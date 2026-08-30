@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS messages(
 );
 CREATE INDEX IF NOT EXISTS idx_pending ON messages(recipient, delivered_at);
 CREATE INDEX IF NOT EXISTS idx_ingest ON messages(ingest_uuid);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_uuid ON messages(uuid);
 CREATE TABLE IF NOT EXISTS agents(
   name            TEXT PRIMARY KEY,
   repo            TEXT NOT NULL,
@@ -202,6 +203,54 @@ impl BusStore {
             ],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Insert a message that arrived over federation, keeping its origin
+    /// uuid. Duplicate forwards (at-least-once) no-op on the unique index;
+    /// returns whether a row was actually inserted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_federated(
+        &self,
+        uuid: &str,
+        sender: &str,
+        recipient: &str,
+        to_display: &str,
+        urgency: &str,
+        body: &str,
+        thread: Option<&str>,
+        record_ref: Option<&str>,
+        created_at: Option<f64>,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "INSERT INTO messages(uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(uuid) DO NOTHING",
+            params![
+                uuid,
+                thread,
+                sender,
+                recipient,
+                to_display,
+                urgency,
+                body,
+                record_ref,
+                created_at.unwrap_or_else(now_epoch)
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Federation ack path: the home node stored it; the origin's row is
+    /// done traveling.
+    pub fn mark_delivered_by_uuid(&self, uuid: &str, via: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET delivered_at=?1, delivered_via=?2
+             WHERE uuid=?3 AND delivered_at IS NULL",
+            params![now_epoch(), via, uuid],
+        )?;
+        Ok(())
     }
 
     /// Undelivered messages for a recipient, in send order. Class never

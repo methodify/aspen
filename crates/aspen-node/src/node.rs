@@ -43,6 +43,8 @@ pub struct NodeInner {
     pub store: BusStore,
     pub sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
     pub delivery_tx: mpsc::UnboundedSender<String>,
+    /// Present when this node has joined a mesh (identity + cert on disk).
+    pub mesh: Option<Arc<crate::federation::MeshState>>,
 }
 
 impl NodeInner {
@@ -84,15 +86,37 @@ pub fn repo_channel(repo: &Path) -> String {
 impl Node {
     pub fn open(data_dir: &Path) -> Result<Self> {
         let store = BusStore::open(&data_dir.join("bus.db"))?;
-        Ok(Self::with_store(store))
+        let files = crate::mesh::MeshFiles::new(data_dir);
+        let mesh = match (files.load_identity()?, files.load_mesh()?) {
+            (Some(identity), Some(mut config)) if identity.cert.is_some() => {
+                config.peers = files.verified_peers()?;
+                Some(Arc::new(crate::federation::MeshState {
+                    identity,
+                    config,
+                    links: Mutex::new(HashMap::new()),
+                    remote: Mutex::new(HashMap::new()),
+                }))
+            }
+            _ => None,
+        };
+        let node = Self::build(store, mesh);
+        if node.inner.mesh.is_some() {
+            crate::federation::spawn_dialers(node.inner.clone());
+        }
+        Ok(node)
     }
 
     pub fn with_store(store: BusStore) -> Self {
+        Self::build(store, None)
+    }
+
+    fn build(store: BusStore, mesh: Option<Arc<crate::federation::MeshState>>) -> Self {
         let (delivery_tx, delivery_rx) = mpsc::unbounded_channel::<String>();
         let inner = Arc::new(NodeInner {
             store,
             sessions: Mutex::new(HashMap::new()),
             delivery_tx,
+            mesh,
         });
         tokio::spawn(delivery::run(inner.clone(), delivery_rx));
         Self { inner }
@@ -174,6 +198,7 @@ impl Node {
         // Anything held for this agent while it was down delivers at session
         // start (plumb's "next session start" rule).
         self.inner.tick_delivery(name);
+        crate::federation::broadcast_roster(&self.inner);
         Ok(managed)
     }
 
@@ -296,6 +321,7 @@ async fn pump(
             SessionEvent::Exited { .. } => {
                 inner.sessions.lock().unwrap().remove(&sess.name);
                 let _ = sess.events.send(ev);
+                crate::federation::broadcast_roster(&inner);
                 break;
             }
             _ => {}

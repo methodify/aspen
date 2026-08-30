@@ -73,6 +73,45 @@ enum Command {
         #[command(subcommand)]
         command: BusCommand,
     },
+    /// Mesh membership: identity, certification, peers.
+    Mesh {
+        #[command(subcommand)]
+        command: MeshCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MeshCommand {
+    /// Create a new mesh here: root key + this node's certified identity.
+    Init {
+        /// Mesh name.
+        #[arg(long)]
+        mesh: String,
+        /// This node's name (defaults to hostname).
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// On a new node: generate identity, print the enroll blob for the
+    /// root holder.
+    Enroll {
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Where the root key lives: turn an enroll blob into a cert blob.
+    Certify { blob: String },
+    /// On the new node: install the cert blob, joining the mesh.
+    Join { blob: String },
+    /// Print this node's cert blob (give it to peers via `peers add`).
+    Export,
+    /// Register a peer's cert blob, optionally with a dial URL.
+    PeersAdd {
+        blob: String,
+        /// ws://host:port/api/federation/ws — omit if the peer dials us.
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Show mesh membership as configured on disk.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -182,6 +221,152 @@ async fn main() -> Result<()> {
         Command::Bus { command } => match command {
             BusCommand::Log { lines } => bus_log(&cli.data_dir, lines),
         },
+        Command::Mesh { command } => mesh_command(&cli.data_dir, command),
+    }
+}
+
+fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
+    use aspen_node::mesh::{MeshConfig, MeshFiles};
+    use aspen_wire::identity::{self, JoinRequest, MeshRoot, NodeCert, NodeIdentity};
+
+    let files = MeshFiles::new(data_dir);
+    let default_node = || {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| {
+                s.trim()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                    .collect::<String>()
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "node".into())
+    };
+
+    match cmd {
+        MeshCommand::Init { mesh, node } => {
+            if files.load_mesh()?.is_some() {
+                anyhow::bail!("this node already belongs to a mesh (see `aspen mesh status`)");
+            }
+            let node_name = node.unwrap_or_else(default_node);
+            let root = MeshRoot::create(&mesh);
+            let mut id = NodeIdentity::create(&node_name);
+            let cert = root.certify(&id.join_request())?;
+            id.install_cert(cert)?;
+            files.save_root(&root)?;
+            files.save_identity(&id)?;
+            files.save_mesh(&MeshConfig {
+                mesh: mesh.clone(),
+                root_public: root.root_public.clone(),
+                peers: vec![],
+            })?;
+            println!("mesh '{mesh}' created; this node is '{node_name}'.");
+            println!("ROOT KEY at {} — it IS the mesh. Back it up; never copy it to nodes that don't certify.", data_dir.join("root.key").display());
+            println!("\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
+                identity::to_blob("cert", files.load_identity()?.unwrap().cert.as_ref().unwrap())?);
+            Ok(())
+        }
+        MeshCommand::Enroll { node } => {
+            let node_name = node.unwrap_or_else(default_node);
+            let id = match files.load_identity()? {
+                Some(existing) if existing.cert.is_some() => {
+                    anyhow::bail!("this node already has a certified identity")
+                }
+                Some(existing) => existing,
+                None => {
+                    let id = NodeIdentity::create(&node_name);
+                    files.save_identity(&id)?;
+                    id
+                }
+            };
+            println!("enroll blob for '{}' — run `aspen mesh certify <blob>` where the root key lives:\n{}",
+                id.node, identity::to_blob("enroll", &id.join_request())?);
+            Ok(())
+        }
+        MeshCommand::Certify { blob } => {
+            let root = files
+                .load_root()?
+                .ok_or_else(|| anyhow::anyhow!("no root key here — run this on the mesh's root node"))?;
+            let req: JoinRequest = identity::from_blob("enroll", &blob)?;
+            let cert = root.certify(&req)?;
+            files.add_peer(cert.clone(), None).ok(); // register them here too
+            println!("cert blob for '{}' — run `aspen mesh join <blob>` on that node:\n{}",
+                cert.node, identity::to_blob("cert", &cert)?);
+            println!("\n(peer '{}' was also added to THIS node's mesh.json — set its URL with `aspen mesh peers-add` if you dial it)", cert.node);
+            Ok(())
+        }
+        MeshCommand::Join { blob } => {
+            let cert: NodeCert = identity::from_blob("cert", &blob)?;
+            let mut id = files
+                .load_identity()?
+                .ok_or_else(|| anyhow::anyhow!("no identity here — run `aspen mesh enroll` first"))?;
+            id.install_cert(cert.clone())?;
+            files.save_identity(&id)?;
+            if files.load_mesh()?.is_none() {
+                // First join: trust the root key this cert carries (verified
+                // against itself at install; the operator carried the blob).
+                files.save_mesh(&MeshConfig {
+                    mesh: cert.mesh.clone(),
+                    root_public: cert.root_public.clone(),
+                    peers: vec![],
+                })?;
+            }
+            println!("joined mesh '{}' as node '{}'.", cert.mesh, cert.node);
+            println!("\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
+                identity::to_blob("cert", &cert)?);
+            Ok(())
+        }
+        MeshCommand::Export => {
+            let id = files
+                .load_identity()?
+                .ok_or_else(|| anyhow::anyhow!("no identity on this node"))?;
+            let cert = id
+                .cert
+                .ok_or_else(|| anyhow::anyhow!("this node is not certified yet"))?;
+            println!("{}", identity::to_blob("cert", &cert)?);
+            Ok(())
+        }
+        MeshCommand::PeersAdd { blob, url } => {
+            let cert: NodeCert = identity::from_blob("cert", &blob)?;
+            files.add_peer(cert.clone(), url.clone())?;
+            println!(
+                "peer '{}' registered{}",
+                cert.node,
+                url.map(|u| format!(" (dialing {u})")).unwrap_or_default()
+            );
+            Ok(())
+        }
+        MeshCommand::Status => {
+            match (files.load_identity()?, files.load_mesh()?) {
+                (Some(id), Some(mesh)) => {
+                    println!(
+                        "mesh '{}' — this node: '{}' ({})",
+                        mesh.mesh,
+                        id.node,
+                        if id.cert.is_some() { "certified" } else { "NOT certified" }
+                    );
+                    if files.load_root()?.is_some() {
+                        println!("root key: PRESENT on this node");
+                    }
+                    let peers = files.verified_peers()?;
+                    if peers.is_empty() {
+                        println!("peers: none");
+                    }
+                    for p in peers {
+                        println!(
+                            "  peer '{}'{}",
+                            p.cert.node,
+                            p.url.map(|u| format!(" — dials {u}")).unwrap_or_else(|| " — inbound only".into())
+                        );
+                    }
+                }
+                (Some(id), None) => println!("identity '{}' exists but no mesh joined (enrolled, awaiting join?)", id.node),
+                _ => println!("no mesh membership on this node (see `aspen mesh init` / `enroll`)"),
+            }
+            Ok(())
+        }
     }
 }
 

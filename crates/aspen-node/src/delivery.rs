@@ -27,7 +27,22 @@ pub async fn run(inner: Arc<NodeInner>, mut rx: mpsc::UnboundedReceiver<String>)
             continue; // operator mail is read from the store/UI, not injected
         }
         let Some(sess) = inner.live(&recipient) else {
-            continue; // not running: stays pending, delivered at next spawn
+            // Not running here. A node-qualified address (`name@node`) or a
+            // bare name homed elsewhere forwards over the mesh when the
+            // link is up; otherwise rows stay pending (next spawn here, or
+            // next link-up).
+            if let Some(mesh) = &inner.mesh {
+                let home = match recipient.split_once('@') {
+                    Some((_, node)) => Some(node.to_owned()),
+                    None => mesh.find_remote(&recipient).map(|(node, _)| node),
+                };
+                if let Some(node) = home {
+                    if mesh.link_up(&node) {
+                        crate::federation::forward_pending(&inner, &recipient, &node);
+                    }
+                }
+            }
+            continue;
         };
         if let Err(e) = attempt(&inner, &sess).await {
             tracing::warn!(recipient, error = %e, "bus delivery attempt failed; rows remain pending");

@@ -125,10 +125,19 @@ pub fn send_message(
     } else if let Some(name) = to.strip_prefix('@') {
         vec![name.to_owned()]
     } else if let Some(channel) = to.strip_prefix('#') {
-        let members = inner
+        let mut members = inner
             .store
             .channel_members(channel)
             .map_err(|e| e.to_string())?;
+        // Cross-node channel members join the fan-out under their bare
+        // names; the delivery engine forwards to their home nodes.
+        if let Some(mesh) = &inner.mesh {
+            for (name, _node) in mesh.remote_channel_members(channel) {
+                if !members.contains(&name) {
+                    members.push(name);
+                }
+            }
+        }
         let others: Vec<String> = members.into_iter().filter(|m| m != from).collect();
         if others.is_empty() {
             return Err(format!(
@@ -161,10 +170,53 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
         return "→ @operator: lands in the operator inbox; the operator reads it on their own schedule.".into();
     }
     match inner.live(recipient) {
-        None => format!(
-            "→ @{recipient}: NOT RUNNING — nothing can wake them; this is held and arrives at \
-             their next session start. If it needs them now, tell the operator."
-        ),
+        None => {
+            // Homed on a peer node? Say what will actually happen. Both
+            // node-qualified (`name@node`) and roster-known bare names.
+            if let Some(mesh) = &inner.mesh {
+                let found = match recipient.split_once('@') {
+                    Some((bare, node)) => Some((
+                        node.to_owned(),
+                        crate::federation::RemoteAgent {
+                            name: bare.to_owned(),
+                            channel: String::new(),
+                            live: mesh
+                                .remote
+                                .lock()
+                                .unwrap()
+                                .get(node)
+                                .map(|v| v.iter().any(|a| a.name == bare && a.live))
+                                .unwrap_or(false),
+                            turn_state: None,
+                        },
+                    )),
+                    None => mesh.find_remote(recipient),
+                };
+                if let Some((node, ra)) = found {
+                    return if mesh.link_up(&node) {
+                        let state = if ra.live {
+                            ra.turn_state.as_deref().unwrap_or("running").to_owned()
+                        } else {
+                            "not running there either".to_owned()
+                        };
+                        format!(
+                            "→ @{recipient}: homed on node '{node}' ({state}) — forwarding \
+                             over the mesh now; their node takes it from there."
+                        )
+                    } else {
+                        format!(
+                            "→ @{recipient}: homed on node '{node}', but that node is \
+                             UNREACHABLE right now — held here and forwarded when the link \
+                             returns."
+                        )
+                    };
+                }
+            }
+            format!(
+                "→ @{recipient}: NOT RUNNING — nothing can wake them; this is held and arrives at \
+                 their next session start. If it needs them now, tell the operator."
+            )
+        }
         Some(sess) => match (sess.turn_state(), urgency) {
             (_, "notice") => format!(
                 "→ @{recipient}: notice recorded; it rides along with their next delivery or turn."
@@ -200,6 +252,31 @@ fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
             line.push_str(&format!(", {pending} pending"));
         }
         lines.push(line);
+    }
+    if let Some(mesh) = &inner.mesh {
+        let remote = mesh.remote.lock().unwrap();
+        for (node, agents) in remote.iter() {
+            let reachable = mesh.link_up(node);
+            for a in agents {
+                let state = if !reachable {
+                    "node unreachable".to_owned()
+                } else if a.live {
+                    format!(
+                        "running, {}",
+                        a.turn_state.as_deref().unwrap_or("state unknown")
+                    )
+                } else {
+                    "not running".to_owned()
+                };
+                let pending = inner.store.pending_count(&a.name).unwrap_or(0);
+                let mut line =
+                    format!("  @{} — #{} — on node '{}' — {}", a.name, a.channel, node, state);
+                if pending > 0 {
+                    line.push_str(&format!(", {pending} pending here"));
+                }
+                lines.push(line);
+            }
+        }
     }
     let op_pending = inner.store.pending_count("operator").unwrap_or(0);
     lines.push(format!(

@@ -11,6 +11,8 @@ serde = { workspace = true }
 aspen-core = { path = "../aspen-core" }
 aspen-claude = { path = "../aspen-claude" }
 aspen-node = { path = "../aspen-node" }
+aspen-wire = { path = "../aspen-wire" }
+futures-util = "0.3"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

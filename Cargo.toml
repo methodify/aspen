@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/aspen-core", "crates/aspen-claude", "crates/aspen-node", "crates/aspen"]
+members = ["crates/aspen-core", "crates/aspen-claude", "crates/aspen-node", "crates/aspen-wire", "crates/aspen"]
 
 [workspace.package]
 version = "0.1.0"

@@ -51,6 +51,7 @@ pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> R
         .route("/bus/send", post(post_bus_send))
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
+        .route("/federation/ws", get(ws_federation))
         .with_state(state);
 
     let mut app = Router::new().nest("/api", api);
@@ -348,6 +349,50 @@ async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoRespo
         Ok(items) => Json(items).into_response(),
         Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet
     }
+}
+
+/// Inbound federation link: bridge the axum socket to text-frame channels
+/// and hand it to the transport-blind link runner. Every frame after hello
+/// is a sealed envelope, so an unauthenticated caller can hold a socket
+/// open but can neither read nor forge mesh traffic.
+async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
+    if s.node.inner.mesh.is_none() {
+        return err(StatusCode::SERVICE_UNAVAILABLE, "this node has not joined a mesh")
+            .into_response();
+    }
+    let inner = s.node.inner.clone();
+    ws.on_upgrade(move |socket| async move {
+        let (mut sink, mut stream) = {
+            use futures_util::StreamExt as _;
+            socket.split()
+        };
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(async move {
+            use futures_util::SinkExt as _;
+            while let Some(f) = out_rx.recv().await {
+                if sink.send(Message::Text(f.into())).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let reader = tokio::spawn(async move {
+            use futures_util::StreamExt as _;
+            while let Some(Ok(msg)) = stream.next().await {
+                if let Message::Text(t) = msg {
+                    if in_tx.send(t.to_string()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        if let Err(e) = aspen_node::federation::run_link(inner, out_tx, in_rx).await {
+            tracing::debug!(error = %e, "inbound federation link ended");
+        }
+        writer.abort();
+        reader.abort();
+    })
+    .into_response()
 }
 
 // ------------------------------------------------------------------------ bus
