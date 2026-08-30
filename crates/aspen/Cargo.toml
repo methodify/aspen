@@ -1,0 +1,16 @@
+[package]
+name = "aspen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aspen-core = { path = "../aspen-core" }
+aspen-claude = { path = "../aspen-claude" }
+aspen-node = { path = "../aspen-node" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
