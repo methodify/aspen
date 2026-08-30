@@ -29,6 +29,8 @@ pub struct ManagedSession {
     pub turn_state: Mutex<TurnState>,
     /// Fan-out to any number of observers (UI connections, dev harness).
     pub events: broadcast::Sender<SessionEvent>,
+    /// Present when spawned interactively: the console can answer prompts.
+    pub broker: Option<Arc<crate::permit::OperatorBroker>>,
 }
 
 impl ManagedSession {
@@ -66,6 +68,9 @@ pub struct SpawnOpts {
     pub resume: Option<String>,
     pub allow_all: bool,
     pub permission_mode: Option<String>,
+    /// An operator surface exists: prompt instead of policy-denying, and
+    /// route AskUserQuestion to the console.
+    pub interactive: bool,
 }
 
 /// The auto-channel name for a repo: its directory name. (Two repos sharing
@@ -120,7 +125,16 @@ impl Node {
         cfg.charter = Some(charter_text(name, &channel, opts.charter.as_deref()));
 
         let mcp = crate::tools::build_mcp(self.inner.clone(), name.to_owned());
-        let (handle, adapter_rx) = ClaudeSession::spawn(cfg.clone(), mcp).await?;
+        let op_broker = opts
+            .interactive
+            .then(|| Arc::new(crate::permit::OperatorBroker::new(cfg.policy)));
+        let (handle, adapter_rx) = match &op_broker {
+            Some(b) => {
+                let b: Arc<dyn aspen_claude::broker::PermissionBroker> = b.clone();
+                ClaudeSession::spawn_with_broker(cfg.clone(), mcp, b).await?
+            }
+            None => ClaudeSession::spawn(cfg.clone(), mcp).await?,
+        };
 
         self.inner.store.register_agent(
             name,
@@ -131,6 +145,9 @@ impl Node {
         )?;
 
         let (events_tx, _) = broadcast::channel(4096);
+        if let Some(b) = &op_broker {
+            b.attach_events(events_tx.clone());
+        }
         let managed = Arc::new(ManagedSession {
             name: name.to_owned(),
             repo,
@@ -138,6 +155,7 @@ impl Node {
             handle,
             turn_state: Mutex::new(TurnState::Idle),
             events: events_tx,
+            broker: op_broker,
         });
         self.inner
             .sessions
@@ -183,6 +201,32 @@ impl Node {
 
     pub fn subscribe(&self, name: &str) -> Option<broadcast::Receiver<SessionEvent>> {
         self.inner.live(name).map(|s| s.events.subscribe())
+    }
+
+    /// Console answer to a pending permission prompt.
+    pub fn answer_permission(
+        &self,
+        name: &str,
+        request_id: &str,
+        allow: bool,
+        message: Option<String>,
+        updated_input: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let broker = sess
+            .broker
+            .as_ref()
+            .ok_or_else(|| anyhow!("@{name} was not spawned interactively"))?;
+        if broker.answer(request_id, allow, message, updated_input) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "prompt {request_id} is no longer open (answered, cancelled, or timed out)"
+            ))
+        }
     }
 }
 

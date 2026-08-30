@@ -16,9 +16,11 @@
 //! - `result` is the only end-of-turn signal.
 //! - `--permission-prompt-tool stdio` or the permission surface is dead code.
 
+pub mod broker;
 pub mod mcp;
 pub mod normalize;
 pub mod process;
 pub mod session;
 
-pub use session::{ClaudeConfig, ClaudeSession, PermissionDecision, PermissionPolicy};
+pub use broker::{BrokerDecision, DecidedBy, PermissionBroker, PermissionRequest};
+pub use session::{ClaudeConfig, ClaudeSession, PermissionPolicy, PolicyBroker};

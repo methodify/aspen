@@ -30,12 +30,6 @@ pub enum PermissionPolicy {
     AllowAll,
 }
 
-#[derive(Debug, Clone)]
-pub struct PermissionDecision {
-    pub allow: bool,
-    pub deny_message: String,
-}
-
 const READ_ONLY_TOOLS: &[&str] = &[
     "Read",
     "Glob",
@@ -96,11 +90,22 @@ pub struct ClaudeSession {
 }
 
 impl ClaudeSession {
-    /// Spawn, wire the loops, and perform the `initialize` handshake.
-    /// Returns the handle plus the normalized event stream.
+    /// Spawn with the config's policy as the broker (no operator surface).
     pub async fn spawn(
         cfg: ClaudeConfig,
         mcp: McpServer,
+    ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
+        let broker: Arc<dyn crate::broker::PermissionBroker> =
+            Arc::new(PolicyBroker(cfg.policy));
+        Self::spawn_with_broker(cfg, mcp, broker).await
+    }
+
+    /// Spawn, wire the loops, and perform the `initialize` handshake.
+    /// Returns the handle plus the normalized event stream.
+    pub async fn spawn_with_broker(
+        cfg: ClaudeConfig,
+        mcp: McpServer,
+        broker: Arc<dyn crate::broker::PermissionBroker>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
         let mut spec = SpawnSpec::new(cfg.repo.clone());
         spec.claude_bin = cfg.claude_bin.clone();
@@ -165,8 +170,8 @@ impl ClaudeSession {
             let session = session.clone();
             let mut stdout_rx = proc.stdout_rx;
             let events_tx = events_tx.clone();
-            let policy = cfg.policy;
             let mcp = Arc::new(mcp);
+            let broker = broker.clone();
             tokio::spawn(async move {
                 while let Some(line) = stdout_rx.recv().await {
                     let frame: Value = match serde_json::from_str(&line) {
@@ -179,7 +184,7 @@ impl ClaudeSession {
                         }
                     };
                     session
-                        .route_frame(frame, &events_tx, policy, &mcp)
+                        .route_frame(frame, &events_tx, &broker, &mcp)
                         .await;
                 }
             });
@@ -253,10 +258,10 @@ impl ClaudeSession {
     }
 
     async fn route_frame(
-        &self,
+        self: &Arc<Self>,
         frame: Value,
         events_tx: &mpsc::Sender<SessionEvent>,
-        policy: PermissionPolicy,
+        broker: &Arc<dyn crate::broker::PermissionBroker>,
         mcp: &Arc<McpServer>,
     ) {
         match frame.get("type").and_then(|t| t.as_str()).unwrap_or("") {
@@ -280,13 +285,14 @@ impl ClaudeSession {
                 }
             }
             "control_request" => {
-                self.handle_cli_request(frame, events_tx, policy, mcp).await;
+                self.handle_cli_request(frame, events_tx, broker, mcp).await;
             }
             "control_cancel_request" => {
-                // Our P0 deciders answer synchronously, so there is nothing
-                // in flight to cancel; when the operator UI holds prompts
-                // open, this must close them (reference §3, invariant 5).
-                tracing::debug!("control_cancel_request received");
+                // The CLI raced a hook or moved on: close any prompt the
+                // broker holds open (reference §3, invariant 5).
+                if let Some(rid) = frame.get("request_id").and_then(|r| r.as_str()) {
+                    broker.cancel(rid);
+                }
             }
             _ => {
                 for ev in normalize(frame) {
@@ -299,10 +305,10 @@ impl ClaudeSession {
     /// The four subtypes the CLI originates (reference §6). Handle all;
     /// never hang any — an unanswered request wedges the CLI forever.
     async fn handle_cli_request(
-        &self,
+        self: &Arc<Self>,
         frame: Value,
         events_tx: &mpsc::Sender<SessionEvent>,
-        policy: PermissionPolicy,
+        broker: &Arc<dyn crate::broker::PermissionBroker>,
         mcp: &Arc<McpServer>,
     ) {
         let request_id = frame
@@ -315,37 +321,62 @@ impl ClaudeSession {
 
         match subtype {
             "can_use_tool" => {
-                let tool_name = request
-                    .get("tool_name")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_owned();
-                let input = request.get("input").cloned().unwrap_or(json!({}));
-                let decision = decide(policy, &tool_name, &request);
-                let _ = events_tx
-                    .send(SessionEvent::PermissionSettled {
+                // A decision can take minutes at a console. NEVER block the
+                // reader on it — spawn, decide, respond.
+                let session = self.clone();
+                let events_tx = events_tx.clone();
+                let broker = broker.clone();
+                tokio::spawn(async move {
+                    let req = crate::broker::PermissionRequest {
                         request_id: request_id.clone(),
-                        tool_name: tool_name.clone(),
-                        allowed: decision.allow,
-                        by_policy: true,
-                    })
-                    .await;
-                if decision.allow {
-                    // updatedInput is REQUIRED on allow; envelope is
-                    // snake_case but this payload is camelCase (reference
-                    // §3 invariant 2 — real, not a typo).
-                    self.respond_success(
-                        &request_id,
-                        json!({ "behavior": "allow", "updatedInput": input }),
-                    )
-                    .await;
-                } else {
-                    self.respond_success(
-                        &request_id,
-                        json!({ "behavior": "deny", "message": decision.deny_message }),
-                    )
-                    .await;
-                }
+                        tool_name: request
+                            .get("tool_name")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_owned(),
+                        input: request.get("input").cloned().unwrap_or(json!({})),
+                        suggestions: request
+                            .get("permission_suggestions")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        raw: request,
+                    };
+                    let tool_name = req.tool_name.clone();
+                    let (decision, by) = broker.decide(req).await;
+                    let allowed = matches!(decision, crate::broker::BrokerDecision::Allow { .. });
+                    let _ = events_tx
+                        .send(SessionEvent::PermissionSettled {
+                            request_id: request_id.clone(),
+                            tool_name,
+                            allowed,
+                            by_policy: by == crate::broker::DecidedBy::Policy,
+                        })
+                        .await;
+                    match decision {
+                        crate::broker::BrokerDecision::Allow {
+                            updated_input,
+                            updated_permissions,
+                        } => {
+                            // updatedInput is REQUIRED on allow; envelope is
+                            // snake_case but this payload is camelCase
+                            // (reference §3 invariant 2 — real, not a typo).
+                            let mut payload =
+                                json!({ "behavior": "allow", "updatedInput": updated_input });
+                            if let Some(p) = updated_permissions {
+                                payload["updatedPermissions"] = p;
+                            }
+                            session.respond_success(&request_id, payload).await;
+                        }
+                        crate::broker::BrokerDecision::Deny { message } => {
+                            session
+                                .respond_success(
+                                    &request_id,
+                                    json!({ "behavior": "deny", "message": message }),
+                                )
+                                .await;
+                        }
+                    }
+                });
             }
             "hook_callback" => {
                 // `{}` is a valid HookJSONOutput; broken hooks must not
@@ -389,31 +420,66 @@ impl ClaudeSession {
     }
 }
 
-fn decide(policy: PermissionPolicy, tool_name: &str, request: &Value) -> PermissionDecision {
-    // AskUserQuestion arrives as can_use_tool; answers ride updatedInput
-    // (reference §7.6). P0 has no operator surface, so allow-with-echo: the
-    // model is told "the user did not answer" and proceeds, which is honest.
-    let allow = match policy {
-        PermissionPolicy::AllowAll => true,
+/// The silent tier: what a policy decides without anyone being asked.
+/// Returns None when the policy has no opinion (prompt-worthy).
+pub fn policy_opinion(
+    policy: PermissionPolicy,
+    tool_name: &str,
+    request: &Value,
+) -> Option<bool> {
+    match policy {
+        PermissionPolicy::AllowAll => Some(true),
         PermissionPolicy::ReadOnlyAuto => {
-            READ_ONLY_TOOLS.contains(&tool_name)
+            let auto = READ_ONLY_TOOLS.contains(&tool_name)
                 // Aspen's own tools are bus comms and roster reads — safe by
                 // construction, and an agent that cannot speak is stranded.
                 || tool_name.starts_with("mcp__aspen__")
+                // AskUserQuestion arrives as can_use_tool; answers ride
+                // updatedInput (reference §7.6). With no operator surface,
+                // allow-with-echo is honest: the model is told "the user
+                // did not answer" and proceeds.
                 || tool_name == "AskUserQuestion"
                 || request
                     .get("input")
                     .and_then(|i| i.get("questions"))
-                    .is_some()
+                    .is_some();
+            if auto {
+                Some(true)
+            } else {
+                Some(false) // this policy has no prompt channel: deny
+            }
         }
-    };
-    PermissionDecision {
-        allow,
-        deny_message: format!(
-            "hub policy ({:?}): {} is not auto-allowed and no operator is attached to \
-             approve it. Proceed without this tool, or tell the operator what you need.",
-            policy, tool_name
-        ),
+    }
+}
+
+pub fn policy_deny_message(tool_name: &str) -> String {
+    format!(
+        "aspen policy: {tool_name} is not auto-allowed and no operator surface is attached \
+         to approve it. Proceed without this tool, or tell the operator what you need."
+    )
+}
+
+/// Broker that answers purely from policy — the dev/headless default.
+pub struct PolicyBroker(pub PermissionPolicy);
+
+#[async_trait]
+impl crate::broker::PermissionBroker for PolicyBroker {
+    async fn decide(
+        &self,
+        req: crate::broker::PermissionRequest,
+    ) -> (crate::broker::BrokerDecision, crate::broker::DecidedBy) {
+        let allow = policy_opinion(self.0, &req.tool_name, &req.raw).unwrap_or(false);
+        let d = if allow {
+            crate::broker::BrokerDecision::Allow {
+                updated_input: req.input,
+                updated_permissions: None,
+            }
+        } else {
+            crate::broker::BrokerDecision::Deny {
+                message: policy_deny_message(&req.tool_name),
+            }
+        };
+        (d, crate::broker::DecidedBy::Policy)
     }
 }
 

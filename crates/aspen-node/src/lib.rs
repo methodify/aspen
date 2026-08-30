@@ -9,6 +9,7 @@
 
 pub mod delivery;
 pub mod node;
+pub mod permit;
 pub mod store;
 pub mod tools;
 

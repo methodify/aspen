@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs"] }
+serde = { workspace = true }
 aspen-core = { path = "../aspen-core" }
 aspen-claude = { path = "../aspen-claude" }
 aspen-node = { path = "../aspen-node" }

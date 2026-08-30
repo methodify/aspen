@@ -91,18 +91,33 @@ fn bus_send(inner: &Arc<NodeInner>, me: &str, args: Value) -> Result<String, Str
         .get("body")
         .and_then(|v| v.as_str())
         .ok_or("missing 'body'")?;
-    if body.trim().is_empty() {
-        return Err("refusing to send an empty message".into());
-    }
     let urgency = args
         .get("urgency")
         .and_then(|v| v.as_str())
         .unwrap_or("normal");
+    let thread = args.get("thread").and_then(|v| v.as_str());
+    let record = args.get("record").and_then(|v| v.as_str());
+    let notes = send_message(inner, me, &to, body, urgency, thread, record)?;
+    Ok(format!("Sent ({urgency}) to {}.\n{}", to, notes.join("\n")))
+}
+
+/// The one send path, shared by the agent-facing MCP tool and the operator
+/// API. Returns per-recipient delivery notes.
+pub fn send_message(
+    inner: &Arc<NodeInner>,
+    from: &str,
+    to: &str,
+    body: &str,
+    urgency: &str,
+    thread: Option<&str>,
+    record: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if body.trim().is_empty() {
+        return Err("refusing to send an empty message".into());
+    }
     if !["gating", "normal", "notice"].contains(&urgency) {
         return Err(format!("urgency must be gating|normal|notice, not {urgency:?}"));
     }
-    let thread = args.get("thread").and_then(|v| v.as_str());
-    let record = args.get("record").and_then(|v| v.as_str());
 
     // Resolve the address to concrete recipients.
     let recipients: Vec<String> = if to == "@operator" {
@@ -114,7 +129,7 @@ fn bus_send(inner: &Arc<NodeInner>, me: &str, args: Value) -> Result<String, Str
             .store
             .channel_members(channel)
             .map_err(|e| e.to_string())?;
-        let others: Vec<String> = members.into_iter().filter(|m| m != me).collect();
+        let others: Vec<String> = members.into_iter().filter(|m| m != from).collect();
         if others.is_empty() {
             return Err(format!(
                 "channel #{channel} has no members besides you — bus_status lists who exists"
@@ -131,16 +146,12 @@ fn bus_send(inner: &Arc<NodeInner>, me: &str, args: Value) -> Result<String, Str
     for recipient in &recipients {
         inner
             .store
-            .insert_message(me, recipient, &to, urgency, body, thread, record)
+            .insert_message(from, recipient, to, urgency, body, thread, record)
             .map_err(|e| e.to_string())?;
         inner.tick_delivery(recipient);
         out.push(delivery_note(inner, recipient, urgency));
     }
-    Ok(format!(
-        "Sent ({urgency}) to {}.\n{}",
-        to,
-        out.join("\n")
-    ))
+    Ok(out)
 }
 
 /// What the sender is told about how their message will actually land — the

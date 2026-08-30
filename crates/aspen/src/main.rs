@@ -12,6 +12,8 @@ use clap::{Parser, Subcommand};
 use aspen_core::SessionEvent;
 use aspen_node::{Node, SpawnOpts};
 
+mod api;
+
 #[derive(Parser)]
 #[command(name = "aspen", version, about = "Aspen node daemon")]
 struct Cli {
@@ -26,6 +28,22 @@ fn default_data_dir() -> PathBuf {
     dirs_home().join(".aspen")
 }
 
+/// Find a built console without configuration: ui/dist relative to the
+/// executable's dev tree, or ~/.aspen/ui.
+fn default_ui_dir() -> Option<PathBuf> {
+    let candidates = [
+        std::env::current_dir().ok().map(|d| d.join("ui/dist")),
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| e.ancestors().nth(3).map(|r| r.join("ui/dist"))),
+        Some(default_data_dir().join("ui")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|d| d.join("index.html").is_file())
+}
+
 fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -35,6 +53,16 @@ fn dirs_home() -> PathBuf {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the node: API + web console on localhost.
+    Up {
+        /// Listen address for the API and console.
+        #[arg(long, default_value = "127.0.0.1:7420")]
+        listen: std::net::SocketAddr,
+        /// Directory with the built SPA (defaults to ui/dist next to the
+        /// binary's source tree, if present).
+        #[arg(long)]
+        ui: Option<PathBuf>,
+    },
     /// Developer harness commands against a live agent runtime.
     Dev {
         #[command(subcommand)]
@@ -111,6 +139,15 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
+        Command::Up { listen, ui } => {
+            let node = Node::open(&cli.data_dir)?;
+            let ui_dir = ui.or_else(default_ui_dir);
+            match &ui_dir {
+                Some(d) => eprintln!("[aspen] serving console from {}", d.display()),
+                None => eprintln!("[aspen] no ui/dist found — API only"),
+            }
+            api::serve(node, listen, ui_dir).await
+        }
         Command::Dev { command } => match command {
             DevCommand::Oneshot {
                 repo,
