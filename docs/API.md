@@ -14,7 +14,10 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
 | `POST /api/agents/{name}/interrupt` | — | `{}` | abort the in-flight turn |
 | `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input? }` | `{}` | answer a pending permission prompt. `message` is shown to the model on deny; `updated_input` (optional) replaces tool input on allow |
+| `POST /api/agents/{name}/revive` | — | `Agent` | bring a registered-but-down agent back by resuming its stored session (history intact) |
 | `DELETE /api/agents/{name}` | — | `{}` | shutdown ladder |
+| `GET /api/agents/{name}/transcript` | — | `TranscriptItem[]` | rehydrated history from the runtime's on-disk transcript — render above the live stream when opening a session |
+| `GET /api/sessions?repo=/path` | — | `SessionInfo[]` | enumerate a repo's sessions from disk (newest first); `user_messages == 0` is a warm spawn, hide it |
 | `GET /api/bus/log?n=50` | — | `BusMessage[]` | the trail, chronological |
 | `POST /api/bus/send` | `{ to, body, urgency?, thread?, record? }` | `{ notes: string[] }` | send **as @operator**. `to` is `@agent`, `#channel`, `@operator` |
 | `GET /api/operator/inbox` | — | `BusMessage[]` | undelivered messages addressed to the operator |
@@ -48,6 +51,23 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 }
 ```
 
+### TranscriptItem
+
+```jsonc
+{ "role": "user" | "assistant",
+  "text": "…",                    // full markdown text
+  "bus": true,                     // user items only: an [aspen bus] injection
+  "tools": [{ "id": "toolu_…", "name": "Read" }],  // assistant items only
+  "uuid": "…", "timestamp": "2026-…" }
+```
+
+### SessionInfo
+
+```jsonc
+{ "session_id": "uuid", "title": "…" | null, "entrypoint": "aspen" | "cli" | null,
+  "modified": 1756500000.0, "user_messages": 12 }
+```
+
 ## WebSocket: `GET /api/agents/{name}/events`
 
 Upgrades to a WS that streams the session's normalized events as JSON text
@@ -73,8 +93,8 @@ Key kinds for the console:
   duration_ms, result_text }` — the only signal that unblocks the composer.
 - `exited { code }` — the session is gone; offer resume.
 
-The socket sends only live events (no history yet — the transcript-replay
-endpoint is a planned addition). Multiple sockets per session are fine
+The socket sends only live events; history comes from the transcript
+endpoint. Multiple sockets per session are fine
 (broadcast fan-out). A client may send text frames; they are ignored today.
 
 ## Static

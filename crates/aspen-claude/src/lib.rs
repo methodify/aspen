@@ -21,6 +21,7 @@ pub mod mcp;
 pub mod normalize;
 pub mod process;
 pub mod session;
+pub mod transcript;
 
 pub use broker::{BrokerDecision, DecidedBy, PermissionBroker, PermissionRequest};
 pub use session::{ClaudeConfig, ClaudeSession, PermissionPolicy, PolicyBroker};

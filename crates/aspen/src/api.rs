@@ -27,6 +27,7 @@ pub struct AppState {
 type S = State<Arc<AppState>>;
 
 pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> Result<()> {
+    let shutdown_node = node.clone();
     let state = Arc::new(AppState {
         node,
         node_name: hostname(),
@@ -42,7 +43,10 @@ pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> R
             post(post_permission),
         )
         .route("/agents/{name}", delete(delete_agent))
+        .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/events", get(ws_events))
+        .route("/agents/{name}/transcript", get(get_transcript))
+        .route("/sessions", get(get_sessions))
         .route("/bus/log", get(get_bus_log))
         .route("/bus/send", post(post_bus_send))
         .route("/operator/inbox", get(get_inbox))
@@ -61,7 +65,30 @@ pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> R
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!("aspen node API listening on http://{listen}");
     eprintln!("[aspen] node up: http://{listen}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            eprintln!("\n[aspen] shutting down sessions…");
+            // Clean ladder for every live session; transcripts persist and
+            // revive brings each one back with context intact.
+            let names: Vec<String> = shutdown_node
+                .inner
+                .sessions
+                .lock()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            for name in names {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    shutdown_node.shutdown_agent(&name),
+                )
+                .await;
+            }
+            eprintln!("[aspen] bye");
+        })
+        .await?;
     Ok(())
 }
 
@@ -210,6 +237,20 @@ async fn post_permission(
     }
 }
 
+async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    match s.node.revive_agent(&name, true).await {
+        Ok(_) => {
+            let rows = s.node.inner.store.agents().unwrap_or_default();
+            match rows.iter().find(|a| a.name == name) {
+                Some(a) => Json(agent_json(&s, a)).into_response(),
+                None => err(StatusCode::INTERNAL_SERVER_ERROR, "revived but not registered")
+                    .into_response(),
+            }
+        }
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
 async fn delete_agent(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
     match s.node.shutdown_agent(&name).await {
         Ok(()) => Json(json!({})).into_response(),
@@ -261,6 +302,51 @@ async fn pump_events(
                 _ => return,      // closed
             },
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionsQuery {
+    repo: String,
+}
+
+/// Enumerate a repo's sessions from disk (the filesystem is the registry).
+async fn get_sessions(Query(q): Query<SessionsQuery>) -> impl IntoResponse {
+    match aspen_claude::transcript::enumerate_sessions(std::path::Path::new(&q.repo)) {
+        Ok(rows) => Json(
+            rows.iter()
+                .map(|s| {
+                    json!({
+                        "session_id": s.session_id,
+                        "title": s.title,
+                        "entrypoint": s.entrypoint,
+                        "modified": s.modified_epoch,
+                        "user_messages": s.user_messages,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Rehydrated history for an agent's session — what the console renders
+/// above the live stream.
+async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    let rows = match s.node.inner.store.agents() {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let Some(agent) = rows.iter().find(|a| a.name == name) else {
+        return err(StatusCode::NOT_FOUND, format!("no agent named @{name}")).into_response();
+    };
+    let Some(sid) = &agent.session_id else {
+        return Json(Vec::<Value>::new()).into_response();
+    };
+    match aspen_claude::transcript::rehydrate(&agent.repo, sid) {
+        Ok(items) => Json(items).into_response(),
+        Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet
     }
 }
 

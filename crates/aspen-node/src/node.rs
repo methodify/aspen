@@ -136,11 +136,17 @@ impl Node {
             None => ClaudeSession::spawn(cfg.clone(), mcp).await?,
         };
 
+        // On resume the runtime keeps the resumed session's id — register
+        // that, not the fresh uuid the config generated and never used.
+        let effective_session_id = opts
+            .resume
+            .clone()
+            .unwrap_or_else(|| cfg.session_id.to_string());
         self.inner.store.register_agent(
             name,
             &repo,
             &channel,
-            &cfg.session_id.to_string(),
+            &effective_session_id,
             opts.charter.as_deref(),
         )?;
 
@@ -201,6 +207,26 @@ impl Node {
 
     pub fn subscribe(&self, name: &str) -> Option<broadcast::Receiver<SessionEvent>> {
         self.inner.live(name).map(|s| s.events.subscribe())
+    }
+
+    /// Bring a registered-but-down agent back by resuming its session. The
+    /// conversation, not the process, is the identity.
+    pub async fn revive_agent(&self, name: &str, interactive: bool) -> Result<Arc<ManagedSession>> {
+        if self.inner.live(name).is_some() {
+            return Err(anyhow!("@{name} is already running"));
+        }
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named @{name} on record"))?;
+        let opts = SpawnOpts {
+            charter: row.charter.clone(),
+            resume: row.session_id.clone(),
+            interactive,
+            ..Default::default()
+        };
+        self.spawn_agent(name, row.repo.clone(), opts).await
     }
 
     /// Console answer to a pending permission prompt.
