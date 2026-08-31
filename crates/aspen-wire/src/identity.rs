@@ -129,6 +129,12 @@ impl NodeIdentity {
         Ok(SigningKey::from_bytes(&bytes))
     }
 
+    /// Sign a relay's challenge nonce, proving key possession at register.
+    pub fn sign_relay_challenge(&self, mesh: &str, nonce: &[u8]) -> Result<Vec<u8>> {
+        let ctx = crate::relay::challenge_context(mesh, &self.node, nonce);
+        Ok(self.signing_key()?.sign(&ctx).to_vec())
+    }
+
     pub fn x_secret_key(&self) -> Result<x25519_dalek::StaticSecret> {
         let bytes: [u8; 32] = self
             .x_secret

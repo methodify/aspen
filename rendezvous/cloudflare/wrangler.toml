@@ -1,0 +1,17 @@
+name = "aspen-rendezvous"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+# One Durable Object class holds one mesh's live node sockets.
+[[durable_objects.bindings]]
+name = "MESH"
+class_name = "MeshRelay"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MeshRelay"]
+
+# Set the mesh root public keys as a secret (never in this file):
+#   wrangler secret put MESH_ROOTS
+# Value is JSON: { "mymesh": "<base64 root pubkey from `aspen mesh root-pubkey`>" }
+# The root PUBLIC key only — it verifies membership, it cannot forge it.

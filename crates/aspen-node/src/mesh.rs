@@ -27,6 +27,10 @@ pub struct MeshConfig {
     pub root_public: Vec<u8>,
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+    /// Rendezvous relay URL (wss://…/relay), the universal fallback for
+    /// peers with no direct path. None = direct/tailnet only.
+    #[serde(default)]
+    pub relay: Option<String>,
 }
 
 pub struct MeshFiles {

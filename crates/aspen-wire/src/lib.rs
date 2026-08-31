@@ -13,9 +13,11 @@
 
 pub mod envelope;
 pub mod identity;
+pub mod relay;
 
 pub use envelope::SealedEnvelope;
 pub use identity::{JoinRequest, MeshRoot, NodeCert, NodeIdentity};
+pub use relay::{Challenge, RelayFrame, Register};
 
 pub mod b64 {
     use base64::engine::general_purpose::STANDARD;

@@ -1,0 +1,15 @@
+{
+  "name": "aspen-rendezvous",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  }
+}

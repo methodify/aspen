@@ -642,4 +642,195 @@ pub fn spawn_dialers(inner: Arc<NodeInner>) {
             broadcast_roster(&inner2);
         }
     });
+
+    // If a rendezvous relay is configured, keep a connection to it — the
+    // universal fallback for peers with no direct path.
+    if let Some(mesh) = &inner.mesh {
+        if let Some(relay_url) = mesh.config.relay.clone() {
+            spawn_relay_client(inner.clone(), relay_url);
+        }
+    }
+}
+
+/// Maintain one relay connection, muxing per-peer federation links over it.
+fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = relay_session(&inner, &relay_url).await {
+                tracing::debug!(error = %e, "relay session ended");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
+}
+
+async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
+    use aspen_wire::relay::{Challenge, RelayFrame, Register};
+
+    let mesh = inner
+        .mesh
+        .as_ref()
+        .ok_or_else(|| anyhow!("no mesh"))?
+        .clone();
+    let (ws, _) = tokio_tungstenite::connect_async(relay_url).await?;
+    let (mut sink, mut stream) = ws.split();
+
+    // Challenge → Register.
+    let first = stream
+        .next()
+        .await
+        .ok_or_else(|| anyhow!("relay closed before challenge"))??;
+    let challenge: Challenge = serde_json::from_str(first.to_text()?)?;
+    let cert = mesh
+        .identity
+        .cert
+        .clone()
+        .ok_or_else(|| anyhow!("node not certified"))?;
+    let reg = Register {
+        mesh: mesh.config.mesh.clone(),
+        node: mesh.identity.node.clone(),
+        challenge_sig: mesh
+            .identity
+            .sign_relay_challenge(&mesh.config.mesh, &challenge.nonce)?,
+        cert,
+    };
+    sink.send(tokio_tungstenite::tungstenite::Message::text(
+        serde_json::to_string(&reg)?,
+    ))
+    .await?;
+
+    // Mux: outbound relay frames + per-peer inbound channels.
+    let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<String>();
+    let peer_ins: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // Writer task: everything queued for the relay socket.
+    let writer = tokio::spawn(async move {
+        while let Some(frame) = relay_rx.recv().await {
+            if sink
+                .send(tokio_tungstenite::tungstenite::Message::text(frame))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    // Which peers we dial vs accept: lower node name dials, to avoid double
+    // links (both sides otherwise start one).
+    let me = mesh.identity.node.clone();
+
+    let result = relay_read_loop(inner, &mesh, &me, &relay_tx, &peer_ins, &mut stream).await;
+    writer.abort();
+    // Drop all per-peer links routed over this relay.
+    peer_ins.lock().unwrap().clear();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn relay_read_loop(
+    inner: &Arc<NodeInner>,
+    mesh: &Arc<MeshState>,
+    me: &str,
+    relay_tx: &mpsc::UnboundedSender<String>,
+    peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    stream: &mut (impl futures_util::Stream<
+        Item = std::result::Result<
+            tokio_tungstenite::tungstenite::Message,
+            tokio_tungstenite::tungstenite::Error,
+        >,
+    > + Unpin),
+) -> Result<()> {
+    use aspen_wire::relay::RelayFrame;
+
+    while let Some(msg) = stream.next().await {
+        let msg = msg?;
+        let text = match msg.to_text() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let frame: RelayFrame = match serde_json::from_str(text) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        match frame {
+            RelayFrame::Welcome { peers } => {
+                for p in peers {
+                    if me < p.as_str() && !mesh.link_up(&p) {
+                        start_relay_link(inner, me, &p, relay_tx, peer_ins);
+                    }
+                }
+            }
+            RelayFrame::Presence { node, online } => {
+                if online && me < node.as_str() && !mesh.link_up(&node) {
+                    start_relay_link(inner, me, &node, relay_tx, peer_ins);
+                }
+            }
+            RelayFrame::Route { from: Some(from), data, .. } => {
+                let sender = peer_ins.lock().unwrap().get(&from).cloned();
+                match sender {
+                    Some(tx) => {
+                        let _ = tx.send(data);
+                    }
+                    None => {
+                        // First contact from a peer that dials us: accept.
+                        let tx = start_relay_link(inner, me, &from, relay_tx, peer_ins);
+                        let _ = tx.send(data);
+                    }
+                }
+            }
+            RelayFrame::Undeliverable { to } => {
+                peer_ins.lock().unwrap().remove(&to);
+            }
+            RelayFrame::Rejected { reason } => {
+                return Err(anyhow!("relay rejected this node: {reason}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Start one federation link that rides the relay to `peer`: wrap outbound
+/// frames as Route{to:peer}, feed inbound Route data in. Returns the inbound
+/// sender registered for the peer.
+fn start_relay_link(
+    inner: &Arc<NodeInner>,
+    _me: &str,
+    peer: &str,
+    relay_tx: &mpsc::UnboundedSender<String>,
+    peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+) -> mpsc::UnboundedSender<String> {
+    use aspen_wire::relay::RelayFrame;
+
+    let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    peer_ins.lock().unwrap().insert(peer.to_owned(), in_tx.clone());
+
+    // Bridge this link's outbound frames into relay Route envelopes.
+    let relay_tx2 = relay_tx.clone();
+    let peer2 = peer.to_owned();
+    tokio::spawn(async move {
+        while let Some(data) = out_rx.recv().await {
+            let framed = serde_json::to_string(&RelayFrame::Route {
+                to: Some(peer2.clone()),
+                from: None,
+                data,
+            })
+            .unwrap();
+            if relay_tx2.send(framed).is_err() {
+                break;
+            }
+        }
+    });
+
+    let inner2 = inner.clone();
+    let peer3 = peer.to_owned();
+    let peer_ins2 = peer_ins.clone();
+    tokio::spawn(async move {
+        let _ = run_link(inner2, out_tx, in_rx).await;
+        peer_ins2.lock().unwrap().remove(&peer3);
+    });
+    in_tx
 }

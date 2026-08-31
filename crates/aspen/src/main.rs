@@ -110,6 +110,13 @@ enum MeshCommand {
         #[arg(long)]
         url: Option<String>,
     },
+    /// Print this mesh's ROOT PUBLIC key (safe to give a relay).
+    RootPubkey,
+    /// Set (or clear) the rendezvous relay URL this node dials.
+    Relay {
+        /// wss://host/relay — omit to clear.
+        url: Option<String>,
+    },
     /// Show mesh membership as configured on disk.
     Status,
 }
@@ -261,6 +268,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 mesh: mesh.clone(),
                 root_public: root.root_public.clone(),
                 peers: vec![],
+                relay: None,
             })?;
             println!("mesh '{mesh}' created; this node is '{node_name}'.");
             println!("ROOT KEY at {} — it IS the mesh. Back it up; never copy it to nodes that don't certify.", data_dir.join("root.key").display());
@@ -311,6 +319,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                     mesh: cert.mesh.clone(),
                     root_public: cert.root_public.clone(),
                     peers: vec![],
+                    relay: None,
                 })?;
             }
             println!("joined mesh '{}' as node '{}'.", cert.mesh, cert.node);
@@ -338,6 +347,23 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             );
             Ok(())
         }
+        MeshCommand::RootPubkey => {
+            let mesh = files.load_mesh()?
+                .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
+            println!("{}", aspen_wire::b64::encode(&mesh.root_public));
+            Ok(())
+        }
+        MeshCommand::Relay { url } => {
+            let mut mesh = files.load_mesh()?
+                .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
+            mesh.relay = url.clone();
+            files.save_mesh(&mesh)?;
+            match url {
+                Some(u) => println!("relay set: {u} (restart `aspen up` to connect)"),
+                None => println!("relay cleared"),
+            }
+            Ok(())
+        }
         MeshCommand::Status => {
             match (files.load_identity()?, files.load_mesh()?) {
                 (Some(id), Some(mesh)) => {
@@ -349,6 +375,9 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                     );
                     if files.load_root()?.is_some() {
                         println!("root key: PRESENT on this node");
+                    }
+                    if let Some(u) = &mesh.relay {
+                        println!("relay: {u}");
                     }
                     let peers = files.verified_peers()?;
                     if peers.is_empty() {
