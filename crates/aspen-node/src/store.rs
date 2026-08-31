@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS agents(
   created_at      REAL NOT NULL,
   last_spawned_at REAL
 );
+CREATE TABLE IF NOT EXISTS repos(
+  path             TEXT PRIMARY KEY,
+  skip_permissions INTEGER NOT NULL DEFAULT 0,
+  added_at         REAL NOT NULL,
+  last_used_at     REAL
+);
 ";
 
 pub fn now_epoch() -> f64 {
@@ -68,6 +74,13 @@ pub struct StoredMessage {
     pub delivered_at: Option<f64>,
     pub delivered_via: Option<String>,
     pub ingested_at: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RepoRow {
+    pub path: PathBuf,
+    pub skip_permissions: bool,
+    pub last_used_at: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +173,67 @@ impl BusStore {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    // ------------------------------------------------------------------ repos
+
+    /// Remember a repo (idempotent). Preserves an existing skip default
+    /// unless `skip` is given.
+    pub fn add_repo(&self, path: &Path, skip: Option<bool>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO repos(path, skip_permissions, added_at, last_used_at)
+             VALUES(?1, ?2, ?3, ?3)
+             ON CONFLICT(path) DO UPDATE SET
+               skip_permissions = COALESCE(?4, repos.skip_permissions),
+               last_used_at = ?3",
+            params![
+                path.to_string_lossy(),
+                skip.unwrap_or(false) as i64,
+                now_epoch(),
+                skip.map(|b| b as i64),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_repo_skip(&self, path: &Path, skip: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE repos SET skip_permissions=?2 WHERE path=?1",
+            params![path.to_string_lossy(), skip as i64],
+        )?;
+        if n == 0 {
+            anyhow::bail!("repo not registered: {}", path.display());
+        }
+        Ok(())
+    }
+
+    pub fn remove_repo(&self, path: &Path) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM repos WHERE path=?1", [path.to_string_lossy()])?;
+        Ok(())
+    }
+
+    pub fn repos(&self) -> Result<Vec<RepoRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT path, skip_permissions, last_used_at FROM repos ORDER BY last_used_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(RepoRow {
+                    path: PathBuf::from(r.get::<_, String>(0)?),
+                    skip_permissions: r.get::<_, i64>(1)? != 0,
+                    last_used_at: r.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn repo(&self, path: &Path) -> Result<Option<RepoRow>> {
+        Ok(self.repos()?.into_iter().find(|r| r.path == path))
     }
 
     pub fn channel_members(&self, channel: &str) -> Result<Vec<String>> {

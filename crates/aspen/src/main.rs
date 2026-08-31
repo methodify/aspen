@@ -62,7 +62,12 @@ enum Command {
         /// binary's source tree, if present).
         #[arg(long)]
         ui: Option<PathBuf>,
+        /// Run detached in the background; logs to <data-dir>/aspen.log.
+        #[arg(short = 'd', long)]
+        detach: bool,
     },
+    /// Stop a detached node started with `up -d`.
+    Down,
     /// Developer harness commands against a live agent runtime.
     Dev {
         #[command(subcommand)]
@@ -185,15 +190,24 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Up { listen, ui } => {
+        Command::Up { listen, ui, detach } => {
+            // Detached start: re-exec self in a new session, redirect output
+            // to a log file, record the pid, and return.
+            if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
+                return spawn_detached(&cli.data_dir, listen, ui.as_deref());
+            }
             let node = Node::open(&cli.data_dir)?;
             let ui_dir = ui.or_else(default_ui_dir);
             match &ui_dir {
                 Some(d) => eprintln!("[aspen] serving console from {}", d.display()),
                 None => eprintln!("[aspen] no ui/dist found — API only"),
             }
-            api::serve(node, listen, ui_dir, &cli.data_dir).await
+            write_pidfile(&cli.data_dir);
+            let result = api::serve(node, listen, ui_dir, &cli.data_dir).await;
+            remove_pidfile(&cli.data_dir);
+            result
         }
+        Command::Down => stop_detached(&cli.data_dir),
         Command::Dev { command } => match command {
             DevCommand::Oneshot {
                 repo,
@@ -230,6 +244,112 @@ async fn main() -> Result<()> {
         },
         Command::Mesh { command } => mesh_command(&cli.data_dir, command),
     }
+}
+
+fn pidfile(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("aspen.pid")
+}
+
+fn write_pidfile(data_dir: &std::path::Path) {
+    std::fs::create_dir_all(data_dir).ok();
+    let _ = std::fs::write(pidfile(data_dir), std::process::id().to_string());
+}
+
+fn remove_pidfile(data_dir: &std::path::Path) {
+    let _ = std::fs::remove_file(pidfile(data_dir));
+}
+
+/// Re-exec self detached (new session, output to a log file), record the
+/// child pid, and return. The child sees ASPEN_DETACHED and runs normally.
+fn spawn_detached(
+    data_dir: &std::path::Path,
+    listen: std::net::SocketAddr,
+    ui: Option<&std::path::Path>,
+) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    std::fs::create_dir_all(data_dir).ok();
+    let log_path = data_dir.join("aspen.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let log_err = log.try_clone()?;
+
+    let exe = std::env::current_exe()?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("--data-dir")
+        .arg(data_dir)
+        .arg("up")
+        .arg("--listen")
+        .arg(listen.to_string());
+    if let Some(ui) = ui {
+        cmd.arg("--ui").arg(ui);
+    }
+    cmd.env("ASPEN_DETACHED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
+
+    // Detach from the controlling terminal so closing it doesn't SIGHUP us.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(0x0000_0008 | 0x0000_0200);
+    }
+
+    let child = cmd.spawn()?;
+    std::fs::write(pidfile(data_dir), child.id().to_string())?;
+    println!(
+        "aspen started detached (pid {}) on http://{listen}\n  logs: {}\n  stop: aspen --data-dir {} down",
+        child.id(),
+        log_path.display(),
+        data_dir.display(),
+    );
+    Ok(())
+}
+
+fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
+    let path = pidfile(data_dir);
+    let pid: i32 = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("no running detached node found ({})", path.display()))?;
+    #[cfg(unix)]
+    {
+        // SIGTERM triggers the graceful shutdown ladder.
+        let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+        if rc != 0 {
+            remove_pidfile(data_dir);
+            anyhow::bail!("process {pid} not running (cleared stale pidfile)");
+        }
+    }
+    #[cfg(windows)]
+    {
+        let ok = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            remove_pidfile(data_dir);
+            anyhow::bail!("could not stop process {pid} (cleared stale pidfile)");
+        }
+    }
+    remove_pidfile(data_dir);
+    println!("sent stop to aspen node (pid {pid})");
+    Ok(())
 }
 
 fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {

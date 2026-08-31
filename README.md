@@ -1,8 +1,8 @@
 # Aspen
 
 **A control plane for a fleet of coding agents across all your repos and all
-your machines.** Aspen is a rhizomatic organism: what looks like a forest of
-separate agents is one living network.
+your machines.** One daemon per machine runs agent sessions in the repos they
+work on; a bus connects them; a mesh connects the machines.
 
 - One **node daemon** (`aspen`) per machine runs agent sessions over their
   native headless protocols, in the repo each works on.
@@ -43,8 +43,16 @@ cargo build --release
 ./target/release/aspen up                 # http://127.0.0.1:7420
 ```
 
-Open the console, plant an agent in a repo, and step into its session. Two
-agents in the same repo share a `#repo` channel automatically.
+Open the console, start a session in a repo, and step into it. Two sessions
+in the same repo share a `#repo` channel automatically. The daemon remembers
+repos you use and can list and resume existing sessions found on disk.
+
+Start the daemon in the background instead:
+
+```bash
+./target/release/aspen up -d      # detached; logs to <data-dir>/aspen.log
+./target/release/aspen down       # stop it (clean shutdown)
+```
 
 Dev harness without the UI:
 

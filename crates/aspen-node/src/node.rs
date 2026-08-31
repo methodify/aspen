@@ -76,6 +76,9 @@ pub struct SpawnOpts {
     /// An operator surface exists: prompt instead of policy-denying, and
     /// route AskUserQuestion to the console.
     pub interactive: bool,
+    /// Skip permission prompts entirely (`--dangerously-skip-permissions` /
+    /// bypassPermissions mode). When None, the repo's stored default is used.
+    pub skip_permissions: Option<bool>,
 }
 
 /// The auto-channel name for a repo: its directory name. (Two repos sharing
@@ -137,10 +140,27 @@ impl Node {
             .map_err(|e| anyhow!("repo {}: {e}", repo.display()))?;
         let channel = repo_channel(&repo);
 
+        // Resolve skip-permissions: explicit request wins, else the repo's
+        // stored default, else off.
+        let skip = opts.skip_permissions.unwrap_or_else(|| {
+            self.inner
+                .store
+                .repo(&repo)
+                .ok()
+                .flatten()
+                .map(|r| r.skip_permissions)
+                .unwrap_or(false)
+        });
+
         let mut cfg = ClaudeConfig::new(repo.clone());
         cfg.model = opts.model.clone();
         cfg.resume = opts.resume.clone();
-        cfg.permission_mode = opts.permission_mode.clone();
+        // bypassPermissions makes the CLI skip can_use_tool entirely; an
+        // explicit permission_mode still overrides it if given.
+        cfg.permission_mode = opts
+            .permission_mode
+            .clone()
+            .or_else(|| skip.then(|| "bypassPermissions".to_string()));
         cfg.policy = if opts.allow_all {
             PermissionPolicy::AllowAll
         } else {
@@ -173,6 +193,9 @@ impl Node {
             &effective_session_id,
             opts.charter.as_deref(),
         )?;
+        // Remember the repo (and, when the operator asked to skip here,
+        // adopt that as the repo's default going forward).
+        let _ = self.inner.store.add_repo(&repo, opts.skip_permissions);
 
         let (events_tx, _) = broadcast::channel(4096);
         if let Some(b) = &op_broker {

@@ -66,6 +66,9 @@ pub async fn serve(
         .route("/bus/send", post(post_bus_send))
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
+        .route("/repos", get(get_repos).post(post_repo))
+        .route("/repos/skip", post(post_repo_skip))
+        .route("/repos/forget", post(post_repo_forget))
         .route("/repo/autorun", get(get_autorun))
         .route("/repo/skills", get(get_skills))
         .route(
@@ -97,7 +100,7 @@ pub async fn serve(
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             eprintln!("\n[aspen] shutting down sessions…");
             // Clean ladder for every live session; transcripts persist and
             // revive brings each one back with context intact.
@@ -120,6 +123,30 @@ pub async fn serve(
         })
         .await?;
     Ok(())
+}
+
+/// Resolve on Ctrl-C (SIGINT) or SIGTERM — the latter is what `aspen down`
+/// sends to a detached node, so both take the clean shutdown ladder.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn load_or_create_token(data_dir: &std::path::Path) -> Result<String> {
@@ -287,6 +314,9 @@ struct SpawnBody {
     resume: Option<String>,
     #[serde(default)]
     allow_all: bool,
+    /// Skip permission prompts (bypassPermissions). Omit to use the repo's
+    /// stored default.
+    skip_permissions: Option<bool>,
 }
 
 async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoResponse {
@@ -309,6 +339,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         resume: body.resume,
         allow_all: body.allow_all,
         interactive: true,
+        skip_permissions: body.skip_permissions,
         ..Default::default()
     };
     match s
@@ -640,6 +671,91 @@ async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct RepoQuery {
     repo: String,
+}
+
+// ---------------------------------------------------------------------- repos
+
+fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
+    // How many discovered sessions and how many live agents this repo has.
+    let sessions = aspen_claude::transcript::enumerate_sessions(&r.path)
+        .map_or(0, |v| v.iter().filter(|si| si.user_messages > 0).count());
+    let live = s
+        .node
+        .inner
+        .store
+        .agents()
+        .unwrap_or_default()
+        .iter()
+        .filter(|a| a.repo == r.path && s.node.inner.live(&a.name).is_some())
+        .count();
+    json!({
+        "path": r.path.to_string_lossy(),
+        "skip_permissions": r.skip_permissions,
+        "last_used_at": r.last_used_at,
+        "sessions": sessions,
+        "live_agents": live,
+    })
+}
+
+async fn get_repos(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.repos() {
+        Ok(rows) => Json(rows.iter().map(|r| repo_json(&s, r)).collect::<Vec<_>>()).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RepoAddBody {
+    path: String,
+    skip_permissions: Option<bool>,
+}
+
+async fn post_repo(State(s): S, Json(b): Json<RepoAddBody>) -> impl IntoResponse {
+    // Register only real directories, stored canonicalized so they match
+    // spawn's canonicalized repo paths.
+    let path = match std::path::Path::new(&b.path).canonicalize() {
+        Ok(p) if p.is_dir() => p,
+        Ok(_) => return err(StatusCode::BAD_REQUEST, "not a directory").into_response(),
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("{}: {e}", b.path)).into_response(),
+    };
+    if let Err(e) = s.node.inner.store.add_repo(&path, b.skip_permissions) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    match s.node.inner.store.repo(&path) {
+        Ok(Some(r)) => Json(repo_json(&s, &r)).into_response(),
+        _ => err(StatusCode::INTERNAL_SERVER_ERROR, "added but not found").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RepoSkipBody {
+    path: String,
+    skip_permissions: bool,
+}
+
+async fn post_repo_skip(State(s): S, Json(b): Json<RepoSkipBody>) -> impl IntoResponse {
+    let path = std::path::Path::new(&b.path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    match s.node.inner.store.set_repo_skip(&path, b.skip_permissions) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RepoPathBody {
+    path: String,
+}
+
+async fn post_repo_forget(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
+    let path = std::path::Path::new(&b.path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    match s.node.inner.store.remove_repo(&path) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 /// The trust gate's inspection: exactly what this repo would auto-run on

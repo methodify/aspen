@@ -1,6 +1,7 @@
 # Aspen — product design (working draft)
 
-> **Aspen** — a rhizomatic organism: what looks like a forest of separate trees is one living root system. Component verbiage stays neutral and factual (node, mesh, bus, session, operator). This document expands the founding
+> **Aspen** is the project name; all component verbiage stays neutral and
+> factual (node, mesh, bus, session, operator — no metaphors). This document expands the founding
 > notes into product contours: what it is, the concepts it's made of, how the
 > pieces work, and what we deliberately are not building. It is a conversation
 > artifact, not a spec — sections marked **[open]** are decisions still to make.

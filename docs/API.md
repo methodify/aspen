@@ -10,7 +10,11 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 |---|---|---|---|
 | `GET /api/node` | — | `{ node: string, version: string }` | identity/health |
 | `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state |
-| `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume? }` | `Agent` | spawn + join bus. 409 if name is live |
+| `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default |
+| `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
+| `POST /api/repos` | `{ path, skip_permissions? }` | `Repo` | remember a repo (must be a real directory) |
+| `POST /api/repos/skip` | `{ path, skip_permissions }` | `{ ok }` | set a repo's skip-permissions default |
+| `POST /api/repos/forget` | `{ path }` | `{ ok }` | forget a repo (sessions on disk are untouched) |
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
 | `POST /api/agents/{name}/interrupt` | — | `{}` | abort the in-flight turn |
 | `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input? }` | `{}` | answer a pending permission prompt. `message` is shown to the model on deny; `updated_input` (optional) replaces tool input on allow |
@@ -27,6 +31,13 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `PUT /api/repo/skill` | `{ repo, rel, content, reload? }` | `{ ok, reloaded_sessions }` | write a file; `reload` (default true) reloads live sessions in that repo |
 | `DELETE /api/repo/skill?repo=&rel=` | — | `{ ok }` | delete a skill/command file |
 | `POST /api/agents/{name}/reload` | — | inventory | reload one live session's plugins/skills/commands |
+
+### Repo
+
+```jsonc
+{ "path": "/home/u/src/proj", "skip_permissions": false,
+  "last_used_at": 1756500000.0, "sessions": 12, "live_agents": 1 }
+```
 
 ### SkillEntry
 
