@@ -1,0 +1,130 @@
+/* ── Command palette (⌘K) — Switchboard voice ──────────────────────────
+   A strip-like panel floated over everything: engraved 1px borders, one
+   machined chamfer, mono addresses, amber accent on the selected row. */
+
+.pal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: color-mix(in srgb, var(--bg-well) 62%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+
+.pal-panel {
+  width: min(620px, calc(100vw - 2 * var(--sp-6)));
+  max-height: 64vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-hi);
+  clip-path: polygon(var(--chamfer) 0, 100% 0, 100% 100%, 0 100%, 0 var(--chamfer));
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--bg-well) 80%, transparent);
+}
+
+.pal-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-strip);
+}
+
+.pal-glyph {
+  color: var(--sig-normal);
+  font: 600 0.9rem/1 var(--font-display);
+}
+
+.pal-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: var(--sp-1) 0;
+  color: var(--text-hi);
+  font: 400 0.9375rem/1.4 var(--font-body);
+}
+.pal-input:focus {
+  outline: none; /* the panel itself is the focus surface */
+}
+
+.pal-esc {
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  padding: 2px 5px;
+  background: var(--bg-well);
+}
+
+.pal-list {
+  overflow-y: auto;
+  padding: var(--sp-2) 0 var(--sp-2);
+  min-height: 0;
+}
+
+.pal-section {
+  padding: var(--sp-2) var(--sp-4) var(--sp-1);
+}
+
+.pal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-mid);
+  font: 400 0.8125rem/1.4 var(--font-body);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.pal-row.sel {
+  background: var(--bg-strip-2);
+  border-left-color: var(--sig-normal);
+  color: var(--text-hi);
+}
+
+.pal-mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-hi);
+}
+.pal-row.sel .pal-mono {
+  color: var(--sig-normal);
+}
+
+.pal-sub {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pal-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.pal-empty {
+  padding: var(--sp-4);
+  text-align: center;
+}
+
+.pal-status {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-strip);
+  color: var(--live);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pal-status.err {
+  color: var(--sig-gate);
+}

@@ -8,7 +8,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import type { Activity, ActivitySession, Channel } from "../api";
+import type { Activity, ActivitySession, Channel, MeshInfo, WaitingEdge } from "../api";
 import { usePoll } from "../hooks";
 import { Empty, presenceOf, relTime } from "../components";
 import type { Presence } from "../components";
@@ -64,6 +64,16 @@ interface Edge {
   spokes: Pt[];
 }
 
+/** A resolved likely-waiting arrow: `agent` → the party it waits on. */
+interface WaitArrow {
+  agent: string;
+  on: string;
+  since: number;
+  snippet: string;
+  from: Pt;
+  to: Pt;
+}
+
 interface Layout {
   width: number;
   height: number;
@@ -71,6 +81,7 @@ interface Layout {
   markers: PlacedMarker[];
   channelLabels: ChannelLabel[];
   edges: Edge[];
+  waits: WaitArrow[];
   operator: Pt;
 }
 
@@ -133,6 +144,7 @@ function computeLayout(
   sessions: ActivitySession[],
   channels: Channel[],
   recent: Set<string>,
+  waiting: WaitingEdge[],
 ): Layout {
   const byNode = groupByNode(sessions);
   const nNodes = Math.max(1, byNode.length);
@@ -224,7 +236,16 @@ function computeLayout(
     edges.push({ channel: ch.name, hub, spokes });
   }
 
-  return { width, height, regions, markers, channelLabels, edges, operator };
+  // Likely-waiting arrows — only drawn when BOTH endpoints resolve to markers.
+  const waits: WaitArrow[] = [];
+  for (const w of waiting) {
+    const from = resolve(w.agent);
+    const to = resolve(w.on);
+    if (!from || !to || from === to) continue;
+    waits.push({ agent: w.agent, on: w.on, since: w.since, snippet: w.snippet, from, to });
+  }
+
+  return { width, height, regions, markers, channelLabels, edges, waits, operator };
 }
 
 /** A gentle perpendicular-arced path from a spoke endpoint to the hub. */
@@ -240,10 +261,56 @@ function arcPath(from: Pt, hub: Pt): string {
   return `M ${from.x} ${from.y} Q ${cx} ${cy} ${hub.x} ${hub.y}`;
 }
 
+/**
+ * Geometry for a waiting arrow: a shallow arc (bowed the OPPOSITE way from
+ * channel arcs) trimmed clear of both markers, with an arrowhead at the
+ * waited-on end and a midpoint label anchor.
+ */
+function waitGeom(from: Pt, to: Pt): {
+  d: string;
+  label: Pt;
+  head: string;
+} {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const trim = Math.min(MARKER * 0.85, len / 3);
+  const a: Pt = { x: from.x + ux * trim, y: from.y + uy * trim };
+  const b: Pt = { x: to.x - ux * trim, y: to.y - uy * trim };
+  // Perpendicular bow — negative side, so it never overlays channel arcs.
+  const nx = uy;
+  const ny = -ux;
+  const off = Math.min(36, len * 0.14);
+  const c: Pt = { x: (a.x + b.x) / 2 + nx * off, y: (a.y + b.y) / 2 + ny * off };
+  // Quadratic midpoint (t = 0.5) for the label.
+  const label: Pt = {
+    x: 0.25 * a.x + 0.5 * c.x + 0.25 * b.x,
+    y: 0.25 * a.y + 0.5 * c.y + 0.25 * b.y,
+  };
+  // Arrowhead aligned with the curve's end tangent (c → b).
+  const tdx = b.x - c.x;
+  const tdy = b.y - c.y;
+  const tlen = Math.hypot(tdx, tdy) || 1;
+  const tx = tdx / tlen;
+  const ty = tdy / tlen;
+  const px = -ty;
+  const py = tx;
+  const hw = 3.6;
+  const hl = 8;
+  const head =
+    `M ${b.x} ${b.y} ` +
+    `L ${b.x - tx * hl + px * hw} ${b.y - ty * hl + py * hw} ` +
+    `L ${b.x - tx * hl - px * hw} ${b.y - ty * hl - py * hw} Z`;
+  return { d: `M ${a.x} ${a.y} Q ${c.x} ${c.y} ${b.x} ${b.y}`, label, head };
+}
+
 export default function MeshMap() {
   const nav = useNavigate();
   const activityPoll = usePoll<Activity>(api.activity, 2000);
   const channelsPoll = usePoll<Channel[]>(api.channels, 2000);
+  const meshPoll = usePoll<MeshInfo>(api.mesh, 5000);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [mouse, setMouse] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -251,6 +318,8 @@ export default function MeshMap() {
   const sessions = activityPoll.data?.sessions ?? [];
   const channels = channelsPoll.data ?? [];
   const trail = activityPoll.data?.trail ?? [];
+  const waiting = activityPoll.data?.waiting ?? [];
+  const mesh = meshPoll.data;
 
   const recent = useMemo(() => {
     const set = new Set<string>();
@@ -259,8 +328,8 @@ export default function MeshMap() {
   }, [trail]);
 
   const layout = useMemo(
-    () => computeLayout(sessions, channels, recent),
-    [sessions, channels, recent],
+    () => computeLayout(sessions, channels, recent, waiting),
+    [sessions, channels, recent, waiting],
   );
 
   const nodeCount = new Set(sessions.map((s) => s.node)).size;
@@ -300,6 +369,76 @@ export default function MeshMap() {
       </div>
 
       <div className="stage-body">
+        {mesh && (
+          <div
+            className="strip"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 10,
+              marginBottom: "var(--sp-4)",
+              padding: "8px 14px",
+            }}
+          >
+            {mesh.in_mesh ? (
+              <>
+                <span className="label">Mesh</span>
+                <span className="mono" style={{ color: "var(--text-hi)" }}>
+                  mesh {mesh.mesh} · node {mesh.node}
+                </span>
+                {(mesh.peers ?? []).map((p) => (
+                  <span
+                    key={p.node}
+                    className="chip"
+                    title={p.url ?? undefined}
+                    style={{ gap: 6 }}
+                  >
+                    <span
+                      aria-hidden
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: "50%",
+                        display: "inline-block",
+                        background: p.link_up ? "var(--live)" : "var(--offline)",
+                        boxShadow: p.link_up ? "0 0 5px var(--live)" : "none",
+                      }}
+                    />
+                    {p.node}
+                    <span style={{ color: p.link_up ? "var(--text-dim)" : "var(--offline)" }}>
+                      {p.link_up ? "linked" : "unreachable"} · {p.agents}{" "}
+                      {p.agents === 1 ? "agent" : "agents"}
+                    </span>
+                  </span>
+                ))}
+                {mesh.relay?.url && (
+                  <span
+                    className="chip"
+                    title={mesh.relay.url}
+                    style={{
+                      color:
+                        mesh.relay.connected_at != null ? "var(--live)" : "var(--sig-gate)",
+                      borderColor:
+                        mesh.relay.connected_at != null ? "var(--live)" : "var(--sig-gate)",
+                    }}
+                  >
+                    {mesh.relay.connected_at != null
+                      ? `relay · connected ${relTime(mesh.relay.connected_at)}`
+                      : "relay · down"}
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <span style={{ color: "var(--text-mid)", fontSize: "0.8125rem" }}>
+                  standalone node {mesh.node} — not joined to a mesh
+                </span>
+                <span className="mono-meta">aspen mesh init | join</span>
+              </>
+            )}
+          </div>
+        )}
         {sessions.length === 0 ? (
           <Empty mark="◈">No sessions in the mesh yet.</Empty>
         ) : (
@@ -404,6 +543,36 @@ export default function MeshMap() {
                       style={{ font: "600 10px/1 var(--font-display)", letterSpacing: "0.08em" }}
                     >
                       {e.channel}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Likely-waiting arrows (dashed amber, agent → waited-on) */}
+              {layout.waits.map((w, i) => {
+                const g = waitGeom(w.from, w.to);
+                return (
+                  <g key={`wait:${w.agent}:${w.on}:${i}`}>
+                    <title>{`@${w.agent.replace(/^@/, "")} likely waiting on ${
+                      w.on === "operator" ? "@operator" : `@${w.on.replace(/^@/, "")}`
+                    } for ${relTime(w.since)}${w.snippet ? ` — ${w.snippet}` : ""}`}</title>
+                    <path
+                      d={g.d}
+                      fill="none"
+                      stroke="var(--sig-normal)"
+                      strokeWidth={1.25}
+                      strokeOpacity={0.85}
+                      strokeDasharray="5 4"
+                    />
+                    <path d={g.head} fill="var(--sig-normal)" fillOpacity={0.85} />
+                    <text
+                      x={g.label.x}
+                      y={g.label.y - 5}
+                      textAnchor="middle"
+                      fill="var(--sig-normal)"
+                      style={{ font: "400 10px/1.4 var(--font-mono)", letterSpacing: "0.01em" }}
+                    >
+                      waiting {relTime(w.since)}
                     </text>
                   </g>
                 );
@@ -583,6 +752,18 @@ export default function MeshMap() {
                   <path d="M 0 4 Q 11 -4 22 4" fill="none" stroke="var(--sig-notice)" strokeWidth={1.5} />
                 </svg>
                 <span style={{ color: "var(--text-dim)" }}>custom channel</span>
+              </span>
+              <span className="micro" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <svg width={22} height={8} aria-hidden>
+                  <path
+                    d="M 0 4 Q 11 -4 22 4"
+                    fill="none"
+                    stroke="var(--sig-normal)"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 3"
+                  />
+                </svg>
+                <span style={{ color: "var(--text-dim)" }}>likely waiting</span>
               </span>
             </div>
 

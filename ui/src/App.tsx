@@ -9,6 +9,7 @@ import Sessions from "./pages/Sessions";
 import Session from "./pages/Session";
 import MeshMap from "./pages/MeshMap";
 import Library from "./pages/Library";
+import Palette from "./Palette";
 
 export interface AppData {
   agents: Agent[];
@@ -119,6 +120,7 @@ export default function App() {
 
   return (
     <AppDataContext.Provider value={data}>
+      <Palette />
       <div className="shell">
         <StatusBar />
         <div className="body-grid">

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -8,7 +9,7 @@ import {
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, sessionEventsUrl } from "./../api";
+import { api, sessionEventsUrl, type PermissionAnswer, type RuntimeInfo } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
   addLocalUserMessage,
@@ -28,6 +29,27 @@ import {
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { Meter, presenceOf } from "./../components";
+import {
+  buildQuestionUpdatedInput,
+  filterSlashCommands,
+  fmtTokens,
+  hasSuggestions,
+  loadRenderMode,
+  normalizeModels,
+  parseQuestions,
+  slashCommandsOf,
+  slashPartialOf,
+  statusModeOf,
+  statusNoteOf,
+  storeRenderMode,
+  summarizeContext,
+  summarizeSuggestions,
+  toolUseNameOf,
+  type ContextSummary,
+  type RenderMode,
+  type SlashCommand,
+} from "./sessionExtras";
+import "./session.css";
 
 // ---------------------------------------------------------------------------
 // Transcript reducer (thin shell over the pure module)
@@ -66,6 +88,14 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+const PERMISSION_MODES = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "dontAsk",
+] as const;
+
 // ---------------------------------------------------------------------------
 // Item renderers
 
@@ -77,7 +107,7 @@ function Md({ text }: { text: string }) {
   );
 }
 
-function AssistantBubble({ item }: { item: AssistantBubbleItem }) {
+function AssistantBubble({ item, source }: { item: AssistantBubbleItem; source?: boolean }) {
   return (
     <div className="bubble bubble-assistant">
       {item.thinking && (
@@ -87,7 +117,11 @@ function AssistantBubble({ item }: { item: AssistantBubbleItem }) {
         </details>
       )}
       {item.text ? (
-        <Md text={item.text} />
+        source ? (
+          <pre className="src-body">{item.text}</pre>
+        ) : (
+          <Md text={item.text} />
+        )
       ) : (
         item.open && <span className="dim">…</span>
       )}
@@ -107,14 +141,14 @@ function UserBubble({ item }: { item: UserBubbleItem }) {
   );
 }
 
-function BusBubble({ item }: { item: BusBubbleItem }) {
+function BusBubble({ item, source }: { item: BusBubbleItem; source?: boolean }) {
   const nl = item.text.indexOf("\n");
   const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
   const body = nl >= 0 ? item.text.slice(nl + 1) : "";
   return (
     <div className="bubble bubble-bus">
       <div className="bus-header mono">{header}</div>
-      {body && <Md text={body} />}
+      {body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} />)}
     </div>
   );
 }
@@ -160,12 +194,124 @@ function ToolCard({ item }: { item: ToolCardItem }) {
   );
 }
 
-function PermissionCard({
+/**
+ * AskUserQuestion rendered as a question card (§7.6): options as buttons,
+ * multiSelect toggles, an optional free-text note, and an explicit skip.
+ * A question is a conversation, not an alarm — amber, not the gate red.
+ */
+function QuestionCard({
   item,
   onAnswer,
 }: {
   item: PermissionCardItem;
+  onAnswer: (answer: PermissionAnswer) => Promise<boolean>;
+}) {
+  const questions = useMemo(() => parseQuestions(item.input) ?? [], [item.input]);
+  const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  if (item.settled) {
+    return (
+      <div className="perm-settled mono">
+        <span className={item.outcome === "denied" ? "perm-denied" : "perm-allowed"}>
+          {item.outcome === "allowed" ? "answered" : (item.outcome ?? "settled")}
+        </span>{" "}
+        question
+      </div>
+    );
+  }
+
+  function toggle(qi: number, label: string, multi: boolean) {
+    setPicks((prev) => {
+      const next = prev.slice();
+      const cur = next[qi] ?? [];
+      next[qi] = multi
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : cur.length === 1 && cur[0] === label
+          ? []
+          : [label];
+      return next;
+    });
+  }
+
+  const hasAny = picks.some((p) => p.length > 0) || note.trim() !== "";
+
+  async function submit() {
+    setSubmitting(true);
+    const updated_input = buildQuestionUpdatedInput(item.input, questions, picks, note);
+    const ok = await onAnswer({ allow: true, updated_input });
+    if (!ok) setSubmitting(false);
+  }
+
+  async function skip() {
+    // Explicit skip: a bare allow sends no answers (§7.6).
+    setSubmitting(true);
+    const ok = await onAnswer({ allow: true });
+    if (!ok) setSubmitting(false);
+  }
+
+  return (
+    <div className="q-card">
+      <div className="q-head">
+        <span className="chip chip-question">question</span>
+        <span className="mono dim">@agent asks</span>
+      </div>
+      {questions.map((q, qi) => (
+        <div className="q-block" key={qi}>
+          {q.header && <div className="q-header-label">{q.header}</div>}
+          <div className="q-question">{q.question}</div>
+          <div className="q-opts" role="group" aria-label={q.question}>
+            {q.options.map((o) => (
+              <button
+                key={o.label}
+                type="button"
+                className="q-opt"
+                aria-pressed={(picks[qi] ?? []).includes(o.label)}
+                title={o.description ?? undefined}
+                disabled={submitting}
+                onClick={() => toggle(qi, o.label, q.multiSelect)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          {q.multiSelect && <div className="q-multi-hint">select all that apply</div>}
+        </div>
+      ))}
+      <div className="q-free">
+        <input
+          value={note}
+          placeholder="optional note to the agent"
+          disabled={submitting}
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && hasAny) void submit();
+          }}
+        />
+      </div>
+      <div className="q-actions">
+        <button className="btn-answer" disabled={submitting || !hasAny} onClick={() => void submit()}>
+          answer
+        </button>
+        <button className="btn-skip" disabled={submitting} onClick={() => void skip()}>
+          skip (no answer)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PermissionCard({
+  item,
+  onAnswer,
+  onAlways,
+}: {
+  item: PermissionCardItem;
   onAnswer: (allow: boolean, message?: string) => Promise<boolean>;
+  onAlways: (() => Promise<boolean>) | null;
 }) {
   const [denyOpen, setDenyOpen] = useState(false);
   const [denyMsg, setDenyMsg] = useState("");
@@ -188,6 +334,17 @@ function PermissionCard({
     if (!ok) setSubmitting(false);
   }
 
+  async function always() {
+    if (!onAlways) return;
+    setSubmitting(true);
+    const ok = await onAlways();
+    if (!ok) setSubmitting(false);
+  }
+
+  const grantScope = onAlways
+    ? (summarizeSuggestions(item.suggestions) ?? "applies the CLI's suggested rule")
+    : null;
+
   return (
     <div className="perm-card">
       <div className="perm-head">
@@ -199,6 +356,16 @@ function PermissionCard({
         <button className="btn-allow" disabled={submitting} onClick={() => void answer(true)}>
           Allow
         </button>
+        {onAlways && (
+          <button
+            className="btn-always"
+            disabled={submitting}
+            title="allow now and apply the CLI's suggested rule for next time"
+            onClick={() => void always()}
+          >
+            Always allow
+          </button>
+        )}
         {!denyOpen ? (
           <button className="btn-deny" disabled={submitting} onClick={() => setDenyOpen(true)}>
             Deny…
@@ -224,6 +391,7 @@ function PermissionCard({
             </button>
           </>
         )}
+        {grantScope && <div className="perm-grant-scope">always allow: {grantScope}</div>}
       </div>
     </div>
   );
@@ -258,6 +426,75 @@ function SessionView({ name }: { name: string }) {
   const [reloading, setReloading] = useState(false);
   const [reloadNote, setReloadNote] = useState<string | null>(null);
 
+  // --- interactive extras state ---
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [ctx, setCtx] = useState<ContextSummary | null>(null);
+  const [ctxOpen, setCtxOpen] = useState(false);
+  const [renderMode, setRenderMode] = useState<RenderMode>(loadRenderMode);
+  const [modelValue, setModelValue] = useState("default");
+  const [modeValue, setModeValue] = useState("default");
+  const [ctlNote, setCtlNote] = useState<string | null>(null);
+  const [ctlError, setCtlError] = useState<string | null>(null);
+  const [statusNote, setStatusNote] = useState<string | null>(null);
+  const [localLastTool, setLocalLastTool] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [titleOverride, setTitleOverride] = useState<string | null | undefined>(undefined);
+  const [charterOpen, setCharterOpen] = useState(false);
+  const [charterDraft, setCharterDraft] = useState<string | null>(null);
+  const [charterSaving, setCharterSaving] = useState(false);
+  const [charterOverride, setCharterOverride] = useState<string | null | undefined>(undefined);
+  const [acDismissed, setAcDismissed] = useState(false);
+  const [acIdx, setAcIdx] = useState(0);
+  const busyLocalStartRef = useRef<number | null>(null);
+  const ctlTimerRef = useRef<number | undefined>(undefined);
+
+  function flashCtlNote(msg: string) {
+    setCtlError(null);
+    setCtlNote(msg);
+    if (ctlTimerRef.current !== undefined) window.clearTimeout(ctlTimerRef.current);
+    ctlTimerRef.current = window.setTimeout(() => setCtlNote(null), 4000);
+  }
+
+  async function fetchContext() {
+    // Only called at turn end or when idle — never mid-turn (docs §9).
+    try {
+      const payload = await api.contextUsage(name);
+      setCtx(summarizeContext(payload));
+    } catch {
+      setCtx(null); // hide gracefully
+    }
+  }
+
+  async function loadRuntime() {
+    try {
+      const rt = await api.runtime(name);
+      setRuntime(rt);
+      const inv = rt.inventory;
+      const m = inv?.["model"];
+      if (typeof m === "string" && m) setModelValue(m);
+      const pm = inv?.["permissionMode"] ?? inv?.["permission_mode"];
+      if (typeof pm === "string" && pm) setModeValue(pm);
+    } catch {
+      setRuntime(null); // autocomplete/model list degrade gracefully
+    }
+  }
+
+  useEffect(() => {
+    void loadRuntime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+
+  // Context on mount, but only once the agent is known idle (never mid-turn).
+  const ctxSeededRef = useRef(false);
+  useEffect(() => {
+    if (ctxSeededRef.current || !agent) return;
+    ctxSeededRef.current = true;
+    if (agent.turn_state !== "busy") void fetchContext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent]);
+
   // Event handling (transcript + session meta) behind a ref so the WS
   // callbacks always see the latest closure.
   const handleEventRef = useRef<(ev: SessionEvent) => void>(() => {});
@@ -269,17 +506,38 @@ function SessionView({ name }: { name: string }) {
           // §5.3: `turn_ended` is the single unlock signal for the composer.
           setBusy(false);
           setInterrupting(false);
+          setStatusNote(null);
+          busyLocalStartRef.current = null;
           setLastTurn({
             subtype: typeof ev.subtype === "string" ? ev.subtype : "success",
             costUsd: typeof ev.total_cost_usd === "number" ? ev.total_cost_usd : null,
             durationMs: typeof ev.duration_ms === "number" ? ev.duration_ms : null,
           });
+          void fetchContext();
           break;
         case "exited":
           setExited({ code: ev.code ?? null });
           setBusy(false);
           setInterrupting(false);
+          setStatusNote(null);
           break;
+        case "tool_use": {
+          const tn = toolUseNameOf(ev);
+          if (tn) setLocalLastTool(tn);
+          setStatusNote(null);
+          break;
+        }
+        case "text_delta":
+        case "assistant_message":
+          setStatusNote(null);
+          break;
+        case "status": {
+          const note = statusNoteOf(ev.raw);
+          if (note !== null) setStatusNote(note);
+          const mode = statusModeOf(ev.raw);
+          if (mode) setModeValue(mode);
+          break;
+        }
         default:
           break;
       }
@@ -339,6 +597,13 @@ function SessionView({ name }: { name: string }) {
     };
   }, [name]);
 
+  // Working-seconds tick while busy.
+  useEffect(() => {
+    if (!busy) return;
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
+
   // Auto-scroll: stick to the bottom unless the operator scrolled away.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
@@ -354,6 +619,8 @@ function SessionView({ name }: { name: string }) {
     dispatch({ type: "local_send", text, localKey });
     setDraft("");
     setBusy(true);
+    busyLocalStartRef.current = Date.now();
+    setNowTick(Date.now());
     setActionError(null);
     try {
       const { uuid } = await api.sendMessage(name, text);
@@ -361,6 +628,7 @@ function SessionView({ name }: { name: string }) {
     } catch (e) {
       dispatch({ type: "send_failed", localKey });
       setBusy(false);
+      busyLocalStartRef.current = null;
       setActionError(`send: ${errText(e)}`);
     }
   }
@@ -386,6 +654,7 @@ function SessionView({ name }: { name: string }) {
       await api.reloadAgent(name);
       setReloadNote("skills reloaded");
       window.setTimeout(() => setReloadNote(null), 3000);
+      void loadRuntime(); // commands/inventory may have changed
     } catch (e) {
       setActionError(`reload: ${errText(e)}`);
     } finally {
@@ -393,22 +662,17 @@ function SessionView({ name }: { name: string }) {
     }
   }
 
-  async function answerPermission(
+  async function answerPermissionWith(
     requestId: string,
-    allow: boolean,
-    message?: string,
+    answer: PermissionAnswer,
   ): Promise<boolean> {
     setActionError(null);
     try {
-      await api.answerPermission(
-        name,
-        requestId,
-        allow ? { allow: true } : { allow: false, ...(message ? { message } : {}) },
-      );
+      await api.answerPermission(name, requestId, answer);
       // Optimistic settle; the WS permission_settled is idempotent on top.
       dispatch({
         type: "event",
-        ev: { kind: "permission_settled", request_id: requestId, allow },
+        ev: { kind: "permission_settled", request_id: requestId, allow: answer.allow },
       });
       return true;
     } catch (e) {
@@ -417,30 +681,234 @@ function SessionView({ name }: { name: string }) {
     }
   }
 
-  function renderItem(item: TranscriptItem) {
+  function answerPermission(
+    requestId: string,
+    allow: boolean,
+    message?: string,
+  ): Promise<boolean> {
+    return answerPermissionWith(
+      requestId,
+      allow ? { allow: true } : { allow: false, ...(message ? { message } : {}) },
+    );
+  }
+
+  // --- header control actions ---
+
+  async function changeModel(v: string) {
+    setModelValue(v);
+    try {
+      await api.setModel(name, v === "default" ? null : v);
+      flashCtlNote(`model → ${v} — takes effect next turn`);
+    } catch (e) {
+      setCtlError(`model: ${errText(e)}`);
+    }
+  }
+
+  async function changeMode(v: string) {
+    setModeValue(v);
+    try {
+      await api.setMode(name, v);
+      flashCtlNote(`mode → ${v}`);
+    } catch (e) {
+      setCtlError(`mode: ${errText(e)}`);
+    }
+  }
+
+  const title = titleOverride !== undefined ? titleOverride : (agent?.title ?? null);
+
+  async function saveTitle() {
+    const v = titleDraft.trim();
+    setTitleEditing(false);
+    try {
+      await api.setTitle(name, v || null);
+      setTitleOverride(v || null);
+      flashCtlNote(v ? "title saved" : "title cleared");
+    } catch (e) {
+      setCtlError(`title: ${errText(e)}`);
+    }
+  }
+
+  const charter = charterOverride !== undefined ? charterOverride : (agent?.charter ?? null);
+
+  async function saveCharter() {
+    if (charterDraft === null) return;
+    const v = charterDraft.trim();
+    setCharterSaving(true);
+    try {
+      await api.setCharter(name, v || null);
+      setCharterOverride(v || null);
+      setCharterDraft(null);
+      flashCtlNote(v ? "charter saved" : "charter cleared");
+    } catch (e) {
+      setCtlError(`charter: ${errText(e)}`);
+    } finally {
+      setCharterSaving(false);
+    }
+  }
+
+  function changeRenderMode(m: RenderMode) {
+    setRenderMode(m);
+    storeRenderMode(m);
+  }
+
+  // --- slash-command autocomplete ---
+
+  const commands = useMemo(() => slashCommandsOf(runtime), [runtime]);
+  const slashPartial = slashPartialOf(draft);
+  const acMatches = useMemo(
+    () => (slashPartial !== null && !acDismissed ? filterSlashCommands(commands, slashPartial) : []),
+    [commands, slashPartial, acDismissed],
+  );
+  const acOpen = acMatches.length > 0;
+
+  useEffect(() => {
+    setAcIdx(0);
+  }, [slashPartial]);
+
+  function pickCommand(cmd: SlashCommand | undefined) {
+    if (!cmd) return;
+    setDraft(`/${cmd.name} `);
+    setAcDismissed(false);
+  }
+
+  function onDraftChange(v: string) {
+    setDraft(v);
+    if (acDismissed && slashPartialOf(v) === null) setAcDismissed(false);
+  }
+
+  // --- model options ---
+
+  const modelOptions = useMemo(() => {
+    const opts = normalizeModels(runtime?.handshake?.models).filter(
+      (o) => o.id !== "default",
+    );
+    if (modelValue !== "default" && !opts.some((o) => o.id === modelValue)) {
+      opts.push({ id: modelValue, label: modelValue });
+    }
+    return opts;
+  }, [runtime, modelValue]);
+
+  // --- rendering ---
+
+  function renderConsoleItem(item: TranscriptItem) {
     switch (item.kind) {
       case "assistant":
-        return <AssistantBubble key={item.id} item={item} />;
+        if (!item.text && !item.open) return null;
+        return (
+          <div key={item.id} className="cline cline-assistant">
+            {item.text || "…"}
+          </div>
+        );
+      case "user":
+        return (
+          <div key={item.id} className="cline cline-user">
+            {"> " + item.text}
+          </div>
+        );
+      case "bus":
+        return (
+          <div key={item.id} className="cline cline-bus">
+            {item.text}
+          </div>
+        );
+      case "tool":
+        return (
+          <div key={item.id} className="cline cline-tool">
+            [tool] {item.name}
+          </div>
+        );
+      case "permission":
+        if (item.settled) {
+          return (
+            <div key={item.id} className="cline cline-tool">
+              [permission] {item.outcome ?? "settled"} {item.toolName}
+            </div>
+          );
+        }
+        // Unsettled prompts stay interactive in every render mode.
+        return renderPermissionItem(item);
+      case "turn_end":
+        return (
+          <div key={item.id} className="cline cline-turn">
+            ── turn ended · {item.subtype}
+          </div>
+        );
+    }
+  }
+
+  function renderPermissionItem(item: PermissionCardItem) {
+    const isQuestion =
+      item.toolName === "AskUserQuestion" || parseQuestions(item.input) !== null;
+    if (isQuestion) {
+      return (
+        <QuestionCard
+          key={item.id}
+          item={item}
+          onAnswer={(answer) => answerPermissionWith(item.requestId, answer)}
+        />
+      );
+    }
+    return (
+      <PermissionCard
+        key={item.id}
+        item={item}
+        onAnswer={(allow, message) => answerPermission(item.requestId, allow, message)}
+        onAlways={
+          hasSuggestions(item.suggestions)
+            ? () =>
+                answerPermissionWith(item.requestId, {
+                  allow: true,
+                  updated_permissions: item.suggestions,
+                })
+            : null
+        }
+      />
+    );
+  }
+
+  function renderItem(item: TranscriptItem) {
+    if (renderMode === "console") return renderConsoleItem(item);
+    const source = renderMode === "source";
+    switch (item.kind) {
+      case "assistant":
+        return <AssistantBubble key={item.id} item={item} source={source} />;
       case "user":
         return <UserBubble key={item.id} item={item} />;
       case "bus":
-        return <BusBubble key={item.id} item={item} />;
+        return <BusBubble key={item.id} item={item} source={source} />;
       case "tool":
         return <ToolCard key={item.id} item={item} />;
       case "permission":
-        return (
-          <PermissionCard
-            key={item.id}
-            item={item}
-            onAnswer={(allow, message) => answerPermission(item.requestId, allow, message)}
-          />
-        );
+        return renderPermissionItem(item);
       case "turn_end":
         return <TurnEndMarker key={item.id} item={item} />;
     }
   }
 
   function composerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (acOpen) {
+      const n = acMatches.length;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setAcIdx((i) => (i + 1) % n);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setAcIdx((i) => (i - 1 + n) % n);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        pickCommand(acMatches[Math.min(acIdx, n - 1)]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setAcDismissed(true);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send();
@@ -453,6 +921,20 @@ function SessionView({ name }: { name: string }) {
     (it): it is PermissionCardItem => it.kind === "permission" && !it.settled,
   );
 
+  // Working seconds: prefer the server's busy_since, fall back to local start.
+  let workSecs: number | null = null;
+  if (busy) {
+    const since = agent?.busy_since;
+    if (typeof since === "number" && since > 0) {
+      workSecs = Math.max(0, Math.floor(nowTick / 1000 - since));
+    } else if (busyLocalStartRef.current !== null) {
+      workSecs = Math.max(0, Math.floor((nowTick - busyLocalStartRef.current) / 1000));
+    }
+  }
+  const lastTool = localLastTool ?? agent?.last_tool ?? null;
+
+  const ctxPct = ctx?.percent !== null && ctx?.percent !== undefined ? Math.round(ctx.percent) : null;
+
   return (
     <div className="session">
       <header className="session-head">
@@ -460,6 +942,31 @@ function SessionView({ name }: { name: string }) {
         <h1>
           <span className="mono">@{name}</span>
         </h1>
+        {titleEditing ? (
+          <input
+            autoFocus
+            className="session-title-input"
+            value={titleDraft}
+            placeholder="title (empty clears)"
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={() => void saveTitle()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveTitle();
+              if (e.key === "Escape") setTitleEditing(false);
+            }}
+          />
+        ) : (
+          <span
+            className={title ? "session-title" : "session-title unset"}
+            title="click to edit title"
+            onClick={() => {
+              setTitleDraft(title ?? "");
+              setTitleEditing(true);
+            }}
+          >
+            {title ?? "add title"}
+          </span>
+        )}
         {agent && (
           <span className="dim mono session-repo">
             {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
@@ -487,6 +994,159 @@ function SessionView({ name }: { name: string }) {
         </span>
       </header>
 
+      <div className="session-controls">
+        <span className="ctl-group">
+          <span className="ctl-label">model</span>
+          <select
+            className="ctl-select"
+            value={modelValue}
+            disabled={exited !== null}
+            onChange={(e) => void changeModel(e.target.value)}
+            title="switch model — takes effect next turn"
+          >
+            <option value="default">default</option>
+            {modelOptions.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </span>
+        <span className="ctl-group">
+          <span className="ctl-label">mode</span>
+          <select
+            className="ctl-select"
+            value={modeValue}
+            disabled={exited !== null}
+            onChange={(e) => void changeMode(e.target.value)}
+            title="permission mode"
+          >
+            {PERMISSION_MODES.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </span>
+        <div className="seg" role="group" aria-label="render mode">
+          {(["chat", "console", "source"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={renderMode === m}
+              onClick={() => changeRenderMode(m)}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <button
+          className="charter-toggle"
+          aria-expanded={charterOpen}
+          onClick={() => setCharterOpen((o) => !o)}
+        >
+          charter {charterOpen ? "▴" : "▾"}
+        </button>
+        {ctlNote && <span className="ctl-note">{ctlNote}</span>}
+        {ctlError && <span className="ctl-error">{ctlError}</span>}
+        <span className="spacer" />
+        {ctx && (ctxPct !== null || ctx.categories.length > 0) && (
+          <div
+            className="ctx-meter"
+            onClick={() => setCtxOpen((o) => !o)}
+            title="context usage — click for breakdown"
+          >
+            <span className="ctl-label">ctx</span>
+            {ctxPct !== null && (
+              <>
+                <span className="ctx-bar">
+                  <span
+                    className={
+                      ctxPct >= 90 ? "ctx-fill hot" : ctxPct >= 70 ? "ctx-fill warm" : "ctx-fill"
+                    }
+                    style={{ width: `${ctxPct}%` }}
+                  />
+                </span>
+                <span className="ctx-pct">{ctxPct}%</span>
+              </>
+            )}
+            {ctxOpen && (
+              <div className="ctx-pop" onClick={(e) => e.stopPropagation()}>
+                {ctx.categories.slice(0, 8).map((c) => (
+                  <div className="ctx-row" key={c.name}>
+                    <span>{c.name}</span>
+                    <b>{fmtTokens(c.tokens)}</b>
+                  </div>
+                ))}
+                {(ctx.usedTokens !== null || ctx.maxTokens !== null) && (
+                  <div className="ctx-row ctx-row-total">
+                    <span>used / max</span>
+                    <b>
+                      {ctx.usedTokens !== null ? fmtTokens(ctx.usedTokens) : "—"} /{" "}
+                      {ctx.maxTokens !== null ? fmtTokens(ctx.maxTokens) : "—"}
+                    </b>
+                  </div>
+                )}
+                {ctx.autoCompactThreshold !== null && (
+                  <div className="ctx-row">
+                    <span>auto-compact at</span>
+                    <b>{fmtTokens(ctx.autoCompactThreshold)}</b>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {charterOpen && (
+        <div className="charter-drawer">
+          {charterDraft === null ? (
+            <>
+              {charter ? (
+                <pre className="charter-body">{charter}</pre>
+              ) : (
+                <div className="dim" style={{ marginBottom: 8 }}>
+                  no charter set.
+                </div>
+              )}
+              <div className="charter-actions">
+                <button className="btn sm" onClick={() => setCharterDraft(charter ?? "")}>
+                  edit
+                </button>
+                <span className="charter-caption">
+                  applies at next revive — a charter rides the system prompt
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <textarea
+                className="charter-edit"
+                value={charterDraft}
+                placeholder="charter (empty clears)"
+                onChange={(e) => setCharterDraft(e.target.value)}
+              />
+              <div className="charter-actions">
+                <button
+                  className="btn sm primary"
+                  disabled={charterSaving}
+                  onClick={() => void saveCharter()}
+                >
+                  {charterSaving ? "saving…" : "save"}
+                </button>
+                <button className="btn sm ghost" onClick={() => setCharterDraft(null)}>
+                  cancel
+                </button>
+                <span className="charter-caption">
+                  applies at next revive — a charter rides the system prompt
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {historyError && (
         <div className="error-inline">history: {historyError} (live stream only)</div>
       )}
@@ -503,7 +1163,7 @@ function SessionView({ name }: { name: string }) {
           <button
             className="btn sm"
             onClick={() => {
-              const el = scrollRef.current?.querySelector(".perm-card");
+              const el = scrollRef.current?.querySelector(".perm-card, .q-card");
               el?.scrollIntoView({ behavior: "smooth", block: "center" });
             }}
           >
@@ -522,7 +1182,7 @@ function SessionView({ name }: { name: string }) {
       )}
 
       <div
-        className="transcript"
+        className={renderMode === "console" ? "transcript console" : "transcript"}
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -539,7 +1199,11 @@ function SessionView({ name }: { name: string }) {
         <span className="status-left mono">
           {busy ? (
             <>
-              <span className="working">working…</span>
+              <span className="working">
+                {workSecs !== null ? `working ${workSecs}s` : "working…"}
+              </span>
+              {lastTool && <span className="status-tool">· last tool {lastTool}</span>}
+              {statusNote && <span className="status-note">{statusNote}</span>}
               <button
                 className="btn-interrupt"
                 onClick={() => void interrupt()}
@@ -549,7 +1213,10 @@ function SessionView({ name }: { name: string }) {
               </button>
             </>
           ) : (
-            <span className="dim">{lastTurn ? `last turn: ${lastTurn.subtype}` : "idle"}</span>
+            <>
+              <span className="dim">{lastTurn ? `last turn: ${lastTurn.subtype}` : "idle"}</span>
+              {statusNote && <span className="status-note">{statusNote}</span>}
+            </>
           )}
         </span>
         {actionError && <span className="error-text">{actionError}</span>}
@@ -561,16 +1228,37 @@ function SessionView({ name }: { name: string }) {
       </div>
 
       <div className="composer">
+        {acOpen && (
+          <div className="ac-pop" role="listbox" aria-label="slash commands">
+            {acMatches.map((c, i) => (
+              <div
+                key={c.name}
+                role="option"
+                aria-selected={i === acIdx}
+                className={i === acIdx ? "ac-item sel" : "ac-item"}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickCommand(c);
+                }}
+                onMouseEnter={() => setAcIdx(i)}
+              >
+                <span className="mono ac-name">/{c.name}</span>
+                {c.argumentHint && <span className="mono ac-args">{c.argumentHint}</span>}
+                {c.description && <span className="ac-desc">{c.description}</span>}
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={composerKeyDown}
           placeholder={
             exited
               ? "session exited"
               : busy
                 ? "working… unlocks at turn end"
-                : `message @${name} — Enter sends, Shift+Enter for a newline`
+                : `message @${name} — Enter sends, Shift+Enter for a newline, / for commands`
           }
           disabled={composerDisabled}
           rows={2}

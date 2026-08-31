@@ -725,8 +725,17 @@ mod tests {
         let s = BusStore::open_in_memory().unwrap();
         s.insert_message("arch", "impl", "@impl", "normal", "hello", None, None, None)
             .unwrap();
-        s.insert_message("arch", "impl", "@impl", "gating", "now!", Some("t-1"), None, None)
-            .unwrap();
+        s.insert_message(
+            "arch",
+            "impl",
+            "@impl",
+            "gating",
+            "now!",
+            Some("t-1"),
+            None,
+            None,
+        )
+        .unwrap();
         let pending = s.pending_for("impl").unwrap();
         assert_eq!(pending.len(), 2);
         // Send order, never class order.

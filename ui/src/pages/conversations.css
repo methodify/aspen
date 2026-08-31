@@ -1,0 +1,93 @@
+/* Conversations page — DM rail, trail view, receipt expansion. Switchboard
+   tokens only: no new colors. */
+
+/* ── Direct-message rail rows ───────────────────────────────────────── */
+.dm-pair-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.dm-pair-label .who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-pair-label .who.op { color: var(--sig-normal); }
+.dm-pair-label .link { color: var(--text-dim); flex: none; }
+
+/* Observer note on agent↔agent threads */
+.dm-observer {
+  text-align: center;
+  color: var(--text-dim);
+  font: 400 0.78rem/1.5 var(--font-mono);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+/* Delivery-state fragments (dm rows + trail rows) */
+.dstate { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); white-space: nowrap; }
+.dstate.ok { color: var(--live); }
+
+/* ── Receipts (watch a post land) ───────────────────────────────────── */
+.ticks.clickable { cursor: pointer; }
+.ticks.clickable:hover { color: var(--text-hi); }
+.receipts {
+  margin-top: var(--sp-2);
+  border: 1px solid var(--line);
+  background: var(--bg-well);
+  padding: var(--sp-2) var(--sp-3);
+  white-space: normal;
+}
+.receipt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 2px 0;
+  color: var(--text-mid);
+}
+.receipt-row .who { color: var(--text-hi); flex: none; }
+.receipt-row .rt { color: var(--text-dim); margin-left: auto; flex: none; }
+
+/* ── Trail view ─────────────────────────────────────────────────────── */
+.trail-filters {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+.trail-filters input,
+.trail-filters select { padding: 3px var(--sp-2); font-size: 0.78rem; }
+.trail-filters input { width: 110px; }
+.trail-filters input.wide { flex: 1; min-width: 120px; }
+.trail-rows { flex: 1; overflow: auto; padding: var(--sp-2) var(--sp-4); }
+.trail-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+.trail-row:last-child { border-bottom: none; }
+.trail-row .addr { white-space: nowrap; flex: none; }
+.trail-body {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.trail-body.open {
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-overflow: clip;
+}

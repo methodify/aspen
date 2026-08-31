@@ -1,0 +1,156 @@
+/* Command page — triage cockpit surfaces. Switchboard tokens only: no new
+   colors, everything derives from the priority/presence palettes. */
+
+/* ── Needs-you cards (permission gates / questions) ─────────────────── */
+.needs-card {
+  border: 1px solid var(--line);
+  background: var(--bg-strip);
+  margin-bottom: var(--sp-2);
+}
+.needs-card.perm {
+  border-color: var(--sig-gate);
+  background: color-mix(in srgb, var(--sig-gate-dim) 40%, var(--bg-strip));
+}
+.needs-card.question {
+  border-color: var(--sig-normal);
+  background: color-mix(in srgb, var(--sig-normal-dim) 45%, var(--bg-strip));
+}
+.needs-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  flex-wrap: wrap;
+}
+.needs-body { padding: 0 var(--sp-3) var(--sp-3); }
+.needs-kind {
+  font: 700 0.625rem/1 var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  white-space: nowrap;
+  clip-path: polygon(4px 0, 100% 0, 100% 100%, 0 100%, 0 4px);
+}
+.needs-card.perm .needs-kind {
+  color: var(--sig-gate);
+  background: var(--sig-gate-dim);
+  border: 1px solid var(--sig-gate);
+}
+.needs-card.question .needs-kind {
+  color: var(--sig-normal);
+  background: var(--sig-normal-dim);
+  border: 1px solid var(--sig-normal);
+}
+
+/* Node origin chip (remote mesh items) */
+.node-chip {
+  font: 500 0.65rem/1 var(--font-mono);
+  padding: 1px 5px;
+  border: 1px solid var(--sig-notice);
+  color: var(--sig-notice);
+  background: var(--sig-notice-dim);
+  white-space: nowrap;
+}
+
+/* Collapsed key-field view of a permission's tool input */
+.perm-kv {
+  display: flex;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 1px 0;
+  min-width: 0;
+}
+.perm-kv .k { color: var(--text-dim); flex: none; }
+.perm-kv .v {
+  color: var(--text-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.needs-input-full {
+  background: var(--bg-well);
+  border: 1px solid var(--line);
+  padding: var(--sp-2);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  max-height: 240px;
+  margin: var(--sp-2) 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.needs-actions {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+}
+.needs-actions .deny-input { flex: 1; min-width: 160px; }
+
+/* Question blocks */
+.q-block { margin-bottom: var(--sp-3); }
+.q-text { font-size: 0.9rem; margin-bottom: var(--sp-2); color: var(--text-hi); }
+.q-options { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.q-option {
+  font: 500 0.8125rem/1.3 var(--font-body);
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-well);
+  color: var(--text-mid);
+  border: 1px solid var(--line-hi);
+  cursor: pointer;
+  max-width: 100%;
+}
+.q-option:hover { border-color: var(--text-dim); color: var(--text-hi); }
+.q-option[aria-pressed="true"] {
+  border-color: var(--sig-normal);
+  color: var(--sig-normal);
+  background: var(--sig-normal-dim);
+}
+.q-option .q-desc { display: block; font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+.q-response { width: 100%; margin-top: var(--sp-2); }
+
+/* ── Waiting-on rows ────────────────────────────────────────────────── */
+.waiting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--idle);
+  background: var(--bg-strip);
+  margin-bottom: var(--sp-2);
+  flex-wrap: wrap;
+}
+.waiting-snippet {
+  flex-basis: 100%;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── In-flight extras ───────────────────────────────────────────────── */
+.flight-title {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18ch;
+}
+.flight-streaming { color: var(--live); white-space: nowrap; }
+
+/* ── Recent-traffic filter row ──────────────────────────────────────── */
+.traffic-filters {
+  display: flex;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  align-items: center;
+}
+.traffic-filters input,
+.traffic-filters select { padding: 3px var(--sp-2); font-size: 0.78rem; }
+.traffic-filters input { flex: 1; min-width: 0; }
