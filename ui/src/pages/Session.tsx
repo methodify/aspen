@@ -254,6 +254,8 @@ function SessionView({ name }: { name: string }) {
   const [exited, setExited] = useState<{ code: number | null } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [reloading, setReloading] = useState(false);
+  const [reloadNote, setReloadNote] = useState<string | null>(null);
 
   // Event handling (transcript + session meta) behind a ref so the WS
   // callbacks always see the latest closure.
@@ -374,6 +376,22 @@ function SessionView({ name }: { name: string }) {
     }
   }
 
+  async function reload() {
+    if (reloading) return;
+    setReloading(true);
+    setReloadNote(null);
+    setActionError(null);
+    try {
+      await api.reloadAgent(name);
+      setReloadNote("skills reloaded");
+      window.setTimeout(() => setReloadNote(null), 3000);
+    } catch (e) {
+      setActionError(`reload: ${errText(e)}`);
+    } finally {
+      setReloading(false);
+    }
+  }
+
   async function answerPermission(
     requestId: string,
     allow: boolean,
@@ -438,8 +456,20 @@ function SessionView({ name }: { name: string }) {
         </h1>
         {agent && (
           <span className="dim mono session-repo">
-            {agent.repo} · #{agent.channel}
+            {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
           </span>
+        )}
+        {reloadNote ? (
+          <span className="ok-inline mono reload-note">{reloadNote}</span>
+        ) : (
+          <button
+            className="btn-reload"
+            onClick={() => void reload()}
+            disabled={reloading || exited !== null}
+            title="reload this session's plugins/skills/commands"
+          >
+            {reloading ? "reloading…" : "reload"}
+          </button>
         )}
         <span className={`ws-state ws-${wsState}`}>
           <span

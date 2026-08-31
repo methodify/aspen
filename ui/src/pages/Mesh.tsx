@@ -21,7 +21,9 @@ function AgentCard({ agent }: { agent: Agent }) {
           </span>
         )}
       </div>
-      <div className="agent-card-repo mono">{agent.repo}</div>
+      <div className="agent-card-repo mono">
+        {agent.repo ?? `remote · ${agent.node}`}
+      </div>
       <div className="agent-card-meta">
         <span className="mono">#{agent.channel}</span>
         {agent.charter && <span className="agent-card-charter">{agent.charter}</span>}

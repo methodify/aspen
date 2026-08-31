@@ -66,6 +66,7 @@ pub async fn serve(
         .route("/bus/send", post(post_bus_send))
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
+        .route("/repo/autorun", get(get_autorun))
         .route("/repo/skills", get(get_skills))
         .route(
             "/repo/skill",
@@ -639,6 +640,13 @@ async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct RepoQuery {
     repo: String,
+}
+
+/// The trust gate's inspection: exactly what this repo would auto-run on
+/// spawn (hooks, MCP servers, skills). "Here is everything this repository
+/// will run, before it runs" (reference §7.7).
+async fn get_autorun(Query(q): Query<RepoQuery>) -> impl IntoResponse {
+    Json(aspen_node::trust::inspect(std::path::Path::new(&q.repo))).into_response()
 }
 
 async fn get_skills(Query(q): Query<RepoQuery>) -> impl IntoResponse {

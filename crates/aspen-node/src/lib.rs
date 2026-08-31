@@ -15,6 +15,7 @@ pub mod permit;
 pub mod skills;
 pub mod store;
 pub mod tools;
+pub mod trust;
 
 pub use node::{Node, SpawnOpts, TurnState};
 pub use store::{BusStore, StoredMessage};
