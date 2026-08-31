@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
                 Some(d) => eprintln!("[aspen] serving console from {}", d.display()),
                 None => eprintln!("[aspen] no ui/dist found — API only"),
             }
-            api::serve(node, listen, ui_dir).await
+            api::serve(node, listen, ui_dir, &cli.data_dir).await
         }
         Command::Dev { command } => match command {
             DevCommand::Oneshot {

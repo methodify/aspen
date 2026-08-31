@@ -44,6 +44,65 @@ pub struct MeshState {
     pub links: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
     /// node name → last roster it sent us.
     pub remote: Mutex<HashMap<String, Vec<RemoteAgent>>>,
+    /// Outstanding api_req calls we made, keyed by request id.
+    pub pending_api: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
+    /// Event subscriptions WE serve to peers: sub id → forwarder task.
+    pub served_subs: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Event subscriptions we REQUESTED: sub id → (serving peer, consumer).
+    pub remote_subs: Mutex<HashMap<String, (String, mpsc::UnboundedSender<Value>)>>,
+}
+
+impl MeshState {
+    pub fn new(identity: NodeIdentity, config: MeshConfig) -> Self {
+        Self {
+            identity,
+            config,
+            links: Mutex::new(HashMap::new()),
+            remote: Mutex::new(HashMap::new()),
+            pending_api: Mutex::new(HashMap::new()),
+            served_subs: Mutex::new(HashMap::new()),
+            remote_subs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Remote API call over the federation link, correlated by id.
+    pub async fn api_call(
+        &self,
+        node: &str,
+        op: &str,
+        agent: &str,
+        body: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_api.lock().unwrap().insert(id.clone(), tx);
+        let sent = self.send_to(
+            node,
+            &json!({ "t": "api_req", "id": id, "op": op, "agent": agent, "body": body }),
+        );
+        if let Err(e) = sent {
+            self.pending_api.lock().unwrap().remove(&id);
+            return Err(e);
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(v)) => {
+                if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+                    Ok(v.get("body").cloned().unwrap_or(Value::Null))
+                } else {
+                    Err(anyhow!(
+                        "{}",
+                        v.get("error").and_then(|e| e.as_str()).unwrap_or("remote error")
+                    ))
+                }
+            }
+            Ok(Err(_)) => Err(anyhow!("link to {node:?} dropped mid-call")),
+            Err(_) => {
+                self.pending_api.lock().unwrap().remove(&id);
+                Err(anyhow!("remote call to {node:?} timed out"))
+            }
+        }
+    }
 }
 
 impl MeshState {
@@ -282,6 +341,12 @@ pub async fn run_link(
     }
     drop(links);
     mesh.remote.lock().unwrap().remove(&peer);
+    // Consumers of subscriptions served over this link learn immediately
+    // (their channel closes) rather than waiting on silence.
+    mesh.remote_subs
+        .lock()
+        .unwrap()
+        .retain(|_, (served_by, _)| served_by != &peer);
     tracing::info!(peer = %peer, "federation link down");
     result
 }
@@ -363,10 +428,155 @@ async fn link_loop(
                     inner.tick_delivery(&name);
                 }
             }
+            "api_req" => {
+                // Serve the peer's console. Spawned: ops like spawn/revive
+                // take seconds and must not stall the link.
+                let id = payload.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+                let op = payload.get("op").and_then(|o| o.as_str()).unwrap_or("").to_owned();
+                let agent = payload.get("agent").and_then(|a| a.as_str()).unwrap_or("").to_owned();
+                let body = payload.get("body").cloned().unwrap_or(Value::Null);
+                let inner = inner.clone();
+                let mesh = mesh.clone();
+                let peer = peer.to_owned();
+                tokio::spawn(async move {
+                    let res = serve_api_req(&inner, &op, &agent, body).await;
+                    let reply = match res {
+                        Ok(body) => json!({ "t": "api_res", "id": id, "ok": true, "body": body }),
+                        Err(e) => json!({ "t": "api_res", "id": id, "ok": false, "error": e.to_string() }),
+                    };
+                    let _ = mesh.send_to(&peer, &reply);
+                });
+            }
+            "api_res" => {
+                if let Some(id) = payload.get("id").and_then(|i| i.as_str()) {
+                    if let Some(tx) = mesh.pending_api.lock().unwrap().remove(id) {
+                        let _ = tx.send(payload);
+                    }
+                }
+            }
+            "sub" => {
+                let id = payload.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+                let agent = payload.get("agent").and_then(|a| a.as_str()).unwrap_or("").to_owned();
+                let Some(sess) = inner.live(&agent) else {
+                    let _ = mesh.send_to(peer, &json!({ "t": "sub_end", "id": id, "reason": "no such live agent" }));
+                    continue;
+                };
+                let mut rx = sess.events.subscribe();
+                let mesh2 = mesh.clone();
+                let peer2 = peer.to_owned();
+                let id2 = id.clone();
+                let task = tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(ev) => {
+                                let Ok(ev_json) = serde_json::to_value(&ev) else { continue };
+                                if mesh2
+                                    .send_to(&peer2, &json!({ "t": "ev", "id": id2, "ev": ev_json }))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                if matches!(ev, aspen_core::SessionEvent::Exited { .. }) {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = mesh2.send_to(&peer2, &json!({ "t": "sub_end", "id": id2 }));
+                    mesh2.served_subs.lock().unwrap().remove(&id2);
+                });
+                mesh.served_subs.lock().unwrap().insert(id, task);
+            }
+            "unsub" => {
+                if let Some(id) = payload.get("id").and_then(|i| i.as_str()) {
+                    if let Some(task) = mesh.served_subs.lock().unwrap().remove(id) {
+                        task.abort();
+                    }
+                }
+            }
+            "ev" | "sub_end" => {
+                if let Some(id) = payload.get("id").and_then(|i| i.as_str()) {
+                    let is_end = payload.get("t").and_then(|t| t.as_str()) == Some("sub_end");
+                    let dead = {
+                        let subs = mesh.remote_subs.lock().unwrap();
+                        subs.get(id).map(|(_, tx)| tx.send(payload.clone()).is_err())
+                    };
+                    if dead == Some(true) || is_end {
+                        mesh.remote_subs.lock().unwrap().remove(id);
+                        if dead == Some(true) && !is_end {
+                            let _ = mesh.send_to(peer, &json!({ "t": "unsub", "id": id }));
+                        }
+                    }
+                }
+            }
             other => tracing::debug!(peer, other, "unknown federation payload ignored"),
         }
     }
     Ok(())
+}
+
+/// Execute a peer console's request against this node. The op vocabulary
+/// mirrors the local REST API; every op is scoped to one named agent.
+async fn serve_api_req(
+    inner: &Arc<NodeInner>,
+    op: &str,
+    agent: &str,
+    body: Value,
+) -> Result<Value> {
+    let node = crate::node::Node {
+        inner: inner.clone(),
+    };
+    match op {
+        "message" => {
+            let text = body
+                .get("text")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| anyhow!("missing text"))?;
+            let uuid = node.send_operator_message(agent, text.to_owned()).await?;
+            Ok(json!({ "uuid": uuid }))
+        }
+        "interrupt" => {
+            node.interrupt(agent).await?;
+            Ok(json!({}))
+        }
+        "shutdown" => {
+            node.shutdown_agent(agent).await?;
+            Ok(json!({}))
+        }
+        "revive" => {
+            node.revive_agent(agent, true).await?;
+            Ok(json!({}))
+        }
+        "permission" => {
+            node.answer_permission(
+                agent,
+                body.get("request_id")
+                    .and_then(|r| r.as_str())
+                    .ok_or_else(|| anyhow!("missing request_id"))?,
+                body.get("allow").and_then(|a| a.as_bool()).unwrap_or(false),
+                body.get("message").and_then(|m| m.as_str()).map(str::to_owned),
+                body.get("updated_input").cloned().filter(|v| !v.is_null()),
+            )?;
+            Ok(json!({}))
+        }
+        "transcript" => {
+            let rows = inner.store.agents()?;
+            let row = rows
+                .iter()
+                .find(|a| a.name == agent)
+                .ok_or_else(|| anyhow!("no agent named @{agent}"))?;
+            let sid = row
+                .session_id
+                .as_ref()
+                .ok_or_else(|| anyhow!("no session on record"))?;
+            let items =
+                aspen_claude::transcript::rehydrate(&row.repo, sid).unwrap_or_default();
+            Ok(json!(items))
+        }
+        other => Err(anyhow!("unknown remote op {other:?}")),
+    }
 }
 
 // ----------------------------------------------------------------- dialing

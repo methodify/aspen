@@ -22,15 +22,30 @@ use aspen_node::{Node, SpawnOpts, TurnState};
 pub struct AppState {
     pub node: Node,
     pub node_name: String,
+    pub token: Option<String>,
 }
 
 type S = State<Arc<AppState>>;
 
-pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> Result<()> {
+pub async fn serve(
+    node: Node,
+    listen: SocketAddr,
+    ui_dir: Option<PathBuf>,
+    data_dir: &std::path::Path,
+) -> Result<()> {
     let shutdown_node = node.clone();
+    // Loopback listeners trust the local user; anything wider requires the
+    // node token on every /api call (the federation WS is exempt — it has
+    // its own cryptographic auth and carries only sealed frames).
+    let token = if listen.ip().is_loopback() {
+        None
+    } else {
+        Some(load_or_create_token(data_dir)?)
+    };
     let state = Arc::new(AppState {
         node,
         node_name: hostname(),
+        token: token.clone(),
     });
 
     let api = Router::new()
@@ -52,8 +67,12 @@ pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> R
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
         .route("/federation/ws", get(ws_federation))
-        .with_state(state);
+        .with_state(state.clone());
 
+    let api = api.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth_middleware,
+    ));
     let mut app = Router::new().nest("/api", api);
     if let Some(dir) = ui_dir {
         let index = dir.join("index.html");
@@ -65,7 +84,10 @@ pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> R
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!("aspen node API listening on http://{listen}");
-    eprintln!("[aspen] node up: http://{listen}");
+    match &token {
+        Some(tk) => eprintln!("[aspen] node up: http://{listen}/?token={tk}"),
+        None => eprintln!("[aspen] node up: http://{listen}"),
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
@@ -93,6 +115,58 @@ pub async fn serve(node: Node, listen: SocketAddr, ui_dir: Option<PathBuf>) -> R
     Ok(())
 }
 
+fn load_or_create_token(data_dir: &std::path::Path) -> Result<String> {
+    let path = data_dir.join("api-token");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let existing = existing.trim().to_owned();
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+    }
+    use rand_core::RngCore;
+    let mut bytes = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(data_dir).ok();
+    std::fs::write(&path, &token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(token)
+}
+
+async fn auth_middleware(
+    State(s): S,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let Some(expected) = &s.token else {
+        return next.run(req).await;
+    };
+    // Federation carries sealed frames and authenticates cryptographically.
+    if req.uri().path().ends_with("/federation/ws") {
+        return next.run(req).await;
+    }
+    let presented = req
+        .headers()
+        .get("x-aspen-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| {
+            req.uri().query().and_then(|q| {
+                q.split('&')
+                    .find_map(|kv| kv.strip_prefix("token=").map(str::to_owned))
+            })
+        });
+    if presented.as_deref() == Some(expected.as_str()) {
+        next.run(req).await
+    } else {
+        err(StatusCode::UNAUTHORIZED, "missing or invalid node token").into_response()
+    }
+}
+
 fn hostname() -> String {
     std::env::var("HOSTNAME")
         .ok()
@@ -109,6 +183,36 @@ fn hostname() -> String {
 
 fn err(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     (status, Json(json!({ "error": e.to_string() })))
+}
+
+/// A `name@node` address targeting a DIFFERENT node resolves to (bare,
+/// node) for mesh proxying; `name@<this-node>` collapses to local.
+fn remote_parts(s: &AppState, name: &str) -> Option<(String, String)> {
+    let (bare, node) = name.split_once('@')?;
+    let mesh = s.node.inner.mesh.as_ref()?;
+    if node == mesh.identity.node {
+        return None;
+    }
+    Some((bare.to_owned(), node.to_owned()))
+}
+
+const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Proxy one op to the agent's home node; map errors to a response.
+async fn proxy(
+    s: &AppState,
+    node: &str,
+    op: &str,
+    agent: &str,
+    body: Value,
+) -> axum::response::Response {
+    let Some(mesh) = &s.node.inner.mesh else {
+        return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+    };
+    match mesh.api_call(node, op, agent, body, REMOTE_TIMEOUT).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
+    }
 }
 
 // ------------------------------------------------------------------- handlers
@@ -136,8 +240,33 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
 
 async fn get_agents(State(s): S) -> impl IntoResponse {
     match s.node.inner.store.agents() {
-        Ok(rows) => Json(rows.iter().map(|a| agent_json(&s, a)).collect::<Vec<_>>())
-            .into_response(),
+        Ok(rows) => {
+            let mut out: Vec<Value> = rows.iter().map(|a| agent_json(&s, a)).collect();
+            for v in out.iter_mut() {
+                v["node"] = json!(s.node.inner.mesh.as_ref().map(|m| m.identity.node.clone()));
+            }
+            if let Some(mesh) = &s.node.inner.mesh {
+                let remote = mesh.remote.lock().unwrap();
+                for (node, agents) in remote.iter() {
+                    let reachable = mesh.link_up(node);
+                    for a in agents {
+                        out.push(json!({
+                            "name": format!("{}@{}", a.name, node),
+                            "repo": null,
+                            "channel": a.channel,
+                            "session_id": null,
+                            "charter": null,
+                            "live": a.live && reachable,
+                            "turn_state": if reachable { json!(a.turn_state) } else { Value::Null },
+                            "pending": s.node.inner.store.pending_count(&format!("{}@{}", a.name, node)).unwrap_or(0),
+                            "node": node,
+                            "remote": true,
+                        }));
+                    }
+                }
+            }
+            Json(out).into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -201,6 +330,9 @@ async fn post_message(
     Path(name): Path<String>,
     Json(body): Json<MessageBody>,
 ) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "message", &bare, json!({ "text": body.text })).await;
+    }
     match s.node.send_operator_message(&name, body.text).await {
         Ok(uuid) => Json(json!({ "uuid": uuid })).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
@@ -208,6 +340,9 @@ async fn post_message(
 }
 
 async fn post_interrupt(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "interrupt", &bare, json!({})).await;
+    }
     match s.node.interrupt(&name).await {
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
@@ -226,6 +361,12 @@ async fn post_permission(
     Path((name, request_id)): Path<(String, String)>,
     Json(body): Json<PermissionBody>,
 ) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "permission", &bare, json!({
+            "request_id": request_id, "allow": body.allow,
+            "message": body.message, "updated_input": body.updated_input,
+        })).await;
+    }
     match s.node.answer_permission(
         &name,
         &request_id,
@@ -239,6 +380,9 @@ async fn post_permission(
 }
 
 async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "revive", &bare, json!({})).await;
+    }
     match s.node.revive_agent(&name, true).await {
         Ok(_) => {
             let rows = s.node.inner.store.agents().unwrap_or_default();
@@ -253,6 +397,9 @@ async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse
 }
 
 async fn delete_agent(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "shutdown", &bare, json!({})).await;
+    }
     match s.node.shutdown_agent(&name).await {
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
@@ -266,11 +413,74 @@ async fn ws_events(
     Path(name): Path<String>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        let Some(mesh) = s.node.inner.mesh.clone() else {
+            return err(StatusCode::NOT_FOUND, "not in a mesh").into_response();
+        };
+        return ws
+            .on_upgrade(move |socket| pump_remote_events(socket, mesh, node, bare))
+            .into_response();
+    }
     let Some(rx) = s.node.subscribe(&name) else {
         return err(StatusCode::NOT_FOUND, format!("no running agent @{name}")).into_response();
     };
     ws.on_upgrade(move |socket| pump_events(socket, rx))
         .into_response()
+}
+
+/// Bridge a console WS to a subscription served by the agent's home node.
+async fn pump_remote_events(
+    mut socket: WebSocket,
+    mesh: Arc<aspen_node::federation::MeshState>,
+    node: String,
+    agent: String,
+) {
+    let sub_id = uuid::Uuid::new_v4().to_string();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    mesh.remote_subs
+        .lock()
+        .unwrap()
+        .insert(sub_id.clone(), (node.clone(), tx));
+    if mesh
+        .send_to(&node, &json!({ "t": "sub", "id": sub_id, "agent": agent }))
+        .is_err()
+    {
+        mesh.remote_subs.lock().unwrap().remove(&sub_id);
+        let _ = socket
+            .send(Message::Text(
+                json!({ "kind": "status", "raw": { "error": format!("node '{node}' unreachable") } })
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    }
+    loop {
+        tokio::select! {
+            frame = rx.recv() => match frame {
+                Some(f) => {
+                    if f.get("t").and_then(|t| t.as_str()) == Some("sub_end") {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
+                    let Some(ev) = f.get("ev") else { continue };
+                    if socket.send(Message::Text(ev.to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
+                None => { // link died
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+            },
+            msg = socket.recv() => match msg {
+                Some(Ok(_)) => {}
+                _ => break, // console gone: tell the serving node to stop
+            },
+        }
+    }
+    mesh.remote_subs.lock().unwrap().remove(&sub_id);
+    let _ = mesh.send_to(&node, &json!({ "t": "unsub", "id": sub_id }));
 }
 
 async fn pump_events(
@@ -335,6 +545,9 @@ async fn get_sessions(Query(q): Query<SessionsQuery>) -> impl IntoResponse {
 /// Rehydrated history for an agent's session — what the console renders
 /// above the live stream.
 async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "transcript", &bare, json!({})).await;
+    }
     let rows = match s.node.inner.store.agents() {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),

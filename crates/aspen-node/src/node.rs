@@ -90,12 +90,7 @@ impl Node {
         let mesh = match (files.load_identity()?, files.load_mesh()?) {
             (Some(identity), Some(mut config)) if identity.cert.is_some() => {
                 config.peers = files.verified_peers()?;
-                Some(Arc::new(crate::federation::MeshState {
-                    identity,
-                    config,
-                    links: Mutex::new(HashMap::new()),
-                    remote: Mutex::new(HashMap::new()),
-                }))
+                Some(Arc::new(crate::federation::MeshState::new(identity, config)))
             }
             _ => None,
         };
