@@ -107,6 +107,32 @@ function Md({ text }: { text: string }) {
   );
 }
 
+/**
+ * Markdown rendered the way a terminal renders it — the claude TUI look.
+ * One monospace size throughout; structure carried by weight, color, and
+ * character prefixes (• bullets, │ quotes, ─ rules), never by font size.
+ */
+function TuiMd({ text }: { text: string }) {
+  return (
+    <div className="tui-md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => <div className="tui-h tui-h1">{children}</div>,
+          h2: ({ children }) => <div className="tui-h tui-h2">{children}</div>,
+          h3: ({ children }) => <div className="tui-h">{children}</div>,
+          h4: ({ children }) => <div className="tui-h">{children}</div>,
+          h5: ({ children }) => <div className="tui-h">{children}</div>,
+          h6: ({ children }) => <div className="tui-h">{children}</div>,
+          hr: () => <div className="tui-hr" aria-hidden />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function AssistantBubble({ item, source }: { item: AssistantBubbleItem; source?: boolean }) {
   return (
     <div className="bubble bubble-assistant">
@@ -792,25 +818,34 @@ function SessionView({ name }: { name: string }) {
 
   function renderConsoleItem(item: TranscriptItem) {
     switch (item.kind) {
-      case "assistant":
+      case "assistant": {
         if (!item.text && !item.open) return null;
         return (
           <div key={item.id} className="cline cline-assistant">
-            {item.text || "…"}
+            {item.text ? <TuiMd text={item.text} /> : "…"}
+            {item.open && item.text && <span className="caret" aria-hidden="true" />}
           </div>
         );
+      }
       case "user":
         return (
           <div key={item.id} className="cline cline-user">
             {"> " + item.text}
           </div>
         );
-      case "bus":
+      case "bus": {
+        // Keep the [aspen bus] header line as raw terminal text; the body
+        // is agent prose and renders as TUI markdown like everything else.
+        const nl = item.text.indexOf("\n");
+        const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
+        const body = nl >= 0 ? item.text.slice(nl + 1) : "";
         return (
           <div key={item.id} className="cline cline-bus">
-            {item.text}
+            <div>{header}</div>
+            {body && <TuiMd text={body} />}
           </div>
         );
+      }
       case "tool":
         return (
           <div key={item.id} className="cline cline-tool">

@@ -306,3 +306,95 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── TUI markdown — console mode interprets markdown the way a terminal
+      does: one mono size, structure via weight/color/characters ───────── */
+.tui-md {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+.tui-md > :first-child { margin-top: 0; }
+.tui-md > :last-child { margin-bottom: 0; }
+.tui-md p { margin: 0 0 0.7em; }
+
+/* Headers: no size change (a terminal has one size) — bold + accent. */
+.tui-h {
+  font-weight: 700;
+  color: var(--text-hi);
+  margin: 0.9em 0 0.45em;
+}
+.tui-h:first-child { margin-top: 0; }
+.tui-h1, .tui-h2 { color: var(--sig-normal); }
+
+.tui-md strong { font-weight: 700; color: var(--text-hi); }
+.tui-md em { font-style: italic; }
+.tui-md del { color: var(--text-dim); }
+
+/* Inline code: terminals recolor, they don't box. */
+.tui-md :not(pre) > code {
+  font-family: var(--font-mono);
+  color: var(--sig-notice);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* Code blocks: a dimmed well with a gutter rule, like the TUI's block. */
+.tui-md pre {
+  background: color-mix(in srgb, var(--bg-well) 70%, transparent);
+  border: none;
+  border-left: 2px solid var(--line-hi);
+  padding: 0.5em 0.9em;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+.tui-md pre code { color: var(--text-hi); }
+
+/* Lists: • bullets, terminal indent. */
+.tui-md ul, .tui-md ol { margin: 0 0 0.7em; padding-left: 2ch; }
+.tui-md ul { list-style: none; }
+.tui-md ul > li { position: relative; padding-left: 2ch; }
+.tui-md ul > li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--sig-normal);
+}
+.tui-md ol { list-style: decimal; padding-left: 4ch; }
+.tui-md ol > li::marker { color: var(--sig-normal); font-family: var(--font-mono); }
+.tui-md li { margin: 0.1em 0; }
+.tui-md li > p { margin: 0; }
+
+/* Blockquote: the │ gutter. */
+.tui-md blockquote {
+  margin: 0.6em 0;
+  padding-left: 1.2ch;
+  border-left: 2px solid var(--line-hi);
+  color: var(--text-mid);
+}
+
+/* Links: recolored + underlined, URL semantics stay visible on hover. */
+.tui-md a { color: var(--sig-notice); text-decoration: underline; }
+
+/* Rule: a drawn line. */
+.tui-hr { border-top: 1px solid var(--line-hi); margin: 0.8em 0; }
+
+/* Tables: hairline box-drawing feel, mono alignment. */
+.tui-md table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: inherit;
+}
+.tui-md th, .tui-md td {
+  border: 1px solid var(--line-hi);
+  padding: 0.15em 0.9ch;
+  text-align: left;
+}
+.tui-md th { color: var(--text-hi); font-weight: 700; background: color-mix(in srgb, var(--bg-well) 55%, transparent); }
+
+/* Assistant console lines wrap normally now that markdown structures them. */
+.transcript.console .cline-assistant { white-space: normal; }
+/* Markdown containers manage their own whitespace (pre-wrap would double it). */
+.cline .tui-md { white-space: normal; }
