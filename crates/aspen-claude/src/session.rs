@@ -402,6 +402,13 @@ impl ClaudeSession {
         }
     }
 
+    /// Re-read plugins/skills/commands from disk (reference §12.4). Returns
+    /// the refreshed inventory the CLI reports.
+    pub async fn reload_plugins(&self) -> Result<Value> {
+        self.request(json!({ "subtype": "reload_plugins" }), Duration::from_secs(30))
+            .await
+    }
+
     /// End-of-session ladder (reference §4.3): `end_session` → stdin EOF →
     /// kill. Transcripts persist in all cases.
     pub async fn shutdown_ladder(&self) {

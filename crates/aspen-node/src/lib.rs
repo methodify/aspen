@@ -12,6 +12,7 @@ pub mod node;
 pub mod federation;
 pub mod mesh;
 pub mod permit;
+pub mod skills;
 pub mod store;
 pub mod tools;
 

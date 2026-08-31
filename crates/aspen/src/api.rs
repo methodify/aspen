@@ -66,6 +66,9 @@ pub async fn serve(
         .route("/bus/send", post(post_bus_send))
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
+        .route("/repo/skills", get(get_skills))
+        .route("/repo/skill", get(get_skill).put(put_skill).delete(delete_skill))
+        .route("/agents/{name}/reload", post(post_reload))
         .route("/federation/ws", get(ws_federation))
         .with_state(state.clone());
 
@@ -606,6 +609,77 @@ async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
         reader.abort();
     })
     .into_response()
+}
+
+// --------------------------------------------------------------------- skills
+
+#[derive(Deserialize)]
+struct RepoQuery {
+    repo: String,
+}
+
+async fn get_skills(Query(q): Query<RepoQuery>) -> impl IntoResponse {
+    match aspen_node::skills::list(std::path::Path::new(&q.repo)) {
+        Ok(entries) => Json(entries).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SkillQuery {
+    repo: String,
+    rel: String,
+}
+
+async fn get_skill(Query(q): Query<SkillQuery>) -> impl IntoResponse {
+    match aspen_node::skills::read(std::path::Path::new(&q.repo), &q.rel) {
+        Ok(content) => Json(json!({ "content": content })).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SkillWrite {
+    repo: String,
+    rel: String,
+    content: String,
+    /// Reload live sessions in this repo after saving (default true).
+    #[serde(default = "yes")]
+    reload: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+async fn put_skill(State(s): S, Json(b): Json<SkillWrite>) -> impl IntoResponse {
+    let repo = std::path::PathBuf::from(&b.repo);
+    if let Err(e) = aspen_node::skills::write(&repo, &b.rel, &b.content) {
+        return err(StatusCode::BAD_REQUEST, e).into_response();
+    }
+    let reloaded = if b.reload {
+        s.node.reload_repo(&repo).await
+    } else {
+        0
+    };
+    Json(json!({ "ok": true, "reloaded_sessions": reloaded })).into_response()
+}
+
+async fn delete_skill(Query(q): Query<SkillQuery>) -> impl IntoResponse {
+    match aspen_node::skills::delete(std::path::Path::new(&q.repo), &q.rel) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+async fn post_reload(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "reload", &bare, json!({})).await;
+    }
+    match s.node.reload_plugins(&name).await {
+        Ok(inv) => Json(inv).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
 }
 
 // ------------------------------------------------------------------------ bus

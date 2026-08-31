@@ -22,6 +22,22 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `POST /api/bus/send` | `{ to, body, urgency?, thread?, record? }` | `{ notes: string[] }` | send **as @operator**. `to` is `@agent`, `#channel`, `@operator` |
 | `GET /api/operator/inbox` | — | `BusMessage[]` | undelivered messages addressed to the operator |
 | `POST /api/operator/inbox/read` | — | `{}` | mark operator inbox delivered |
+| `GET /api/repo/skills?repo=/path` | — | `SkillEntry[]` | list a repo's skills + commands (from disk) |
+| `GET /api/repo/skill?repo=/path&rel=.claude/skills/x/SKILL.md` | — | `{ content }` | read one skill/command file |
+| `PUT /api/repo/skill` | `{ repo, rel, content, reload? }` | `{ ok, reloaded_sessions }` | write a file; `reload` (default true) reloads live sessions in that repo |
+| `DELETE /api/repo/skill?repo=&rel=` | — | `{ ok }` | delete a skill/command file |
+| `POST /api/agents/{name}/reload` | — | inventory | reload one live session's plugins/skills/commands |
+
+### SkillEntry
+
+```jsonc
+{ "name": "greet", "rel": ".claude/skills/greet/SKILL.md",
+  "kind": "skill" | "command", "description": "…" | null }
+```
+
+Remote addressing (`name@node`) works on message, interrupt, permission,
+revive, shutdown, transcript, events, and reload — the console drives
+agents on any node through this node.
 
 ### Agent
 

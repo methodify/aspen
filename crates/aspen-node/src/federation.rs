@@ -549,6 +549,7 @@ async fn serve_api_req(
             node.revive_agent(agent, true).await?;
             Ok(json!({}))
         }
+        "reload" => node.reload_plugins(agent).await,
         "permission" => {
             node.answer_permission(
                 agent,

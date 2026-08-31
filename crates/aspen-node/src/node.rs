@@ -31,6 +31,9 @@ pub struct ManagedSession {
     pub events: broadcast::Sender<SessionEvent>,
     /// Present when spawned interactively: the console can answer prompts.
     pub broker: Option<Arc<crate::permit::OperatorBroker>>,
+    /// The runtime's last `system/init` inventory (skills/commands/mcp),
+    /// captured whenever it arrives (with the first turn, per reference §4).
+    pub inventory: Mutex<Option<serde_json::Value>>,
 }
 
 impl ManagedSession {
@@ -181,6 +184,7 @@ impl Node {
             turn_state: Mutex::new(TurnState::Idle),
             events: events_tx,
             broker: op_broker,
+            inventory: Mutex::new(None),
         });
         self.inner
             .sessions
@@ -249,6 +253,35 @@ impl Node {
         self.spawn_agent(name, row.repo.clone(), opts).await
     }
 
+    /// Reload a live session's plugins/skills/commands from disk.
+    pub async fn reload_plugins(&self, name: &str) -> Result<serde_json::Value> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        sess.handle.reload_plugins().await
+    }
+
+    /// Reload every live session running in a given repo (after a skill edit).
+    pub async fn reload_repo(&self, repo: &Path) -> usize {
+        let targets: Vec<Arc<ManagedSession>> = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.repo == repo)
+            .cloned()
+            .collect();
+        let mut n = 0;
+        for s in targets {
+            if s.handle.reload_plugins().await.is_ok() {
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Console answer to a pending permission prompt.
     pub fn answer_permission(
         &self,
@@ -312,6 +345,9 @@ async fn pump(
             }
             SessionEvent::UserReplay { uuid } => {
                 let _ = inner.store.mark_ingested(uuid);
+            }
+            SessionEvent::RuntimeInit { raw, .. } => {
+                *sess.inventory.lock().unwrap() = Some(raw.clone());
             }
             SessionEvent::Exited { .. } => {
                 inner.sessions.lock().unwrap().remove(&sess.name);
