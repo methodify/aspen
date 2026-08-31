@@ -10,19 +10,19 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 |---|---|---|---|
 | `GET /api/node` | — | `{ node: string, version: string }` | identity/health |
 | `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state |
-| `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default |
+| `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate) |
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
 | `POST /api/repos` | `{ path, skip_permissions? }` | `Repo` | remember a repo (must be a real directory) |
 | `POST /api/repos/skip` | `{ path, skip_permissions }` | `{ ok }` | set a repo's skip-permissions default |
 | `POST /api/repos/forget` | `{ path }` | `{ ok }` | forget a repo (sessions on disk are untouched) |
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
 | `POST /api/agents/{name}/interrupt` | — | `{}` | abort the in-flight turn |
-| `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input? }` | `{}` | answer a pending permission prompt. `message` is shown to the model on deny; `updated_input` (optional) replaces tool input on allow |
+| `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input?, updated_permissions? }` | `{}` | answer a prompt. Deny: `message` shown to the model. Allow: `updated_input` replaces tool input — for AskUserQuestion send `{questions: <echo>, answers: {"<question text>": "<option label>"}, response?}` (§7.6). `updated_permissions`: echo the prompt's `suggestions` verbatim for "always allow" |
 | `POST /api/agents/{name}/revive` | — | `Agent` | bring a registered-but-down agent back by resuming its stored session (history intact) |
 | `DELETE /api/agents/{name}` | — | `{}` | shutdown ladder |
 | `GET /api/agents/{name}/transcript` | — | `TranscriptItem[]` | rehydrated history from the runtime's on-disk transcript — render above the live stream when opening a session |
 | `GET /api/sessions?repo=/path` | — | `SessionInfo[]` | enumerate a repo's sessions from disk (newest first); `user_messages == 0` is a warm spawn, hide it |
-| `GET /api/bus/log?n=50` | — | `BusMessage[]` | the trail, chronological |
+| `GET /api/bus/log?n=&sender=&recipient=&thread=&record=&urgency=&q=` | — | `BusMessage[]` | the trail, chronological; all filters optional (`q` = body substring) |
 | `POST /api/bus/send` | `{ to, body, urgency?, thread?, record? }` | `{ notes: string[] }` | send **as @operator**. `to` is `@agent`, `#channel`, `@operator` |
 | `GET /api/operator/inbox` | — | `BusMessage[]` | undelivered messages addressed to the operator |
 | `POST /api/operator/inbox/read` | — | `{}` | mark operator inbox delivered |
@@ -31,6 +31,19 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `PUT /api/repo/skill` | `{ repo, rel, content, reload? }` | `{ ok, reloaded_sessions }` | write a file; `reload` (default true) reloads live sessions in that repo |
 | `DELETE /api/repo/skill?repo=&rel=` | — | `{ ok }` | delete a skill/command file |
 | `POST /api/agents/{name}/reload` | — | inventory | reload one live session's plugins/skills/commands |
+| `GET /api/agents/{name}/runtime` | — | `{ handshake, inventory }` | the runtime's own view: handshake `commands[]`/`models[]`/`output_style`, and the `system/init` inventory (tools/skills/mcp as loaded). Source for slash autocomplete |
+| `GET /api/agents/{name}/context` | — | context usage | rich breakdown from `get_context_usage`: `categories`, `gridRows`, `maxTokens`, `autoCompactThreshold`… Poll at turn end, never mid-turn |
+| `POST /api/agents/{name}/model` | `{ model }` | `{}` | switch model (null/"default" resets). Takes effect next turn — say so |
+| `POST /api/agents/{name}/mode` | `{ mode }` | `{}` | permission mode: default/acceptEdits/bypassPermissions/plan/dontAsk |
+| `POST /api/agents/{name}/title` | `{ title }` | `{}` | operator display title (null clears; the @name stays the bus identity) |
+| `POST /api/agents/{name}/charter` | `{ charter }` | `{}` | update the stored charter — applies at next spawn/revive (rides the system prompt) |
+| `GET /api/needs` | — | `{ prompts[], inbox[] }` | THE MESH-WIDE OPERATOR INBOX: every open permission prompt/question (local + every connected node; remote agents named `name@node`) + @operator mail from every node (`node` field, null=local) |
+| `POST /api/needs/read` | — | `{}` | mark operator mail read, locally and on every connected peer |
+| `GET /api/dms` | — | `[{a,b,last_at,messages}]` | direct-message pairs (non-channel traffic), newest first |
+| `GET /api/dm?a=&b=&n=` | — | `BusMessage[]` | one direct conversation, chronological |
+| `GET /api/bus/post/{post}` | — | `BusMessage[]` | per-recipient receipts for one logical post — watch a routed message land (delivered/ingested per recipient) |
+| `GET /api/mesh` | — | mesh info | `{ in_mesh, mesh, node, peers:[{node,url,link_up,agents}], relay:{url,connected_at} }` |
+| `POST /api/repos/trust` / `untrust` | `{ path }` | `{ ok }` | record / revoke repo trust |
 
 ### Repo
 

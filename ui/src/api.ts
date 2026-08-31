@@ -23,6 +23,12 @@ export interface Agent {
   node: string;
   /** true for agents hosted on another node (names like `west@beta`). */
   remote?: boolean;
+  /** Operator-set display title (the @name stays the bus identity). */
+  title?: string | null;
+  /** Epoch seconds the current turn started, when busy. */
+  busy_since?: number | null;
+  /** The most recent tool this turn. */
+  last_tool?: string | null;
 }
 
 export type Urgency = "gating" | "normal" | "notice";
@@ -79,6 +85,8 @@ export interface Repo {
   last_used_at: number;
   sessions: number;
   live_agents: number;
+  trusted?: boolean;
+  has_autorun?: boolean;
 }
 
 export interface StartAgentRequest {
@@ -90,6 +98,8 @@ export interface StartAgentRequest {
   resume?: string;
   /** Run in bypassPermissions; omit to use the repo's stored default. */
   skip_permissions?: boolean;
+  /** The operator reviewed the repo's autorun surface (trust gate). */
+  acknowledge_trust?: boolean;
 }
 
 export interface BusSendRequest {
@@ -118,8 +128,10 @@ export interface PermissionAnswer {
   allow: boolean;
   /** Shown to the model on deny. */
   message?: string;
-  /** Optional replacement tool input on allow. */
+  /** Replacement tool input on allow — for questions, {questions, answers, response?} per §7.6. */
   updated_input?: unknown;
+  /** "Always allow": echo the prompt's `suggestions` verbatim. */
+  updated_permissions?: unknown;
 }
 
 /** A channel the operator can address (GET /api/channels). */
@@ -152,8 +164,11 @@ export interface ActivitySession {
   node: string;
   channel: string;
   repo: string | null;
+  title?: string | null;
   live: boolean;
   turn_state: TurnState | null;
+  busy_since?: number | null;
+  last_tool?: string | null;
   pending: number;
   remote: boolean;
 }
@@ -162,6 +177,77 @@ export interface Activity {
   sessions: ActivitySession[];
   trail: BusMessage[];
   inbox: number;
+  /** Likely-waiting-on inference from the trail (honest heuristic). */
+  waiting: WaitingEdge[];
+}
+
+/** One open permission prompt / question, mesh-wide (GET /api/needs). */
+export interface OpenPrompt {
+  /** `name` locally, `name@node` for remote agents — answer via that name. */
+  agent: string;
+  /** null = this node. */
+  node: string | null;
+  request_id: string;
+  tool_name: string;
+  input: unknown;
+  /** PermissionUpdate[] from the CLI — echo verbatim as updated_permissions for "always allow". */
+  suggestions: unknown;
+  asked_at: number;
+  is_question: boolean;
+}
+
+export interface Needs {
+  prompts: OpenPrompt[];
+  inbox: (BusMessage & { node: string | null })[];
+}
+
+export interface DmPair {
+  a: string;
+  b: string;
+  last_at: number;
+  messages: number;
+}
+
+export interface MeshPeer {
+  node: string;
+  url: string | null;
+  link_up: boolean;
+  agents: number;
+}
+
+export interface MeshInfo {
+  in_mesh: boolean;
+  mesh?: string;
+  node: string;
+  peers?: MeshPeer[];
+  relay?: { url: string | null; connected_at: number | null };
+}
+
+/** { handshake, inventory } — the runtime's own view of a session. */
+export interface RuntimeInfo {
+  handshake: {
+    commands?: { name: string; description?: string; argumentHint?: string }[];
+    models?: unknown[];
+    output_style?: string;
+    [k: string]: unknown;
+  } | null;
+  inventory: Record<string, unknown> | null;
+}
+
+export interface WaitingEdge {
+  agent: string;
+  on: string;
+  since: number;
+  snippet: string;
+}
+
+/** The repo's autorun surface, shown by the trust gate before first spawn. */
+export interface RepoAutorun {
+  hooks: string[];
+  mcp_servers: string[];
+  skills: string[];
+  plugins: string[];
+  has_autorun: boolean;
 }
 
 export class ApiError extends Error {
@@ -244,7 +330,24 @@ export const api = {
     post<{ ok: boolean }>("/api/repos/skip", { path, skip_permissions: skipPermissions }),
   forgetRepo: (path: string) => post<{ ok: boolean }>("/api/repos/forget", { path }),
 
-  busLog: (n = 200) => request<BusMessage[]>(`/api/bus/log?n=${n}`),
+  busLog: (
+    n = 200,
+    filters?: {
+      sender?: string;
+      recipient?: string;
+      thread?: string;
+      record?: string;
+      urgency?: string;
+      q?: string;
+    },
+  ) => {
+    const qs = new URLSearchParams({ n: String(n) });
+    for (const [k, v] of Object.entries(filters ?? {})) {
+      if (v) qs.set(k, v);
+    }
+    return request<BusMessage[]>(`/api/bus/log?${qs.toString()}`);
+  },
+  postReceipts: (post: string) => request<BusMessage[]>(`/api/bus/post/${enc(post)}`),
   busSend: (req: BusSendRequest) => post<{ notes: string[] }>("/api/bus/send", req),
 
   repoSkills: (repo: string) =>
@@ -274,6 +377,29 @@ export const api = {
     request<{ ok: boolean }>(`/api/channels/${enc(name)}`, { method: "DELETE" }),
   channelLog: (name: string, n = 100) =>
     request<ChannelPost[]>(`/api/channels/${enc(name)}/log?n=${n}`),
+  runtime: (name: string) => request<RuntimeInfo>(`/api/agents/${enc(name)}/runtime`),
+  contextUsage: (name: string) =>
+    request<Record<string, unknown>>(`/api/agents/${enc(name)}/context`),
+  setModel: (name: string, model: string | null) =>
+    post<Record<string, never>>(`/api/agents/${enc(name)}/model`, { model }),
+  setMode: (name: string, mode: string) =>
+    post<Record<string, never>>(`/api/agents/${enc(name)}/mode`, { mode }),
+  setTitle: (name: string, title: string | null) =>
+    post<Record<string, never>>(`/api/agents/${enc(name)}/title`, { title }),
+  setCharter: (name: string, charter: string | null) =>
+    post<Record<string, never>>(`/api/agents/${enc(name)}/charter`, { charter }),
+
+  needs: () => request<Needs>("/api/needs"),
+  markNeedsRead: () => post<Record<string, never>>("/api/needs/read"),
+
+  dms: () => request<DmPair[]>("/api/dms"),
+  dmLog: (a: string, b: string, n = 200) =>
+    request<BusMessage[]>(`/api/dm?a=${enc(a)}&b=${enc(b)}&n=${n}`),
+
+  mesh: () => request<MeshInfo>("/api/mesh"),
+  trustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/trust", { path }),
+  untrustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/untrust", { path }),
+
   addChannelMember: (name: string, member: string) =>
     post<{ ok: boolean }>(`/api/channels/${enc(name)}/members`, { member }),
   removeChannelMember: (name: string, member: string) =>
