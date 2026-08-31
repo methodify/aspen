@@ -122,6 +122,48 @@ export interface PermissionAnswer {
   updated_input?: unknown;
 }
 
+/** A channel the operator can address (GET /api/channels). */
+export interface Channel {
+  name: string;
+  kind: "repo" | "custom";
+  topic: string | null;
+  /** member addresses (bare names, `name@node`, or `operator`) */
+  members: string[];
+  member_count: number | null;
+}
+
+/** One logical channel post — a fan-out collapsed to a single entry. */
+export interface ChannelPost {
+  post: string;
+  sender: string;
+  urgency: Urgency;
+  body: string;
+  thread: string | null;
+  record: string | null;
+  created_at: number;
+  recipients: number;
+  delivered: number;
+  ingested: number;
+}
+
+/** A session in the mesh-wide activity snapshot. */
+export interface ActivitySession {
+  name: string;
+  node: string;
+  channel: string;
+  repo: string | null;
+  live: boolean;
+  turn_state: TurnState | null;
+  pending: number;
+  remote: boolean;
+}
+
+export interface Activity {
+  sessions: ActivitySession[];
+  trail: BusMessage[];
+  inbox: number;
+}
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -222,6 +264,20 @@ export const api = {
 
   inbox: () => request<BusMessage[]>("/api/operator/inbox"),
   markInboxRead: () => post<Record<string, never>>("/api/operator/inbox/read"),
+
+  activity: () => request<Activity>("/api/activity"),
+
+  channels: () => request<Channel[]>("/api/channels"),
+  createChannel: (name: string, topic?: string, members?: string[]) =>
+    post<{ ok: boolean; name: string }>("/api/channels", { name, topic, members }),
+  deleteChannel: (name: string) =>
+    request<{ ok: boolean }>(`/api/channels/${enc(name)}`, { method: "DELETE" }),
+  channelLog: (name: string, n = 100) =>
+    request<ChannelPost[]>(`/api/channels/${enc(name)}/log?n=${n}`),
+  addChannelMember: (name: string, member: string) =>
+    post<{ ok: boolean }>(`/api/channels/${enc(name)}/members`, { member }),
+  removeChannelMember: (name: string, member: string) =>
+    post<{ ok: boolean }>(`/api/channels/${enc(name)}/members/remove`, { member }),
 };
 
 /** WebSocket URL for a session's event stream, honoring the page origin. */

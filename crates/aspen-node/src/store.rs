@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS messages(
   delivered_at  REAL,
   delivered_via TEXT,
   ingest_uuid   TEXT,
-  ingested_at   REAL
+  ingested_at   REAL,
+  post          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pending ON messages(recipient, delivered_at);
 CREATE INDEX IF NOT EXISTS idx_ingest ON messages(ingest_uuid);
@@ -50,6 +51,17 @@ CREATE TABLE IF NOT EXISTS repos(
   added_at         REAL NOT NULL,
   last_used_at     REAL
 );
+CREATE TABLE IF NOT EXISTS channels(
+  name        TEXT PRIMARY KEY,
+  topic       TEXT,
+  created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS channel_members(
+  channel  TEXT NOT NULL,
+  member   TEXT NOT NULL,
+  PRIMARY KEY(channel, member)
+);
+CREATE INDEX IF NOT EXISTS idx_chanmem ON channel_members(channel);
 ";
 
 pub fn now_epoch() -> f64 {
@@ -74,6 +86,22 @@ pub struct StoredMessage {
     pub delivered_at: Option<f64>,
     pub delivered_via: Option<String>,
     pub ingested_at: Option<f64>,
+    pub post: Option<String>,
+}
+
+/// One logical channel post (a fan-out collapsed to a single entry).
+#[derive(Debug, Clone)]
+pub struct ChannelPost {
+    pub post: String,
+    pub sender: String,
+    pub urgency: String,
+    pub body: String,
+    pub thread: Option<String>,
+    pub record_ref: Option<String>,
+    pub created_at: f64,
+    pub recipients: i64,
+    pub delivered: i64,
+    pub ingested: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +143,14 @@ impl BusStore {
             );
         }
         conn.execute_batch(SCHEMA)?;
+        // Additive column for stores created before `post` existed. New
+        // stores already have it via SCHEMA; the duplicate-column error on
+        // those is expected and ignored.
+        if let Err(e) = conn.execute("ALTER TABLE messages ADD COLUMN post TEXT", []) {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -236,11 +272,102 @@ impl BusStore {
         Ok(self.repos()?.into_iter().find(|r| r.path == path))
     }
 
+    /// Members of a repo auto-channel: the local agents homed in it.
     pub fn channel_members(&self, channel: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT name FROM agents WHERE channel=?1 ORDER BY name")?;
         let rows = stmt
             .query_map([channel], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    // --------------------------------------------------------------- channels
+
+    /// Custom channels (explicit membership; may span repos and nodes) —
+    /// distinct from a repo's implicit auto-channel.
+    pub fn create_channel(&self, name: &str, topic: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO channels(name, topic, created_at) VALUES(?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET topic=COALESCE(?2, channels.topic)",
+            params![name, topic, now_epoch()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_channel(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM channels WHERE name=?1", [name])?;
+        conn.execute("DELETE FROM channel_members WHERE channel=?1", [name])?;
+        Ok(())
+    }
+
+    pub fn set_channel_topic(&self, name: &str, topic: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE channels SET topic=?2 WHERE name=?1",
+            params![name, topic],
+        )?;
+        Ok(())
+    }
+
+    /// Add a member address to a custom channel. `member` is a bare local
+    /// agent name, a qualified `name@node`, or `@operator`.
+    pub fn add_channel_member(&self, channel: &str, member: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members(channel, member) VALUES(?1, ?2)",
+            params![channel, member],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_channel_member(&self, channel: &str, member: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM channel_members WHERE channel=?1 AND member=?2",
+            params![channel, member],
+        )?;
+        Ok(())
+    }
+
+    /// Explicit members of a custom channel (addresses, verbatim).
+    pub fn custom_channel_members(&self, channel: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT member FROM channel_members WHERE channel=?1 ORDER BY member")?;
+        let rows = stmt
+            .query_map([channel], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// True if a custom channel row exists (vs an implicit repo channel).
+    pub fn channel_exists(&self, name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row("SELECT 1 FROM channels WHERE name=?1", [name], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
+    /// (name, topic, member_count) for every custom channel.
+    pub fn channels(&self) -> Result<Vec<(String, Option<String>, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.name, c.topic, COUNT(m.member)
+             FROM channels c LEFT JOIN channel_members m ON m.channel = c.name
+             GROUP BY c.name, c.topic ORDER BY c.name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -259,11 +386,12 @@ impl BusStore {
         body: &str,
         thread: Option<&str>,
         record_ref: Option<&str>,
+        post: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages(uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO messages(uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at,post)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 uuid::Uuid::new_v4().to_string(),
                 thread,
@@ -273,7 +401,8 @@ impl BusStore {
                 urgency,
                 body,
                 record_ref,
-                now_epoch()
+                now_epoch(),
+                post
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -297,8 +426,8 @@ impl BusStore {
     ) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let n = conn.execute(
-            "INSERT INTO messages(uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            "INSERT INTO messages(uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at,post)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?1)
              ON CONFLICT(uuid) DO NOTHING",
             params![
                 uuid,
@@ -333,7 +462,7 @@ impl BusStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
-                    created_at,delivered_at,delivered_via,ingested_at
+                    created_at,delivered_at,delivered_via,ingested_at,post
              FROM messages WHERE recipient=?1 AND delivered_at IS NULL ORDER BY id",
         )?;
         let rows = stmt
@@ -374,12 +503,46 @@ impl BusStore {
         Ok(())
     }
 
+    /// One channel's conversation: posts to `#name`, grouped by post id so a
+    /// fan-out to N members is one entry, with per-post delivery aggregates.
+    pub fn channel_log(&self, display: &str, limit: i64) -> Result<Vec<ChannelPost>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(post, uuid) AS pid,
+                    MIN(id) AS first_id,
+                    sender, urgency, body, thread, record_ref, MIN(created_at),
+                    COUNT(*) AS recipients,
+                    SUM(CASE WHEN delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS delivered,
+                    SUM(CASE WHEN ingested_at IS NOT NULL THEN 1 ELSE 0 END) AS ingested
+             FROM messages WHERE to_display=?1
+             GROUP BY pid ORDER BY first_id DESC LIMIT ?2",
+        )?;
+        let mut rows = stmt
+            .query_map(params![display, limit], |r| {
+                Ok(ChannelPost {
+                    post: r.get(0)?,
+                    sender: r.get(2)?,
+                    urgency: r.get(3)?,
+                    body: r.get(4)?,
+                    thread: r.get(5)?,
+                    record_ref: r.get(6)?,
+                    created_at: r.get(7)?,
+                    recipients: r.get(8)?,
+                    delivered: r.get(9)?,
+                    ingested: r.get(10)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
     /// The lookback: chronology at a glance (`bus log`).
     pub fn log(&self, limit: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
-                    created_at,delivered_at,delivered_via,ingested_at
+                    created_at,delivered_at,delivered_via,ingested_at,post
              FROM messages ORDER BY id DESC LIMIT ?1",
         )?;
         let mut rows = stmt
@@ -405,6 +568,7 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> std::result::Result<StoredMessage, r
         delivered_at: r.get(10)?,
         delivered_via: r.get(11)?,
         ingested_at: r.get(12)?,
+        post: r.get(13)?,
     })
 }
 

@@ -27,6 +27,7 @@ import {
   type UserBubbleItem,
 } from "./../transcript";
 import { useAppData } from "./../App";
+import { Meter, presenceOf } from "./../components";
 
 // ---------------------------------------------------------------------------
 // Transcript reducer (thin shell over the pure module)
@@ -448,9 +449,14 @@ function SessionView({ name }: { name: string }) {
 
   const composerDisabled = busy || exited !== null;
 
+  const pendingPerms = transcript.items.filter(
+    (it): it is PermissionCardItem => it.kind === "permission" && !it.settled,
+  );
+
   return (
     <div className="session">
       <header className="session-head">
+        {agent && <Meter presence={presenceOf(agent.live, agent.turn_state)} />}
         <h1>
           <span className="mono">@{name}</span>
         </h1>
@@ -459,6 +465,7 @@ function SessionView({ name }: { name: string }) {
             {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
           </span>
         )}
+        <span className="spacer" />
         {reloadNote ? (
           <span className="ok-inline mono reload-note">{reloadNote}</span>
         ) : (
@@ -484,19 +491,33 @@ function SessionView({ name }: { name: string }) {
         <div className="error-inline">history: {historyError} (live stream only)</div>
       )}
 
+      {pendingPerms.length > 0 && (
+        <div className="perm-dock">
+          <span className="chip chip-perm">permission</span>
+          <span>
+            {pendingPerms.length === 1
+              ? `@${name} needs approval for ${pendingPerms[0].toolName}`
+              : `@${name} needs ${pendingPerms.length} approvals`}
+          </span>
+          <span style={{ flex: 1 }} />
+          <button
+            className="btn sm"
+            onClick={() => {
+              const el = scrollRef.current?.querySelector(".perm-card");
+              el?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
+          >
+            jump to it
+          </button>
+        </div>
+      )}
+
       {exited && (
         <div className="exited-banner">
-          session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — start{" "}
-          <span className="mono">@{name}</span> again from the <Link to="/">Mesh</Link> page
-          {agent ? (
-            <>
-              {" "}
-              with resume session id <span className="mono">{agent.session_id}</span>
-            </>
-          ) : (
-            " with its resume session id"
-          )}{" "}
-          to continue.
+          session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — resume{" "}
+          <span className="mono">@{name}</span> from{" "}
+          <Link to="/sessions">Sessions</Link> or <Link to="/library">Library</Link> to
+          continue its conversation.
         </div>
       )}
 

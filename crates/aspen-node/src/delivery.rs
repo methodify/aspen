@@ -152,6 +152,7 @@ mod tests {
             delivered_at: None,
             delivered_via: None,
             ingested_at: None,
+            post: None,
         }
     }
 

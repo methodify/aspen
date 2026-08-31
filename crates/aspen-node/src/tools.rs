@@ -127,16 +127,28 @@ pub fn send_message(
     } else if let Some(name) = to.strip_prefix('@') {
         vec![name.to_owned()]
     } else if let Some(channel) = to.strip_prefix('#') {
-        let mut members = inner
-            .store
-            .channel_members(channel)
-            .map_err(|e| e.to_string())?;
-        // Cross-node channel members join the fan-out under their bare
-        // names; the delivery engine forwards to their home nodes.
-        if let Some(mesh) = &inner.mesh {
-            for (name, _node) in mesh.remote_channel_members(channel) {
-                if !members.contains(&name) {
-                    members.push(name);
+        let mut members: Vec<String> = Vec::new();
+        // A custom channel carries explicit members (which may span repos
+        // and nodes, and may include @operator); a bare repo name falls
+        // back to that repo's auto-membership.
+        if inner.store.channel_exists(channel).unwrap_or(false) {
+            for m in inner
+                .store
+                .custom_channel_members(channel)
+                .map_err(|e| e.to_string())?
+            {
+                members.push(canonical_member(&m));
+            }
+        } else {
+            members = inner
+                .store
+                .channel_members(channel)
+                .map_err(|e| e.to_string())?;
+            if let Some(mesh) = &inner.mesh {
+                for (name, _node) in mesh.remote_channel_members(channel) {
+                    if !members.contains(&name) {
+                        members.push(name);
+                    }
                 }
             }
         }
@@ -153,16 +165,39 @@ pub fn send_message(
         ));
     };
 
+    // One post id groups a fan-out (channel → N recipients) into a single
+    // logical message for conversation views.
+    let post = uuid::Uuid::new_v4().to_string();
     let mut out = Vec::new();
     for recipient in &recipients {
         inner
             .store
-            .insert_message(from, recipient, to, urgency, body, thread, record)
+            .insert_message(
+                from,
+                recipient,
+                to,
+                urgency,
+                body,
+                thread,
+                record,
+                Some(&post),
+            )
             .map_err(|e| e.to_string())?;
         inner.tick_delivery(recipient);
         out.push(delivery_note(inner, recipient, urgency));
     }
     Ok(out)
+}
+
+/// Canonicalize a channel-member address to a recipient key: `@operator`
+/// and `operator` → "operator"; `@name` → "name"; `name@node` kept as-is
+/// (the delivery engine forwards it).
+pub fn canonical_member(addr: &str) -> String {
+    let a = addr.trim();
+    if a == "@operator" || a == "operator" {
+        return "operator".into();
+    }
+    a.strip_prefix('@').unwrap_or(a).to_owned()
 }
 
 /// What the sender is told about how their message will actually land — the

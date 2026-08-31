@@ -11,8 +11,11 @@ work on; a bus connects them; a mesh connects the machines.
   passive, honest trail.
 - One minimal **rendezvous** relay stitches nodes together across any network
   topology, holding nothing it can read.
-- One **operator console** (web) is the window into all of it: the mesh, the
-  sessions (fully interactive), the bus, the operator inbox, and skills.
+- One **operator console** (web) is the window into all of it — designed as a
+  switchboard, not a dashboard (see [`docs/V2.md`](docs/V2.md)): a Command
+  triage home, first-class **Conversations** (channels that span repos and
+  nodes, with delivery/ingest ticks and a Route gesture), interactive
+  Sessions, a spatial **Map** of the mesh, and a Library of repos and skills.
 
 Built on Claude Code's headless NDJSON protocol; designed so a second agent
 runtime is an adapter, not a rewrite.

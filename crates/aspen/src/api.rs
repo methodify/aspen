@@ -66,6 +66,15 @@ pub async fn serve(
         .route("/bus/send", post(post_bus_send))
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
+        .route("/channels", get(get_channels).post(post_channel))
+        .route("/channels/{name}", delete(delete_channel_route))
+        .route("/channels/{name}/log", get(get_channel_log))
+        .route("/channels/{name}/members", post(post_channel_member))
+        .route(
+            "/channels/{name}/members/remove",
+            post(remove_channel_member_route),
+        )
+        .route("/activity", get(get_activity))
         .route("/repos", get(get_repos).post(post_repo))
         .route("/repos/skip", post(post_repo_skip))
         .route("/repos/forget", post(post_repo_forget))
@@ -673,6 +682,212 @@ struct RepoQuery {
     repo: String,
 }
 
+// ------------------------------------------------------------------- channels
+
+/// Every channel the operator can address: the auto per-repo channels
+/// (derived from where agents live) and custom channels (explicit
+/// membership, may span repos/nodes). Auto and custom are distinguished so
+/// the UI can present them differently.
+async fn get_channels(State(s): S) -> impl IntoResponse {
+    let mut out: Vec<Value> = Vec::new();
+
+    // Auto repo channels: group agents by their channel.
+    let agents = s.node.inner.store.agents().unwrap_or_default();
+    let mut by_channel: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for a in &agents {
+        by_channel
+            .entry(a.channel.clone())
+            .or_default()
+            .push(a.name.clone());
+    }
+    // Remote roster contributes auto members too.
+    if let Some(mesh) = &s.node.inner.mesh {
+        for ras in mesh.remote.lock().unwrap().values() {
+            for ra in ras {
+                by_channel
+                    .entry(ra.channel.clone())
+                    .or_default()
+                    .push(ra.name.clone());
+            }
+        }
+    }
+    for (name, members) in by_channel {
+        out.push(json!({
+            "name": name, "kind": "repo", "topic": Value::Null,
+            "members": members, "member_count": null,
+        }));
+    }
+
+    // Custom channels.
+    if let Ok(chans) = s.node.inner.store.channels() {
+        for (name, topic, count) in chans {
+            let members = s
+                .node
+                .inner
+                .store
+                .custom_channel_members(&name)
+                .unwrap_or_default();
+            out.push(json!({
+                "name": name, "kind": "custom", "topic": topic,
+                "members": members, "member_count": count,
+            }));
+        }
+    }
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct ChannelCreate {
+    name: String,
+    topic: Option<String>,
+    #[serde(default)]
+    members: Vec<String>,
+}
+
+async fn post_channel(State(s): S, Json(b): Json<ChannelCreate>) -> impl IntoResponse {
+    let name = b.name.trim().trim_start_matches('#').to_owned();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return err(StatusCode::BAD_REQUEST, "channel names are [A-Za-z0-9_-]+").into_response();
+    }
+    let store = &s.node.inner.store;
+    if let Err(e) = store.create_channel(&name, b.topic.as_deref()) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    for m in &b.members {
+        let m = aspen_node::tools::canonical_member(m);
+        let _ = store.add_channel_member(&name, &m);
+    }
+    Json(json!({ "ok": true, "name": name })).into_response()
+}
+
+async fn delete_channel_route(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    match s
+        .node
+        .inner
+        .store
+        .delete_channel(name.trim_start_matches('#'))
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MemberBody {
+    member: String,
+}
+
+async fn post_channel_member(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> impl IntoResponse {
+    let name = name.trim_start_matches('#');
+    let store = &s.node.inner.store;
+    let _ = store.create_channel(name, None); // ensure it exists
+    match store.add_channel_member(name, &aspen_node::tools::canonical_member(&b.member)) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn remove_channel_member_route(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> impl IntoResponse {
+    match s.node.inner.store.remove_channel_member(
+        name.trim_start_matches('#'),
+        &aspen_node::tools::canonical_member(&b.member),
+    ) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn get_channel_log(
+    State(s): S,
+    Path(name): Path<String>,
+    Query(q): Query<LogQuery>,
+) -> impl IntoResponse {
+    let display = format!("#{}", name.trim_start_matches('#'));
+    match s.node.inner.store.channel_log(&display, q.n.unwrap_or(100)) {
+        Ok(posts) => Json(
+            posts
+                .iter()
+                .map(|p| {
+                    json!({
+                        "post": p.post, "sender": p.sender, "urgency": p.urgency,
+                        "body": p.body, "thread": p.thread, "record": p.record_ref,
+                        "created_at": p.created_at, "recipients": p.recipients,
+                        "delivered": p.delivered, "ingested": p.ingested,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+// ------------------------------------------------------------------- activity
+
+/// A mesh-wide snapshot for the home/command surface: every session with its
+/// live turn-state and pending count (local + remote), plus the recent trail
+/// tail. Presence is DERIVED from turn-state, so it can't lie.
+async fn get_activity(State(s): S) -> impl IntoResponse {
+    let mut sessions: Vec<Value> = Vec::new();
+    let node_name = s
+        .node
+        .inner
+        .mesh
+        .as_ref()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| s.node_name.clone());
+    for a in s.node.inner.store.agents().unwrap_or_default() {
+        let live = s.node.inner.live(&a.name);
+        sessions.push(json!({
+            "name": a.name, "node": node_name, "channel": a.channel,
+            "repo": a.repo.to_string_lossy(),
+            "live": live.is_some(),
+            "turn_state": live.as_ref().map(|m| match m.turn_state() {
+                TurnState::Idle => "idle", TurnState::Busy => "busy" }),
+            "pending": s.node.inner.store.pending_count(&a.name).unwrap_or(0),
+            "remote": false,
+        }));
+    }
+    if let Some(mesh) = &s.node.inner.mesh {
+        for (node, ras) in mesh.remote.lock().unwrap().iter() {
+            let reachable = mesh.link_up(node);
+            for ra in ras {
+                sessions.push(json!({
+                    "name": format!("{}@{}", ra.name, node), "node": node,
+                    "channel": ra.channel, "repo": Value::Null,
+                    "live": ra.live && reachable,
+                    "turn_state": if reachable { json!(ra.turn_state) } else { Value::Null },
+                    "pending": s.node.inner.store.pending_count(&format!("{}@{}", ra.name, node)).unwrap_or(0),
+                    "remote": true,
+                }));
+            }
+        }
+    }
+    let trail: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .log(40)
+        .unwrap_or_default()
+        .iter()
+        .map(message_json)
+        .collect();
+    let inbox = s.node.inner.store.pending_count("operator").unwrap_or(0);
+    Json(json!({ "sessions": sessions, "trail": trail, "inbox": inbox })).into_response()
+}
+
 // ---------------------------------------------------------------------- repos
 
 fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
@@ -845,6 +1060,7 @@ fn message_json(m: &aspen_node::StoredMessage) -> Value {
         "delivered_at": m.delivered_at,
         "delivered_via": m.delivered_via,
         "ingested_at": m.ingested_at,
+        "post": m.post,
     })
 }
 
