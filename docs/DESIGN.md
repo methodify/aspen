@@ -437,7 +437,40 @@ Chosen: **Aspen** — not Rhizome directly, but a rhizomatic plant, keeping all 
 
 ---
 
-## 14. Decisions log
+## 14a. Build status (2026-08-31)
+
+All four phases are built and live-verified against Claude Code 2.1.251;
+what shipped, and where the design bent in contact:
+
+- **P0** — node daemon, Claude adapter, three-class bus. Done.
+- **P1** — `aspen up` REST+WS API, the operator console (mesh, interactive
+  session with the §5.2 merge, bus, inbox, skills), answerable permission
+  prompts, transcript rehydration, session revive. Done.
+- **P2** — mesh identity (`aspen-wire`: root, certs, sealed envelopes), the
+  federation link (nonce-proof handshake, roster sync, store-and-forward
+  bus), cross-node remote-session control from any console, the rendezvous
+  relay (standalone `aspen-relay` + Cloudflare Workers port), node-token
+  API auth. Done.
+- **P3** — skills manager (repo-scoped edit + live `reload_plugins`), CI on
+  three OSes, release/packaging, docs. Done.
+
+Deltas from the plan worth recording:
+
+- **Operator credential (§8)**: implemented as a per-node API token for
+  non-loopback listeners; loopback stays frictionless. The delegated /
+  passkey-wrapped operator key remains the future refinement, not a
+  regression — the *envelope* signing/encryption that protects mesh traffic
+  is fully in place.
+- **Trust gate (§3/§7.7)**: the security *substrate* (sealed transport,
+  token auth, path-jailed skill editing) is in; the pre-spawn "here is
+  everything this repo will run" review UI is the one deferred P1 affordance
+  — tracked, not dropped.
+- **Terminal-session attach**: punted as agreed; all agents are
+  aspen-launched.
+- **`system`-message injection** for roster: not needed — roster rides the
+  federation `notice`/roster channel and bus-header injection, both live.
+
+## 14b. Decisions log
 
 Resolved 2026-08-30 with the operator:
 
