@@ -133,7 +133,7 @@ function BusComposer() {
           onChange={(e) => setBody(e.target.value)}
           rows={3}
           required
-          placeholder="the body is the message — no subject line"
+          placeholder="message body"
         />
       </label>
       <div className="form-row">
@@ -160,7 +160,7 @@ export default function Bus() {
     <div className="page">
       <header className="page-head">
         <h1>Bus</h1>
-        <span className="dim">the trail · {log.length} messages</span>
+        <span className="dim">{log.length} messages</span>
       </header>
       {error && <div className="error-inline">bus log: {error}</div>}
       <BusComposer />

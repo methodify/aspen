@@ -7,6 +7,7 @@ import Session from "./pages/Session";
 import Bus from "./pages/Bus";
 import Inbox from "./pages/Inbox";
 import Skills from "./pages/Skills";
+import Repos from "./pages/Repos";
 
 export interface AppData {
   agents: Agent[];
@@ -48,6 +49,7 @@ function Sidebar() {
           Mesh
         </NavLink>
         <NavLink to="/bus">Bus</NavLink>
+        <NavLink to="/repos">Repos</NavLink>
         <NavLink to="/skills">Skills</NavLink>
         <NavLink to="/inbox">
           Inbox
@@ -56,7 +58,7 @@ function Sidebar() {
       </div>
       <div className="sidebar-agents">
         <div className="sidebar-heading">agents</div>
-        {agents.length === 0 && <div className="sidebar-empty">none planted</div>}
+        {agents.length === 0 && <div className="sidebar-empty">none</div>}
         {agents.map((a) => (
           <NavLink
             key={a.name}
@@ -96,6 +98,7 @@ export default function App() {
             <Route path="/" element={<Mesh />} />
             <Route path="/session/:name" element={<Session />} />
             <Route path="/bus" element={<Bus />} />
+            <Route path="/repos" element={<Repos />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/inbox" element={<Inbox />} />
           </Routes>

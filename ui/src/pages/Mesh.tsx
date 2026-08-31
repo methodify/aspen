@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type Agent } from "./../api";
+import { usePoll } from "./../hooks";
 import { useAppData } from "./../App";
 
 function AgentCard({ agent }: { agent: Agent }) {
@@ -32,43 +33,49 @@ function AgentCard({ agent }: { agent: Agent }) {
   );
 }
 
-function PlantForm() {
+function NewSessionForm() {
   const { refreshAgents } = useAppData();
+  const repoPoll = usePoll(api.repos, 5000);
+  const repoPaths = (repoPoll.data ?? []).map((r) => r.path);
   const [name, setName] = useState("");
   const [repo, setRepo] = useState("");
   const [charter, setCharter] = useState("");
   const [model, setModel] = useState("");
   const [resume, setResume] = useState("");
   const [allowAll, setAllowAll] = useState(false);
+  const [skipPermissions, setSkipPermissions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [planted, setPlanted] = useState<string | null>(null);
+  const [started, setStarted] = useState<string | null>(null);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
     setError(null);
-    setPlanted(null);
+    setStarted(null);
     if (!name.trim() || !repo.trim()) {
       setError("name and repo are required");
       return;
     }
     setBusy(true);
     try {
-      const agent = await api.plantAgent({
+      const agent = await api.startAgent({
         name: name.trim(),
         repo: repo.trim(),
         ...(charter.trim() ? { charter: charter.trim() } : {}),
         ...(model.trim() ? { model: model.trim() } : {}),
         ...(resume.trim() ? { resume: resume.trim() } : {}),
         ...(allowAll ? { allow_all: true } : {}),
+        // Only send when checked, so an unchecked box uses the repo default.
+        ...(skipPermissions ? { skip_permissions: true } : {}),
       });
-      setPlanted(agent.name);
+      setStarted(agent.name);
       setName("");
       setCharter("");
       setModel("");
       setResume("");
       setAllowAll(false);
+      setSkipPermissions(false);
       await refreshAgents();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -78,11 +85,16 @@ function PlantForm() {
   }
 
   return (
-    <form className="panel plant-form" onSubmit={submit}>
-      <h2>plant an agent</h2>
+    <form className="panel session-form" onSubmit={submit}>
+      <h2>New session</h2>
+      <datalist id="mesh-repo-paths">
+        {repoPaths.map((p) => (
+          <option key={p} value={p} />
+        ))}
+      </datalist>
       <div className="form-row">
         <label>
-          name
+          agent name
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -92,12 +104,13 @@ function PlantForm() {
           />
         </label>
         <label>
-          repo path
+          repository path
           <input
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
             placeholder="/home/you/src/project"
             className="mono grow"
+            list="mesh-repo-paths"
             required
           />
         </label>
@@ -138,15 +151,23 @@ function PlantForm() {
           />
           allow_all
         </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={skipPermissions}
+            onChange={(e) => setSkipPermissions(e.target.checked)}
+          />
+          Skip permission prompts (dangerous)
+        </label>
         <button type="submit" disabled={busy}>
-          {busy ? "planting…" : "plant"}
+          {busy ? "starting…" : "Start"}
         </button>
       </div>
       {error && <div className="error-inline">{error}</div>}
-      {planted && (
+      {started && (
         <div className="ok-inline">
-          planted <span className="mono">@{planted}</span> —{" "}
-          <Link to={`/session/${encodeURIComponent(planted)}`}>open session</Link>
+          started <span className="mono">@{started}</span> —{" "}
+          <Link to={`/session/${encodeURIComponent(started)}`}>open session</Link>
         </div>
       )}
     </form>
@@ -170,10 +191,10 @@ export default function Mesh() {
           <AgentCard key={a.name} agent={a} />
         ))}
         {agentsLoaded && agents.length === 0 && (
-          <div className="empty">no agents yet — plant one below.</div>
+          <div className="empty">No agents yet. Start one below.</div>
         )}
       </div>
-      <PlantForm />
+      <NewSessionForm />
     </div>
   );
 }

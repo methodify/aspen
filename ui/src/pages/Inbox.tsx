@@ -37,7 +37,7 @@ export default function Inbox() {
       </header>
       {error && <div className="error-inline">{error}</div>}
       <div className="bus-log">
-        {inbox.length === 0 && <div className="empty">inbox zero — nothing needs you.</div>}
+        {inbox.length === 0 && <div className="empty">No unread messages.</div>}
         {inbox.map((m) => (
           <BusRow key={m.id} m={m} />
         ))}

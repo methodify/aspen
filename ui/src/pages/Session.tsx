@@ -486,7 +486,7 @@ function SessionView({ name }: { name: string }) {
 
       {exited && (
         <div className="exited-banner">
-          session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — plant{" "}
+          session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — start{" "}
           <span className="mono">@{name}</span> again from the <Link to="/">Mesh</Link> page
           {agent ? (
             <>

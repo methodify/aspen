@@ -66,17 +66,30 @@ export interface SessionInfo {
   session_id: string;
   title: string | null;
   entrypoint: string | null;
+  /** epoch seconds */
   modified: number;
   user_messages: number;
 }
 
-export interface PlantAgentRequest {
+/** A remembered repository (GET /api/repos). */
+export interface Repo {
+  path: string;
+  skip_permissions: boolean;
+  /** epoch seconds */
+  last_used_at: number;
+  sessions: number;
+  live_agents: number;
+}
+
+export interface StartAgentRequest {
   name: string;
   repo: string;
   charter?: string;
   model?: string;
   allow_all?: boolean;
   resume?: string;
+  /** Run in bypassPermissions; omit to use the repo's stored default. */
+  skip_permissions?: boolean;
 }
 
 export interface BusSendRequest {
@@ -160,7 +173,7 @@ export const api = {
   node: () => request<NodeInfo>("/api/node"),
 
   agents: () => request<Agent[]>("/api/agents"),
-  plantAgent: (req: PlantAgentRequest) => post<Agent>("/api/agents", req),
+  startAgent: (req: StartAgentRequest) => post<Agent>("/api/agents", req),
   deleteAgent: (name: string) =>
     request<Record<string, never>>(`/api/agents/${enc(name)}`, { method: "DELETE" }),
 
@@ -178,6 +191,16 @@ export const api = {
   reloadAgent: (name: string) =>
     post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
   sessions: (repo: string) => request<SessionInfo[]>(`/api/sessions?repo=${enc(repo)}`),
+
+  repos: () => request<Repo[]>("/api/repos"),
+  addRepo: (path: string, skipPermissions?: boolean) =>
+    post<Repo>("/api/repos", {
+      path,
+      ...(skipPermissions !== undefined ? { skip_permissions: skipPermissions } : {}),
+    }),
+  setRepoSkip: (path: string, skipPermissions: boolean) =>
+    post<{ ok: boolean }>("/api/repos/skip", { path, skip_permissions: skipPermissions }),
+  forgetRepo: (path: string) => post<{ ok: boolean }>("/api/repos/forget", { path }),
 
   busLog: (n = 200) => request<BusMessage[]>(`/api/bus/log?n=${n}`),
   busSend: (req: BusSendRequest) => post<{ notes: string[] }>("/api/bus/send", req),
