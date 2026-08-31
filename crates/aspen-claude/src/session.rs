@@ -412,6 +412,35 @@ impl ClaudeSession {
         .await
     }
 
+    /// Rich context breakdown (reference §9): percentage, per-category
+    /// tokens, a pre-computed visual grid. Poll at turn end, never mid-turn.
+    pub async fn get_context_usage(&self) -> Result<Value> {
+        self.request(
+            json!({ "subtype": "get_context_usage" }),
+            Duration::from_secs(30),
+        )
+        .await
+    }
+
+    /// Switch model; takes effect next turn (say so in the UI). Pass None
+    /// or "default" to reset.
+    pub async fn set_model(&self, model: Option<&str>) -> Result<Value> {
+        self.request(
+            json!({ "subtype": "set_model", "model": model }),
+            Duration::from_secs(30),
+        )
+        .await
+    }
+
+    /// Live-switch the session-wide permission posture (reference §7.1).
+    pub async fn set_permission_mode(&self, mode: &str) -> Result<Value> {
+        self.request(
+            json!({ "subtype": "set_permission_mode", "mode": mode }),
+            Duration::from_secs(30),
+        )
+        .await
+    }
+
     /// End-of-session ladder (reference §4.3): `end_session` → stdin EOF →
     /// kill. Transcripts persist in all cases.
     pub async fn shutdown_ladder(&self) {

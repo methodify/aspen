@@ -75,7 +75,7 @@ async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::
         "wake"
     };
     let text = compose(&pending);
-    *sess.turn_state.lock().unwrap() = TurnState::Busy;
+    sess.mark_busy();
     let ingest_uuid = sess.handle.send_user(text).await?;
     let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
     inner.store.mark_delivered(&ids, via, Some(&ingest_uuid))?;

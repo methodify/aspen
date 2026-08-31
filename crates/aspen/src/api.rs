@@ -85,6 +85,20 @@ pub async fn serve(
             get(get_skill).put(put_skill).delete(delete_skill),
         )
         .route("/agents/{name}/reload", post(post_reload))
+        .route("/agents/{name}/runtime", get(get_runtime))
+        .route("/agents/{name}/context", get(get_context))
+        .route("/agents/{name}/model", post(post_model))
+        .route("/agents/{name}/mode", post(post_mode))
+        .route("/agents/{name}/title", post(post_title))
+        .route("/agents/{name}/charter", post(post_charter))
+        .route("/needs", get(get_needs))
+        .route("/needs/read", post(post_needs_read))
+        .route("/dms", get(get_dms))
+        .route("/dm", get(get_dm))
+        .route("/bus/post/{post}", get(get_post_receipts))
+        .route("/mesh", get(get_mesh))
+        .route("/repos/trust", post(post_repo_trust))
+        .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
         .with_state(state.clone());
 
@@ -266,8 +280,15 @@ async fn get_node(State(s): S) -> Json<Value> {
 
 fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
     let live = s.node.inner.live(&a.name);
+    let (busy_since, last_tool) = live
+        .as_ref()
+        .map(|m| m.presence_detail())
+        .unwrap_or((None, None));
     json!({
         "name": a.name,
+        "title": a.title,
+        "busy_since": busy_since,
+        "last_tool": last_tool,
         "repo": a.repo.to_string_lossy(),
         "channel": a.channel,
         "session_id": a.session_id,
@@ -326,6 +347,9 @@ struct SpawnBody {
     /// Skip permission prompts (bypassPermissions). Omit to use the repo's
     /// stored default.
     skip_permissions: Option<bool>,
+    /// The operator reviewed this repo's autorun surface and trusts it.
+    #[serde(default)]
+    acknowledge_trust: bool,
 }
 
 async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoResponse {
@@ -341,6 +365,25 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             "agent names are [A-Za-z0-9_-]+ and not 'operator'",
         )
         .into_response();
+    }
+    // The trust gate (reference §7.7): headless sessions never show the
+    // workspace-trust dialog, so the console owns it. A repo that would
+    // auto-run anything requires explicit consent once.
+    let repo_path = std::path::Path::new(&body.repo)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&body.repo));
+    let (autorun, trusted) = s.node.trust_state(&repo_path);
+    if body.acknowledge_trust {
+        let _ = s.node.record_trust(&repo_path);
+    } else if !trusted && autorun.has_autorun {
+        return (
+            StatusCode::PRECONDITION_REQUIRED,
+            Json(json!({
+                "error": "untrusted repo: review what it auto-runs, then retry with acknowledge_trust",
+                "autorun": autorun,
+            })),
+        )
+            .into_response();
     }
     let opts = SpawnOpts {
         charter: body.charter,
@@ -408,6 +451,8 @@ struct PermissionBody {
     allow: bool,
     message: Option<String>,
     updated_input: Option<Value>,
+    /// "Always allow" rules — echo the prompt's `suggestions` back verbatim.
+    updated_permissions: Option<Value>,
 }
 
 async fn post_permission(
@@ -434,6 +479,7 @@ async fn post_permission(
         body.allow,
         body.message,
         body.updated_input,
+        body.updated_permissions,
     ) {
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::GONE, e).into_response(),
@@ -682,6 +728,300 @@ struct RepoQuery {
     repo: String,
 }
 
+// -------------------------------------------------- session runtime controls
+
+/// The runtime's own view: handshake (commands/models/output style) plus the
+/// system/init inventory. This is the source for slash autocomplete and the
+/// loaded-skill/MCP panel — never parsed from disk.
+async fn get_runtime(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "runtime", &bare, json!({})).await;
+    }
+    match s.node.runtime_info(&name) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+async fn get_context(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "context", &bare, json!({})).await;
+    }
+    match s.node.context_usage(&name).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelBody {
+    model: Option<String>,
+}
+
+async fn post_model(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<ModelBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "set_model", &bare, json!({ "model": b.model })).await;
+    }
+    match s.node.set_model(&name, b.model.as_deref()).await {
+        Ok(()) => Json(json!({})).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ModeBody {
+    mode: String,
+}
+
+async fn post_mode(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<ModeBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "set_mode", &bare, json!({ "mode": b.mode })).await;
+    }
+    match s.node.set_permission_mode(&name, &b.mode).await {
+        Ok(()) => Json(json!({})).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct TitleBody {
+    title: Option<String>,
+}
+
+async fn post_title(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<TitleBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "title", &bare, json!({ "title": b.title })).await;
+    }
+    match s.node.set_title(&name, b.title.as_deref()) {
+        Ok(()) => Json(json!({})).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CharterBody {
+    charter: Option<String>,
+}
+
+async fn post_charter(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<CharterBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "charter", &bare, json!({ "charter": b.charter })).await;
+    }
+    match s.node.set_charter(&name, b.charter.as_deref()) {
+        Ok(()) => Json(json!({})).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+// ------------------------------------------------------ the mesh-wide inbox
+
+/// Everything in the WHOLE MESH that needs the operator: open permission
+/// prompts and questions (local + every connected peer) and @operator mail
+/// from every node's store. The console's Command surface is built on this.
+async fn get_needs(State(s): S) -> impl IntoResponse {
+    let mut prompts: Vec<Value> = s
+        .node
+        .open_prompts()
+        .into_iter()
+        .map(|(agent, p)| {
+            json!({
+                "agent": agent, "node": Value::Null, "request_id": p.request_id,
+                "tool_name": p.tool_name, "input": p.input,
+                "suggestions": p.suggestions, "asked_at": p.asked_at,
+                "is_question": p.is_question,
+            })
+        })
+        .collect();
+    let mut inbox: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .pending_for("operator")
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let mut v = message_json(m);
+            v["node"] = Value::Null;
+            v
+        })
+        .collect();
+
+    if let Some(mesh) = &s.node.inner.mesh {
+        let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
+        for peer in peers {
+            match mesh
+                .api_call(
+                    &peer,
+                    "needs",
+                    "",
+                    json!({}),
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+            {
+                Ok(v) => {
+                    if let Some(ps) = v.get("prompts").and_then(|p| p.as_array()) {
+                        for p in ps {
+                            let mut p = p.clone();
+                            p["node"] = json!(peer);
+                            // Remote prompts are answered via name@node.
+                            if let Some(a) = p.get("agent").and_then(|a| a.as_str()) {
+                                p["agent"] = json!(format!("{a}@{peer}"));
+                            }
+                            prompts.push(p);
+                        }
+                    }
+                    if let Some(ms) = v.get("inbox").and_then(|m| m.as_array()) {
+                        for m in ms {
+                            let mut m = m.clone();
+                            m["node"] = json!(peer);
+                            inbox.push(m);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(peer, error = %e, "needs aggregation: peer unreachable");
+                }
+            }
+        }
+    }
+    Json(json!({ "prompts": prompts, "inbox": inbox })).into_response()
+}
+
+/// Mark the operator inbox read — locally and on every connected peer.
+async fn post_needs_read(State(s): S) -> impl IntoResponse {
+    let store = &s.node.inner.store;
+    if let Ok(rows) = store.pending_for("operator") {
+        let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
+        let _ = store.mark_delivered(&ids, "operator-ui", None);
+    }
+    if let Some(mesh) = &s.node.inner.mesh {
+        let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
+        for peer in peers {
+            let _ = mesh
+                .api_call(
+                    &peer,
+                    "inbox_read",
+                    "",
+                    json!({}),
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+        }
+    }
+    Json(json!({})).into_response()
+}
+
+// -------------------------------------------------------- direct messages
+
+async fn get_dms(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.dm_pairs() {
+        Ok(rows) => Json(
+            rows.iter()
+                .map(|(a, b, last, n)| json!({ "a": a, "b": b, "last_at": last, "messages": n }))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DmQuery {
+    a: String,
+    b: String,
+    n: Option<i64>,
+}
+
+async fn get_dm(State(s): S, Query(q): Query<DmQuery>) -> impl IntoResponse {
+    match s.node.inner.store.dm_log(&q.a, &q.b, q.n.unwrap_or(200)) {
+        Ok(rows) => Json(rows.iter().map(message_json).collect::<Vec<_>>()).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Per-recipient receipts for one logical post — watch a routed message land.
+async fn get_post_receipts(State(s): S, Path(post): Path<String>) -> impl IntoResponse {
+    match s.node.inner.store.post_receipts(&post) {
+        Ok(rows) => Json(rows.iter().map(message_json).collect::<Vec<_>>()).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------- mesh info
+
+/// Mesh legibility: identity, peers with live link state, relay health.
+async fn get_mesh(State(s): S) -> impl IntoResponse {
+    let Some(mesh) = &s.node.inner.mesh else {
+        return Json(json!({ "in_mesh": false, "node": s.node_name })).into_response();
+    };
+    let links = mesh.links.lock().unwrap();
+    let remote = mesh.remote.lock().unwrap();
+    let peers: Vec<Value> = mesh
+        .config
+        .peers
+        .iter()
+        .map(|p| {
+            let name = &p.cert.node;
+            json!({
+                "node": name,
+                "url": p.url,
+                "link_up": links.contains_key(name),
+                "agents": remote.get(name).map(|v| v.len()).unwrap_or(0),
+            })
+        })
+        .collect();
+    Json(json!({
+        "in_mesh": true,
+        "mesh": mesh.config.mesh,
+        "node": mesh.identity.node,
+        "peers": peers,
+        "relay": {
+            "url": mesh.config.relay,
+            "connected_at": *mesh.relay_connected_at.lock().unwrap(),
+        },
+    }))
+    .into_response()
+}
+
+// -------------------------------------------------------------- trust gate
+
+async fn post_repo_trust(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
+    let path = std::path::Path::new(&b.path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    match s.node.record_trust(&path) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn post_repo_untrust(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
+    let path = std::path::Path::new(&b.path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    match s.node.revoke_trust(&path) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 // ------------------------------------------------------------------- channels
 
 /// Every channel the operator can address: the auto per-repo channels
@@ -850,12 +1190,19 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
         .unwrap_or_else(|| s.node_name.clone());
     for a in s.node.inner.store.agents().unwrap_or_default() {
         let live = s.node.inner.live(&a.name);
+        let (busy_since, last_tool) = live
+            .as_ref()
+            .map(|m| m.presence_detail())
+            .unwrap_or((None, None));
         sessions.push(json!({
             "name": a.name, "node": node_name, "channel": a.channel,
             "repo": a.repo.to_string_lossy(),
+            "title": a.title,
             "live": live.is_some(),
             "turn_state": live.as_ref().map(|m| match m.turn_state() {
                 TurnState::Idle => "idle", TurnState::Busy => "busy" }),
+            "busy_since": busy_since,
+            "last_tool": last_tool,
             "pending": s.node.inner.store.pending_count(&a.name).unwrap_or(0),
             "remote": false,
         }));
@@ -875,17 +1222,51 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
             }
         }
     }
-    let trail: Vec<Value> = s
-        .node
-        .inner
-        .store
-        .log(40)
-        .unwrap_or_default()
+    let recent = s.node.inner.store.log(200).unwrap_or_default();
+    let trail: Vec<Value> = recent
         .iter()
+        .rev()
+        .take(40)
+        .rev()
         .map(message_json)
         .collect();
+
+    // Waiting-on heuristic: an IDLE agent whose most recent outbound direct
+    // message has seen no reply is *likely waiting* on that counterpart.
+    // Honest labeling ("likely") — this is inference from the trail, not a
+    // protocol fact.
+    let mut waiting: Vec<Value> = Vec::new();
+    for sv in &sessions {
+        if sv["live"] != json!(true) || sv["turn_state"] != json!("idle") {
+            continue;
+        }
+        let name = sv["name"].as_str().unwrap_or_default();
+        let last_out = recent
+            .iter()
+            .rev()
+            .find(|m| m.sender == name && !m.to_display.starts_with('#'));
+        if let Some(out) = last_out {
+            let replied = recent.iter().any(|m| {
+                m.id > out.id
+                    && (m.sender == out.recipient
+                        || m.sender == format!("{}@{}", out.recipient, node_name))
+                    && (m.recipient == name || m.recipient.starts_with(&format!("{name}@")))
+            });
+            if !replied {
+                let snippet: String = out.body.chars().take(90).collect();
+                waiting.push(json!({
+                    "agent": name,
+                    "on": out.recipient,
+                    "since": out.created_at,
+                    "snippet": snippet,
+                }));
+            }
+        }
+    }
+
     let inbox = s.node.inner.store.pending_count("operator").unwrap_or(0);
-    Json(json!({ "sessions": sessions, "trail": trail, "inbox": inbox })).into_response()
+    Json(json!({ "sessions": sessions, "trail": trail, "inbox": inbox, "waiting": waiting }))
+        .into_response()
 }
 
 // ---------------------------------------------------------------------- repos
@@ -903,12 +1284,15 @@ fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
         .iter()
         .filter(|a| a.repo == r.path && s.node.inner.live(&a.name).is_some())
         .count();
+    let (autorun, trusted) = s.node.trust_state(&r.path);
     json!({
         "path": r.path.to_string_lossy(),
         "skip_permissions": r.skip_permissions,
         "last_used_at": r.last_used_at,
         "sessions": sessions,
         "live_agents": live,
+        "trusted": trusted,
+        "has_autorun": autorun.has_autorun,
     })
 }
 
@@ -1067,10 +1451,25 @@ fn message_json(m: &aspen_node::StoredMessage) -> Value {
 #[derive(Deserialize)]
 struct LogQuery {
     n: Option<i64>,
+    sender: Option<String>,
+    recipient: Option<String>,
+    thread: Option<String>,
+    record: Option<String>,
+    urgency: Option<String>,
+    q: Option<String>,
 }
 
 async fn get_bus_log(State(s): S, Query(q): Query<LogQuery>) -> impl IntoResponse {
-    match s.node.inner.store.log(q.n.unwrap_or(50)) {
+    let res = s.node.inner.store.log_filtered(
+        q.sender.as_deref().filter(|v| !v.is_empty()),
+        q.recipient.as_deref().filter(|v| !v.is_empty()),
+        q.thread.as_deref().filter(|v| !v.is_empty()),
+        q.record.as_deref().filter(|v| !v.is_empty()),
+        q.urgency.as_deref().filter(|v| !v.is_empty()),
+        q.q.as_deref().filter(|v| !v.is_empty()),
+        q.n.unwrap_or(50),
+    );
+    match res {
         Ok(rows) => Json(rows.iter().map(message_json).collect::<Vec<_>>()).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS agents(
   session_id      TEXT,
   charter         TEXT,
   created_at      REAL NOT NULL,
-  last_spawned_at REAL
+  last_spawned_at REAL,
+  title           TEXT
 );
 CREATE TABLE IF NOT EXISTS repos(
   path             TEXT PRIMARY KEY,
@@ -118,6 +119,8 @@ pub struct AgentRow {
     pub channel: String,
     pub session_id: Option<String>,
     pub charter: Option<String>,
+    /// Operator-set display title (the agent name stays the bus identity).
+    pub title: Option<String>,
 }
 
 #[derive(Clone)]
@@ -146,9 +149,14 @@ impl BusStore {
         // Additive column for stores created before `post` existed. New
         // stores already have it via SCHEMA; the duplicate-column error on
         // those is expected and ignored.
-        if let Err(e) = conn.execute("ALTER TABLE messages ADD COLUMN post TEXT", []) {
-            if !e.to_string().contains("duplicate column") {
-                return Err(e.into());
+        for stmt in [
+            "ALTER TABLE messages ADD COLUMN post TEXT",
+            "ALTER TABLE agents ADD COLUMN title TEXT",
+        ] {
+            if let Err(e) = conn.execute(stmt, []) {
+                if !e.to_string().contains("duplicate column") {
+                    return Err(e.into());
+                }
             }
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -195,8 +203,9 @@ impl BusStore {
 
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT name, repo, channel, session_id, charter FROM agents ORDER BY name")?;
+        let mut stmt = conn.prepare(
+            "SELECT name, repo, channel, session_id, charter, title FROM agents ORDER BY name",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(AgentRow {
@@ -205,10 +214,37 @@ impl BusStore {
                     channel: r.get(2)?,
                     session_id: r.get(3)?,
                     charter: r.get(4)?,
+                    title: r.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    pub fn set_agent_title(&self, name: &str, title: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE agents SET title=?2 WHERE name=?1",
+            params![name, title.filter(|t| !t.trim().is_empty())],
+        )?;
+        if n == 0 {
+            anyhow::bail!("no agent named @{name} on record");
+        }
+        Ok(())
+    }
+
+    /// Update the stored charter. Takes effect at the next spawn/revive —
+    /// a charter rides `appendSystemPrompt` and cannot change mid-session.
+    pub fn set_agent_charter(&self, name: &str, charter: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE agents SET charter=?2 WHERE name=?1",
+            params![name, charter.filter(|c| !c.trim().is_empty())],
+        )?;
+        if n == 0 {
+            anyhow::bail!("no agent named @{name} on record");
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------ repos
@@ -537,6 +573,114 @@ impl BusStore {
         Ok(rows)
     }
 
+    /// Direct-message conversations: every counterpart pair that has
+    /// exchanged direct (non-channel) traffic, with last-activity ordering.
+    /// Returned as (a, b, last_at, message_count) with a<b lexically so a
+    /// pair appears once.
+    pub fn dm_pairs(&self) -> Result<Vec<(String, String, f64, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT CASE WHEN sender < recipient THEN sender ELSE recipient END AS a,
+                    CASE WHEN sender < recipient THEN recipient ELSE sender END AS b,
+                    MAX(created_at), COUNT(*)
+             FROM messages WHERE to_display NOT LIKE '#%'
+             GROUP BY a, b ORDER BY MAX(created_at) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// One direct conversation, both directions, chronological.
+    pub fn dm_log(&self, a: &str, b: &str, limit: i64) -> Result<Vec<StoredMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
+                    created_at,delivered_at,delivered_via,ingested_at,post
+             FROM messages
+             WHERE to_display NOT LIKE '#%'
+               AND ((sender=?1 AND recipient=?2) OR (sender=?2 AND recipient=?1))
+             ORDER BY id DESC LIMIT ?3",
+        )?;
+        let mut rows = stmt
+            .query_map(params![a, b, limit], row_to_message)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// Filtered lookback — the trail's query surface. Every filter is
+    /// optional; `q` is a body substring.
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_filtered(
+        &self,
+        sender: Option<&str>,
+        recipient: Option<&str>,
+        thread: Option<&str>,
+        record: Option<&str>,
+        urgency: Option<&str>,
+        q: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<StoredMessage>> {
+        let mut sql = String::from(
+            "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
+                    created_at,delivered_at,delivered_via,ingested_at,post
+             FROM messages WHERE 1=1",
+        );
+        let mut params_vec: Vec<String> = Vec::new();
+        let mut push = |sql: &mut String, clause: &str, v: &str| {
+            params_vec.push(v.to_owned());
+            sql.push_str(&clause.replace('?', &format!("?{}", params_vec.len())));
+        };
+        if let Some(v) = sender {
+            push(&mut sql, " AND sender=?", v);
+        }
+        if let Some(v) = recipient {
+            push(&mut sql, " AND recipient=?", v);
+        }
+        if let Some(v) = thread {
+            push(&mut sql, " AND thread=?", v);
+        }
+        if let Some(v) = record {
+            push(&mut sql, " AND record_ref LIKE ?", &format!("%{v}%"));
+        }
+        if let Some(v) = urgency {
+            push(&mut sql, " AND urgency=?", v);
+        }
+        if let Some(v) = q {
+            push(&mut sql, " AND body LIKE ?", &format!("%{v}%"));
+        }
+        params_vec.push(limit.to_string());
+        sql.push_str(&format!(" ORDER BY id DESC LIMIT ?{}", params_vec.len()));
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(params_vec.iter()),
+                row_to_message,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// Per-recipient delivery receipts for one logical post — the
+    /// watch-it-land view. Proof of ingestion per recipient.
+    pub fn post_receipts(&self, post: &str) -> Result<Vec<StoredMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
+                    created_at,delivered_at,delivered_via,ingested_at,post
+             FROM messages WHERE post=?1 OR uuid=?1 ORDER BY recipient",
+        )?;
+        let rows = stmt
+            .query_map([post], row_to_message)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// The lookback: chronology at a glance (`bus log`).
     pub fn log(&self, limit: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().unwrap();
@@ -579,9 +723,9 @@ mod tests {
     #[test]
     fn send_pending_deliver_ingest_roundtrip() {
         let s = BusStore::open_in_memory().unwrap();
-        s.insert_message("arch", "impl", "@impl", "normal", "hello", None, None)
+        s.insert_message("arch", "impl", "@impl", "normal", "hello", None, None, None)
             .unwrap();
-        s.insert_message("arch", "impl", "@impl", "gating", "now!", Some("t-1"), None)
+        s.insert_message("arch", "impl", "@impl", "gating", "now!", Some("t-1"), None, None)
             .unwrap();
         let pending = s.pending_for("impl").unwrap();
         assert_eq!(pending.len(), 2);

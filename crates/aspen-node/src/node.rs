@@ -34,11 +34,31 @@ pub struct ManagedSession {
     /// The runtime's last `system/init` inventory (skills/commands/mcp),
     /// captured whenever it arrives (with the first turn, per reference §4).
     pub inventory: Mutex<Option<serde_json::Value>>,
+    /// When the current turn started (busy since), epoch seconds.
+    pub busy_since: Mutex<Option<f64>>,
+    /// The most recent tool the session invoked this turn.
+    pub last_tool: Mutex<Option<String>>,
 }
 
 impl ManagedSession {
     pub fn turn_state(&self) -> TurnState {
         *self.turn_state.lock().unwrap()
+    }
+
+    pub fn mark_busy(&self) {
+        *self.turn_state.lock().unwrap() = TurnState::Busy;
+        let mut since = self.busy_since.lock().unwrap();
+        if since.is_none() {
+            *since = Some(crate::store::now_epoch());
+        }
+    }
+
+    /// (busy_since_epoch, last_tool) for presence detail.
+    pub fn presence_detail(&self) -> (Option<f64>, Option<String>) {
+        (
+            *self.busy_since.lock().unwrap(),
+            self.last_tool.lock().unwrap().clone(),
+        )
     }
 }
 
@@ -48,6 +68,8 @@ pub struct NodeInner {
     pub delivery_tx: mpsc::UnboundedSender<String>,
     /// Present when this node has joined a mesh (identity + cert on disk).
     pub mesh: Option<Arc<crate::federation::MeshState>>,
+    /// The node data directory (trust store, keys). None for in-memory use.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl NodeInner {
@@ -102,7 +124,7 @@ impl Node {
             }
             _ => None,
         };
-        let node = Self::build(store, mesh);
+        let node = Self::build(store, mesh, Some(data_dir.to_owned()));
         if node.inner.mesh.is_some() {
             crate::federation::spawn_dialers(node.inner.clone());
         }
@@ -110,16 +132,21 @@ impl Node {
     }
 
     pub fn with_store(store: BusStore) -> Self {
-        Self::build(store, None)
+        Self::build(store, None, None)
     }
 
-    fn build(store: BusStore, mesh: Option<Arc<crate::federation::MeshState>>) -> Self {
+    fn build(
+        store: BusStore,
+        mesh: Option<Arc<crate::federation::MeshState>>,
+        data_dir: Option<PathBuf>,
+    ) -> Self {
         let (delivery_tx, delivery_rx) = mpsc::unbounded_channel::<String>();
         let inner = Arc::new(NodeInner {
             store,
             sessions: Mutex::new(HashMap::new()),
             delivery_tx,
             mesh,
+            data_dir,
         });
         tokio::spawn(delivery::run(inner.clone(), delivery_rx));
         Self { inner }
@@ -210,6 +237,8 @@ impl Node {
             events: events_tx,
             broker: op_broker,
             inventory: Mutex::new(None),
+            busy_since: Mutex::new(None),
+            last_tool: Mutex::new(None),
         });
         self.inner
             .sessions
@@ -234,7 +263,7 @@ impl Node {
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         delivery::flush_notices(&self.inner, &sess).await;
-        *sess.turn_state.lock().unwrap() = TurnState::Busy;
+        sess.mark_busy();
         sess.handle.send_user(text).await
     }
 
@@ -278,6 +307,110 @@ impl Node {
         self.spawn_agent(name, row.repo.clone(), opts).await
     }
 
+    /// The trust gate's decision surface: what a repo would auto-run, and
+    /// whether the operator has already trusted it. Enforcement happens in
+    /// the API layer so dev/CLI flows stay unchanged.
+    pub fn trust_state(&self, repo: &Path) -> (crate::trust::RepoAutorun, bool) {
+        let autorun = crate::trust::inspect(repo);
+        let trusted = self
+            .inner
+            .data_dir
+            .as_ref()
+            .map(|d| crate::trust::TrustStore::new(d).is_trusted(repo))
+            .unwrap_or(true);
+        (autorun, trusted)
+    }
+
+    pub fn record_trust(&self, repo: &Path) -> Result<()> {
+        let d = self
+            .inner
+            .data_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("no data dir on this node"))?;
+        crate::trust::TrustStore::new(d).trust(repo)
+    }
+
+    pub fn revoke_trust(&self, repo: &Path) -> Result<()> {
+        let d = self
+            .inner
+            .data_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("no data dir on this node"))?;
+        crate::trust::TrustStore::new(d).revoke(repo)
+    }
+
+    pub fn set_title(&self, name: &str, title: Option<&str>) -> Result<()> {
+        self.inner.store.set_agent_title(name, title)
+    }
+
+    pub fn set_charter(&self, name: &str, charter: Option<&str>) -> Result<()> {
+        self.inner.store.set_agent_charter(name, charter)
+    }
+
+    /// The runtime's own view of a session: handshake (commands, models,
+    /// output style, account) plus the `system/init` inventory (tools,
+    /// skills, MCP servers, plugins as loaded). Never parsed from disk.
+    pub fn runtime_info(&self, name: &str) -> Result<serde_json::Value> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        Ok(serde_json::json!({
+            "handshake": sess.handle.handshake.get(),
+            "inventory": sess.inventory.lock().unwrap().clone(),
+        }))
+    }
+
+    /// Rich context breakdown from the runtime (poll at turn end).
+    pub async fn context_usage(&self, name: &str) -> Result<serde_json::Value> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        sess.handle.get_context_usage().await
+    }
+
+    /// Switch a session's model (takes effect next turn).
+    pub async fn set_model(&self, name: &str, model: Option<&str>) -> Result<()> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        sess.handle.set_model(model).await.map(|_| ())
+    }
+
+    /// Live-switch a session's permission mode.
+    pub async fn set_permission_mode(&self, name: &str, mode: &str) -> Result<()> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        sess.handle.set_permission_mode(mode).await.map(|_| ())
+    }
+
+    /// Every permission prompt / question currently held open on THIS node,
+    /// tagged with the agent holding it.
+    pub fn open_prompts(&self) -> Vec<(String, crate::permit::OpenPrompt)> {
+        let sessions: Vec<Arc<ManagedSession>> = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
+        let mut out = Vec::new();
+        for s in sessions {
+            if let Some(b) = &s.broker {
+                for p in b.open_prompts() {
+                    out.push((s.name.clone(), p));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.1.asked_at.total_cmp(&b.1.asked_at));
+        out
+    }
+
     /// Reload a live session's plugins/skills/commands from disk.
     pub async fn reload_plugins(&self, name: &str) -> Result<serde_json::Value> {
         let sess = self
@@ -308,6 +441,7 @@ impl Node {
     }
 
     /// Console answer to a pending permission prompt.
+    #[allow(clippy::too_many_arguments)]
     pub fn answer_permission(
         &self,
         name: &str,
@@ -315,6 +449,7 @@ impl Node {
         allow: bool,
         message: Option<String>,
         updated_input: Option<serde_json::Value>,
+        updated_permissions: Option<serde_json::Value>,
     ) -> Result<()> {
         let sess = self
             .inner
@@ -324,7 +459,13 @@ impl Node {
             .broker
             .as_ref()
             .ok_or_else(|| anyhow!("@{name} was not spawned interactively"))?;
-        if broker.answer(request_id, allow, message, updated_input) {
+        if broker.answer(
+            request_id,
+            allow,
+            message,
+            updated_input,
+            updated_permissions,
+        ) {
             Ok(())
         } else {
             Err(anyhow!(
@@ -361,12 +502,18 @@ async fn pump(
         match &ev {
             SessionEvent::TurnEnded { .. } => {
                 *sess.turn_state.lock().unwrap() = TurnState::Idle;
+                *sess.busy_since.lock().unwrap() = None;
+                *sess.last_tool.lock().unwrap() = None;
                 // A boundary is a delivery opportunity for anything that
                 // arrived for us while nothing could be written.
                 inner.tick_delivery(&sess.name);
             }
-            SessionEvent::TextDelta { .. } | SessionEvent::ToolUse { .. } => {
-                *sess.turn_state.lock().unwrap() = TurnState::Busy;
+            SessionEvent::TextDelta { .. } => {
+                sess.mark_busy();
+            }
+            SessionEvent::ToolUse { tool_name, .. } => {
+                sess.mark_busy();
+                *sess.last_tool.lock().unwrap() = Some(tool_name.clone());
             }
             SessionEvent::UserReplay { uuid } => {
                 let _ = inner.store.mark_ingested(uuid);

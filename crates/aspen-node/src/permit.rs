@@ -19,8 +19,23 @@ use aspen_core::SessionEvent;
 const OPERATOR_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 struct PendingPrompt {
+    tool_name: String,
     original_input: Value,
+    suggestions: Value,
+    asked_at_epoch: f64,
     answer: oneshot::Sender<BrokerDecision>,
+}
+
+/// A snapshot of one open prompt, for inbox aggregation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenPrompt {
+    pub request_id: String,
+    pub tool_name: String,
+    pub input: Value,
+    pub suggestions: Value,
+    pub asked_at: f64,
+    /// AskUserQuestion prompts are questions, not approvals.
+    pub is_question: bool,
 }
 
 pub struct OperatorBroker {
@@ -44,13 +59,16 @@ impl OperatorBroker {
     }
 
     /// Console answer path. Returns false if the prompt is no longer open
-    /// (answered elsewhere, cancelled, or timed out).
+    /// (answered elsewhere, cancelled, or timed out). `updated_permissions`
+    /// carries "always allow" rules — echo the CLI's own suggestions back
+    /// (reference §7.4); malformed entries degrade to allow-once.
     pub fn answer(
         &self,
         request_id: &str,
         allow: bool,
         message: Option<String>,
         updated_input: Option<Value>,
+        updated_permissions: Option<Value>,
     ) -> bool {
         let Some(p) = self.pending.lock().unwrap().remove(request_id) else {
             return false;
@@ -58,7 +76,7 @@ impl OperatorBroker {
         let decision = if allow {
             BrokerDecision::Allow {
                 updated_input: updated_input.unwrap_or(p.original_input),
-                updated_permissions: None,
+                updated_permissions: updated_permissions.filter(|v| !v.is_null()),
             }
         } else {
             BrokerDecision::Deny {
@@ -68,6 +86,25 @@ impl OperatorBroker {
             }
         };
         p.answer.send(decision).is_ok()
+    }
+
+    /// Every prompt currently held open, oldest first.
+    pub fn open_prompts(&self) -> Vec<OpenPrompt> {
+        let pending = self.pending.lock().unwrap();
+        let mut out: Vec<OpenPrompt> = pending
+            .iter()
+            .map(|(id, p)| OpenPrompt {
+                request_id: id.clone(),
+                tool_name: p.tool_name.clone(),
+                input: p.original_input.clone(),
+                suggestions: p.suggestions.clone(),
+                asked_at: p.asked_at_epoch,
+                is_question: p.tool_name == "AskUserQuestion"
+                    || p.original_input.get("questions").is_some(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.asked_at.total_cmp(&b.asked_at));
+        out
     }
 
     fn emit(&self, ev: SessionEvent) {
@@ -102,7 +139,10 @@ impl PermissionBroker for OperatorBroker {
         self.pending.lock().unwrap().insert(
             req.request_id.clone(),
             PendingPrompt {
+                tool_name: req.tool_name.clone(),
                 original_input: req.input.clone(),
+                suggestions: req.suggestions.clone(),
+                asked_at_epoch: crate::store::now_epoch(),
                 answer: tx,
             },
         );

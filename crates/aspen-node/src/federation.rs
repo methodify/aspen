@@ -50,6 +50,8 @@ pub struct MeshState {
     pub served_subs: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// Event subscriptions we REQUESTED: sub id → (serving peer, consumer).
     pub remote_subs: Mutex<HashMap<String, (String, mpsc::UnboundedSender<Value>)>>,
+    /// Epoch seconds when the relay session came up; None when down/unused.
+    pub relay_connected_at: Mutex<Option<f64>>,
 }
 
 impl MeshState {
@@ -62,6 +64,7 @@ impl MeshState {
             pending_api: Mutex::new(HashMap::new()),
             served_subs: Mutex::new(HashMap::new()),
             remote_subs: Mutex::new(HashMap::new()),
+            relay_connected_at: Mutex::new(None),
         }
     }
 
@@ -586,6 +589,67 @@ async fn serve_api_req(
             Ok(json!({}))
         }
         "reload" => node.reload_plugins(agent).await,
+        "runtime" => node.runtime_info(agent),
+        "context" => node.context_usage(agent).await,
+        "set_model" => {
+            node.set_model(agent, body.get("model").and_then(|m| m.as_str()))
+                .await?;
+            Ok(json!({}))
+        }
+        "set_mode" => {
+            node.set_permission_mode(
+                agent,
+                body.get("mode")
+                    .and_then(|m| m.as_str())
+                    .ok_or_else(|| anyhow!("missing mode"))?,
+            )
+            .await?;
+            Ok(json!({}))
+        }
+        "title" => {
+            node.set_title(agent, body.get("title").and_then(|v| v.as_str()))?;
+            Ok(json!({}))
+        }
+        "charter" => {
+            node.set_charter(agent, body.get("charter").and_then(|v| v.as_str()))?;
+            Ok(json!({}))
+        }
+        // Node-level ops (the `agent` field is ignored):
+        "needs" => {
+            let prompts: Vec<Value> = node
+                .open_prompts()
+                .into_iter()
+                .map(|(agent, p)| {
+                    json!({
+                        "agent": agent, "request_id": p.request_id,
+                        "tool_name": p.tool_name, "input": p.input,
+                        "suggestions": p.suggestions, "asked_at": p.asked_at,
+                        "is_question": p.is_question,
+                    })
+                })
+                .collect();
+            let inbox: Vec<Value> = inner
+                .store
+                .pending_for("operator")
+                .unwrap_or_default()
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id, "sender": m.sender, "recipient": m.recipient,
+                        "to_display": m.to_display, "urgency": m.urgency,
+                        "body": m.body, "thread": m.thread, "record": m.record_ref,
+                        "created_at": m.created_at,
+                    })
+                })
+                .collect();
+            Ok(json!({ "prompts": prompts, "inbox": inbox }))
+        }
+        "inbox_read" => {
+            let rows = inner.store.pending_for("operator")?;
+            let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
+            inner.store.mark_delivered(&ids, "operator-ui", None)?;
+            Ok(json!({}))
+        }
         "permission" => {
             node.answer_permission(
                 agent,
@@ -597,6 +661,9 @@ async fn serve_api_req(
                     .and_then(|m| m.as_str())
                     .map(str::to_owned),
                 body.get("updated_input").cloned().filter(|v| !v.is_null()),
+                body.get("updated_permissions")
+                    .cloned()
+                    .filter(|v| !v.is_null()),
             )?;
             Ok(json!({}))
         }
@@ -736,6 +803,8 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
     ))
     .await?;
 
+    *mesh.relay_connected_at.lock().unwrap() = Some(crate::store::now_epoch());
+
     // Mux: outbound relay frames + per-peer inbound channels.
     let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<String>();
     let peer_ins: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
@@ -759,6 +828,7 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
     let me = mesh.identity.node.clone();
 
     let result = relay_read_loop(inner, &mesh, &me, &relay_tx, &peer_ins, &mut stream).await;
+    *mesh.relay_connected_at.lock().unwrap() = None;
     writer.abort();
     // Drop all per-peer links routed over this relay.
     peer_ins.lock().unwrap().clear();
