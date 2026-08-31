@@ -147,7 +147,11 @@ impl NodeIdentity {
     /// Install a cert minted for this identity, verifying it actually is.
     pub fn install_cert(&mut self, cert: NodeCert) -> Result<()> {
         if cert.node != self.node {
-            bail!("cert names node {:?}, this node is {:?}", cert.node, self.node);
+            bail!(
+                "cert names node {:?}, this node is {:?}",
+                cert.node,
+                self.node
+            );
         }
         if cert.ed_public != self.ed_public || cert.x_public != self.x_public {
             bail!("cert covers different keys than this node holds");

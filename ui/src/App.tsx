@@ -6,6 +6,7 @@ import Mesh from "./pages/Mesh";
 import Session from "./pages/Session";
 import Bus from "./pages/Bus";
 import Inbox from "./pages/Inbox";
+import Skills from "./pages/Skills";
 
 export interface AppData {
   agents: Agent[];
@@ -47,6 +48,7 @@ function Sidebar() {
           Mesh
         </NavLink>
         <NavLink to="/bus">Bus</NavLink>
+        <NavLink to="/skills">Skills</NavLink>
         <NavLink to="/inbox">
           Inbox
           {inbox.length > 0 && <span className="badge badge-unread">{inbox.length}</span>}
@@ -60,7 +62,7 @@ function Sidebar() {
             key={a.name}
             to={`/session/${encodeURIComponent(a.name)}`}
             className="sidebar-agent"
-            title={`${a.repo} · ${a.live ? (a.turn_state ?? "live") : "down"}`}
+            title={`${a.repo ?? `remote · ${a.node}`} · ${a.live ? (a.turn_state ?? "live") : "down"}`}
           >
             <span className={turnDotClass(a)} />
             <span className="mono">@{a.name}</span>
@@ -94,6 +96,7 @@ export default function App() {
             <Route path="/" element={<Mesh />} />
             <Route path="/session/:name" element={<Session />} />
             <Route path="/bus" element={<Bus />} />
+            <Route path="/skills" element={<Skills />} />
             <Route path="/inbox" element={<Inbox />} />
           </Routes>
         </main>

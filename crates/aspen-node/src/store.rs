@@ -146,8 +146,8 @@ impl BusStore {
 
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT name, repo, channel, session_id, charter FROM agents ORDER BY name")?;
+        let mut stmt = conn
+            .prepare("SELECT name, repo, channel, session_id, charter FROM agents ORDER BY name")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(AgentRow {

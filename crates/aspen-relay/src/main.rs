@@ -18,7 +18,7 @@ use axum::routing::get;
 use axum::Router;
 use tokio::sync::{mpsc, Mutex};
 
-use aspen_wire::relay::{challenge_context, Challenge, RelayFrame, Register};
+use aspen_wire::relay::{challenge_context, Challenge, Register, RelayFrame};
 
 use clap::Parser;
 
@@ -57,7 +57,8 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let root_pubkey = base64_decode(&cli.root_pubkey).context("--root-pubkey is not valid base64")?;
+    let root_pubkey =
+        base64_decode(&cli.root_pubkey).context("--root-pubkey is not valid base64")?;
 
     let relay = Relay {
         mesh: cli.mesh.clone(),
@@ -71,7 +72,11 @@ async fn main() -> Result<()> {
         .with_state(relay);
 
     let listener = tokio::net::TcpListener::bind(cli.listen).await?;
-    tracing::info!("aspen-relay for mesh '{}' listening on {}", cli.mesh, cli.listen);
+    tracing::info!(
+        "aspen-relay for mesh '{}' listening on {}",
+        cli.mesh,
+        cli.listen
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -197,7 +202,10 @@ async fn route(relay: &Relay, from: &str, text: &str) {
     let Ok(frame) = serde_json::from_str::<RelayFrame>(text) else {
         return;
     };
-    if let RelayFrame::Route { to: Some(to), data, .. } = frame {
+    if let RelayFrame::Route {
+        to: Some(to), data, ..
+    } = frame
+    {
         let nodes = relay.nodes.lock().await;
         if let Some(dest) = nodes.get(&to) {
             let fwd = serde_json::to_string(&RelayFrame::Route {

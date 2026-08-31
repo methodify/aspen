@@ -105,8 +105,10 @@ mod tests {
         let root = MeshRoot::create("m");
         let mut a = NodeIdentity::create("a");
         let mut b = NodeIdentity::create("b");
-        a.install_cert(root.certify(&a.join_request()).unwrap()).unwrap();
-        b.install_cert(root.certify(&b.join_request()).unwrap()).unwrap();
+        a.install_cert(root.certify(&a.join_request()).unwrap())
+            .unwrap();
+        b.install_cert(root.certify(&b.join_request()).unwrap())
+            .unwrap();
         (a, b, root)
     }
 
@@ -122,7 +124,8 @@ mod tests {
     fn wrong_recipient_cannot_open() {
         let (a, b, root) = pair();
         let mut c = NodeIdentity::create("c");
-        c.install_cert(root.certify(&c.join_request()).unwrap()).unwrap();
+        c.install_cert(root.certify(&c.join_request()).unwrap())
+            .unwrap();
         let env = SealedEnvelope::seal(&a, b.cert.as_ref().unwrap(), b"secret").unwrap();
         assert!(env.open(&c, a.cert.as_ref().unwrap()).is_err());
     }

@@ -11,13 +11,18 @@ export type TurnState = "idle" | "busy";
 
 export interface Agent {
   name: string;
-  repo: string;
+  /** null for remote agents (their repo lives on another node). */
+  repo: string | null;
   channel: string;
   session_id: string;
   charter: string | null;
   live: boolean;
   turn_state: TurnState | null;
   pending: number;
+  /** Which mesh node hosts this agent. */
+  node: string;
+  /** true for agents hosted on another node (names like `west@beta`). */
+  remote?: boolean;
 }
 
 export type Urgency = "gating" | "normal" | "notice";
@@ -80,6 +85,20 @@ export interface BusSendRequest {
   urgency?: Urgency;
   thread?: string;
   record?: string;
+}
+
+/** A skill or slash-command file found under a repo's `.claude/` tree. */
+export interface SkillEntry {
+  name: string;
+  rel: string;
+  kind: "skill" | "command";
+  description: string | null;
+}
+
+export interface SkillSaveResult {
+  ok: boolean;
+  /** Live sessions in the repo that were reloaded (when `reload` was set). */
+  reloaded_sessions: number;
 }
 
 export interface PermissionAnswer {
@@ -156,10 +175,27 @@ export const api = {
     ),
   transcript: (name: string) =>
     request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
+  reloadAgent: (name: string) =>
+    post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
   sessions: (repo: string) => request<SessionInfo[]>(`/api/sessions?repo=${enc(repo)}`),
 
   busLog: (n = 200) => request<BusMessage[]>(`/api/bus/log?n=${n}`),
   busSend: (req: BusSendRequest) => post<{ notes: string[] }>("/api/bus/send", req),
+
+  repoSkills: (repo: string) =>
+    request<SkillEntry[]>(`/api/repo/skills?repo=${enc(repo)}`),
+  readSkill: (repo: string, rel: string) =>
+    request<{ content: string }>(`/api/repo/skill?repo=${enc(repo)}&rel=${enc(rel)}`),
+  writeSkill: (repo: string, rel: string, content: string, reload = true) =>
+    request<SkillSaveResult>("/api/repo/skill", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repo, rel, content, reload }),
+    }),
+  deleteSkill: (repo: string, rel: string) =>
+    request<{ ok: boolean }>(`/api/repo/skill?repo=${enc(repo)}&rel=${enc(rel)}`, {
+      method: "DELETE",
+    }),
 
   inbox: () => request<BusMessage[]>("/api/operator/inbox"),
   markInboxRead: () => post<Record<string, never>>("/api/operator/inbox/read"),

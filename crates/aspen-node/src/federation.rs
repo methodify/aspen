@@ -92,7 +92,9 @@ impl MeshState {
                 } else {
                     Err(anyhow!(
                         "{}",
-                        v.get("error").and_then(|e| e.as_str()).unwrap_or("remote error")
+                        v.get("error")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("remote error")
                     ))
                 }
             }
@@ -145,17 +147,14 @@ impl MeshState {
         let cert = self
             .peer_cert(node)
             .ok_or_else(|| anyhow!("no cert on file for node {node:?}"))?;
-        let env = SealedEnvelope::seal(
-            &self.identity,
-            &cert,
-            payload.to_string().as_bytes(),
-        )?;
+        let env = SealedEnvelope::seal(&self.identity, &cert, payload.to_string().as_bytes())?;
         let frame = serde_json::to_string(&env)?;
         let links = self.links.lock().unwrap();
         let tx = links
             .get(node)
             .ok_or_else(|| anyhow!("no live link to node {node:?}"))?;
-        tx.send(frame).map_err(|_| anyhow!("link to {node:?} closed"))
+        tx.send(frame)
+            .map_err(|_| anyhow!("link to {node:?} closed"))
     }
 }
 
@@ -333,10 +332,7 @@ pub async fn run_link(
 
     // 6. Teardown (only if the registered link is still ours).
     let mut links = mesh.links.lock().unwrap();
-    if links
-        .get(&peer)
-        .is_some_and(|tx| tx.same_channel(&out_tx))
-    {
+    if links.get(&peer).is_some_and(|tx| tx.same_channel(&out_tx)) {
         links.remove(&peer);
     }
     drop(links);
@@ -379,7 +375,10 @@ async fn link_loop(
         match payload.get("t").and_then(|t| t.as_str()).unwrap_or("") {
             "bus" => {
                 let uuid = payload.get("uuid").and_then(|u| u.as_str()).unwrap_or("");
-                let sender = payload.get("sender").and_then(|s| s.as_str()).unwrap_or("?");
+                let sender = payload
+                    .get("sender")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("?");
                 // Cross-node sender identity gains its home suffix unless it
                 // already carries one.
                 let sender = if sender.contains('@') {
@@ -395,8 +394,14 @@ async fn link_loop(
                     uuid,
                     &sender,
                     recipient,
-                    payload.get("to_display").and_then(|s| s.as_str()).unwrap_or(""),
-                    payload.get("urgency").and_then(|s| s.as_str()).unwrap_or("normal"),
+                    payload
+                        .get("to_display")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or(""),
+                    payload
+                        .get("urgency")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("normal"),
                     payload.get("body").and_then(|s| s.as_str()).unwrap_or(""),
                     payload.get("thread").and_then(|s| s.as_str()),
                     payload.get("record_ref").and_then(|s| s.as_str()),
@@ -431,9 +436,21 @@ async fn link_loop(
             "api_req" => {
                 // Serve the peer's console. Spawned: ops like spawn/revive
                 // take seconds and must not stall the link.
-                let id = payload.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
-                let op = payload.get("op").and_then(|o| o.as_str()).unwrap_or("").to_owned();
-                let agent = payload.get("agent").and_then(|a| a.as_str()).unwrap_or("").to_owned();
+                let id = payload
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let op = payload
+                    .get("op")
+                    .and_then(|o| o.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let agent = payload
+                    .get("agent")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 let body = payload.get("body").cloned().unwrap_or(Value::Null);
                 let inner = inner.clone();
                 let mesh = mesh.clone();
@@ -442,7 +459,9 @@ async fn link_loop(
                     let res = serve_api_req(&inner, &op, &agent, body).await;
                     let reply = match res {
                         Ok(body) => json!({ "t": "api_res", "id": id, "ok": true, "body": body }),
-                        Err(e) => json!({ "t": "api_res", "id": id, "ok": false, "error": e.to_string() }),
+                        Err(e) => {
+                            json!({ "t": "api_res", "id": id, "ok": false, "error": e.to_string() })
+                        }
                     };
                     let _ = mesh.send_to(&peer, &reply);
                 });
@@ -455,10 +474,21 @@ async fn link_loop(
                 }
             }
             "sub" => {
-                let id = payload.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
-                let agent = payload.get("agent").and_then(|a| a.as_str()).unwrap_or("").to_owned();
+                let id = payload
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let agent = payload
+                    .get("agent")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 let Some(sess) = inner.live(&agent) else {
-                    let _ = mesh.send_to(peer, &json!({ "t": "sub_end", "id": id, "reason": "no such live agent" }));
+                    let _ = mesh.send_to(
+                        peer,
+                        &json!({ "t": "sub_end", "id": id, "reason": "no such live agent" }),
+                    );
                     continue;
                 };
                 let mut rx = sess.events.subscribe();
@@ -469,9 +499,14 @@ async fn link_loop(
                     loop {
                         match rx.recv().await {
                             Ok(ev) => {
-                                let Ok(ev_json) = serde_json::to_value(&ev) else { continue };
+                                let Ok(ev_json) = serde_json::to_value(&ev) else {
+                                    continue;
+                                };
                                 if mesh2
-                                    .send_to(&peer2, &json!({ "t": "ev", "id": id2, "ev": ev_json }))
+                                    .send_to(
+                                        &peer2,
+                                        &json!({ "t": "ev", "id": id2, "ev": ev_json }),
+                                    )
                                     .is_err()
                                 {
                                     break;
@@ -501,7 +536,8 @@ async fn link_loop(
                     let is_end = payload.get("t").and_then(|t| t.as_str()) == Some("sub_end");
                     let dead = {
                         let subs = mesh.remote_subs.lock().unwrap();
-                        subs.get(id).map(|(_, tx)| tx.send(payload.clone()).is_err())
+                        subs.get(id)
+                            .map(|(_, tx)| tx.send(payload.clone()).is_err())
                     };
                     if dead == Some(true) || is_end {
                         mesh.remote_subs.lock().unwrap().remove(id);
@@ -557,7 +593,9 @@ async fn serve_api_req(
                     .and_then(|r| r.as_str())
                     .ok_or_else(|| anyhow!("missing request_id"))?,
                 body.get("allow").and_then(|a| a.as_bool()).unwrap_or(false),
-                body.get("message").and_then(|m| m.as_str()).map(str::to_owned),
+                body.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_owned),
                 body.get("updated_input").cloned().filter(|v| !v.is_null()),
             )?;
             Ok(json!({}))
@@ -572,8 +610,7 @@ async fn serve_api_req(
                 .session_id
                 .as_ref()
                 .ok_or_else(|| anyhow!("no session on record"))?;
-            let items =
-                aspen_claude::transcript::rehydrate(&row.repo, sid).unwrap_or_default();
+            let items = aspen_claude::transcript::rehydrate(&row.repo, sid).unwrap_or_default();
             Ok(json!(items))
         }
         other => Err(anyhow!("unknown remote op {other:?}")),
@@ -586,16 +623,15 @@ async fn serve_api_req(
 pub fn spawn_dialers(inner: Arc<NodeInner>) {
     let Some(mesh) = &inner.mesh else { return };
     for peer in &mesh.config.peers {
-        let Some(url) = peer.url.clone() else { continue };
+        let Some(url) = peer.url.clone() else {
+            continue;
+        };
         let name = peer.cert.node.clone();
         let inner = inner.clone();
         tokio::spawn(async move {
             loop {
                 // Only one live link per peer; if an inbound one exists, wait.
-                let already = inner
-                    .mesh
-                    .as_ref()
-                    .is_some_and(|m| m.link_up(&name));
+                let already = inner.mesh.as_ref().is_some_and(|m| m.link_up(&name));
                 if !already {
                     match tokio_tungstenite::connect_async(&url).await {
                         Ok((ws, _)) => {
@@ -666,7 +702,7 @@ fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
 }
 
 async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
-    use aspen_wire::relay::{Challenge, RelayFrame, Register};
+    use aspen_wire::relay::{Challenge, Register};
 
     let mesh = inner
         .mesh
@@ -768,7 +804,11 @@ async fn relay_read_loop(
                     start_relay_link(inner, me, &node, relay_tx, peer_ins);
                 }
             }
-            RelayFrame::Route { from: Some(from), data, .. } => {
+            RelayFrame::Route {
+                from: Some(from),
+                data,
+                ..
+            } => {
                 let sender = peer_ins.lock().unwrap().get(&from).cloned();
                 match sender {
                     Some(tx) => {
@@ -807,7 +847,10 @@ fn start_relay_link(
 
     let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-    peer_ins.lock().unwrap().insert(peer.to_owned(), in_tx.clone());
+    peer_ins
+        .lock()
+        .unwrap()
+        .insert(peer.to_owned(), in_tx.clone());
 
     // Bridge this link's outbound frames into relay Route envelopes.
     let relay_tx2 = relay_tx.clone();

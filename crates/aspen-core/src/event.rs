@@ -21,7 +21,10 @@ pub enum SessionEvent {
     TextDelta { text: String, thinking: bool },
     /// A block-level assistant snapshot (UI performs the snapshot-reconciling
     /// merge; adapters must not).
-    AssistantMessage { message_id: Option<String>, raw: Value },
+    AssistantMessage {
+        message_id: Option<String>,
+        raw: Value,
+    },
     /// The model invoked a tool.
     ToolUse {
         tool_use_id: String,
@@ -30,7 +33,10 @@ pub enum SessionEvent {
         parent_tool_use_id: Option<String>,
     },
     /// A tool's result came back.
-    ToolResult { tool_use_id: Option<String>, raw: Value },
+    ToolResult {
+        tool_use_id: Option<String>,
+        raw: Value,
+    },
     /// A user message we sent was accepted by the runtime (delivery ack).
     UserReplay { uuid: String },
     /// The runtime asked permission for a tool call and hub's policy did not

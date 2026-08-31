@@ -53,7 +53,9 @@ pub struct SessionInfo {
 /// Enumerate a project's sessions from disk, newest first. A session with
 /// zero real user messages is a warm spawn — callers may hide it.
 pub fn enumerate_sessions(project_path: &Path) -> Result<Vec<SessionInfo>> {
-    let dir = claude_home().join("projects").join(project_slug(project_path));
+    let dir = claude_home()
+        .join("projects")
+        .join(project_slug(project_path));
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -208,7 +210,9 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
                 if !is_real_user_line(&v) {
                     continue;
                 }
-                let Some(text) = extract_text(&v) else { continue };
+                let Some(text) = extract_text(&v) else {
+                    continue;
+                };
                 let is_bus = text.trim_start().starts_with("[aspen bus]");
                 items.push(json!({
                     "role": "user", "bus": is_bus, "text": text,

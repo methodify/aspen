@@ -116,7 +116,9 @@ pub fn send_message(
         return Err("refusing to send an empty message".into());
     }
     if !["gating", "normal", "notice"].contains(&urgency) {
-        return Err(format!("urgency must be gating|normal|notice, not {urgency:?}"));
+        return Err(format!(
+            "urgency must be gating|normal|notice, not {urgency:?}"
+        ));
     }
 
     // Resolve the address to concrete recipients.
@@ -269,8 +271,10 @@ fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
                     "not running".to_owned()
                 };
                 let pending = inner.store.pending_count(&a.name).unwrap_or(0);
-                let mut line =
-                    format!("  @{} — #{} — on node '{}' — {}", a.name, a.channel, node, state);
+                let mut line = format!(
+                    "  @{} — #{} — on node '{}' — {}",
+                    a.name, a.channel, node, state
+                );
                 if pending > 0 {
                     line.push_str(&format!(", {pending} pending here"));
                 }

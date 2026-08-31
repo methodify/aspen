@@ -53,9 +53,7 @@ fn normalize_stream_event(frame: &Value) -> Vec<SessionEvent> {
     }
     // Boundaries (message_start/stop, content_block_start/stop) matter to a
     // renderer; pass them through as Raw so the UI layer can use them.
-    vec![SessionEvent::Raw {
-        raw: frame.clone(),
-    }]
+    vec![SessionEvent::Raw { raw: frame.clone() }]
 }
 
 fn normalize_assistant(frame: Value) -> Vec<SessionEvent> {

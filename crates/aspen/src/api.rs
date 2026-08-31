@@ -67,7 +67,10 @@ pub async fn serve(
         .route("/operator/inbox", get(get_inbox))
         .route("/operator/inbox/read", post(post_inbox_read))
         .route("/repo/skills", get(get_skills))
-        .route("/repo/skill", get(get_skill).put(put_skill).delete(delete_skill))
+        .route(
+            "/repo/skill",
+            get(get_skill).put(put_skill).delete(delete_skill),
+        )
         .route("/agents/{name}/reload", post(post_reload))
         .route("/federation/ws", get(ws_federation))
         .with_state(state.clone());
@@ -307,13 +310,20 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         interactive: true,
         ..Default::default()
     };
-    match s.node.spawn_agent(&name, PathBuf::from(body.repo), opts).await {
+    match s
+        .node
+        .spawn_agent(&name, PathBuf::from(body.repo), opts)
+        .await
+    {
         Ok(_) => {
             let rows = s.node.inner.store.agents().unwrap_or_default();
             match rows.iter().find(|a| a.name == name) {
                 Some(a) => Json(agent_json(&s, a)).into_response(),
-                None => err(StatusCode::INTERNAL_SERVER_ERROR, "spawned but not registered")
-                    .into_response(),
+                None => err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "spawned but not registered",
+                )
+                .into_response(),
             }
         }
         Err(e) if e.to_string().contains("already running") => {
@@ -365,10 +375,17 @@ async fn post_permission(
     Json(body): Json<PermissionBody>,
 ) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "permission", &bare, json!({
-            "request_id": request_id, "allow": body.allow,
-            "message": body.message, "updated_input": body.updated_input,
-        })).await;
+        return proxy(
+            &s,
+            &node,
+            "permission",
+            &bare,
+            json!({
+                "request_id": request_id, "allow": body.allow,
+                "message": body.message, "updated_input": body.updated_input,
+            }),
+        )
+        .await;
     }
     match s.node.answer_permission(
         &name,
@@ -391,8 +408,11 @@ async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse
             let rows = s.node.inner.store.agents().unwrap_or_default();
             match rows.iter().find(|a| a.name == name) {
                 Some(a) => Json(agent_json(&s, a)).into_response(),
-                None => err(StatusCode::INTERNAL_SERVER_ERROR, "revived but not registered")
-                    .into_response(),
+                None => err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "revived but not registered",
+                )
+                .into_response(),
             }
         }
         Err(e) => err(StatusCode::CONFLICT, e).into_response(),
@@ -573,8 +593,11 @@ async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoRespo
 /// open but can neither read nor forge mesh traffic.
 async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
     if s.node.inner.mesh.is_none() {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "this node has not joined a mesh")
-            .into_response();
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this node has not joined a mesh",
+        )
+        .into_response();
     }
     let inner = s.node.inner.clone();
     ws.on_upgrade(move |socket| async move {

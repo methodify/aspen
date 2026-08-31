@@ -160,7 +160,10 @@ mod tests {
         let one = compose(&[msg("normal", "arch", "hello")]);
         assert!(one.contains("[aspen bus] normal from @arch"));
         assert!(one.contains("hello"));
-        let two = compose(&[msg("normal", "arch", "first"), msg("gating", "op", "second")]);
+        let two = compose(&[
+            msg("normal", "arch", "first"),
+            msg("gating", "op", "second"),
+        ]);
         assert!(two.starts_with("[aspen bus] 2 messages"));
         // Send order preserved in the rendered text.
         assert!(two.find("first").unwrap() < two.find("second").unwrap());

@@ -95,8 +95,7 @@ impl ClaudeSession {
         cfg: ClaudeConfig,
         mcp: McpServer,
     ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
-        let broker: Arc<dyn crate::broker::PermissionBroker> =
-            Arc::new(PolicyBroker(cfg.policy));
+        let broker: Arc<dyn crate::broker::PermissionBroker> = Arc::new(PolicyBroker(cfg.policy));
         Self::spawn_with_broker(cfg, mcp, broker).await
     }
 
@@ -183,9 +182,7 @@ impl ClaudeSession {
                             continue;
                         }
                     };
-                    session
-                        .route_frame(frame, &events_tx, &broker, &mcp)
-                        .await;
+                    session.route_frame(frame, &events_tx, &broker, &mcp).await;
                 }
             });
         }
@@ -317,7 +314,10 @@ impl ClaudeSession {
             .unwrap_or("")
             .to_owned();
         let request = frame.get("request").cloned().unwrap_or(Value::Null);
-        let subtype = request.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+        let subtype = request
+            .get("subtype")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
 
         match subtype {
             "can_use_tool" => {
@@ -405,8 +405,11 @@ impl ClaudeSession {
     /// Re-read plugins/skills/commands from disk (reference §12.4). Returns
     /// the refreshed inventory the CLI reports.
     pub async fn reload_plugins(&self) -> Result<Value> {
-        self.request(json!({ "subtype": "reload_plugins" }), Duration::from_secs(30))
-            .await
+        self.request(
+            json!({ "subtype": "reload_plugins" }),
+            Duration::from_secs(30),
+        )
+        .await
     }
 
     /// End-of-session ladder (reference §4.3): `end_session` → stdin EOF →
@@ -429,11 +432,7 @@ impl ClaudeSession {
 
 /// The silent tier: what a policy decides without anyone being asked.
 /// Returns None when the policy has no opinion (prompt-worthy).
-pub fn policy_opinion(
-    policy: PermissionPolicy,
-    tool_name: &str,
-    request: &Value,
-) -> Option<bool> {
+pub fn policy_opinion(policy: PermissionPolicy, tool_name: &str, request: &Value) -> Option<bool> {
     match policy {
         PermissionPolicy::AllowAll => Some(true),
         PermissionPolicy::ReadOnlyAuto => {

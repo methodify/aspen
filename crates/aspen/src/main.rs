@@ -272,8 +272,13 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             })?;
             println!("mesh '{mesh}' created; this node is '{node_name}'.");
             println!("ROOT KEY at {} — it IS the mesh. Back it up; never copy it to nodes that don't certify.", data_dir.join("root.key").display());
-            println!("\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
-                identity::to_blob("cert", files.load_identity()?.unwrap().cert.as_ref().unwrap())?);
+            println!(
+                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
+                identity::to_blob(
+                    "cert",
+                    files.load_identity()?.unwrap().cert.as_ref().unwrap()
+                )?
+            );
             Ok(())
         }
         MeshCommand::Enroll { node } => {
@@ -294,22 +299,25 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             Ok(())
         }
         MeshCommand::Certify { blob } => {
-            let root = files
-                .load_root()?
-                .ok_or_else(|| anyhow::anyhow!("no root key here — run this on the mesh's root node"))?;
+            let root = files.load_root()?.ok_or_else(|| {
+                anyhow::anyhow!("no root key here — run this on the mesh's root node")
+            })?;
             let req: JoinRequest = identity::from_blob("enroll", &blob)?;
             let cert = root.certify(&req)?;
             files.add_peer(cert.clone(), None).ok(); // register them here too
-            println!("cert blob for '{}' — run `aspen mesh join <blob>` on that node:\n{}",
-                cert.node, identity::to_blob("cert", &cert)?);
+            println!(
+                "cert blob for '{}' — run `aspen mesh join <blob>` on that node:\n{}",
+                cert.node,
+                identity::to_blob("cert", &cert)?
+            );
             println!("\n(peer '{}' was also added to THIS node's mesh.json — set its URL with `aspen mesh peers-add` if you dial it)", cert.node);
             Ok(())
         }
         MeshCommand::Join { blob } => {
             let cert: NodeCert = identity::from_blob("cert", &blob)?;
-            let mut id = files
-                .load_identity()?
-                .ok_or_else(|| anyhow::anyhow!("no identity here — run `aspen mesh enroll` first"))?;
+            let mut id = files.load_identity()?.ok_or_else(|| {
+                anyhow::anyhow!("no identity here — run `aspen mesh enroll` first")
+            })?;
             id.install_cert(cert.clone())?;
             files.save_identity(&id)?;
             if files.load_mesh()?.is_none() {
@@ -323,8 +331,10 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 })?;
             }
             println!("joined mesh '{}' as node '{}'.", cert.mesh, cert.node);
-            println!("\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
-                identity::to_blob("cert", &cert)?);
+            println!(
+                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
+                identity::to_blob("cert", &cert)?
+            );
             Ok(())
         }
         MeshCommand::Export => {
@@ -348,13 +358,15 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             Ok(())
         }
         MeshCommand::RootPubkey => {
-            let mesh = files.load_mesh()?
+            let mesh = files
+                .load_mesh()?
                 .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
             println!("{}", aspen_wire::b64::encode(&mesh.root_public));
             Ok(())
         }
         MeshCommand::Relay { url } => {
-            let mut mesh = files.load_mesh()?
+            let mut mesh = files
+                .load_mesh()?
                 .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
             mesh.relay = url.clone();
             files.save_mesh(&mesh)?;
@@ -371,7 +383,11 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                         "mesh '{}' — this node: '{}' ({})",
                         mesh.mesh,
                         id.node,
-                        if id.cert.is_some() { "certified" } else { "NOT certified" }
+                        if id.cert.is_some() {
+                            "certified"
+                        } else {
+                            "NOT certified"
+                        }
                     );
                     if files.load_root()?.is_some() {
                         println!("root key: PRESENT on this node");
@@ -387,11 +403,16 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                         println!(
                             "  peer '{}'{}",
                             p.cert.node,
-                            p.url.map(|u| format!(" — dials {u}")).unwrap_or_else(|| " — inbound only".into())
+                            p.url
+                                .map(|u| format!(" — dials {u}"))
+                                .unwrap_or_else(|| " — inbound only".into())
                         );
                     }
                 }
-                (Some(id), None) => println!("identity '{}' exists but no mesh joined (enrolled, awaiting join?)", id.node),
+                (Some(id), None) => println!(
+                    "identity '{}' exists but no mesh joined (enrolled, awaiting join?)",
+                    id.node
+                ),
                 _ => println!("no mesh membership on this node (see `aspen mesh init` / `enroll`)"),
             }
             Ok(())
@@ -410,7 +431,10 @@ fn bus_log(data_dir: &std::path::Path, lines: i64) -> Result<()> {
         let state = if m.ingested_at.is_some() {
             format!("ingested via {}", m.delivered_via.as_deref().unwrap_or("?"))
         } else if m.delivered_at.is_some() {
-            format!("delivered via {}", m.delivered_via.as_deref().unwrap_or("?"))
+            format!(
+                "delivered via {}",
+                m.delivered_via.as_deref().unwrap_or("?")
+            )
         } else {
             "pending".into()
         };
@@ -460,14 +484,9 @@ async fn dev_oneshot(
     let mut events = node.subscribe(&name).expect("just spawned");
     node.send_operator_message(&name, prompt).await?;
 
-    loop {
-        match events.recv().await {
-            Ok(ev) => {
-                if render_event(&name, &ev, false) {
-                    break;
-                }
-            }
-            Err(_) => break,
+    while let Ok(ev) = events.recv().await {
+        if render_event(&name, &ev, false) {
+            break;
         }
     }
     node.shutdown_agent(&name).await.ok();
@@ -575,10 +594,9 @@ async fn dev_duo(node: &Node, repo: PathBuf, model: Option<String>, timeout_s: u
     // the sentinel while planning to say it later.)
     let store = node.inner.store.clone();
     let round_trip_done = move || -> bool {
-        store.log(100).map_or(false, |rows| {
-            rows.iter().any(|m| {
-                m.sender == "pong" && m.recipient == "ping" && m.delivered_at.is_some()
-            })
+        store.log(100).is_ok_and(|rows| {
+            rows.iter()
+                .any(|m| m.sender == "pong" && m.recipient == "ping" && m.delivered_at.is_some())
         })
     };
     let watch = async {
@@ -589,10 +607,7 @@ async fn dev_duo(node: &Node, repo: PathBuf, model: Option<String>, timeout_s: u
             };
             let Ok((who, ev)) = ev else { continue };
             render_event(who, &ev, true);
-            if who == "ping"
-                && matches!(ev, SessionEvent::TurnEnded { .. })
-                && round_trip_done()
-            {
+            if who == "ping" && matches!(ev, SessionEvent::TurnEnded { .. }) && round_trip_done() {
                 break;
             }
         }

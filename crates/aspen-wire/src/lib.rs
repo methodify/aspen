@@ -17,7 +17,7 @@ pub mod relay;
 
 pub use envelope::SealedEnvelope;
 pub use identity::{JoinRequest, MeshRoot, NodeCert, NodeIdentity};
-pub use relay::{Challenge, RelayFrame, Register};
+pub use relay::{Challenge, Register, RelayFrame};
 
 pub mod b64 {
     use base64::engine::general_purpose::STANDARD;
@@ -31,6 +31,9 @@ pub mod b64 {
         Ok(STANDARD.decode(s)?)
     }
 
+    // serde's with-module contract hands us &Vec here; the slice lint
+    // doesn't apply to a signature we don't control.
+    #[allow(clippy::ptr_arg)]
     pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&encode(v))
     }

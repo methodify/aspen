@@ -73,7 +73,7 @@ pub fn list(repo: &Path) -> Result<Vec<SkillEntry>> {
     // Commands: .claude/commands/**.md
     let cmd_dir = repo.join(".claude/commands");
     collect_commands(&cmd_dir, &cmd_dir, &mut out);
-    out.sort_by(|a, b| (a.kind.clone(), a.name.clone()).cmp(&(b.kind.clone(), b.name.clone())));
+    out.sort_by_key(|a| (a.kind.clone(), a.name.clone()));
     Ok(out)
 }
 
