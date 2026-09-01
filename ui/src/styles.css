@@ -528,3 +528,18 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .composer textarea { flex: 1; }
 .composer button { font: 600 0.8125rem/1 var(--font-body); padding: var(--sp-2) var(--sp-5); background: var(--sig-normal); color: var(--bg-well); border: none; cursor: pointer; align-self: stretch; }
 .composer button:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Nav rail session entries: name + identity line ─────────────────── */
+.nav-item.rail-session { gap: 10px; align-items: flex-start; padding-top: 6px; padding-bottom: 6px; }
+.nav-item.rail-session .meter { margin-top: 3px; flex-shrink: 0; }
+.rail-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.rail-line1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rail-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-line1 .badge-count { margin-left: auto; }
+.rail-line2 {
+  font: 400 0.68rem/1.3 var(--font-mono);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

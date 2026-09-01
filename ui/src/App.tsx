@@ -64,21 +64,31 @@ function MeshColumn() {
       {agents.length === 0 && (
         <div style={{ padding: "4px 16px", color: "var(--text-dim)", fontSize: 12 }}>none running</div>
       )}
-      {agents.map((a) => (
-        <NavLink
-          key={a.name}
-          to={`/session/${encodeURIComponent(a.name)}`}
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-          title={`${a.repo ?? `remote · ${a.node}`} · ${a.live ? (a.turn_state ?? "live") : "down"}`}
-          style={{ gap: 10 }}
-        >
-          <Meter presence={presenceOf(a.live, a.turn_state)} />
-          <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            @{a.name}
-          </span>
-          {a.pending > 0 && <span className="badge-count">{a.pending}</span>}
-        </NavLink>
-      ))}
+      {agents.map((a) => {
+        // Remote names arrive as `name@node`; the rail shows the bare name
+        // and carries the node on the identity line instead.
+        const bare = a.remote ? a.name.split("@")[0] : a.name;
+        const identity = [a.title, `#${a.channel}`, a.remote ? a.node : null]
+          .filter(Boolean)
+          .join(" · ");
+        return (
+          <NavLink
+            key={a.name}
+            to={`/session/${encodeURIComponent(a.name)}`}
+            className={({ isActive }) => `nav-item rail-session${isActive ? " active" : ""}`}
+            title={`${a.repo ?? `remote · ${a.node}`} · ${a.live ? (a.turn_state ?? "live") : "down"}`}
+          >
+            <Meter presence={presenceOf(a.live, a.turn_state)} />
+            <span className="rail-body">
+              <span className="rail-line1">
+                <span className="mono rail-name">@{bare}</span>
+                {a.pending > 0 && <span className="badge-count">{a.pending}</span>}
+              </span>
+              <span className="rail-line2">{identity}</span>
+            </span>
+          </NavLink>
+        );
+      })}
     </nav>
   );
 }
