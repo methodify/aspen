@@ -449,7 +449,16 @@ export default function MeshMap() {
           >
             <svg
               viewBox={`0 0 ${layout.width} ${layout.height}`}
-              style={{ width: "100%", height: "auto", display: "block" }}
+              // Layout units are pixels: the map has an intrinsic 1:1 scale
+              // (22px markers, 300px node panels) and only ever SHRINKS to
+              // fit the viewport — stretching a small mesh up to poster
+              // size made a one-node map fill the whole screen.
+              style={{
+                width: layout.width,
+                maxWidth: "100%",
+                height: "auto",
+                display: "block",
+              }}
               role="img"
               aria-label="Mesh topology map"
             >
