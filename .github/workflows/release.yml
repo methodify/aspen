@@ -15,8 +15,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
+          # Cross-compiled: the hosted arm runner label is public-repo-only.
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           - os: macos-latest
@@ -36,6 +38,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - name: install cross linker
+        if: matrix.cross
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+          } >> "$GITHUB_ENV"
       - name: build binaries (console embedded)
         run: cargo build --release --target ${{ matrix.target }} -p aspen -p aspen-relay
       - name: stage release assets
@@ -50,6 +61,7 @@ jobs:
         with:
           name: aspen-${{ matrix.target }}
           path: dist/*
+          retention-days: 7
 
   publish:
     needs: binaries
