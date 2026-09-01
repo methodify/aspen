@@ -603,7 +603,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             println!("mesh '{mesh}' created; this node is '{node_name}'.");
             println!("ROOT KEY at {} — it IS the mesh. Back it up; never copy it to nodes that don't certify.", data_dir.join("root.key").display());
             println!(
-                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
+                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes; saved in identity.json — re-print anytime with `aspen mesh export`):\n{}",
                 identity::to_blob(
                     "cert",
                     files.load_identity()?.unwrap().cert.as_ref().unwrap()
@@ -661,8 +661,9 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 })?;
             }
             println!("joined mesh '{}' as node '{}'.", cert.mesh, cert.node);
+            println!("this node's cert blob is saved; print it for `peers-add` on other nodes with `aspen mesh export`.");
             println!(
-                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes):\n{}",
+                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes; saved in identity.json — re-print anytime with `aspen mesh export`):\n{}",
                 identity::to_blob("cert", &cert)?
             );
             Ok(())
