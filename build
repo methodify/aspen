@@ -1,0 +1,4 @@
+#!/bin/bash
+
+cargo build --release &
+cd ui && npm ci && npm run build

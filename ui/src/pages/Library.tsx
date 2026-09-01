@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
+import { useTrustedStart } from "../trust";
 
 function errText(e: unknown): string {
   return e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -394,6 +395,7 @@ function RepoStrip({
 
 function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
   const navigate = useNavigate();
+  const trust = useTrustedStart();
   const repos = reposPoll.data ?? [];
 
   const [selected, setSelected] = useState<string | null>(null);
@@ -433,7 +435,8 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
   async function newSession(repo: string, name: string) {
     setActionError(null);
     try {
-      await api.startAgent({ name, repo });
+      const agent = await trust.start({ name, repo });
+      if (agent === null) return; // operator declined the trust review
       navigate(`/session/${encodeURIComponent(name)}`);
     } catch (e) {
       setActionError(errText(e));
@@ -443,7 +446,8 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
   async function resumeSession(repo: string, s: SessionInfo, name: string) {
     setActionError(null);
     try {
-      await api.startAgent({ name, repo, resume: s.session_id });
+      const agent = await trust.start({ name, repo, resume: s.session_id });
+      if (agent === null) return;
       navigate(`/session/${encodeURIComponent(name)}`);
     } catch (e) {
       setActionError(errText(e));
@@ -456,6 +460,7 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {trust.dialog}
       <ErrorBar error={reposPoll.error ? `repos: ${reposPoll.error}` : null} />
       <ErrorBar error={actionError} />
 

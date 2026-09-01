@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import type { Channel, Repo } from "./api";
 import { useAppData } from "./App";
 import { presenceOf } from "./components";
@@ -185,9 +185,17 @@ export default function Palette() {
         setOpen(false);
         nav(`/session/${encodeURIComponent(name)}`);
       } catch (e) {
-        // 428 / untrusted-repo (and any other) error text, verbatim — the
-        // Sessions/Library pages own the full trust review flow.
-        setStatus({ text: e instanceof Error ? e.message : String(e), err: true });
+        // The Sessions/Library pages own the full trust review flow —
+        // point there instead of dead-ending on the raw 428.
+        const untrusted = e instanceof ApiError && e.status === 428;
+        setStatus({
+          text: untrusted
+            ? "untrusted repository — start it from Sessions (s) or Library (l) to review what it auto-runs"
+            : e instanceof Error
+              ? e.message
+              : String(e),
+          err: true,
+        });
       } finally {
         setPending(false);
       }

@@ -1,0 +1,38 @@
+/* Trust review dialog — the gate's honest inventory, Switchboard voice. */
+.trust-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  z-index: 95;
+}
+.trust-panel {
+  width: 520px;
+  max-width: 94vw;
+  max-height: 76vh;
+  overflow: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--sig-normal);
+  clip-path: polygon(var(--chamfer) 0, 100% 0, 100% 100%, 0 100%, 0 var(--chamfer));
+  padding: var(--sp-4);
+}
+.trust-head { display: flex; align-items: center; margin-bottom: var(--sp-3); }
+.trust-path { color: var(--text-hi); word-break: break-all; margin-bottom: var(--sp-2); }
+.trust-lede { color: var(--text-mid); font-size: 0.85rem; margin: 0 0 var(--sp-3); }
+.trust-lists { display: flex; flex-direction: column; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.trust-section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 4px; }
+.trust-item {
+  font-size: 0.78rem;
+  color: var(--text-mid);
+  background: var(--bg-well);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--sig-normal);
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.trust-actions { display: flex; gap: var(--sp-2); justify-content: flex-end; margin-top: var(--sp-2); }
+.trust-foot { margin-top: var(--sp-2); }

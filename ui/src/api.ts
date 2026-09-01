@@ -397,6 +397,9 @@ export const api = {
   dmLog: (a: string, b: string, n = 200) =>
     request<BusMessage[]>(`/api/dm?a=${enc(a)}&b=${enc(b)}&n=${n}`),
 
+  repoAutorun: (repo: string) =>
+    request<RepoAutorun>(`/api/repo/autorun?repo=${enc(repo)}`),
+
   mesh: () => request<MeshInfo>("/api/mesh"),
   trustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/trust", { path }),
   untrustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/untrust", { path }),

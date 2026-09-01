@@ -9,6 +9,7 @@ import { api, type Agent, type StartAgentRequest } from "../api";
 import { usePoll } from "../hooks";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
+import { useTrustedStart, type TrustedStart } from "../trust";
 import { Empty, ErrorBar, Meter, presenceOf } from "../components";
 
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
@@ -27,6 +28,7 @@ function stateColor(p: "busy" | "idle" | "off"): string {
 }
 
 export default function Sessions() {
+  const trust = useTrustedStart();
   const nav = useNavigate();
   const { agents, refreshAgents } = useAppData();
   const reposPoll = usePoll(api.repos, 15000);
@@ -105,8 +107,10 @@ export default function Sessions() {
       </div>
 
       <div className="stage-body">
+        {trust.dialog}
         {panelOpen && (
           <NewSessionPanel
+            startFn={trust.start}
             repoPaths={repos.map((r) => r.path)}
             existing={agents.map((a) => a.name)}
             onClose={() => setPanelOpen(false)}
@@ -213,7 +217,7 @@ export default function Sessions() {
                           onClick={(e) => {
                             e.stopPropagation();
                             void runAction(a.name, () =>
-                              api.startAgent({
+                              trust.start({
                                 name: a.name,
                                 repo: a.repo as string,
                                 resume: a.session_id,
@@ -279,11 +283,13 @@ export default function Sessions() {
 }
 
 function NewSessionPanel({
+  startFn,
   repoPaths,
   existing,
   onClose,
   onStarted,
 }: {
+  startFn: TrustedStart;
   repoPaths: string[];
   existing: string[];
   onClose: () => void;
@@ -320,7 +326,12 @@ function NewSessionPanel({
     if (model.trim()) req.model = model.trim();
     if (skip) req.skip_permissions = true;
     try {
-      const agent = await api.startAgent(req);
+      const agent = await startFn(req);
+      if (agent === null) {
+        // Operator declined the trust review.
+        setBusy(false);
+        return;
+      }
       await onStarted(agent.name);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed to start session");
