@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/aspen-core", "crates/aspen-claude", "crates/aspen-node", "crates/aspen-wire", "crates/aspen-relay", "crates/aspen"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/genuye/aspen"

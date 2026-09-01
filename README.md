@@ -34,7 +34,7 @@ runtime is an adapter, not a rewrite.
 | `aspen-node` | The node: bus store, session manager, delivery engine, mesh federation, permission broker, skills |
 | `aspen-wire` | Mesh identity, sealed envelopes, the relay protocol |
 | `aspen-relay` | The standalone rendezvous relay binary |
-| `aspen` | The `aspen` daemon + CLI (`up`, `down`, `update`, `dev`, `bus`, `mesh`) |
+| `aspen` | The `aspen` daemon + CLI (`up`, `down`, `status`, `update`, `dev`, `bus`, `mesh`) |
 | `ui/` | The operator console (React + TypeScript) |
 | `rendezvous/cloudflare/` | The Workers + Durable Objects rendezvous port |
 
@@ -95,8 +95,11 @@ aspen up -d      # detached; logs to <data-dir>/aspen.log
 aspen down       # stop it (clean shutdown)
 ```
 
-A clean shutdown records which sessions were live; the next `aspen up`
-revives them automatically (`--no-resume` to skip). In debug builds the
+`aspen status` reads out the whole node: binary and daemon versions, pid and
+uptime, the session roster with turn state, pending revives, and mesh
+membership with live link health (from disk when the daemon is down). A clean
+shutdown records which sessions were live; the next `aspen up` revives them
+automatically (`--no-resume` to skip). In debug builds the
 console is read live from `ui/dist`; release builds embed it, and `--ui DIR`
 serves a directory from disk in either case.
 

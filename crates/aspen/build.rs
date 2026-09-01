@@ -16,6 +16,14 @@ fn main() {
     let _ = std::fs::create_dir_all(&dist);
     println!("cargo:rerun-if-changed={}", dist.display());
 
+    // Restamp when the checked-out commit moves, not only on dist changes.
+    let git = Path::new(&manifest).join("../../.git");
+    println!("cargo:rerun-if-changed={}", git.join("HEAD").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        git.join("refs/heads").display()
+    );
+
     let sha = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()

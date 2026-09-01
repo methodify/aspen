@@ -13,6 +13,7 @@ use aspen_core::SessionEvent;
 use aspen_node::{Node, SpawnOpts};
 
 mod api;
+mod status;
 mod update;
 
 const LONG_VERSION: &str = concat!(
@@ -65,6 +66,8 @@ enum Command {
     },
     /// Stop a detached node started with `up -d`.
     Down,
+    /// Show node status: daemon, sessions, mesh.
+    Status,
     /// Update aspen in place from the latest release (or a given version).
     Update {
         /// Install a specific version (tag), e.g. v0.2.0. Default: latest.
@@ -190,6 +193,12 @@ enum BusCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Die quietly when a pipe closes (`aspen status | head`), like other
+    // unix CLIs, instead of panicking on the failed println.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -210,7 +219,7 @@ async fn main() -> Result<()> {
             // Detached start: re-exec self in a new session, redirect output
             // to a log file, record the pid, and return.
             if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
-                return spawn_detached(&cli.data_dir, listen, ui.as_deref());
+                return spawn_detached(&cli.data_dir, listen, ui.as_deref(), no_resume);
             }
             let node = Node::open(&cli.data_dir)?;
             if let Some(d) = &ui {
@@ -232,6 +241,7 @@ async fn main() -> Result<()> {
             result
         }
         Command::Down => stop_detached(&cli.data_dir),
+        Command::Status => status::run(&cli.data_dir),
         Command::Update {
             version,
             force,
@@ -356,6 +366,7 @@ fn spawn_detached(
     data_dir: &std::path::Path,
     listen: std::net::SocketAddr,
     ui: Option<&std::path::Path>,
+    no_resume: bool,
 ) -> Result<()> {
     use std::process::{Command, Stdio};
 
@@ -376,6 +387,9 @@ fn spawn_detached(
         .arg(listen.to_string());
     if let Some(ui) = ui {
         cmd.arg("--ui").arg(ui);
+    }
+    if no_resume {
+        cmd.arg("--no-resume");
     }
     cmd.env("ASPEN_DETACHED", "1")
         .stdin(Stdio::null())
@@ -400,7 +414,36 @@ fn spawn_detached(
         cmd.creation_flags(0x0000_0008 | 0x0000_0200);
     }
 
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
+
+    // Don't declare success until the child proves it: daemon.json is only
+    // written after the listener binds, so wait for it to carry the child's
+    // pid — and surface the log if the child dies instead (e.g. the port is
+    // already taken, which on WSL2 includes ports the *other* side of the
+    // machine forwards).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if read_daemon_state(data_dir).and_then(|s| s.get("pid").and_then(|p| p.as_u64()))
+            == Some(child.id() as u64)
+        {
+            break;
+        }
+        if let Some(status) = child.try_wait()? {
+            eprintln!("aspen failed to start (exit {status}). Last log lines:");
+            print_log_tail(&log_path, 6);
+            anyhow::bail!(
+                "daemon did not start — if the port is in use, pick another with `aspen up -d --listen 127.0.0.1:<port>`"
+            );
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!(
+                "daemon (pid {}) has not confirmed startup after 15s — check {}",
+                child.id(),
+                log_path.display()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
     std::fs::write(pidfile(data_dir), child.id().to_string())?;
     println!(
         "aspen started detached (pid {}) on http://{listen}\n  logs: {}\n  stop: aspen --data-dir {} down",
@@ -409,6 +452,15 @@ fn spawn_detached(
         data_dir.display(),
     );
     Ok(())
+}
+
+fn print_log_tail(log_path: &std::path::Path, n: usize) {
+    if let Ok(text) = std::fs::read_to_string(log_path) {
+        let lines: Vec<&str> = text.lines().collect();
+        for line in lines.iter().rev().take(n).rev() {
+            eprintln!("  | {line}");
+        }
+    }
 }
 
 pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
