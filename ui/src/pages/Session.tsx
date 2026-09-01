@@ -438,7 +438,7 @@ function TurnEndMarker({ item }: { item: TurnEndItem }) {
 // The page
 
 function SessionView({ name }: { name: string }) {
-  const { agents } = useAppData();
+  const { agents, agentsLoaded, refreshAgents } = useAppData();
   const agent = agents.find((a) => a.name === name);
 
   const [transcript, dispatch] = useReducer(reducer, undefined, emptyTranscript);
@@ -455,6 +455,26 @@ function SessionView({ name }: { name: string }) {
   const [confirmStop, setConfirmStop] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [reviving, setReviving] = useState(false);
+
+  // Liveness truth comes from the polled roster, not just the WS `exited`
+  // event — a page that loads (or reconnects) after the process died would
+  // otherwise never learn it and strand the operator with dead controls.
+  // The roster also clears the banner when the session is revived from
+  // another surface. (Remote agents on a down node are excluded: their
+  // `live=false` means "unreachable", not "exited".)
+  useEffect(() => {
+    if (!agentsLoaded || !agent || agent.remote) return;
+    if (!agent.live) {
+      // While a revive is in flight the roster lags a beat; don't flash
+      // the banner back over it.
+      if (reviving) return;
+      setExited((x) => x ?? { code: null });
+      setBusy(false);
+      setInterrupting(false);
+    } else {
+      setExited(null);
+    }
+  }, [agentsLoaded, agent, reviving]);
 
   // --- interactive extras state ---
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -716,6 +736,7 @@ function SessionView({ name }: { name: string }) {
       // session back up and history is already on screen.
       setExited(null);
       setBusy(false);
+      void refreshAgents();
     } catch (e) {
       setActionError(`resume: ${errText(e)}`);
     } finally {
