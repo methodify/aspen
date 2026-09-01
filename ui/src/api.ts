@@ -304,6 +304,7 @@ export const api = {
   startAgent: (req: StartAgentRequest) => post<Agent>("/api/agents", req),
   deleteAgent: (name: string) =>
     request<Record<string, never>>(`/api/agents/${enc(name)}`, { method: "DELETE" }),
+  revive: (name: string) => post<Agent>(`/api/agents/${enc(name)}/revive`),
 
   sendMessage: (name: string, text: string) =>
     post<{ uuid: string }>(`/api/agents/${enc(name)}/message`, { text }),

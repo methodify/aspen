@@ -398,3 +398,9 @@
 .transcript.console .cline-assistant { white-space: normal; }
 /* Markdown containers manage their own whitespace (pre-wrap would double it). */
 .cline .tui-md { white-space: normal; }
+
+/* stop control + exited banner actions */
+.btn-stop { border-color: var(--sig-gate); color: var(--sig-gate); }
+.btn-stop:hover { background: var(--sig-gate-dim); color: var(--sig-gate); }
+.stop-confirm { display: inline-flex; gap: 6px; align-items: center; }
+.exited-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

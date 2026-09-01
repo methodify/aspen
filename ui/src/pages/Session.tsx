@@ -29,6 +29,7 @@ import {
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { Meter, presenceOf } from "./../components";
+import { useHotkeys } from "./../hotkeys";
 import {
   buildQuestionUpdatedInput,
   filterSlashCommands,
@@ -451,6 +452,9 @@ function SessionView({ name }: { name: string }) {
   const [draft, setDraft] = useState("");
   const [reloading, setReloading] = useState(false);
   const [reloadNote, setReloadNote] = useState<string | null>(null);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [reviving, setReviving] = useState(false);
 
   // --- interactive extras state ---
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -668,6 +672,54 @@ function SessionView({ name }: { name: string }) {
     } catch (e) {
       setInterrupting(false);
       setActionError(`interrupt: ${errText(e)}`);
+    }
+  }
+
+  useHotkeys("session", [
+    {
+      key: "i",
+      description: "interrupt the running turn",
+      when: () => busy && !interrupting,
+      handler: () => void interrupt(),
+    },
+    {
+      key: "x",
+      description: "stop this session (asks to confirm)",
+      when: () => exited === null,
+      handler: () => setConfirmStop(true),
+    },
+    { key: "Enter", description: "send (Shift+Enter for a newline)" },
+    { key: "/", description: "slash-command autocomplete in the composer" },
+  ]);
+
+  async function stopSession() {
+    setStopping(true);
+    setActionError(null);
+    try {
+      await api.deleteAgent(name);
+      // The exited banner arrives via the WS `exited` event; the process
+      // takes the clean shutdown ladder.
+    } catch (e) {
+      setActionError(`stop: ${errText(e)}`);
+    } finally {
+      setStopping(false);
+      setConfirmStop(false);
+    }
+  }
+
+  async function reviveSession() {
+    setReviving(true);
+    setActionError(null);
+    try {
+      await api.revive(name);
+      // Same session id resumes; the WS reconnect loop picks the live
+      // session back up and history is already on screen.
+      setExited(null);
+      setBusy(false);
+    } catch (e) {
+      setActionError(`resume: ${errText(e)}`);
+    } finally {
+      setReviving(false);
     }
   }
 
@@ -947,6 +999,11 @@ function SessionView({ name }: { name: string }) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send();
+      return;
+    }
+    // Escape hands the keyboard back to the page (nav keys, ?, i, x…).
+    if (e.key === "Escape") {
+      e.currentTarget.blur();
     }
   }
 
@@ -1020,6 +1077,29 @@ function SessionView({ name }: { name: string }) {
             {reloading ? "reloading…" : "reload"}
           </button>
         )}
+        {exited === null &&
+          (confirmStop ? (
+            <span className="stop-confirm">
+              <button
+                className="btn danger sm"
+                disabled={stopping}
+                onClick={() => void stopSession()}
+              >
+                {stopping ? "stopping…" : "confirm stop"}
+              </button>
+              <button className="btn ghost sm" onClick={() => setConfirmStop(false)}>
+                cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              className="btn-reload btn-stop"
+              onClick={() => setConfirmStop(true)}
+              title="stop this session — the claude process exits cleanly; the conversation stays on disk and can be resumed"
+            >
+              stop
+            </button>
+          ))}
         <span className={`ws-state ws-${wsState}`}>
           <span
             className={wsState === "open" ? "dot dot-idle" : "dot dot-down"}
@@ -1041,7 +1121,7 @@ function SessionView({ name }: { name: string }) {
           >
             <option value="default">default</option>
             {modelOptions.map((o) => (
-              <option key={o.id} value={o.id}>
+              <option key={o.id} value={o.id} title={o.description}>
                 {o.label}
               </option>
             ))}
@@ -1209,10 +1289,20 @@ function SessionView({ name }: { name: string }) {
 
       {exited && (
         <div className="exited-banner">
-          session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — resume{" "}
-          <span className="mono">@{name}</span> from{" "}
-          <Link to="/sessions">Sessions</Link> or <Link to="/library">Library</Link> to
-          continue its conversation.
+          <span>
+            session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — the
+            conversation is on disk and can continue.
+          </span>
+          <button
+            className="btn primary sm"
+            disabled={reviving}
+            onClick={() => void reviveSession()}
+          >
+            {reviving ? "resuming…" : `resume @${name}`}
+          </button>
+          <span className="mono-meta">
+            or from <Link to="/sessions">Sessions</Link> / <Link to="/library">Library</Link>
+          </span>
         </div>
       )}
 

@@ -187,6 +187,7 @@ export function filterSlashCommands(
 export interface ModelOption {
   id: string;
   label: string;
+  description?: string;
 }
 
 export function normalizeModels(models: unknown): ModelOption[] {
@@ -199,14 +200,19 @@ export function normalizeModels(models: unknown): ModelOption[] {
     }
     const r = asRecord(m);
     if (!r) continue;
-    const id = [r["id"], r["name"], r["model"]].find(
+    // The live handshake (2.1.251) uses `value` + `displayName` (with
+    // `resolvedModel` and `description`); older shapes fall back below.
+    const id = [r["value"], r["id"], r["name"], r["model"]].find(
       (v): v is string => typeof v === "string" && v !== "",
     );
     if (!id) continue;
     const label = [r["displayName"], r["display_name"], r["name"]].find(
       (v): v is string => typeof v === "string" && v !== "",
     );
-    out.push({ id, label: label ?? id });
+    const description = [r["description"], r["resolvedModel"]].find(
+      (v): v is string => typeof v === "string" && v !== "",
+    );
+    out.push({ id, label: label ?? id, ...(description ? { description } : {}) });
   }
   // Dedupe by id, keeping first occurrence.
   const seen = new Set<string>();

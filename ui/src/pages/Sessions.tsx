@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { api, type Agent, type StartAgentRequest } from "../api";
 import { usePoll } from "../hooks";
 import { useAppData } from "../App";
+import { useHotkeys } from "../hotkeys";
 import { Empty, ErrorBar, Meter, presenceOf } from "../components";
 
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
@@ -33,6 +34,14 @@ export default function Sessions() {
 
   const [query, setQuery] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
+
+  useHotkeys("sessions", [
+    {
+      key: "n",
+      description: "new session",
+      handler: () => setPanelOpen((v) => !v),
+    },
+  ]);
   const [rowErr, setRowErr] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);

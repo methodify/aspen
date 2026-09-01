@@ -1,0 +1,46 @@
+/* Keyboard help dialog — Switchboard voice, engraved plate. */
+.hk-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 90;
+}
+.hk-panel {
+  width: 380px;
+  max-width: 92vw;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-hi);
+  clip-path: polygon(var(--chamfer) 0, 100% 0, 100% 100%, 0 100%, 0 var(--chamfer));
+  padding: var(--sp-4);
+}
+.hk-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--sp-3);
+}
+.hk-group { margin-bottom: var(--sp-4); }
+.hk-scope { margin-bottom: var(--sp-2); }
+.hk-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 3px 0;
+  font-size: 0.8125rem;
+  color: var(--text-mid);
+}
+.hk-row kbd {
+  font: 500 0.72rem/1 var(--font-mono);
+  color: var(--sig-normal);
+  background: var(--bg-well);
+  border: 1px solid var(--line-hi);
+  padding: 3px 7px;
+  min-width: 2.2em;
+  text-align: center;
+}
+.hk-foot { margin-top: var(--sp-2); }

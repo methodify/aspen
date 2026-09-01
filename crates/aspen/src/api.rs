@@ -411,9 +411,9 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             }
         }
         Err(e) if e.to_string().contains("already running") => {
-            err(StatusCode::CONFLICT, e).into_response()
+            err(StatusCode::CONFLICT, format!("{e:#}")).into_response()
         }
-        Err(e) => err(StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
     }
 }
 
@@ -502,7 +502,7 @@ async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse
                 .into_response(),
             }
         }
-        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
 }
 
