@@ -301,9 +301,10 @@ impl Node {
         // A session that never had a turn wrote no transcript; `-r` on it
         // fails with "No conversation found". Nothing to resume ⇒ start
         // fresh under the same name/repo/charter.
-        let resume = row.session_id.clone().filter(|sid| {
-            aspen_claude::transcript::transcript_path(&row.repo, sid).is_file()
-        });
+        let resume = row
+            .session_id
+            .clone()
+            .filter(|sid| aspen_claude::transcript::transcript_path(&row.repo, sid).is_file());
         let opts = SpawnOpts {
             charter: row.charter.clone(),
             resume,

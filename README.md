@@ -34,15 +34,53 @@ runtime is an adapter, not a rewrite.
 | `aspen-node` | The node: bus store, session manager, delivery engine, mesh federation, permission broker, skills |
 | `aspen-wire` | Mesh identity, sealed envelopes, the relay protocol |
 | `aspen-relay` | The standalone rendezvous relay binary |
-| `aspen` | The `aspen` daemon + CLI (`up`, `dev`, `bus`, `mesh`) |
+| `aspen` | The `aspen` daemon + CLI (`up`, `down`, `update`, `dev`, `bus`, `mesh`) |
 | `ui/` | The operator console (React + TypeScript) |
 | `rendezvous/cloudflare/` | The Workers + Durable Objects rendezvous port |
 
-## Quick start (one machine)
+## Install
+
+One binary, console included, installed to `~/.local/bin` on every platform
+(`%USERPROFILE%\.local\bin` on Windows) — the same place `claude` lives.
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/methodify/aspen/main/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/methodify/aspen/main/install.ps1 | iex
+```
+
+While the repo is private, set `GITHUB_TOKEN` (a PAT with repo read access)
+before running the installer. `ASPEN_VERSION` pins a tag; `ASPEN_INSTALL_DIR`
+overrides the destination.
+
+Updating in place, from the daemon's own machine:
+
+```bash
+aspen update             # install the latest release over this binary
+aspen update --restart   # …and bounce a running daemon onto it: sessions
+                         # are stopped cleanly and revived on the new binary
+                         # with their context intact
+aspen update --version v0.2.0 --force
+```
+
+All node state lives in `~/.aspen` (override with `--data-dir`): the bus
+store, mesh identity and certificates, trusted-repo decisions, the API token,
+daemon state, and logs. Updates never touch it.
+
+### Releasing (maintainers)
+
+Push a tag `v*` matching the workspace version. CI builds the console, embeds
+it, compiles `aspen` + `aspen-relay` for Linux (x86_64, aarch64), Windows, and
+macOS, and publishes a GitHub Release with per-target binaries and a
+`SHA256SUMS` the installers and `aspen update` verify against.
+
+## Build from source (one machine)
 
 ```bash
 cargo build --release
-( cd ui && npm ci && npm run build )      # builds ui/dist, served by `aspen up`
+( cd ui && npm ci && npm run build )      # builds ui/dist, embedded by the release build
 ./target/release/aspen up                 # http://127.0.0.1:7420
 ```
 
@@ -53,9 +91,14 @@ repos you use and can list and resume existing sessions found on disk.
 Start the daemon in the background instead:
 
 ```bash
-./target/release/aspen up -d      # detached; logs to <data-dir>/aspen.log
-./target/release/aspen down       # stop it (clean shutdown)
+aspen up -d      # detached; logs to <data-dir>/aspen.log
+aspen down       # stop it (clean shutdown)
 ```
+
+A clean shutdown records which sessions were live; the next `aspen up`
+revives them automatically (`--no-resume` to skip). In debug builds the
+console is read live from `ui/dist`; release builds embed it, and `--ui DIR`
+serves a directory from disk in either case.
 
 Dev harness without the UI:
 

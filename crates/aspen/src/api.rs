@@ -34,6 +34,7 @@ pub async fn serve(
     data_dir: &std::path::Path,
 ) -> Result<()> {
     let shutdown_node = node.clone();
+    let shutdown_data_dir = data_dir.to_path_buf();
     // Loopback listeners trust the local user; anything wider requires the
     // node token on every /api call (the federation WS is exempt — it has
     // its own cryptographic auth and carries only sealed frames).
@@ -107,15 +108,24 @@ pub async fn serve(
         auth_middleware,
     ));
     let mut app = Router::new().nest("/api", api);
+    let ui_for_state = ui_dir.clone();
     if let Some(dir) = ui_dir {
+        // Explicit --ui override: serve a dist directory from disk.
         let index = dir.join("index.html");
         app = app.fallback_service(
             tower_http::services::ServeDir::new(&dir)
                 .fallback(tower_http::services::ServeFile::new(index)),
         );
+    } else {
+        // The console ships inside the binary (rust-embed): release builds
+        // embed ui/dist at compile time; debug builds read it from disk
+        // live, so UI iteration needs no rebuild.
+        app = app.fallback(embedded_ui);
     }
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    // Bound successfully — now this process owns the daemon state file.
+    crate::write_daemon_state(data_dir, listen, ui_for_state.as_deref());
     tracing::info!("aspen node API listening on http://{listen}");
     match &token {
         Some(tk) => eprintln!("[aspen] node up: http://{listen}/?token={tk}"),
@@ -135,6 +145,15 @@ pub async fn serve(
                 .keys()
                 .cloned()
                 .collect();
+            // Resume ledger: which sessions were live at shutdown. The next
+            // `aspen up` revives them (unless --no-resume), which is what
+            // makes `aspen update --restart` seamless.
+            let ledger = shutdown_data_dir.join("resume.json");
+            if names.is_empty() {
+                let _ = std::fs::remove_file(&ledger);
+            } else {
+                let _ = std::fs::write(&ledger, serde_json::to_string(&names).unwrap_or_default());
+            }
             for name in names {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
@@ -170,6 +189,44 @@ async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+/// The console, embedded. Release builds carry ui/dist inside the binary;
+/// debug builds read the folder live from disk (rust-embed's behavior).
+#[derive(rust_embed::RustEmbed)]
+#[folder = "$CARGO_MANIFEST_DIR/../../ui/dist"]
+struct UiAssets;
+
+async fn embedded_ui(req: axum::extract::Request) -> axum::response::Response {
+    let path = req.uri().path().trim_start_matches('/');
+    // SPA routing: unknown paths (and "/") fall back to index.html.
+    let (name, spa_fallback) = if path.is_empty() || UiAssets::get(path).is_none() {
+        ("index.html", true)
+    } else {
+        (path, false)
+    };
+    let Some(file) = UiAssets::get(name) else {
+        return err(
+            StatusCode::NOT_FOUND,
+            "console not built into this binary (build ui/dist, or pass --ui)",
+        )
+        .into_response();
+    };
+    let mime = mime_guess::from_path(name).first_or_octet_stream();
+    // Hashed assets are immutable; the entry point must always revalidate.
+    let cache = if !spa_fallback && name.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, mime.as_ref().to_owned()),
+            (axum::http::header::CACHE_CONTROL, cache.to_owned()),
+        ],
+        file.data.into_owned(),
+    )
+        .into_response()
 }
 
 fn load_or_create_token(data_dir: &std::path::Path) -> Result<String> {
@@ -275,7 +332,12 @@ async fn proxy(
 // ------------------------------------------------------------------- handlers
 
 async fn get_node(State(s): S) -> Json<Value> {
-    Json(json!({ "node": s.node_name, "version": env!("CARGO_PKG_VERSION") }))
+    Json(json!({
+        "node": s.node_name,
+        "version": env!("CARGO_PKG_VERSION"),
+        "sha": env!("ASPEN_GIT_SHA"),
+        "built": env!("ASPEN_BUILD_DATE"),
+    }))
 }
 
 fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {

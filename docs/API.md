@@ -8,7 +8,7 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 
 | Method & path | Body | Returns | Notes |
 |---|---|---|---|
-| `GET /api/node` | — | `{ node: string, version: string }` | identity/health |
+| `GET /api/node` | — | `{ node, version, sha, built }` | identity/health; `sha`/`built` are stamped at compile time |
 | `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state |
 | `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate) |
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |

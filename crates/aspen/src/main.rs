@@ -13,9 +13,19 @@ use aspen_core::SessionEvent;
 use aspen_node::{Node, SpawnOpts};
 
 mod api;
+mod update;
+
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("ASPEN_GIT_SHA"),
+    ", built ",
+    env!("ASPEN_BUILD_DATE"),
+    ")"
+);
 
 #[derive(Parser)]
-#[command(name = "aspen", version, about = "Aspen node daemon")]
+#[command(name = "aspen", version, long_version = LONG_VERSION, about = "Aspen node daemon")]
 struct Cli {
     /// Node data directory (bus store, config).
     #[arg(long, global = true, default_value_os_t = default_data_dir())]
@@ -26,22 +36,6 @@ struct Cli {
 
 fn default_data_dir() -> PathBuf {
     dirs_home().join(".aspen")
-}
-
-/// Find a built console without configuration: ui/dist relative to the
-/// executable's dev tree, or ~/.aspen/ui.
-fn default_ui_dir() -> Option<PathBuf> {
-    let candidates = [
-        std::env::current_dir().ok().map(|d| d.join("ui/dist")),
-        std::env::current_exe()
-            .ok()
-            .and_then(|e| e.ancestors().nth(3).map(|r| r.join("ui/dist"))),
-        Some(default_data_dir().join("ui")),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|d| d.join("index.html").is_file())
 }
 
 fn dirs_home() -> PathBuf {
@@ -65,9 +59,25 @@ enum Command {
         /// Run detached in the background; logs to <data-dir>/aspen.log.
         #[arg(short = 'd', long)]
         detach: bool,
+        /// Skip auto-reviving the sessions that were live at last shutdown.
+        #[arg(long)]
+        no_resume: bool,
     },
     /// Stop a detached node started with `up -d`.
     Down,
+    /// Update aspen in place from the latest release (or a given version).
+    Update {
+        /// Install a specific version (tag), e.g. v0.2.0. Default: latest.
+        #[arg(long)]
+        version: Option<String>,
+        /// Reinstall even if the version matches.
+        #[arg(long)]
+        force: bool,
+        /// Restart a running daemon on the new binary after updating
+        /// (sessions are revived automatically on startup).
+        #[arg(long)]
+        restart: bool,
+    },
     /// Developer harness commands against a live agent runtime.
     Dev {
         #[command(subcommand)]
@@ -190,24 +200,43 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Up { listen, ui, detach } => {
+        Command::Up {
+            listen,
+            ui,
+            detach,
+            no_resume,
+        } => {
+            cleanup_old_binary();
             // Detached start: re-exec self in a new session, redirect output
             // to a log file, record the pid, and return.
             if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
                 return spawn_detached(&cli.data_dir, listen, ui.as_deref());
             }
             let node = Node::open(&cli.data_dir)?;
-            let ui_dir = ui.or_else(default_ui_dir);
-            match &ui_dir {
-                Some(d) => eprintln!("[aspen] serving console from {}", d.display()),
-                None => eprintln!("[aspen] no ui/dist found — API only"),
+            if let Some(d) = &ui {
+                eprintln!("[aspen] serving console from {}", d.display());
             }
-            write_pidfile(&cli.data_dir);
-            let result = api::serve(node, listen, ui_dir, &cli.data_dir).await;
-            remove_pidfile(&cli.data_dir);
+            if !no_resume {
+                auto_revive(&cli.data_dir, node.clone());
+            }
+            // daemon.json is written by serve() once the port is bound and
+            // removed here only if it is still ours — a failed bind must not
+            // clobber a healthy daemon's state file.
+            let result = api::serve(node, listen, ui, &cli.data_dir).await;
+            let ours = read_daemon_state(&cli.data_dir)
+                .and_then(|s| s.get("pid").and_then(|p| p.as_u64()))
+                == Some(std::process::id() as u64);
+            if ours {
+                remove_daemon_state(&cli.data_dir);
+            }
             result
         }
         Command::Down => stop_detached(&cli.data_dir),
+        Command::Update {
+            version,
+            force,
+            restart,
+        } => update::run(&cli.data_dir, version.as_deref(), force, restart),
         Command::Dev { command } => match command {
             DevCommand::Oneshot {
                 repo,
@@ -250,13 +279,75 @@ fn pidfile(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join("aspen.pid")
 }
 
-fn write_pidfile(data_dir: &std::path::Path) {
+fn state_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("daemon.json")
+}
+
+/// How the daemon was started — enough for `update --restart` to relaunch
+/// it identically. The legacy aspen.pid is kept for older tooling.
+pub(crate) fn write_daemon_state(
+    data_dir: &std::path::Path,
+    listen: std::net::SocketAddr,
+    ui: Option<&std::path::Path>,
+) {
     std::fs::create_dir_all(data_dir).ok();
+    let state = serde_json::json!({
+        "pid": std::process::id(),
+        "listen": listen.to_string(),
+        "ui": ui.map(|p| p.to_string_lossy()),
+        "version": env!("CARGO_PKG_VERSION"),
+        "started_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    });
+    let _ = std::fs::write(state_path(data_dir), state.to_string());
     let _ = std::fs::write(pidfile(data_dir), std::process::id().to_string());
 }
 
-fn remove_pidfile(data_dir: &std::path::Path) {
+pub(crate) fn remove_daemon_state(data_dir: &std::path::Path) {
+    let _ = std::fs::remove_file(state_path(data_dir));
     let _ = std::fs::remove_file(pidfile(data_dir));
+}
+
+pub(crate) fn read_daemon_state(data_dir: &std::path::Path) -> Option<serde_json::Value> {
+    let s = std::fs::read_to_string(state_path(data_dir)).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
+/// Windows self-replace leaves the previous binary as `aspen.exe.old`;
+/// clean it up once the new binary runs.
+fn cleanup_old_binary() {
+    if let Ok(exe) = std::env::current_exe() {
+        let old = exe.with_extension("exe.old");
+        let _ = std::fs::remove_file(old);
+    }
+}
+
+/// Revive the sessions that were live at the last graceful shutdown — the
+/// ledger api::serve writes on the way down. This is what makes
+/// `aspen update --restart` feel invisible: sessions pause, come back on
+/// the new version with context intact.
+fn auto_revive(data_dir: &std::path::Path, node: Node) {
+    let ledger = data_dir.join("resume.json");
+    let Ok(text) = std::fs::read_to_string(&ledger) else {
+        return;
+    };
+    let _ = std::fs::remove_file(&ledger);
+    let names: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+    if names.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        // A beat for the listener to come up before sessions start talking.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        for name in names {
+            match node.revive_agent(&name, true).await {
+                Ok(_) => eprintln!("[aspen] revived @{name}"),
+                Err(e) => eprintln!("[aspen] could not revive @{name}: {e:#}"),
+            }
+        }
+    });
 }
 
 /// Re-exec self detached (new session, output to a log file), record the
@@ -320,18 +411,23 @@ fn spawn_detached(
     Ok(())
 }
 
-fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
+pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
     let path = pidfile(data_dir);
-    let pid: i32 = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+    let pid: i32 = read_daemon_state(data_dir)
+        .and_then(|s| s.get("pid").and_then(|p| p.as_i64()))
+        .map(|p| p as i32)
+        .or_else(|| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+        })
         .ok_or_else(|| anyhow::anyhow!("no running detached node found ({})", path.display()))?;
     #[cfg(unix)]
     {
         // SIGTERM triggers the graceful shutdown ladder.
         let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
         if rc != 0 {
-            remove_pidfile(data_dir);
+            remove_daemon_state(data_dir);
             anyhow::bail!("process {pid} not running (cleared stale pidfile)");
         }
     }
@@ -343,11 +439,13 @@ fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
             .map(|s| s.success())
             .unwrap_or(false);
         if !ok {
-            remove_pidfile(data_dir);
+            remove_daemon_state(data_dir);
             anyhow::bail!("could not stop process {pid} (cleared stale pidfile)");
         }
     }
-    remove_pidfile(data_dir);
+    // Deliberately NOT removing daemon.json here: the daemon removes its
+    // own state on clean exit, and that removal is what `update --restart`
+    // waits on to know the port is free and the resume ledger is written.
     println!("sent stop to aspen node (pid {pid})");
     Ok(())
 }
