@@ -130,12 +130,14 @@ pub async fn serve(
     }
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    // Port 0 = ephemeral: the OS just chose, so report what it chose.
+    let actual = listener.local_addr().unwrap_or(listen);
     // Bound successfully — now this process owns the daemon state file.
-    crate::write_daemon_state(data_dir, listen, ui_for_state.as_deref(), headless);
-    tracing::info!("aspen node API listening on http://{listen}");
+    crate::write_daemon_state(data_dir, actual, listen, ui_for_state.as_deref(), headless);
+    tracing::info!("aspen node API listening on http://{actual}");
     match &token {
-        Some(tk) => eprintln!("[aspen] node up: http://{listen}/?token={tk}"),
-        None => eprintln!("[aspen] node up: http://{listen}"),
+        Some(tk) => eprintln!("[aspen] node up: http://{actual}/?token={tk}"),
+        None => eprintln!("[aspen] node up: http://{actual}"),
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

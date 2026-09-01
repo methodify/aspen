@@ -50,9 +50,11 @@ fn dirs_home() -> PathBuf {
 enum Command {
     /// Run the node: API + web console on localhost.
     Up {
-        /// Listen address for the API and console.
-        #[arg(long, default_value = "127.0.0.1:7420")]
-        listen: std::net::SocketAddr,
+        /// Listen address for the API and console. Default 127.0.0.1:7420;
+        /// headless nodes default to an ephemeral port (port 0 = let the OS
+        /// pick — the actual address lands in daemon.json for status/CLI).
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
         /// Directory with the built SPA (defaults to ui/dist next to the
         /// binary's source tree, if present).
         #[arg(long)]
@@ -233,6 +235,14 @@ async fn main() -> Result<()> {
             headless,
         } => {
             cleanup_old_binary();
+            // Headless nodes take an ephemeral port unless told otherwise:
+            // the fixed port exists for people opening the console, and a
+            // headless node has none. (WSL2 forwards Linux listeners onto
+            // Windows localhost, so fixed ports collide across the sides.)
+            let listen = listen.unwrap_or_else(|| {
+                let port = if headless { 0 } else { 7420 };
+                std::net::SocketAddr::from(([127, 0, 0, 1], port))
+            });
             // Detached start: re-exec self in a new session, redirect output
             // to a log file, record the pid, and return.
             if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
@@ -334,6 +344,7 @@ fn state_path(data_dir: &std::path::Path) -> PathBuf {
 pub(crate) fn write_daemon_state(
     data_dir: &std::path::Path,
     listen: std::net::SocketAddr,
+    requested: std::net::SocketAddr,
     ui: Option<&std::path::Path>,
     headless: bool,
 ) {
@@ -341,6 +352,9 @@ pub(crate) fn write_daemon_state(
     let state = serde_json::json!({
         "pid": std::process::id(),
         "listen": listen.to_string(),
+        // What was asked for (may be port 0 = ephemeral) — restart re-uses
+        // this, not the specific port the OS happened to hand out.
+        "requested": requested.to_string(),
         "ui": ui.map(|p| p.to_string_lossy()),
         "headless": headless,
         "version": env!("CARGO_PKG_VERSION"),
@@ -487,8 +501,12 @@ fn spawn_detached(
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
     std::fs::write(pidfile(data_dir), child.id().to_string())?;
+    // Port 0 means the OS chose — read the actual address the child bound.
+    let actual = read_daemon_state(data_dir)
+        .and_then(|s| s.get("listen").and_then(|l| l.as_str().map(str::to_owned)))
+        .unwrap_or_else(|| listen.to_string());
     println!(
-        "aspen started detached (pid {}) on http://{listen}\n  logs: {}\n  stop: aspen --data-dir {} down",
+        "aspen started detached (pid {}) on http://{actual}\n  logs: {}\n  stop: aspen --data-dir {} down",
         child.id(),
         log_path.display(),
         data_dir.display(),

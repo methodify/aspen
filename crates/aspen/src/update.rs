@@ -216,8 +216,11 @@ fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> R
         println!("no running daemon found — nothing to restart.");
         return Ok(());
     };
-    let listen = state["listen"]
+    // Prefer the *requested* address: an ephemeral node restarts on port 0
+    // (a fresh OS-assigned port), not on the one it happened to hold.
+    let listen = state["requested"]
         .as_str()
+        .or(state["listen"].as_str())
         .unwrap_or("127.0.0.1:7420")
         .to_owned();
     let ui = state["ui"].as_str().map(str::to_owned);

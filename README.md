@@ -95,9 +95,13 @@ aspen up -d      # detached; logs to <data-dir>/aspen.log
 aspen down       # stop it (clean shutdown)
 ```
 
-`aspen up -d --headless` runs an API-only node (no console) — useful when
-two nodes share a machine and one console is enough, e.g. the Windows and
-WSL2 sides of one box. `aspen repos discover` recovers repos from Claude
+`aspen up -d --headless` runs an API-only node (no console) on an
+**ephemeral port** — the OS picks a free one, and `aspen status` (and the
+CLI generally) find it via the daemon state file. That makes a second node
+on the same machine zero-config: e.g. the Windows and WSL2 sides of one box,
+where WSL2 forwards Linux listeners onto Windows localhost and fixed ports
+collide. A headless node dials its peers (or a relay); a node that must be
+dialed at a stable URL passes `--listen` explicitly. `aspen repos discover` recovers repos from Claude
 Code's session store and registers them (also a button in Library, which
 additionally reads a repo's `.mcc/sessions` register to carry mcc session
 names and args over on resume). Per-harness default CLI args (e.g. always
