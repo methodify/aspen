@@ -633,6 +633,25 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 anyhow::anyhow!("no root key here — run this on the mesh's root node")
             })?;
             let req: JoinRequest = identity::from_blob("enroll", &blob)?;
+            // Names route the mesh; a duplicate would make two nodes
+            // indistinguishable. The classic trap: hostname-default names
+            // on the Windows and WSL sides of one machine.
+            if files.load_identity()?.is_some_and(|id| id.node == req.node) {
+                anyhow::bail!(
+                    "'{}' is THIS node's name — re-enroll the other node with a distinct one: aspen mesh enroll --node <name>",
+                    req.node
+                );
+            }
+            if files
+                .verified_peers()?
+                .iter()
+                .any(|p| p.cert.node == req.node)
+            {
+                anyhow::bail!(
+                    "a peer named '{}' already exists in this mesh — re-enroll with a distinct name: aspen mesh enroll --node <name>",
+                    req.node
+                );
+            }
             let cert = root.certify(&req)?;
             files.add_peer(cert.clone(), None).ok(); // register them here too
             println!(
@@ -680,6 +699,15 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
         }
         MeshCommand::PeersAdd { blob, url } => {
             let cert: NodeCert = identity::from_blob("cert", &blob)?;
+            if files
+                .load_identity()?
+                .is_some_and(|id| id.node == cert.node)
+            {
+                anyhow::bail!(
+                    "that cert names '{}' — this node's own name. Two nodes can't share a name; re-enroll the other node as something else.",
+                    cert.node
+                );
+            }
             files.add_peer(cert.clone(), url.clone())?;
             println!(
                 "peer '{}' registered{}",
