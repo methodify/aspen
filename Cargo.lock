@@ -85,7 +85,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "aspen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-claude"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "aspen-core",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-node"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -153,6 +153,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "shell-words",
  "tokio",
  "tokio-tungstenite 0.27.0",
  "tracing",
@@ -161,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-relay"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "aspen-wire",
@@ -179,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-wire"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1583,6 +1584,12 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "shell-words"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shellexpand"

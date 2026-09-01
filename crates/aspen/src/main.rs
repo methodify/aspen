@@ -63,6 +63,10 @@ enum Command {
         /// Skip auto-reviving the sessions that were live at last shutdown.
         #[arg(long)]
         no_resume: bool,
+        /// API only — don't serve the console (e.g. a second node on the
+        /// same machine where one console is enough).
+        #[arg(long)]
+        headless: bool,
     },
     /// Stop a detached node started with `up -d`.
     Down,
@@ -91,11 +95,23 @@ enum Command {
         #[command(subcommand)]
         command: BusCommand,
     },
+    /// Repo registry operations.
+    Repos {
+        #[command(subcommand)]
+        command: ReposCommand,
+    },
     /// Mesh membership: identity, certification, peers.
     Mesh {
         #[command(subcommand)]
         command: MeshCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum ReposCommand {
+    /// Find repos from Claude Code's session store (~/.claude/projects)
+    /// and add them to this node's registry.
+    Discover,
 }
 
 #[derive(Subcommand)]
@@ -214,12 +230,13 @@ async fn main() -> Result<()> {
             ui,
             detach,
             no_resume,
+            headless,
         } => {
             cleanup_old_binary();
             // Detached start: re-exec self in a new session, redirect output
             // to a log file, record the pid, and return.
             if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
-                return spawn_detached(&cli.data_dir, listen, ui.as_deref(), no_resume);
+                return spawn_detached(&cli.data_dir, listen, ui.as_deref(), no_resume, headless);
             }
             let node = Node::open(&cli.data_dir)?;
             if let Some(d) = &ui {
@@ -231,7 +248,7 @@ async fn main() -> Result<()> {
             // daemon.json is written by serve() once the port is bound and
             // removed here only if it is still ours — a failed bind must not
             // clobber a healthy daemon's state file.
-            let result = api::serve(node, listen, ui, &cli.data_dir).await;
+            let result = api::serve(node, listen, ui, headless, &cli.data_dir).await;
             let ours = read_daemon_state(&cli.data_dir)
                 .and_then(|s| s.get("pid").and_then(|p| p.as_u64()))
                 == Some(std::process::id() as u64);
@@ -242,6 +259,25 @@ async fn main() -> Result<()> {
         }
         Command::Down => stop_detached(&cli.data_dir),
         Command::Status => status::run(&cli.data_dir),
+        Command::Repos { command } => match command {
+            ReposCommand::Discover => {
+                let node = Node::open(&cli.data_dir)?;
+                let found = node.discover_repos()?;
+                if found.is_empty() {
+                    println!("no repos found under ~/.claude/projects");
+                }
+                for (path, sessions, added) in found {
+                    println!(
+                        "{} {}  ({} session{})",
+                        if added { "added " } else { "known " },
+                        path.display(),
+                        sessions,
+                        if sessions == 1 { "" } else { "s" },
+                    );
+                }
+                Ok(())
+            }
+        },
         Command::Update {
             version,
             force,
@@ -299,12 +335,14 @@ pub(crate) fn write_daemon_state(
     data_dir: &std::path::Path,
     listen: std::net::SocketAddr,
     ui: Option<&std::path::Path>,
+    headless: bool,
 ) {
     std::fs::create_dir_all(data_dir).ok();
     let state = serde_json::json!({
         "pid": std::process::id(),
         "listen": listen.to_string(),
         "ui": ui.map(|p| p.to_string_lossy()),
+        "headless": headless,
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -367,6 +405,7 @@ fn spawn_detached(
     listen: std::net::SocketAddr,
     ui: Option<&std::path::Path>,
     no_resume: bool,
+    headless: bool,
 ) -> Result<()> {
     use std::process::{Command, Stdio};
 
@@ -390,6 +429,9 @@ fn spawn_detached(
     }
     if no_resume {
         cmd.arg("--no-resume");
+    }
+    if headless {
+        cmd.arg("--headless");
     }
     cmd.env("ASPEN_DETACHED", "1")
         .stdin(Stdio::null())

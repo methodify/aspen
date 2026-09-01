@@ -95,6 +95,15 @@ aspen up -d      # detached; logs to <data-dir>/aspen.log
 aspen down       # stop it (clean shutdown)
 ```
 
+`aspen up -d --headless` runs an API-only node (no console) — useful when
+two nodes share a machine and one console is enough, e.g. the Windows and
+WSL2 sides of one box. `aspen repos discover` recovers repos from Claude
+Code's session store and registers them (also a button in Library, which
+additionally reads a repo's `.mcc/sessions` register to carry mcc session
+names and args over on resume). Per-harness default CLI args (e.g. always
+pass `--chrome` to claude) live in settings — the Claude defaults strip in
+Library, or `settings.json` in the data dir; per-session args stack on top.
+
 `aspen status` reads out the whole node: binary and daemon versions, pid and
 uptime, the session roster with turn state, pending revives, and mesh
 membership with live link health (from disk when the daemon is down). A clean

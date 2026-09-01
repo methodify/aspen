@@ -75,6 +75,12 @@ export interface SessionInfo {
   /** epoch seconds */
   modified: number;
   user_messages: number;
+  /** Name from the repo's .mcc/sessions register, when present. */
+  mcc_name: string | null;
+  /** Args configured in mcc (permission flags already filtered out). */
+  mcc_args: string | null;
+  /** mcc had --dangerously-skip-permissions configured. */
+  mcc_skip: boolean | null;
 }
 
 /** A remembered repository (GET /api/repos). */
@@ -100,6 +106,22 @@ export interface StartAgentRequest {
   skip_permissions?: boolean;
   /** The operator reviewed the repo's autorun surface (trust gate). */
   acknowledge_trust?: boolean;
+  /** Display title for the new agent (e.g. an mcc session name). */
+  title?: string;
+  /** Per-session harness CLI args, appended after the harness defaults. */
+  extra_args?: string;
+}
+
+/** One repo found by POST /api/repos/discover. */
+export interface DiscoveredRepo {
+  path: string;
+  sessions: number;
+  added: boolean;
+}
+
+/** Node settings (GET/PUT /api/settings). */
+export interface Settings {
+  harness: Record<string, { args: string }>;
 }
 
 export interface BusSendRequest {
@@ -320,6 +342,14 @@ export const api = {
   reloadAgent: (name: string) =>
     post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
   sessions: (repo: string) => request<SessionInfo[]>(`/api/sessions?repo=${enc(repo)}`),
+  discoverRepos: () => post<{ found: DiscoveredRepo[] }>("/api/repos/discover", {}),
+  settings: () => request<Settings>("/api/settings"),
+  saveSettings: (s: Settings) =>
+    request<{ ok: boolean }>("/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(s),
+    }),
 
   repos: () => request<Repo[]>("/api/repos"),
   addRepo: (path: string, skipPermissions?: boolean) =>

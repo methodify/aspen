@@ -101,6 +101,9 @@ pub struct SpawnOpts {
     /// Skip permission prompts entirely (`--dangerously-skip-permissions` /
     /// bypassPermissions mode). When None, the repo's stored default is used.
     pub skip_permissions: Option<bool>,
+    /// Per-session harness CLI args (raw string; split at spawn). Appended
+    /// after the harness defaults from settings.json.
+    pub extra_args: Option<String>,
 }
 
 /// The auto-channel name for a repo: its directory name. (Two repos sharing
@@ -194,6 +197,18 @@ impl Node {
             PermissionPolicy::ReadOnlyAuto
         };
         cfg.charter = Some(charter_text(name, &channel, opts.charter.as_deref()));
+        // Harness defaults (settings.json, read live) + this session's args.
+        let defaults = self
+            .inner
+            .data_dir
+            .as_deref()
+            .map(crate::settings::load)
+            .unwrap_or_default()
+            .harness
+            .get("claude")
+            .map(|h| h.args.clone())
+            .unwrap_or_default();
+        cfg.extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
 
         let mcp = crate::tools::build_mcp(self.inner.clone(), name.to_owned());
         let op_broker = opts
@@ -219,6 +234,7 @@ impl Node {
             &channel,
             &effective_session_id,
             opts.charter.as_deref(),
+            opts.extra_args.as_deref(),
         )?;
         // Remember the repo (and, when the operator asked to skip here,
         // adopt that as the repo's default going forward).
@@ -309,9 +325,32 @@ impl Node {
             charter: row.charter.clone(),
             resume,
             interactive,
+            extra_args: row.extra_args.clone(),
             ..Default::default()
         };
         self.spawn_agent(name, row.repo.clone(), opts).await
+    }
+
+    /// Recover repos from Claude Code's on-disk session store and add the
+    /// new ones to this node's registry. Returns (path, session count,
+    /// newly added).
+    pub fn discover_repos(&self) -> Result<Vec<(PathBuf, usize, bool)>> {
+        let known: std::collections::HashSet<PathBuf> = self
+            .inner
+            .store
+            .repos()?
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        let mut out = Vec::new();
+        for found in aspen_claude::transcript::discover_repos() {
+            let added = !known.contains(&found.path);
+            if added {
+                self.inner.store.add_repo(&found.path, None)?;
+            }
+            out.push((found.path, found.sessions, added));
+        }
+        Ok(out)
     }
 
     /// The trust gate's decision surface: what a repo would auto-run, and

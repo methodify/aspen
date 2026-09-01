@@ -299,6 +299,7 @@ function NewSessionPanel({
   const [repo, setRepo] = useState("");
   const [charter, setCharter] = useState("");
   const [model, setModel] = useState("");
+  const [extraArgs, setExtraArgs] = useState("");
   const [skip, setSkip] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -324,6 +325,7 @@ function NewSessionPanel({
     const req: StartAgentRequest = { name: name.trim(), repo: repo.trim() };
     if (charter.trim()) req.charter = charter.trim();
     if (model.trim()) req.model = model.trim();
+    if (extraArgs.trim()) req.extra_args = extraArgs.trim();
     if (skip) req.skip_permissions = true;
     try {
       const agent = await startFn(req);
@@ -408,6 +410,16 @@ function NewSessionPanel({
             placeholder="default"
             spellCheck={false}
             aria-label="model"
+          />
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Runtime args (optional)</span>
+          <input
+            value={extraArgs}
+            onChange={(e) => setExtraArgs(e.target.value)}
+            placeholder="e.g. --chrome (after harness defaults)"
+            spellCheck={false}
+            aria-label="runtime args"
           />
         </label>
         <label style={{ display: "flex", alignItems: "center", gap: 8, alignSelf: "end", paddingBottom: 6 }}>

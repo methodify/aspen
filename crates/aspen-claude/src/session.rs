@@ -51,6 +51,9 @@ pub struct ClaudeConfig {
     /// Injected as `appendSystemPrompt` at initialize — the session's
     /// charter (who you are on the bus), when set.
     pub charter: Option<String>,
+    /// Extra CLI arguments appended verbatim after the protocol flags
+    /// (harness defaults + per-session args, already split).
+    pub extra_args: Vec<String>,
 }
 
 impl ClaudeConfig {
@@ -64,6 +67,7 @@ impl ClaudeConfig {
             policy: PermissionPolicy::ReadOnlyAuto,
             claude_bin: "claude".into(),
             charter: None,
+            extra_args: Vec::new(),
         }
     }
 }
@@ -110,6 +114,7 @@ impl ClaudeSession {
         spec.claude_bin = cfg.claude_bin.clone();
         spec.permission_mode = cfg.permission_mode.clone();
         spec.model = cfg.model.clone();
+        spec.extra_args = cfg.extra_args.clone();
         if let Some(r) = &cfg.resume {
             spec.resume = Some(r.clone());
         } else {

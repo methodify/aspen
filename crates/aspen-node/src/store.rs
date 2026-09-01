@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS agents(
   charter         TEXT,
   created_at      REAL NOT NULL,
   last_spawned_at REAL,
-  title           TEXT
+  title           TEXT,
+  extra_args      TEXT
 );
 CREATE TABLE IF NOT EXISTS repos(
   path             TEXT PRIMARY KEY,
@@ -121,6 +122,9 @@ pub struct AgentRow {
     pub charter: Option<String>,
     /// Operator-set display title (the agent name stays the bus identity).
     pub title: Option<String>,
+    /// Per-session harness CLI args (a raw string, split at spawn time);
+    /// re-applied on revive. Harness defaults live in settings, not here.
+    pub extra_args: Option<String>,
 }
 
 #[derive(Clone)]
@@ -152,6 +156,7 @@ impl BusStore {
         for stmt in [
             "ALTER TABLE messages ADD COLUMN post TEXT",
             "ALTER TABLE agents ADD COLUMN title TEXT",
+            "ALTER TABLE agents ADD COLUMN extra_args TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 if !e.to_string().contains("duplicate column") {
@@ -175,6 +180,7 @@ impl BusStore {
 
     // ---------------------------------------------------------------- agents
 
+    #[allow(clippy::too_many_arguments)]
     pub fn register_agent(
         &self,
         name: &str,
@@ -182,19 +188,22 @@ impl BusStore {
         channel: &str,
         session_id: &str,
         charter: Option<&str>,
+        extra_args: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO agents(name,repo,channel,session_id,charter,created_at,last_spawned_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?6)
+            "INSERT INTO agents(name,repo,channel,session_id,charter,extra_args,created_at,last_spawned_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?7)
              ON CONFLICT(name) DO UPDATE SET repo=?2, channel=?3, session_id=?4,
-               charter=COALESCE(?5, agents.charter), last_spawned_at=?6",
+               charter=COALESCE(?5, agents.charter),
+               extra_args=COALESCE(?6, agents.extra_args), last_spawned_at=?7",
             params![
                 name,
                 repo.to_string_lossy(),
                 channel,
                 session_id,
                 charter,
+                extra_args,
                 now_epoch()
             ],
         )?;
@@ -204,7 +213,7 @@ impl BusStore {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, repo, channel, session_id, charter, title FROM agents ORDER BY name",
+            "SELECT name, repo, channel, session_id, charter, title, extra_args FROM agents ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -215,6 +224,7 @@ impl BusStore {
                     session_id: r.get(3)?,
                     charter: r.get(4)?,
                     title: r.get(5)?,
+                    extra_args: r.get(6)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -751,11 +761,11 @@ mod tests {
     #[test]
     fn channel_membership_via_agent_registry() {
         let s = BusStore::open_in_memory().unwrap();
-        s.register_agent("a", Path::new("/r/proj"), "proj", "sid-a", None)
+        s.register_agent("a", Path::new("/r/proj"), "proj", "sid-a", None, None)
             .unwrap();
-        s.register_agent("b", Path::new("/r/proj"), "proj", "sid-b", None)
+        s.register_agent("b", Path::new("/r/proj"), "proj", "sid-b", None, None)
             .unwrap();
-        s.register_agent("c", Path::new("/r/other"), "other", "sid-c", None)
+        s.register_agent("c", Path::new("/r/other"), "other", "sid-c", None, None)
             .unwrap();
         assert_eq!(s.channel_members("proj").unwrap(), vec!["a", "b"]);
     }

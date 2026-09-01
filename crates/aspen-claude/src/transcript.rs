@@ -272,6 +272,77 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
     Ok(items)
 }
 
+/// A repo found under ~/.claude/projects: its real working directory,
+/// recovered from transcript `cwd` fields (the directory slug is lossy).
+pub struct DiscoveredRepo {
+    pub path: PathBuf,
+    pub sessions: usize,
+}
+
+/// Scan every project directory Claude Code has written and recover the
+/// real repo paths from the transcripts. Only directories that still exist
+/// are returned.
+pub fn discover_repos() -> Vec<DiscoveredRepo> {
+    let projects = claude_home().join("projects");
+    let mut out: Vec<DiscoveredRepo> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&projects) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut sessions = 0usize;
+        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        if let Ok(files) = std::fs::read_dir(&dir) {
+            for f in files.flatten() {
+                let p = f.path();
+                if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                sessions += 1;
+                let modified = f
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
+                    newest = Some((modified, p));
+                }
+            }
+        }
+        let Some((_, transcript)) = newest else {
+            continue;
+        };
+        let Some(cwd) = transcript_cwd(&transcript) else {
+            continue;
+        };
+        if cwd.is_dir() && !out.iter().any(|r| r.path == cwd) {
+            out.push(DiscoveredRepo {
+                path: cwd,
+                sessions,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// The `cwd` stamped on transcript lines — checked over the first lines
+/// only; every real entry carries it.
+fn transcript_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    for line in std::io::BufReader::new(file).lines().take(25).flatten() {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+                return Some(PathBuf::from(cwd));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

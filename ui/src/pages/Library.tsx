@@ -117,6 +117,31 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
   const [skip, setSkip] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discovered, setDiscovered] = useState<string | null>(null);
+
+  async function discover() {
+    if (discovering) return;
+    setError(null);
+    setDiscovered(null);
+    setDiscovering(true);
+    try {
+      const res = await api.discoverRepos();
+      const added = res.found.filter((f) => f.added);
+      setDiscovered(
+        res.found.length === 0
+          ? "nothing found under ~/.claude/projects"
+          : added.length === 0
+            ? `all ${res.found.length} repos already registered`
+            : `added ${added.length}: ${added.map((f) => f.path).join(", ")}`,
+      );
+      if (added.length > 0) onAdded();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setDiscovering(false);
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -169,7 +194,90 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
         <button type="submit" className="btn sm" disabled={busy}>
           {busy ? "adding…" : "add"}
         </button>
+        <button
+          type="button"
+          className="btn ghost sm"
+          disabled={discovering}
+          onClick={() => void discover()}
+          title="find repos from Claude Code's session store (~/.claude/projects)"
+        >
+          {discovering ? "discovering…" : "discover"}
+        </button>
       </div>
+      {discovered && <span className="mono-meta">{discovered}</span>}
+      <ErrorBar error={error} />
+    </form>
+  );
+}
+
+function HarnessDefaults() {
+  const [args, setArgs] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .settings()
+      .then((s) => {
+        if (!live) return;
+        setArgs(s.harness?.claude?.args ?? "");
+        setLoaded(true);
+      })
+      .catch((e) => live && setError(errText(e)));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function save() {
+    if (busy) return;
+    setError(null);
+    setSaved(false);
+    setBusy(true);
+    try {
+      await api.saveSettings({ harness: { claude: { args: args.trim() } } });
+      setSaved(true);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="strip flat"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+      style={{ display: "flex", flexDirection: "column", gap: 10, padding: 14 }}
+    >
+      <span className="label">Claude defaults</span>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          value={args}
+          disabled={!loaded}
+          onChange={(e) => {
+            setArgs(e.target.value);
+            setSaved(false);
+          }}
+          placeholder="extra CLI args for every claude session, e.g. --chrome"
+          className="mono"
+          style={{ flex: 1, minWidth: 240 }}
+          spellCheck={false}
+          aria-label="default claude args"
+        />
+        <button type="submit" className="btn sm" disabled={busy || !loaded}>
+          {busy ? "saving…" : saved ? "saved" : "save"}
+        </button>
+      </div>
+      <span className="micro" style={{ color: "var(--text-mid)" }}>
+        appended to every session of this harness; per-session args come after these.
+      </span>
       <ErrorBar error={error} />
     </form>
   );
@@ -190,8 +298,18 @@ function SessionRow({
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <span className="mono" style={{ fontWeight: 500, color: "var(--text-hi)" }}>
-          {session.title || "(untitled)"}
+          {session.mcc_name || session.title || "(untitled)"}
         </span>
+        {session.mcc_name && (
+          <span className="chip mono" title={session.title ?? undefined}>
+            mcc
+          </span>
+        )}
+        {session.mcc_args && (
+          <span className="chip mono" title="args configured in mcc; applied on resume">
+            {session.mcc_args}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <span
           className="mono-meta"
@@ -212,7 +330,7 @@ function SessionRow({
       {naming && (
         <NameComposer
           label="agent name"
-          initial={slugify(session.title)}
+          initial={slugify(session.mcc_name ?? session.title)}
           submitLabel="resume"
           onSubmit={(name) => {
             setNaming(false);
@@ -446,7 +564,16 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
   async function resumeSession(repo: string, s: SessionInfo, name: string) {
     setActionError(null);
     try {
-      const agent = await trust.start({ name, repo, resume: s.session_id });
+      const agent = await trust.start({
+        name,
+        repo,
+        resume: s.session_id,
+        // mcc register carry-over: its name becomes the title, its args
+        // ride the session (skip-permissions maps to our own model).
+        title: s.mcc_name ?? undefined,
+        extra_args: s.mcc_args ?? undefined,
+        skip_permissions: s.mcc_skip ? true : undefined,
+      });
       if (agent === null) return;
       navigate(`/session/${encodeURIComponent(name)}`);
     } catch (e) {
@@ -465,6 +592,7 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
       <ErrorBar error={actionError} />
 
       <AddRepoForm onAdded={refresh} />
+      <HarnessDefaults />
 
       {reposPoll.data !== null && repos.length === 0 ? (
         <Empty mark="◦">

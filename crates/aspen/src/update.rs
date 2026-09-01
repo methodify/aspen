@@ -221,6 +221,7 @@ fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> R
         .unwrap_or("127.0.0.1:7420")
         .to_owned();
     let ui = state["ui"].as_str().map(str::to_owned);
+    let headless = state["headless"].as_bool().unwrap_or(false);
 
     println!("stopping daemon …");
     crate::stop_detached(data_dir)?;
@@ -251,6 +252,9 @@ fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> R
         .args(["up", "-d", "--listen", &listen]);
     if let Some(ui) = ui {
         cmd.args(["--ui", &ui]);
+    }
+    if headless {
+        cmd.arg("--headless");
     }
     let status = cmd.status().context("starting new daemon")?;
     if !status.success() {

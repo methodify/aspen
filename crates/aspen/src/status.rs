@@ -41,7 +41,12 @@ pub fn run(data_dir: &Path) -> Result<()> {
                         .unwrap_or_default();
                     let ver = node["version"].as_str().unwrap_or("?");
                     let sha = node["sha"].as_str().unwrap_or("?");
-                    println!("daemon: running (pid {pid}) — {base} — v{ver} ({sha}){up}");
+                    let headless = if s.get("headless").and_then(|h| h.as_bool()) == Some(true) {
+                        " — headless"
+                    } else {
+                        ""
+                    };
+                    println!("daemon: running (pid {pid}) — {base} — v{ver} ({sha}){up}{headless}");
                     if ver != env!("CARGO_PKG_VERSION") {
                         println!(
                             "        note: daemon runs v{ver}, this binary is v{} — `aspen update --restart` or `aspen down && aspen up -d` to switch",

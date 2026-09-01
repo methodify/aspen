@@ -31,6 +31,7 @@ pub async fn serve(
     node: Node,
     listen: SocketAddr,
     ui_dir: Option<PathBuf>,
+    headless: bool,
     data_dir: &std::path::Path,
 ) -> Result<()> {
     let shutdown_node = node.clone();
@@ -98,6 +99,8 @@ pub async fn serve(
         .route("/dm", get(get_dm))
         .route("/bus/post/{post}", get(get_post_receipts))
         .route("/mesh", get(get_mesh))
+        .route("/repos/discover", post(post_repos_discover))
+        .route("/settings", get(get_settings).put(put_settings))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
@@ -109,7 +112,10 @@ pub async fn serve(
     ));
     let mut app = Router::new().nest("/api", api);
     let ui_for_state = ui_dir.clone();
-    if let Some(dir) = ui_dir {
+    if headless {
+        // API-only node: another node's console (or the CLI) drives it.
+        app = app.fallback(headless_root);
+    } else if let Some(dir) = ui_dir {
         // Explicit --ui override: serve a dist directory from disk.
         let index = dir.join("index.html");
         app = app.fallback_service(
@@ -125,7 +131,7 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
     // Bound successfully — now this process owns the daemon state file.
-    crate::write_daemon_state(data_dir, listen, ui_for_state.as_deref());
+    crate::write_daemon_state(data_dir, listen, ui_for_state.as_deref(), headless);
     tracing::info!("aspen node API listening on http://{listen}");
     match &token {
         Some(tk) => eprintln!("[aspen] node up: http://{listen}/?token={tk}"),
@@ -227,6 +233,64 @@ async fn embedded_ui(req: axum::extract::Request) -> axum::response::Response {
         file.data.into_owned(),
     )
         .into_response()
+}
+
+async fn headless_root() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        "aspen node running headless (--headless): API only, no console. \
+         Reach this node from another node's console over the mesh.",
+    )
+}
+
+/// Recover repos from Claude Code's session store on this machine and
+/// register the new ones.
+async fn post_repos_discover(State(s): S) -> impl IntoResponse {
+    match s.node.discover_repos() {
+        Ok(found) => Json(json!({
+            "found": found
+                .iter()
+                .map(|(path, sessions, added)| json!({
+                    "path": path, "sessions": sessions, "added": added,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn get_settings(State(s): S) -> impl IntoResponse {
+    let settings = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .map(aspen_node::settings::load)
+        .unwrap_or_default();
+    Json(serde_json::to_value(settings).unwrap_or_default())
+}
+
+async fn put_settings(State(s): S, Json(body): Json<Value>) -> impl IntoResponse {
+    let settings: aspen_node::settings::Settings = match serde_json::from_value(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return err(StatusCode::BAD_REQUEST, format!("bad settings shape: {e}")).into_response()
+        }
+    };
+    // Validate arg strings now so a typo surfaces here, not at next spawn.
+    for (harness, h) in &settings.harness {
+        if let Err(e) = aspen_node::settings::split_args(&h.args, None) {
+            return err(StatusCode::BAD_REQUEST, format!("{harness}: {e:#}")).into_response();
+        }
+    }
+    let Some(dir) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "node has no data dir").into_response();
+    };
+    match aspen_node::settings::save(dir, &settings) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
 }
 
 fn load_or_create_token(data_dir: &std::path::Path) -> Result<String> {
@@ -412,6 +476,12 @@ struct SpawnBody {
     /// The operator reviewed this repo's autorun surface and trusts it.
     #[serde(default)]
     acknowledge_trust: bool,
+    /// Display title to set on the new agent (e.g. carried over from an
+    /// mcc session name).
+    title: Option<String>,
+    /// Per-session harness CLI args (raw string), appended after the
+    /// harness defaults from settings.
+    extra_args: Option<String>,
 }
 
 async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoResponse {
@@ -454,6 +524,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         allow_all: body.allow_all,
         interactive: true,
         skip_permissions: body.skip_permissions,
+        extra_args: body.extra_args.filter(|a| !a.trim().is_empty()),
         ..Default::default()
     };
     match s
@@ -462,6 +533,9 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         .await
     {
         Ok(_) => {
+            if let Some(title) = body.title.as_deref().filter(|t| !t.trim().is_empty()) {
+                let _ = s.node.inner.store.set_agent_title(&name, Some(title));
+            }
             let rows = s.node.inner.store.agents().unwrap_or_default();
             match rows.iter().find(|a| a.name == name) {
                 Some(a) => Json(agent_json(&s, a)).into_response(),
@@ -695,16 +769,24 @@ struct SessionsQuery {
 
 /// Enumerate a repo's sessions from disk (the filesystem is the registry).
 async fn get_sessions(Query(q): Query<SessionsQuery>) -> impl IntoResponse {
-    match aspen_claude::transcript::enumerate_sessions(std::path::Path::new(&q.repo)) {
+    let repo = std::path::Path::new(&q.repo);
+    // mcc's register, when the repo has one: names win over derived titles,
+    // and configured args ride along for the resume flow.
+    let mcc = aspen_node::mcc::read(repo);
+    match aspen_claude::transcript::enumerate_sessions(repo) {
         Ok(rows) => Json(
             rows.iter()
                 .map(|s| {
+                    let m = mcc.get(&s.session_id);
                     json!({
                         "session_id": s.session_id,
                         "title": s.title,
                         "entrypoint": s.entrypoint,
                         "modified": s.modified_epoch,
                         "user_messages": s.user_messages,
+                        "mcc_name": m.map(|m| m.name.clone()),
+                        "mcc_args": m.and_then(|m| m.args.clone()),
+                        "mcc_skip": m.map(|m| m.skip_permissions),
                     })
                 })
                 .collect::<Vec<_>>(),
