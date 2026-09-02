@@ -158,7 +158,18 @@ pub fn run(data_dir: &Path) -> Result<()> {
                 println!("  relay {url} — {conn}");
             }
         }
-        Some(_) => println!("mesh: none configured (see `aspen mesh init` / `enroll`)"),
+        Some(_) => {
+            // Daemon says no mesh. If the files say otherwise, the daemon
+            // missed a reload (it was unreachable when the mesh command ran).
+            let files = aspen_node::mesh::MeshFiles::new(data_dir);
+            match (files.load_identity()?, files.load_mesh()?) {
+                (Some(id), Some(m)) if id.cert.is_some() => println!(
+                    "mesh '{}' is configured on disk but the running daemon hasn't loaded it — run `aspen mesh reload`",
+                    m.mesh
+                ),
+                _ => println!("mesh: none configured (see `aspen mesh init` / `enroll`)"),
+            }
+        }
         // Daemon down (or unreachable): report what's configured on disk.
         None => disk_mesh(data_dir)?,
     }

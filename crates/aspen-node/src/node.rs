@@ -67,12 +67,23 @@ pub struct NodeInner {
     pub sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
     pub delivery_tx: mpsc::UnboundedSender<String>,
     /// Present when this node has joined a mesh (identity + cert on disk).
-    pub mesh: Option<Arc<crate::federation::MeshState>>,
+    /// Swappable so a node that started outside any mesh can join one
+    /// live (`aspen mesh init/join` → reload), no restart.
+    pub mesh: std::sync::RwLock<Option<Arc<crate::federation::MeshState>>>,
     /// The node data directory (trust store, keys). None for in-memory use.
     pub data_dir: Option<PathBuf>,
+    /// Set when the daemon is going down: session exits during the ladder
+    /// must not clear the agents' `live` mark (they'll be revived).
+    pub shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl NodeInner {
+    /// The mesh, if this node is in one (cheap Arc clone; may change at
+    /// runtime via Node::reload_mesh).
+    pub fn mesh(&self) -> Option<Arc<crate::federation::MeshState>> {
+        self.mesh.read().unwrap().clone()
+    }
+
     pub fn live(&self, name: &str) -> Option<Arc<ManagedSession>> {
         self.sessions.lock().unwrap().get(name).cloned()
     }
@@ -128,10 +139,46 @@ impl Node {
             _ => None,
         };
         let node = Self::build(store, mesh, Some(data_dir.to_owned()));
-        if node.inner.mesh.is_some() {
-            crate::federation::spawn_dialers(node.inner.clone());
+        if node.inner.mesh().is_some() {
+            crate::federation::ensure_dialers(node.inner.clone());
         }
         Ok(node)
+    }
+
+    /// Re-read mesh files and apply them to the running daemon: join a mesh
+    /// if we weren't in one, or pick up new peers / relay if we were. Live
+    /// links are preserved. Returns a one-line summary.
+    pub fn reload_mesh(&self) -> Result<String> {
+        let Some(data_dir) = self.inner.data_dir.as_deref() else {
+            anyhow::bail!("node has no data dir");
+        };
+        let files = crate::mesh::MeshFiles::new(data_dir);
+        let (identity, mut config) = match (files.load_identity()?, files.load_mesh()?) {
+            (Some(id), Some(cfg)) if id.cert.is_some() => (id, cfg),
+            _ => return Ok("no certified mesh membership on disk".into()),
+        };
+        config.peers = files.verified_peers()?;
+        let summary;
+        if let Some(mesh) = self.inner.mesh() {
+            let mut cur = mesh.config.write().unwrap();
+            let before = cur.peers.len();
+            *cur = config;
+            summary = format!(
+                "mesh '{}' config reloaded: {} peer(s) (was {}), relay {}",
+                cur.mesh,
+                cur.peers.len(),
+                before,
+                cur.relay.as_deref().unwrap_or("none")
+            );
+        } else {
+            let name = config.mesh.clone();
+            let peers = config.peers.len();
+            let state = Arc::new(crate::federation::MeshState::new(identity, config));
+            *self.inner.mesh.write().unwrap() = Some(state);
+            summary = format!("joined mesh '{name}' live: {peers} peer(s)");
+        }
+        crate::federation::ensure_dialers(self.inner.clone());
+        Ok(summary)
     }
 
     pub fn with_store(store: BusStore) -> Self {
@@ -148,8 +195,9 @@ impl Node {
             store,
             sessions: Mutex::new(HashMap::new()),
             delivery_tx,
-            mesh,
+            mesh: std::sync::RwLock::new(mesh),
             data_dir,
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         });
         tokio::spawn(delivery::run(inner.clone(), delivery_rx));
         Self { inner }
@@ -236,6 +284,7 @@ impl Node {
             opts.charter.as_deref(),
             opts.extra_args.as_deref(),
         )?;
+        let _ = self.inner.store.set_agent_live(name, true);
         // Remember the repo (and, when the operator asked to skip here,
         // adopt that as the repo's default going forward).
         let _ = self.inner.store.add_repo(&repo, opts.skip_permissions);
@@ -291,7 +340,21 @@ impl Node {
         sess.handle.interrupt().await
     }
 
+    /// Operator-initiated stop: clears the live mark so the agent is not
+    /// revived at the next daemon start. (The daemon's own shutdown ladder
+    /// uses `shutdown_for_restart` and keeps the mark.)
     pub async fn shutdown_agent(&self, name: &str) -> Result<()> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let _ = self.inner.store.set_agent_live(name, false);
+        sess.handle.shutdown().await
+    }
+
+    /// Stop a session because the daemon is going down — the agent stays
+    /// marked live and comes back at the next `aspen up`.
+    pub async fn shutdown_for_restart(&self, name: &str) -> Result<()> {
         let sess = self
             .inner
             .live(name)
@@ -569,6 +632,14 @@ async fn pump(
             }
             SessionEvent::Exited { .. } => {
                 inner.sessions.lock().unwrap().remove(&sess.name);
+                if !inner
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    // Died on its own (or operator stop): not a revive
+                    // candidate. During daemon shutdown the mark stays.
+                    let _ = inner.store.set_agent_live(&sess.name, false);
+                }
                 let _ = sess.events.send(ev);
                 crate::federation::broadcast_roster(&inner);
                 break;

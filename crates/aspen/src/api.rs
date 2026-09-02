@@ -35,7 +35,6 @@ pub async fn serve(
     data_dir: &std::path::Path,
 ) -> Result<()> {
     let shutdown_node = node.clone();
-    let shutdown_data_dir = data_dir.to_path_buf();
     // Loopback listeners trust the local user; anything wider requires the
     // node token on every /api call (the federation WS is exempt — it has
     // its own cryptographic auth and carries only sealed frames).
@@ -101,6 +100,7 @@ pub async fn serve(
         .route("/mesh", get(get_mesh))
         .route("/repos/discover", post(post_repos_discover))
         .route("/mesh/repos", get(get_mesh_repos))
+        .route("/mesh/reload", post(post_mesh_reload))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
@@ -144,8 +144,13 @@ pub async fn serve(
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             eprintln!("\n[aspen] shutting down sessions…");
-            // Clean ladder for every live session; transcripts persist and
-            // revive brings each one back with context intact.
+            // Going down: exits during the ladder must keep each agent's
+            // `live` mark — that mark IS the resume ledger, and because it
+            // is maintained continuously it survives a crash too.
+            shutdown_node
+                .inner
+                .shutting_down
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let names: Vec<String> = shutdown_node
                 .inner
                 .sessions
@@ -154,19 +159,10 @@ pub async fn serve(
                 .keys()
                 .cloned()
                 .collect();
-            // Resume ledger: which sessions were live at shutdown. The next
-            // `aspen up` revives them (unless --no-resume), which is what
-            // makes `aspen update --restart` seamless.
-            let ledger = shutdown_data_dir.join("resume.json");
-            if names.is_empty() {
-                let _ = std::fs::remove_file(&ledger);
-            } else {
-                let _ = std::fs::write(&ledger, serde_json::to_string(&names).unwrap_or_default());
-            }
             for name in names {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
-                    shutdown_node.shutdown_agent(&name),
+                    shutdown_node.shutdown_for_restart(&name),
                 )
                 .await;
             }
@@ -381,7 +377,7 @@ fn err(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Value
 /// node) for mesh proxying; `name@<this-node>` collapses to local.
 fn remote_parts(s: &AppState, name: &str) -> Option<(String, String)> {
     let (bare, node) = name.split_once('@')?;
-    let mesh = s.node.inner.mesh.as_ref()?;
+    let mesh = s.node.inner.mesh()?;
     if node == mesh.identity.node {
         return None;
     }
@@ -389,6 +385,9 @@ fn remote_parts(s: &AppState, name: &str) -> Option<(String, String)> {
 }
 
 const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// For mesh-wide listings (repos), where a peer's slowness shouldn't stall
+/// the page: short, and calls run concurrently.
+const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Proxy one op to the agent's home node; map errors to a response.
 async fn proxy(
@@ -398,7 +397,7 @@ async fn proxy(
     agent: &str,
     body: Value,
 ) -> axum::response::Response {
-    let Some(mesh) = &s.node.inner.mesh else {
+    let Some(mesh) = s.node.inner.mesh() else {
         return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
     };
     match mesh.api_call(node, op, agent, body, REMOTE_TIMEOUT).await {
@@ -447,9 +446,9 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
         Ok(rows) => {
             let mut out: Vec<Value> = rows.iter().map(|a| agent_json(&s, a)).collect();
             for v in out.iter_mut() {
-                v["node"] = json!(s.node.inner.mesh.as_ref().map(|m| m.identity.node.clone()));
+                v["node"] = json!(s.node.inner.mesh().map(|m| m.identity.node.clone()));
             }
-            if let Some(mesh) = &s.node.inner.mesh {
+            if let Some(mesh) = s.node.inner.mesh() {
                 let remote = mesh.remote.lock().unwrap();
                 for (node, agents) in remote.iter() {
                     let reachable = mesh.link_up(node);
@@ -518,7 +517,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
 
     // Remote spawn: the repo lives on a peer, so start the session there.
     if let Some(node) = body.node.as_deref().filter(|n| !is_self_node(&s, n)) {
-        let Some(mesh) = &s.node.inner.mesh else {
+        let Some(mesh) = s.node.inner.mesh() else {
             return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
         };
         let req = json!({
@@ -716,7 +715,7 @@ async fn ws_events(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        let Some(mesh) = s.node.inner.mesh.clone() else {
+        let Some(mesh) = s.node.inner.mesh() else {
             return err(StatusCode::NOT_FOUND, "not in a mesh").into_response();
         };
         return ws
@@ -885,7 +884,7 @@ async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoRespo
 /// is a sealed envelope, so an unauthenticated caller can hold a socket
 /// open but can neither read nor forge mesh traffic.
 async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
-    if s.node.inner.mesh.is_none() {
+    if s.node.inner.mesh().is_none() {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             "this node has not joined a mesh",
@@ -1068,7 +1067,7 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
         })
         .collect();
 
-    if let Some(mesh) = &s.node.inner.mesh {
+    if let Some(mesh) = s.node.inner.mesh() {
         let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
         for peer in peers {
             match mesh
@@ -1117,7 +1116,7 @@ async fn post_needs_read(State(s): S) -> impl IntoResponse {
         let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
         let _ = store.mark_delivered(&ids, "operator-ui", None);
     }
-    if let Some(mesh) = &s.node.inner.mesh {
+    if let Some(mesh) = s.node.inner.mesh() {
         let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
         for peer in peers {
             let _ = mesh
@@ -1174,14 +1173,13 @@ async fn get_post_receipts(State(s): S, Path(post): Path<String>) -> impl IntoRe
 
 /// Mesh legibility: identity, peers with live link state, relay health.
 async fn get_mesh(State(s): S) -> impl IntoResponse {
-    let Some(mesh) = &s.node.inner.mesh else {
+    let Some(mesh) = s.node.inner.mesh() else {
         return Json(json!({ "in_mesh": false, "node": s.node_name })).into_response();
     };
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
     let peers: Vec<Value> = mesh
-        .config
-        .peers
+        .peers()
         .iter()
         .map(|p| {
             let name = &p.cert.node;
@@ -1195,11 +1193,11 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
         .collect();
     Json(json!({
         "in_mesh": true,
-        "mesh": mesh.config.mesh,
+        "mesh": mesh.mesh_name(),
         "node": mesh.identity.node,
         "peers": peers,
         "relay": {
-            "url": mesh.config.relay,
+            "url": mesh.relay_url(),
             "connected_at": *mesh.relay_connected_at.lock().unwrap(),
         },
     }))
@@ -1247,7 +1245,7 @@ async fn get_channels(State(s): S) -> impl IntoResponse {
             .push(a.name.clone());
     }
     // Remote roster contributes auto members too.
-    if let Some(mesh) = &s.node.inner.mesh {
+    if let Some(mesh) = s.node.inner.mesh() {
         for ras in mesh.remote.lock().unwrap().values() {
             for ra in ras {
                 by_channel
@@ -1390,8 +1388,7 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
     let node_name = s
         .node
         .inner
-        .mesh
-        .as_ref()
+        .mesh()
         .map(|m| m.identity.node.clone())
         .unwrap_or_else(|| s.node_name.clone());
     for a in s.node.inner.store.agents().unwrap_or_default() {
@@ -1413,7 +1410,7 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
             "remote": false,
         }));
     }
-    if let Some(mesh) = &s.node.inner.mesh {
+    if let Some(mesh) = s.node.inner.mesh() {
         for (node, ras) in mesh.remote.lock().unwrap().iter() {
             let reachable = mesh.link_up(node);
             for ra in ras {
@@ -1477,10 +1474,19 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
 
 // ---------------------------------------------------------------------- repos
 
+/// Apply mesh files to the running daemon (join live, pick up peers/relay).
+/// The mesh CLI calls this after every mutation so no restart is needed.
+async fn post_mesh_reload(State(s): S) -> impl IntoResponse {
+    match s.node.reload_mesh() {
+        Ok(summary) => Json(json!({ "ok": true, "summary": summary })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
 /// True when `node` names this node (or the mesh isn't set up, so
 /// everything is local).
 fn is_self_node(s: &AppState, node: &str) -> bool {
-    match &s.node.inner.mesh {
+    match s.node.inner.mesh() {
         Some(m) => m.identity.node == node,
         None => true,
     }
@@ -1490,8 +1496,7 @@ fn is_self_node(s: &AppState, node: &str) -> bool {
 fn self_node_name(s: &AppState) -> String {
     s.node
         .inner
-        .mesh
-        .as_ref()
+        .mesh()
         .map(|m| m.identity.node.clone())
         .unwrap_or_else(|| "local".into())
 }
@@ -1517,26 +1522,32 @@ async fn get_mesh_repos(State(s): S) -> impl IntoResponse {
         "repos": local,
     }));
 
-    if let Some(mesh) = &s.node.inner.mesh {
-        for peer in &mesh.config.peers {
-            let name = &peer.cert.node;
-            let reachable = mesh.link_up(name);
-            let repos = if reachable {
-                mesh.api_call(name, "node_repos", "", json!({}), REMOTE_TIMEOUT)
-                    .await
-                    .ok()
-                    .and_then(|v| v.as_array().cloned())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            nodes.push(json!({
-                "node": name,
-                "self": false,
-                "reachable": reachable,
-                "repos": repos,
-            }));
-        }
+    if let Some(mesh) = s.node.inner.mesh() {
+        // All peers at once, with a listing-appropriate timeout — one slow
+        // or wedged peer must not hold the whole Library hostage.
+        let calls = mesh.peers().into_iter().map(|peer| {
+            let mesh = mesh.clone();
+            async move {
+                let name = peer.cert.node.clone();
+                let reachable = mesh.link_up(&name);
+                let repos = if reachable {
+                    mesh.api_call(&name, "node_repos", "", json!({}), LIST_TIMEOUT)
+                        .await
+                        .ok()
+                        .and_then(|v| v.as_array().cloned())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                json!({
+                    "node": name,
+                    "self": false,
+                    "reachable": reachable,
+                    "repos": repos,
+                })
+            }
+        });
+        nodes.extend(futures_util::future::join_all(calls).await);
     }
     Json(json!({ "nodes": nodes }))
 }

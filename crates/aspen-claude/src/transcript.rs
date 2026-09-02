@@ -5,6 +5,7 @@
 //! rehydration parses the JSONL into displayable turns: full fidelity for
 //! text, honest degradation for tool traffic.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -50,6 +51,30 @@ pub struct SessionInfo {
     pub user_messages: usize,
 }
 
+/// Scan results memoized per transcript, keyed by (mtime, size). Transcripts
+/// are append-only and can be hundreds of MB across a machine; the Library
+/// polls this, so an unchanged file must cost a stat(), not a read.
+type ScanKey = (std::time::SystemTime, u64);
+type Scanned = (Option<String>, Option<String>, usize);
+static SCAN_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (ScanKey, Scanned)>>> =
+    std::sync::OnceLock::new();
+
+fn scan_transcript_cached(path: &Path, meta: &std::fs::Metadata) -> Scanned {
+    let key: ScanKey = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+    let cache = SCAN_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Some((k, v)) = cache.lock().unwrap().get(path) {
+        if *k == key {
+            return v.clone();
+        }
+    }
+    let scanned = scan_transcript(path);
+    cache
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf(), (key, scanned.clone()));
+    scanned
+}
+
 /// Enumerate a project's sessions from disk, newest first. A session with
 /// zero real user messages is a warm spawn — callers may hide it.
 pub fn enumerate_sessions(project_path: &Path) -> Result<Vec<SessionInfo>> {
@@ -72,14 +97,16 @@ pub fn enumerate_sessions(project_path: &Path) -> Result<Vec<SessionInfo>> {
         if uuid::Uuid::parse_str(stem).is_err() {
             continue;
         }
-        let modified = entry
-            .metadata()
-            .and_then(|m| m.modified())
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let modified = meta
+            .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
-        let (title, entrypoint, user_messages) = scan_transcript(&path);
+        let (title, entrypoint, user_messages) = scan_transcript_cached(&path, &meta);
         out.push(SessionInfo {
             session_id: stem.to_owned(),
             title,

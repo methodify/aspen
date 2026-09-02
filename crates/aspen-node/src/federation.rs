@@ -39,7 +39,15 @@ pub struct RemoteAgent {
 
 pub struct MeshState {
     pub identity: NodeIdentity,
-    pub config: MeshConfig,
+    /// Interior-mutable so `aspen mesh peers-add` / `relay` take effect in
+    /// the running daemon without a restart (see Node::reload_mesh).
+    pub config: std::sync::RwLock<MeshConfig>,
+    /// Peers with a dialer task already running (idempotent ensure_dialers).
+    pub dialing: Mutex<std::collections::HashSet<String>>,
+    /// Relay URL a client task is already maintaining, if any.
+    pub relay_running: Mutex<Option<String>>,
+    /// The roster ticker has been started.
+    pub ticker_started: std::sync::atomic::AtomicBool,
     /// node name → sender of already-serialized wire frames.
     pub links: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
     /// node name → last roster it sent us.
@@ -58,7 +66,10 @@ impl MeshState {
     pub fn new(identity: NodeIdentity, config: MeshConfig) -> Self {
         Self {
             identity,
-            config,
+            config: std::sync::RwLock::new(config),
+            dialing: Mutex::new(std::collections::HashSet::new()),
+            relay_running: Mutex::new(None),
+            ticker_started: std::sync::atomic::AtomicBool::new(false),
             links: Mutex::new(HashMap::new()),
             remote: Mutex::new(HashMap::new()),
             pending_api: Mutex::new(HashMap::new()),
@@ -111,6 +122,19 @@ impl MeshState {
 }
 
 impl MeshState {
+    pub fn peers(&self) -> Vec<crate::mesh::PeerConfig> {
+        self.config.read().unwrap().peers.clone()
+    }
+    pub fn relay_url(&self) -> Option<String> {
+        self.config.read().unwrap().relay.clone()
+    }
+    pub fn mesh_name(&self) -> String {
+        self.config.read().unwrap().mesh.clone()
+    }
+    pub fn root_public(&self) -> Vec<u8> {
+        self.config.read().unwrap().root_public.clone()
+    }
+
     pub fn link_up(&self, node: &str) -> bool {
         self.links.lock().unwrap().contains_key(node)
     }
@@ -139,6 +163,8 @@ impl MeshState {
 
     fn peer_cert(&self, node: &str) -> Option<NodeCert> {
         self.config
+            .read()
+            .unwrap()
             .peers
             .iter()
             .find(|p| p.cert.node == node)
@@ -201,7 +227,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
 
 /// Push the current roster to every connected peer (spawns/exits/timer).
 pub fn broadcast_roster(inner: &Arc<NodeInner>) {
-    let Some(mesh) = &inner.mesh else { return };
+    let Some(mesh) = inner.mesh() else { return };
     let payload = roster_payload(inner);
     let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
     for p in peers {
@@ -214,7 +240,7 @@ pub fn broadcast_roster(inner: &Arc<NodeInner>) {
 /// Forward every pending row for `recipient` to its home `node`.
 /// Rows stay pending until the peer acks storage (at-least-once).
 pub fn forward_pending(inner: &Arc<NodeInner>, recipient: &str, node: &str) {
-    let Some(mesh) = &inner.mesh else { return };
+    let Some(mesh) = inner.mesh() else { return };
     let Ok(pending) = inner.store.pending_for(recipient) else {
         return;
     };
@@ -244,10 +270,8 @@ pub async fn run_link(
     mut in_rx: mpsc::UnboundedReceiver<String>,
 ) -> Result<()> {
     let mesh = inner
-        .mesh
-        .as_ref()
-        .ok_or_else(|| anyhow!("this node has not joined a mesh"))?
-        .clone();
+        .mesh()
+        .ok_or_else(|| anyhow!("this node has not joined a mesh"))?;
 
     // 1. Hello out.
     let my_nonce: Vec<u8> = {
@@ -275,7 +299,7 @@ pub async fn run_link(
         .ok_or_else(|| anyhow!("link closed before peer hello"))?;
     let peer_hello: Hello = serde_json::from_str(&first)?;
     let peer_cert = peer_hello.hello;
-    peer_cert.verify_against(&mesh.config.root_public)?;
+    peer_cert.verify_against(&mesh.root_public())?;
     if peer_cert.node == mesh.identity.node {
         bail!("peer presented this node's own name");
     }
@@ -809,19 +833,25 @@ async fn serve_api_req(
 
 // ----------------------------------------------------------------- dialing
 
-/// Dial every configured peer with a URL, forever, with backoff.
-pub fn spawn_dialers(inner: Arc<NodeInner>) {
-    let Some(mesh) = &inner.mesh else { return };
-    for peer in &mesh.config.peers {
+/// Dial every configured peer with a URL, forever, with backoff. Idempotent:
+/// safe to call again after the config changes — only peers without a
+/// running dialer get one, the roster ticker starts once, and the relay
+/// client starts when a relay is (newly) configured.
+pub fn ensure_dialers(inner: Arc<NodeInner>) {
+    let Some(mesh) = inner.mesh() else { return };
+    for peer in mesh.peers() {
         let Some(url) = peer.url.clone() else {
             continue;
         };
         let name = peer.cert.node.clone();
+        if !mesh.dialing.lock().unwrap().insert(name.clone()) {
+            continue; // already dialing this peer
+        }
         let inner = inner.clone();
         tokio::spawn(async move {
             loop {
                 // Only one live link per peer; if an inbound one exists, wait.
-                let already = inner.mesh.as_ref().is_some_and(|m| m.link_up(&name));
+                let already = inner.mesh().is_some_and(|m| m.link_up(&name));
                 if !already {
                     match tokio_tungstenite::connect_async(&url).await {
                         Ok((ws, _)) => {
@@ -862,18 +892,25 @@ pub fn spawn_dialers(inner: Arc<NodeInner>) {
         });
     }
     // Periodic roster refresh so turn states stay roughly current.
-    let inner2 = inner.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            broadcast_roster(&inner2);
-        }
-    });
+    if !mesh
+        .ticker_started
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        let inner2 = inner.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                broadcast_roster(&inner2);
+            }
+        });
+    }
 
     // If a rendezvous relay is configured, keep a connection to it — the
     // universal fallback for peers with no direct path.
-    if let Some(mesh) = &inner.mesh {
-        if let Some(relay_url) = mesh.config.relay.clone() {
+    if let Some(relay_url) = mesh.relay_url() {
+        let mut running = mesh.relay_running.lock().unwrap();
+        if running.as_deref() != Some(relay_url.as_str()) {
+            *running = Some(relay_url.clone());
             spawn_relay_client(inner.clone(), relay_url);
         }
     }
@@ -894,11 +931,7 @@ fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
 async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
     use aspen_wire::relay::{Challenge, Register};
 
-    let mesh = inner
-        .mesh
-        .as_ref()
-        .ok_or_else(|| anyhow!("no mesh"))?
-        .clone();
+    let mesh = inner.mesh().ok_or_else(|| anyhow!("no mesh"))?.clone();
     let (ws, _) = tokio_tungstenite::connect_async(relay_url).await?;
     let (mut sink, mut stream) = ws.split();
 
@@ -914,11 +947,11 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
         .clone()
         .ok_or_else(|| anyhow!("node not certified"))?;
     let reg = Register {
-        mesh: mesh.config.mesh.clone(),
+        mesh: mesh.mesh_name(),
         node: mesh.identity.node.clone(),
         challenge_sig: mesh
             .identity
-            .sign_relay_challenge(&mesh.config.mesh, &challenge.nonce)?,
+            .sign_relay_challenge(&mesh.mesh_name(), &challenge.nonce)?,
         cert,
     };
     sink.send(tokio_tungstenite::tungstenite::Message::text(

@@ -281,9 +281,18 @@ fn stop_daemon(data_dir: &Path) -> Result<Option<RestartParams>> {
     };
 
     println!("stopping daemon …");
-    crate::stop_detached(data_dir)?;
-    // Clean shutdown removes daemon.json last; wait for it so the resume
-    // ledger is fully written before the new daemon reads it.
+    if let Err(e) = crate::stop_detached(data_dir) {
+        // A stale state file (daemon crashed earlier) is not a reason to
+        // abort the update: stop_detached clears it; we still know how the
+        // daemon was configured and will start it fresh after the swap.
+        if data_dir.join("daemon.json").exists() {
+            return Err(e);
+        }
+        println!("(daemon was not actually running — stale state cleared; will start fresh after update)");
+        return Ok(Some(params));
+    }
+    // Clean shutdown removes daemon.json last; wait for it so the agents'
+    // live marks are final before the new daemon reads them.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while data_dir.join("daemon.json").exists() {
         if std::time::Instant::now() > deadline {

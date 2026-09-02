@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS agents(
   created_at      REAL NOT NULL,
   last_spawned_at REAL,
   title           TEXT,
-  extra_args      TEXT
+  extra_args      TEXT,
+  live            INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS repos(
   path             TEXT PRIMARY KEY,
@@ -157,6 +158,7 @@ impl BusStore {
             "ALTER TABLE messages ADD COLUMN post TEXT",
             "ALTER TABLE agents ADD COLUMN title TEXT",
             "ALTER TABLE agents ADD COLUMN extra_args TEXT",
+            "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 if !e.to_string().contains("duplicate column") {
@@ -227,6 +229,29 @@ impl BusStore {
                     extra_args: r.get(6)?,
                 })
             })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The crash-safe resume ledger: `live` is set on spawn and cleared when
+    /// the operator stops the agent or its process exits on its own — but
+    /// NOT when the daemon itself shuts down. So whatever is still marked
+    /// live at the next `aspen up` is exactly what was running when the
+    /// daemon went away, cleanly or not.
+    pub fn set_agent_live(&self, name: &str, live: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET live=?2 WHERE name=?1",
+            params![name, live as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn agents_marked_live(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT name FROM agents WHERE live=1 ORDER BY name")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }

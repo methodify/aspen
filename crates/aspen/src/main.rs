@@ -145,10 +145,21 @@ enum MeshCommand {
         #[arg(long)]
         node: Option<String>,
     },
-    /// Where the root key lives: turn an enroll blob into a cert blob.
-    Certify { blob: String },
-    /// On the new node: install the cert blob, joining the mesh.
+    /// Where the root key lives: turn an enroll blob into a join bundle
+    /// (the cert plus this node's cert/URL/relay so `join` wires the link).
+    Certify {
+        blob: String,
+        /// How the joining node reaches THIS node, e.g.
+        /// ws://host:7420/api/federation/ws. Omit if this node will dial
+        /// the joiner instead (then add it with `peers-add --url` here).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// On the new node: install a join bundle (or bare cert blob).
     Join { blob: String },
+    /// Tell the running daemon to re-read mesh files (done automatically
+    /// after every mesh command; use this if the daemon was down then).
+    Reload,
     /// Print this node's cert blob (give it to peers via `peers add`).
     Export,
     /// Register a peer's cert blob, optionally with a dial URL.
@@ -412,17 +423,24 @@ fn cleanup_old_binary() {
     }
 }
 
-/// Revive the sessions that were live at the last graceful shutdown — the
-/// ledger api::serve writes on the way down. This is what makes
-/// `aspen update --restart` feel invisible: sessions pause, come back on
-/// the new version with context intact.
+/// Revive whatever was live when the daemon last went away — cleanly
+/// (`aspen down`, `update --restart`) or not (crash, power). The agents
+/// table's `live` mark is maintained continuously, so no shutdown-time
+/// ledger is needed. Sessions the operator stopped, or that exited on
+/// their own, are not marked and stay down.
 fn auto_revive(data_dir: &std::path::Path, node: Node) {
-    let ledger = data_dir.join("resume.json");
-    let Ok(text) = std::fs::read_to_string(&ledger) else {
-        return;
-    };
-    let _ = std::fs::remove_file(&ledger);
-    let names: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+    // Legacy ledger from pre-0.1.7 daemons: honor it once, then retire it.
+    let legacy = data_dir.join("resume.json");
+    let mut names: Vec<String> = std::fs::read_to_string(&legacy)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(&legacy);
+    for n in node.inner.store.agents_marked_live().unwrap_or_default() {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
     if names.is_empty() {
         return;
     }
@@ -701,6 +719,43 @@ pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// After a mesh mutation, ask a running daemon to apply it live. Returns
+/// whether a daemon was reached. Never fatal: the files are the source of
+/// truth and the next `aspen up` reads them anyway.
+fn notify_daemon_reload(data_dir: &std::path::Path) -> bool {
+    let Some(state) = read_daemon_state(data_dir) else {
+        return false;
+    };
+    let Some(listen) = state["listen"].as_str() else {
+        return false;
+    };
+    let mut req = ureq::post(&format!("http://{listen}/api/mesh/reload"))
+        .timeout(std::time::Duration::from_secs(5));
+    let loopback = listen
+        .parse::<std::net::SocketAddr>()
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or(true);
+    if !loopback {
+        if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
+            req = req.set("X-Aspen-Token", tok.trim());
+        }
+    }
+    match req.send_json(serde_json::json!({})) {
+        Ok(resp) => {
+            let v: serde_json::Value = resp.into_json().unwrap_or_default();
+            println!(
+                "daemon: {}",
+                v["summary"].as_str().unwrap_or("mesh reloaded")
+            );
+            true
+        }
+        Err(e) => {
+            println!("(daemon not reloaded: {e} — it reads mesh files at next start, or run `aspen mesh reload`)");
+            false
+        }
+    }
+}
+
 fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
     use aspen_node::mesh::{MeshConfig, MeshFiles};
     use aspen_wire::identity::{self, JoinRequest, MeshRoot, NodeCert, NodeIdentity};
@@ -748,6 +803,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                     files.load_identity()?.unwrap().cert.as_ref().unwrap()
                 )?
             );
+            notify_daemon_reload(data_dir);
             Ok(())
         }
         MeshCommand::Enroll { node } => {
@@ -767,7 +823,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 id.node, identity::to_blob("enroll", &id.join_request())?);
             Ok(())
         }
-        MeshCommand::Certify { blob } => {
+        MeshCommand::Certify { blob, url } => {
             let root = files.load_root()?.ok_or_else(|| {
                 anyhow::anyhow!("no root key here — run this on the mesh's root node")
             })?;
@@ -793,16 +849,43 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             }
             let cert = root.certify(&req)?;
             files.add_peer(cert.clone(), None).ok(); // register them here too
+            let me = files
+                .load_identity()?
+                .and_then(|id| id.cert)
+                .ok_or_else(|| anyhow::anyhow!("this node has no cert of its own"))?;
+            let relay = files.load_mesh()?.and_then(|m| m.relay);
+            let bundle = aspen_node::mesh::JoinBundle {
+                cert: cert.clone(),
+                certifier: me,
+                certifier_url: url.clone(),
+                relay,
+            };
             println!(
-                "cert blob for '{}' — run `aspen mesh join <blob>` on that node:\n{}",
+                "join bundle for '{}' — run `aspen mesh join <blob>` on that node:\n{}",
                 cert.node,
-                identity::to_blob("cert", &cert)?
+                identity::to_blob("bundle", &bundle)?
             );
-            println!("\n(peer '{}' was also added to THIS node's mesh.json — set its URL with `aspen mesh peers-add` if you dial it)", cert.node);
+            println!(
+                "\n(peer '{}' is registered here as inbound-only; the bundle carries this node's cert{}{} so `join` wires the link.)",
+                cert.node,
+                if url.is_some() {
+                    " + dial URL"
+                } else {
+                    " (no dial URL — pass --url if the joiner should dial this node)"
+                },
+                if bundle.relay.is_some() { " + relay" } else { "" },
+            );
+            notify_daemon_reload(data_dir);
             Ok(())
         }
         MeshCommand::Join { blob } => {
-            let cert: NodeCert = identity::from_blob("cert", &blob)?;
+            // A join bundle (from `certify`) or a bare cert blob (legacy).
+            let bundle: Option<aspen_node::mesh::JoinBundle> =
+                identity::from_blob("bundle", &blob).ok();
+            let cert: NodeCert = match &bundle {
+                Some(b) => b.cert.clone(),
+                None => identity::from_blob("cert", &blob)?,
+            };
             let mut id = files.load_identity()?.ok_or_else(|| {
                 anyhow::anyhow!("no identity here — run `aspen mesh enroll` first")
             })?;
@@ -819,11 +902,35 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 })?;
             }
             println!("joined mesh '{}' as node '{}'.", cert.mesh, cert.node);
-            println!("this node's cert blob is saved; print it for `peers-add` on other nodes with `aspen mesh export`.");
-            println!(
-                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes; saved in identity.json — re-print anytime with `aspen mesh export`):\n{}",
-                identity::to_blob("cert", &cert)?
-            );
+            if let Some(b) = bundle {
+                // Wire the certifier as a peer straight from the bundle.
+                files.add_peer(b.certifier.clone(), b.certifier_url.clone())?;
+                println!(
+                    "peer '{}' registered{}",
+                    b.certifier.node,
+                    match &b.certifier_url {
+                        Some(u) => format!(" — dialing {u}"),
+                        None => " — inbound only (it dials us, or a relay carries it)".into(),
+                    }
+                );
+                if let Some(relay) = b.relay {
+                    let mut m = files.load_mesh()?.expect("saved above");
+                    if m.relay.is_none() {
+                        m.relay = Some(relay.clone());
+                        files.save_mesh(&m)?;
+                        println!("relay set from bundle: {relay}");
+                    }
+                }
+            } else {
+                println!("(bare cert: add peers with `aspen mesh peers-add`; `aspen mesh export` prints this node's cert)");
+            }
+            notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        MeshCommand::Reload => {
+            if !notify_daemon_reload(data_dir) {
+                println!("no running daemon to reload (it reads mesh files at startup).");
+            }
             Ok(())
         }
         MeshCommand::Export => {
@@ -853,6 +960,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                 cert.node,
                 url.map(|u| format!(" (dialing {u})")).unwrap_or_default()
             );
+            notify_daemon_reload(data_dir);
             Ok(())
         }
         MeshCommand::RootPubkey => {
@@ -869,9 +977,10 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             mesh.relay = url.clone();
             files.save_mesh(&mesh)?;
             match url {
-                Some(u) => println!("relay set: {u} (restart `aspen up` to connect)"),
-                None => println!("relay cleared"),
+                Some(u) => println!("relay set: {u}"),
+                None => println!("relay cleared (takes effect at next daemon start)"),
             }
+            notify_daemon_reload(data_dir);
             Ok(())
         }
         MeshCommand::Status => {

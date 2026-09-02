@@ -318,6 +318,69 @@ Aspen is, frankly, a C2 system for machines that run code. Design accordingly:
   is a rule, not a mode" legibility lesson), and an audit trail of who/what
   approved each grant.
 
+### 8.1 The single-operator assumption (as built, 2026-09-01) **[revisit]**
+
+Everything in the mesh today rests on one premise: **a mesh is one person's
+machines.** Every node is certified by a root key that person holds, so every
+peer is, by construction, *the operator wearing a different hostname*. That
+premise is what makes the following acceptable, and each item below is a
+capability a peer node has over this node today, with no further policy:
+
+| Peer can… | Since | Notes |
+|---|---|---|
+| read the roster, transcripts, runtime info, context usage | P2 | `api_req` ops |
+| message / interrupt / stop / revive an agent | P2 | operator-equivalent |
+| answer a permission prompt or question on an agent's behalf | v2.1 | incl. "always allow" grants |
+| set model / permission mode / title / charter | v2.1 | |
+| list this node's repo registry; enumerate a repo's sessions | v0.1.6 | `node_repos`, `node_sessions` |
+| trigger repo discovery here (writes this node's registry) | v0.1.6 | `node_discover` |
+| **spawn a session here, acknowledging the trust gate on this node's behalf** | v0.1.6 | `spawn` with `acknowledge_trust` |
+
+The last row is the one to notice: the trust gate exists so nothing auto-runs
+a repo's hooks/MCP without a human looking, and a peer can now satisfy it
+remotely. Correct for one operator; it is exactly the wrong default the
+moment a second person's node is certified into the mesh.
+
+**What changes when the assumption breaks.** Node-scoped ops need a
+*per-node policy layer*: which peers may spawn here, discover here, answer
+prompts here. The natural shape is a small allowlist in `mesh.json` per peer
+(`may: [observe, control, spawn, trust]`), enforced in `serve_api_req`
+before dispatch, defaulting to `observe+control` for peers certified by the
+same root and requiring explicit grant for `spawn`/`trust`. Certs could
+carry a *role* claim signed by the root so the policy travels with the
+identity rather than living only on each node. Pair it with the audit trail
+already called for above: every remote `spawn`/`trust` recorded with the
+originating node.
+
+**Two things are NOT affected** by any of this and should stay put: the
+wire security (root-signed certs, per-envelope sign+encrypt, relay routes
+blind) and the local-surface posture (loopback trusts the local user;
+anything wider needs the node token). Those are correct regardless of how
+many people are in the mesh.
+
+**Trigger to act:** before the first multi-operator mesh, or before the repo
+goes public — whichever comes first. Until then this section is the
+documented IOU.
+
+### 8.2 Release authenticity **[revisit before going public]**
+
+`aspen update` and the installers verify the downloaded binary against the
+release's `SHA256SUMS`. That file comes from the *same* GitHub release as
+the binary, so it proves **integrity** (the bytes weren't corrupted in
+transit) — not **authenticity** (the release wasn't replaced by someone who
+can write to the repo or intercept GitHub). Acceptable while the repo is
+private and one person publishes.
+
+For a public repo: sign releases and verify the signature against a key
+baked into the binary, so a compromised GitHub account cannot push an
+update that installs. **minisign** fits: one keypair, no infrastructure, a
+tiny verification dependency, and the public key is a single line in
+`update.rs`. Release CI signs `SHA256SUMS` (the signed file covers every
+asset by hash), `update` fetches `SHA256SUMS.minisig` alongside and refuses
+to proceed on a bad or missing signature; the installers do the same when
+`minisign` is on the PATH and warn when it isn't. Key rotation = ship a
+release signed by the *old* key whose binary trusts the *new* key.
+
 ---
 
 ## 9. The SPA

@@ -31,7 +31,7 @@ pub async fn run(inner: Arc<NodeInner>, mut rx: mpsc::UnboundedReceiver<String>)
             // bare name homed elsewhere forwards over the mesh when the
             // link is up; otherwise rows stay pending (next spawn here, or
             // next link-up).
-            if let Some(mesh) = &inner.mesh {
+            if let Some(mesh) = inner.mesh() {
                 let home = match recipient.split_once('@') {
                     Some((_, node)) => Some(node.to_owned()),
                     None => mesh.find_remote(&recipient).map(|(node, _)| node),

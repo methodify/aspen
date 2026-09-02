@@ -509,6 +509,9 @@ function RepositoriesSection({
   const [actionError, setActionError] = useState<string | null>(null);
   const [openNodes, setOpenNodes] = useState<Record<string, boolean>>({});
   const [discovering, setDiscovering] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const matches = (path: string) => q === "" || path.toLowerCase().includes(q);
 
   const key = (node: string, path: string) => `${node}\u0000${path}`;
   const selected = selKey ? { node: selKey.split("\u0000")[0], path: selKey.split("\u0000")[1] } : null;
@@ -611,21 +614,35 @@ function RepositoriesSection({
       <AddRepoForm onAdded={refresh} />
       <HarnessDefaults />
 
+      {nodes.reduce((acc, n) => acc + n.repos.length, 0) > 8 && (
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="filter repositories across all nodes…"
+          className="mono"
+          spellCheck={false}
+          aria-label="filter repositories"
+        />
+      )}
+
       {nodes.map((n) => {
         // A single (local) node stays flat — no section chrome. With peers,
         // each node gets a collapsible header; remote sections start closed
         // so a large remote registry doesn't bury the local one.
-        const open = meshed ? (openNodes[n.node] ?? n.self) : true;
+        const visible = n.repos.filter((r) => matches(r.path));
+        // A live filter opens every section so hits are never hidden.
+        const open = q !== "" ? true : meshed ? (openNodes[n.node] ?? n.self) : true;
+        if (q !== "" && visible.length === 0) return null;
         const body = (
           <div className="grid">
-            {n.repos.length === 0 ? (
+            {visible.length === 0 ? (
               <Empty mark="◦">
                 {n.reachable
                   ? "No repositories here yet — discover, or start a session."
                   : "Node unreachable; its repositories are hidden until the link is back."}
               </Empty>
             ) : (
-              n.repos.map((r) => {
+              visible.map((r) => {
                 const k = key(n.node, r.path);
                 return (
                   <div key={k} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -710,7 +727,9 @@ function RepositoriesSection({
                   </span>
                 )}
                 <span className="mono-meta">
-                  {n.repos.length} repo{n.repos.length === 1 ? "" : "s"}
+                  {q !== "" && visible.length !== n.repos.length
+                    ? `${visible.length} of ${n.repos.length}`
+                    : `${n.repos.length} repo${n.repos.length === 1 ? "" : "s"}`}
                 </span>
               </button>
               <span style={{ flex: 1 }} />
@@ -1191,8 +1210,8 @@ function SkillsSection({ repos }: { repos: Repo[] }) {
 // ── Library shell ──────────────────────────────────────────────────────────
 
 export default function Library() {
-  const reposPoll = usePoll(api.repos, 3000);
-  const meshPoll = usePoll(api.meshRepos, 3000);
+  const reposPoll = usePoll(api.repos, 15000);
+  const meshPoll = usePoll(api.meshRepos, 15000);
   const repos = reposPoll.data ?? [];
   const nodeCount = meshPoll.data?.nodes.length ?? 1;
   const [section, setSection] = useState<Section>("repos");

@@ -144,7 +144,7 @@ pub fn send_message(
                 .store
                 .channel_members(channel)
                 .map_err(|e| e.to_string())?;
-            if let Some(mesh) = &inner.mesh {
+            if let Some(mesh) = inner.mesh() {
                 for (name, _node) in mesh.remote_channel_members(channel) {
                     if !members.contains(&name) {
                         members.push(name);
@@ -210,7 +210,7 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
         None => {
             // Homed on a peer node? Say what will actually happen. Both
             // node-qualified (`name@node`) and roster-known bare names.
-            if let Some(mesh) = &inner.mesh {
+            if let Some(mesh) = inner.mesh() {
                 let found = match recipient.split_once('@') {
                     Some((bare, node)) => Some((
                         node.to_owned(),
@@ -290,7 +290,7 @@ fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
         }
         lines.push(line);
     }
-    if let Some(mesh) = &inner.mesh {
+    if let Some(mesh) = inner.mesh() {
         let remote = mesh.remote.lock().unwrap();
         for (node, agents) in remote.iter() {
             let reachable = mesh.link_up(node);

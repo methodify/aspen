@@ -133,3 +133,22 @@ fn write_json_private<T: Serialize>(path: &Path, v: &T) -> Result<()> {
     }
     Ok(())
 }
+
+/// What `aspen mesh certify` hands back to a joining node: its own cert plus
+/// enough about the certifier to wire the first link without a second
+/// round of copy-paste — the certifier's cert, how to dial it (if the
+/// operator said), and the mesh's relay (if any).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct JoinBundle {
+    /// The joining node's root-signed cert.
+    pub cert: NodeCert,
+    /// The certifying node's cert, so the joiner can register it as a peer.
+    pub certifier: NodeCert,
+    /// How the joiner should dial the certifier (ws://…/api/federation/ws).
+    /// None = the certifier will dial the joiner, or a relay carries it.
+    #[serde(default)]
+    pub certifier_url: Option<String>,
+    /// The mesh relay, if the certifier has one configured.
+    #[serde(default)]
+    pub relay: Option<String>,
+}

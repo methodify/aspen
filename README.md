@@ -141,25 +141,35 @@ aspen bus log
 
 ## Joining a second machine (the mesh)
 
+Three commands, two pastes, no restarts — the daemons can be running the
+whole time (mesh commands apply to a running daemon live).
+
 ```bash
-# On machine A (creates the mesh + its root key):
+# On machine A (creates the mesh + its root key; A's daemon joins it live):
 aspen mesh init --mesh mymesh --node alpha
 
 # On machine B:
-aspen mesh enroll --node beta            # prints an enroll blob
-# → paste that blob on A:
-aspen mesh certify aspen:enroll:…        # prints a cert blob
-# → paste the cert blob on B:
-aspen mesh join aspen:cert:…
-
-# Tell each node how to reach the other — directly…
-aspen mesh peers-add aspen:cert:… --url ws://<host>:7420/api/federation/ws
-# …or through a rendezvous relay when there's no direct path:
-aspen mesh relay wss://relay.example.com/relay
+aspen mesh enroll --node beta            # prints an enroll blob → paste on A
+# → on A: certify it, telling B how to reach A:
+aspen mesh certify aspen:enroll:… --url ws://<A-host>:7420/api/federation/ws
+#   prints a join BUNDLE (B's cert + A's cert + that URL + A's relay, if any)
+# → on B:
+aspen mesh join aspen:bundle:…           # installs the cert, registers A as
+                                         # a peer, dials it — link comes up
 ```
 
-Now `aspen up` on both, and either console can see and drive agents on the
-other node (`@agent@node` addressing). Bus traffic and remote sessions travel
+Omit `--url` if A will dial B instead (then `aspen mesh peers-add … --url`
+on A). Names must be distinct per node — the hostname default collides on a
+Windows+WSL box, so name them (`anindor`, `anindor-win`). For peers with no
+direct path, a rendezvous relay:
+
+```bash
+aspen mesh relay wss://relay.example.com/relay   # on each node; rides the
+                                                 # bundle for later joiners
+```
+
+Either console can now see and drive agents on the other node
+(`@agent@node` addressing), and the Library shows both nodes' repos. Bus traffic and remote sessions travel
 end-to-end encrypted; the relay only routes.
 
 See [`rendezvous/README.md`](rendezvous/README.md) to stand up a relay (a
