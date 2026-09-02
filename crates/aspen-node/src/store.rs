@@ -66,6 +66,23 @@ CREATE TABLE IF NOT EXISTS channel_members(
   PRIMARY KEY(channel, member)
 );
 CREATE INDEX IF NOT EXISTS idx_chanmem ON channel_members(channel);
+CREATE TABLE IF NOT EXISTS bookmarks(
+  id           INTEGER PRIMARY KEY,
+  agent        TEXT NOT NULL,
+  session_id   TEXT NOT NULL,
+  message_uuid TEXT,
+  label        TEXT,
+  reason       TEXT NOT NULL,
+  created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bookmark_agent ON bookmarks(agent);
+CREATE TABLE IF NOT EXISTS lineage(
+  child_session  TEXT PRIMARY KEY,
+  parent_session TEXT NOT NULL,
+  fork_message   TEXT,
+  agent          TEXT NOT NULL,
+  created_at     REAL NOT NULL
+);
 ";
 
 pub fn now_epoch() -> f64 {
@@ -116,6 +133,18 @@ pub struct RepoRow {
     /// The repo's handle: its address segment and channel name. Defaults
     /// to the directory basename, unique per node, operator-renamable.
     pub handle: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Bookmark {
+    pub id: i64,
+    pub session_id: String,
+    pub message_uuid: Option<String>,
+    pub label: Option<String>,
+    /// "branch" (the tip left behind by branch-here), "swap" (the tip left
+    /// behind by resuming a bookmark), or "manual".
+    pub reason: String,
+    pub created_at: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +422,106 @@ impl BusStore {
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// The runtime announced a session id for this agent (a fork, or a
+    /// drift we should trust): move the head.
+    pub fn set_agent_session(&self, name: &str, session_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET session_id=?2 WHERE name=?1",
+            params![name, session_id],
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------ bookmarks/lineage
+
+    pub fn add_bookmark(
+        &self,
+        agent: &str,
+        session_id: &str,
+        message_uuid: Option<&str>,
+        label: Option<&str>,
+        reason: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO bookmarks(agent, session_id, message_uuid, label, reason, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![agent, session_id, message_uuid, label, reason, now_epoch()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn bookmarks(&self, agent: &str) -> Result<Vec<Bookmark>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, message_uuid, label, reason, created_at
+             FROM bookmarks WHERE agent=?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![agent], |r| {
+                Ok(Bookmark {
+                    id: r.get(0)?,
+                    session_id: r.get(1)?,
+                    message_uuid: r.get(2)?,
+                    label: r.get(3)?,
+                    reason: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn bookmark(&self, agent: &str, id: i64) -> Result<Option<Bookmark>> {
+        Ok(self.bookmarks(agent)?.into_iter().find(|b| b.id == id))
+    }
+
+    pub fn delete_bookmark(&self, agent: &str, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM bookmarks WHERE agent=?1 AND id=?2",
+            params![agent, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_lineage(
+        &self,
+        agent: &str,
+        child: &str,
+        parent: &str,
+        fork_message: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO lineage(child_session, parent_session, fork_message, agent, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![child, parent, fork_message, agent, now_epoch()],
+        )?;
+        Ok(())
+    }
+
+    /// Parent chain of a session, nearest first.
+    pub fn lineage_of(&self, session: &str) -> Result<Vec<(String, Option<String>)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut out = Vec::new();
+        let mut cur = session.to_owned();
+        for _ in 0..64 {
+            let row: Option<(String, Option<String>)> = conn
+                .query_row(
+                    "SELECT parent_session, fork_message FROM lineage WHERE child_session=?1",
+                    params![cur],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((parent, at)) = row else { break };
+            out.push((parent.clone(), at));
+            cur = parent;
+        }
+        Ok(out)
     }
 
     pub fn set_agent_title(&self, name: &str, title: Option<&str>) -> Result<()> {

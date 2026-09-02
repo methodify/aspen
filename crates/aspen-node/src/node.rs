@@ -38,6 +38,9 @@ pub struct ManagedSession {
     pub busy_since: Mutex<Option<f64>>,
     /// The most recent tool the session invoked this turn.
     pub last_tool: Mutex<Option<String>>,
+    /// When spawned as a fork: (parent session, fork point). The pump
+    /// records lineage once the runtime announces the child's id.
+    pub fork_from: Option<(String, Option<String>)>,
 }
 
 impl ManagedSession {
@@ -115,6 +118,10 @@ pub struct SpawnOpts {
     /// Per-session harness CLI args (raw string; split at spawn). Appended
     /// after the harness defaults from settings.json.
     pub extra_args: Option<String>,
+    /// With `resume`: branch to a fresh session id (the head moves to it).
+    pub fork: bool,
+    /// With `resume`: truncate history to this message first.
+    pub resume_at: Option<String>,
 }
 
 /// The one way a repo path enters or is looked up in the store. Resolves
@@ -257,6 +264,8 @@ impl Node {
         let mut cfg = ClaudeConfig::new(repo.clone());
         cfg.model = opts.model.clone();
         cfg.resume = opts.resume.clone();
+        cfg.fork = opts.fork;
+        cfg.resume_at = opts.resume_at.clone();
         // bypassPermissions makes the CLI skip can_use_tool entirely; an
         // explicit permission_mode still overrides it if given.
         cfg.permission_mode = opts
@@ -338,6 +347,11 @@ impl Node {
             inventory: Mutex::new(None),
             busy_since: Mutex::new(None),
             last_tool: Mutex::new(None),
+            fork_from: if opts.fork {
+                opts.resume.clone().map(|p| (p, opts.resume_at.clone()))
+            } else {
+                None
+            },
         });
         self.inner
             .sessions
@@ -421,6 +435,112 @@ impl Node {
         let opts = SpawnOpts {
             charter: row.charter.clone(),
             resume,
+            interactive,
+            extra_args: row.extra_args.clone(),
+            ..Default::default()
+        };
+        self.spawn_agent(name, row.repo.clone(), opts).await
+    }
+
+    /// Branch here: leave a bookmark on the current head and move the agent
+    /// to a fresh fork of it (optionally from an earlier message). The
+    /// process is restarted on the fork; live marks are kept so the agent
+    /// revives on the new head from now on.
+    pub async fn branch_agent(
+        &self,
+        name: &str,
+        label: Option<&str>,
+        at_message: Option<&str>,
+    ) -> Result<Arc<ManagedSession>> {
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        let head = row
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("{name} has no session to branch from"))?;
+        if !aspen_claude::transcript::transcript_path(&row.repo, &head).is_file() {
+            return Err(anyhow!(
+                "{name}'s session has no transcript yet — nothing to branch from"
+            ));
+        }
+        // Bookmark the tip we're leaving.
+        self.inner.store.add_bookmark(
+            name,
+            &head,
+            None,
+            label
+                .or(row.title.as_deref())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
+            "branch",
+        )?;
+        self.fork_to(name, &head, at_message).await
+    }
+
+    /// Resume a bookmark: bookmark the current tip (reason "swap"), then
+    /// fork from the bookmark's session/point and make that the head.
+    pub async fn resume_bookmark(&self, name: &str, id: i64) -> Result<Arc<ManagedSession>> {
+        let bm = self
+            .inner
+            .store
+            .bookmark(name, id)?
+            .ok_or_else(|| anyhow!("no bookmark {id} for {name}"))?;
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        if let Some(head) = &row.session_id {
+            if head != &bm.session_id {
+                self.inner
+                    .store
+                    .add_bookmark(name, head, None, row.title.as_deref(), "swap")?;
+            }
+        }
+        self.fork_to(name, &bm.session_id, bm.message_uuid.as_deref())
+            .await
+    }
+
+    /// Stop the running process (if any) and relaunch as a fork of `from`.
+    async fn fork_to(
+        &self,
+        name: &str,
+        from: &str,
+        at_message: Option<&str>,
+    ) -> Result<Arc<ManagedSession>> {
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        let interactive = self
+            .inner
+            .live(name)
+            .map(|s| s.broker.is_some())
+            .unwrap_or(true);
+        if self.inner.live(name).is_some() {
+            // Keep the live mark: this is a restart, not an operator stop.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.shutdown_for_restart(name),
+            )
+            .await;
+            // Wait for the process to actually leave the roster.
+            for _ in 0..50 {
+                if self.inner.live(name).is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        let opts = SpawnOpts {
+            charter: row.charter.clone(),
+            resume: Some(from.to_owned()),
+            fork: true,
+            resume_at: at_message.map(str::to_owned),
             interactive,
             extra_args: row.extra_args.clone(),
             ..Default::default()
@@ -667,6 +787,28 @@ async fn pump(
             }
             SessionEvent::RuntimeInit { raw, .. } => {
                 *sess.inventory.lock().unwrap() = Some(raw.clone());
+                // The runtime's announced id is the head. On a fork it is
+                // new — move the agent to it and record where it came from.
+                if let Some(announced) = raw.get("session_id").and_then(|s| s.as_str()) {
+                    let current = inner
+                        .store
+                        .agents()
+                        .ok()
+                        .and_then(|rows| rows.into_iter().find(|a| a.name == sess.name))
+                        .and_then(|a| a.session_id);
+                    if current.as_deref() != Some(announced) {
+                        let _ = inner.store.set_agent_session(&sess.name, announced);
+                        if let Some((parent, at)) = &sess.fork_from {
+                            let _ = inner.store.record_lineage(
+                                &sess.name,
+                                announced,
+                                parent,
+                                at.as_deref(),
+                            );
+                            tracing::info!(agent = %sess.name, parent = %parent, child = %announced, "branched");
+                        }
+                    }
+                }
             }
             SessionEvent::Exited { .. } => {
                 inner.sessions.lock().unwrap().remove(&sess.name);

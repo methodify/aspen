@@ -19,6 +19,8 @@ pub struct SpawnSpec {
     pub session_id: Option<String>,
     pub resume: Option<String>,
     pub fork_session: bool,
+    /// With resume: truncate to this assistant message (branch from a point).
+    pub resume_at: Option<String>,
     pub permission_mode: Option<String>,
     pub model: Option<String>,
     /// Stamped as CLAUDE_CODE_ENTRYPOINT — marks every transcript line so hub
@@ -36,6 +38,7 @@ impl SpawnSpec {
             session_id: None,
             resume: None,
             fork_session: false,
+            resume_at: None,
             permission_mode: None,
             model: None,
             entrypoint: "aspen".into(),
@@ -67,6 +70,10 @@ impl SpawnSpec {
             a.push(id.clone());
             if self.fork_session {
                 a.push("--fork-session".into());
+            }
+            if let Some(at) = &self.resume_at {
+                a.push("--resume-session-at".into());
+                a.push(at.clone());
             }
         } else if let Some(id) = &self.session_id {
             a.push("--session-id".into());

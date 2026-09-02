@@ -9,7 +9,13 @@ import {
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, sessionEventsUrl, type PermissionAnswer, type RuntimeInfo } from "./../api";
+import {
+  api,
+  sessionEventsUrl,
+  type BookmarksInfo,
+  type PermissionAnswer,
+  type RuntimeInfo,
+} from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
   addLocalUserMessage,
@@ -28,7 +34,7 @@ import {
   type UserBubbleItem,
 } from "./../transcript";
 import { useAppData } from "./../App";
-import { Meter, presenceOf } from "./../components";
+import { Meter, presenceOf, relTime } from "./../components";
 import { useHotkeys } from "./../hotkeys";
 import {
   buildQuestionUpdatedInput,
@@ -492,6 +498,12 @@ function SessionView({ name }: { name: string }) {
   const [titleDraft, setTitleDraft] = useState("");
   const [titleOverride, setTitleOverride] = useState<string | null | undefined>(undefined);
   const [charterOpen, setCharterOpen] = useState(false);
+  // Branching: the agent name points at a head; branch-here leaves a
+  // bookmark and forks; the history drawer lists lineage + bookmarks.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<BookmarksInfo | null>(null);
+  const [branching, setBranching] = useState(false);
+  const [branchLabel, setBranchLabel] = useState<string | null>(null);
   const [charterDraft, setCharterDraft] = useState<string | null>(null);
   const [charterSaving, setCharterSaving] = useState(false);
   const [charterOverride, setCharterOverride] = useState<string | null | undefined>(undefined);
@@ -665,6 +677,12 @@ function SessionView({ name }: { name: string }) {
   async function send() {
     const text = draft.trim();
     if (!text || busy || exited) return;
+    // Aspen-level command: /branch [label] — handled here, never sent.
+    if (/^\/branch(\s|$)/.test(text)) {
+      setDraft("");
+      await branchHere(text.replace(/^\/branch\s*/, ""));
+      return;
+    }
     const localKey = crypto.randomUUID();
     dispatch({ type: "local_send", text, localKey });
     setDraft("");
@@ -680,6 +698,45 @@ function SessionView({ name }: { name: string }) {
       setBusy(false);
       busyLocalStartRef.current = null;
       setActionError(`send: ${errText(e)}`);
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      setHistory(await api.bookmarks(name));
+    } catch (e) {
+      setActionError(`history: ${errText(e)}`);
+    }
+  }
+
+  /// Branch here: the tip becomes a bookmark (labeled), the session forks,
+  /// and this name continues on the fork. The head moves at the first turn
+  /// on the branch (the runtime announces the new id then).
+  async function branchHere(label: string) {
+    if (branching) return;
+    setBranching(true);
+    setBranchLabel(null);
+    setActionError(null);
+    try {
+      await api.branch(name, label.trim() || undefined);
+      setCtlNote(`branched — the previous tip is bookmarked${label.trim() ? ` as “${label.trim()}”` : ""}`);
+      await loadHistory();
+      setHistoryOpen(true);
+    } catch (e) {
+      setActionError(`branch: ${errText(e)}`);
+    } finally {
+      setBranching(false);
+    }
+  }
+
+  async function resumeBookmark(id: number) {
+    setActionError(null);
+    try {
+      await api.resumeBookmark(name, id);
+      setCtlNote("resumed the bookmark — the line you were on is bookmarked too");
+      await loadHistory();
+    } catch (e) {
+      setActionError(`resume: ${errText(e)}`);
     }
   }
 
@@ -1099,6 +1156,39 @@ function SessionView({ name }: { name: string }) {
           </button>
         )}
         {exited === null &&
+          (branchLabel !== null ? (
+            <span className="stop-confirm">
+              <input
+                className="mono"
+                value={branchLabel}
+                onChange={(e) => setBranchLabel(e.target.value)}
+                placeholder="label for the tip you're leaving (optional)"
+                autoFocus
+                style={{ width: 260 }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void branchHere(branchLabel);
+                  if (e.key === "Escape") setBranchLabel(null);
+                }}
+                aria-label="bookmark label"
+              />
+              <button className="btn sm" disabled={branching} onClick={() => void branchHere(branchLabel)}>
+                {branching ? "branching…" : "branch here"}
+              </button>
+              <button className="btn ghost sm" onClick={() => setBranchLabel(null)}>
+                cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              className="btn-reload"
+              onClick={() => setBranchLabel("")}
+              disabled={branching}
+              title="branch here: bookmark this point and continue on a fork — come back to the bookmark any time (also: type /branch [label])"
+            >
+              branch
+            </button>
+          ))}
+        {exited === null &&
           (confirmStop ? (
             <span className="stop-confirm">
               <button
@@ -1183,6 +1273,18 @@ function SessionView({ name }: { name: string }) {
         >
           charter {charterOpen ? "▴" : "▾"}
         </button>
+        <button
+          className="charter-toggle"
+          aria-expanded={historyOpen}
+          onClick={() => {
+            const next = !historyOpen;
+            setHistoryOpen(next);
+            if (next) void loadHistory();
+          }}
+          title="this name's lineage and bookmarks"
+        >
+          history {historyOpen ? "▴" : "▾"}
+        </button>
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
         {ctlError && <span className="ctl-error">{ctlError}</span>}
         <span className="spacer" />
@@ -1234,6 +1336,55 @@ function SessionView({ name }: { name: string }) {
           </div>
         )}
       </div>
+
+      {historyOpen && (
+        <div className="charter-drawer">
+          {history === null ? (
+            <div className="dim">loading…</div>
+          ) : (
+            <>
+              <div className="charter-caption" style={{ marginBottom: 6 }}>
+                head {history.head ? history.head.slice(0, 8) : "—"}
+                {history.lineage.length > 0 &&
+                  ` ← ${history.lineage.map((l) => l.session_id.slice(0, 8)).join(" ← ")}`}
+                {" · "}
+                the name follows the head; branching leaves the tip here as a bookmark.
+              </div>
+              {history.bookmarks.length === 0 ? (
+                <div className="dim">no bookmarks yet — branch to leave one.</div>
+              ) : (
+                history.bookmarks.map((b) => (
+                  <div
+                    key={b.id}
+                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}
+                  >
+                    <span className="chip mono" title={b.reason}>
+                      {b.reason === "branch" ? "left by branch" : b.reason === "swap" ? "left by resume" : b.reason}
+                    </span>
+                    <span className="mono" style={{ color: "var(--text-hi)" }}>
+                      {b.label || "(no label)"}
+                    </span>
+                    <span className="mono-meta">{b.session_id.slice(0, 8)}</span>
+                    <span className="mono-meta">{relTime(b.created_at)} ago</span>
+                    <span style={{ flex: 1 }} />
+                    <button className="btn sm" onClick={() => void resumeBookmark(b.id)}>
+                      resume here
+                    </button>
+                    <button
+                      className="btn ghost sm"
+                      onClick={() =>
+                        void api.deleteBookmark(name, b.id).then(loadHistory).catch((e) => setActionError(errText(e)))
+                      }
+                    >
+                      forget
+                    </button>
+                  </div>
+                ))
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {charterOpen && (
         <div className="charter-drawer">

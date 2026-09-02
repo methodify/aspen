@@ -615,6 +615,49 @@ async fn serve_api_req(
             node.revive_agent(agent, true).await?;
             Ok(json!({}))
         }
+        "branch" => {
+            node.branch_agent(
+                agent,
+                body.get("label").and_then(|l| l.as_str()),
+                body.get("at").and_then(|a| a.as_str()),
+            )
+            .await?;
+            Ok(json!({}))
+        }
+        "bookmarks" => {
+            let head = node
+                .inner
+                .store
+                .agents()?
+                .into_iter()
+                .find(|a| a.name == agent)
+                .and_then(|a| a.session_id);
+            let lineage = head
+                .as_deref()
+                .and_then(|h| node.inner.store.lineage_of(h).ok())
+                .unwrap_or_default();
+            Ok(json!({
+                "head": head,
+                "lineage": lineage.iter().map(|(p, at)| json!({ "session_id": p, "fork_message": at })).collect::<Vec<_>>(),
+                "bookmarks": node.inner.store.bookmarks(agent)?,
+            }))
+        }
+        "resume_bookmark" => {
+            let id = body
+                .get("id")
+                .and_then(|i| i.as_i64())
+                .ok_or_else(|| anyhow!("missing id"))?;
+            node.resume_bookmark(agent, id).await?;
+            Ok(json!({}))
+        }
+        "delete_bookmark" => {
+            let id = body
+                .get("id")
+                .and_then(|i| i.as_i64())
+                .ok_or_else(|| anyhow!("missing id"))?;
+            node.inner.store.delete_bookmark(agent, id)?;
+            Ok(json!({}))
+        }
         "reload" => node.reload_plugins(agent).await,
         "runtime" => node.runtime_info(agent),
         "context" => node.context_usage(agent).await,

@@ -38,6 +38,10 @@ ambiguous is refused with the candidates. `operator` is global.
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
 | `POST /api/agents/{name}/interrupt` | — | `{}` | abort the in-flight turn |
 | `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input?, updated_permissions? }` | `{}` | answer a prompt. Deny: `message` shown to the model. Allow: `updated_input` replaces tool input — for AskUserQuestion send `{questions: <echo>, answers: {"<question text>": "<option label>"}, response?}` (§7.6). `updated_permissions`: echo the prompt's `suggestions` verbatim for "always allow" |
+| `POST /api/agents/{name}/branch` | `{ label?, at? }` | `Agent` | branch here: bookmark the current tip (labeled), fork the session (optionally from message `at`), and move this name's head to the fork. The head moves when the runtime announces the new id — at the first turn on the branch |
+| `GET /api/agents/{name}/bookmarks` | — | `{ head, lineage: [{session_id, fork_message}], bookmarks: Bookmark[] }` | the name's current head, its parent chain, and its bookmarks (`reason`: branch / swap / manual) |
+| `POST /api/agents/{name}/bookmarks/{id}/resume` | — | `Agent` | resume a bookmark: the current tip is bookmarked (`swap`), then the head moves to a fork of the bookmark's session/point |
+| `DELETE /api/agents/{name}/bookmarks/{id}` | — | `{ ok }` | forget a bookmark (transcripts on disk are untouched) |
 | `POST /api/agents/{name}/revive` | — | `Agent` | bring a registered-but-down agent back by resuming its stored session (history intact) |
 | `DELETE /api/agents/{name}` | — | `{}` | shutdown ladder |
 | `GET /api/agents/{name}/transcript` | — | `TranscriptItem[]` | rehydrated history from the runtime's on-disk transcript — render above the live stream when opening a session |

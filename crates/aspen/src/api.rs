@@ -66,6 +66,13 @@ pub async fn serve(
         )
         .route("/agents/{name}", delete(delete_agent))
         .route("/agents/{name}/revive", post(post_revive))
+        .route("/agents/{name}/branch", post(post_branch))
+        .route("/agents/{name}/bookmarks", get(get_bookmarks))
+        .route(
+            "/agents/{name}/bookmarks/{id}/resume",
+            post(post_bookmark_resume),
+        )
+        .route("/agents/{name}/bookmarks/{id}", delete(delete_bookmark))
         .route("/agents/{name}/events", get(ws_events))
         .route("/agents/{name}/transcript", get(get_transcript))
         .route("/sessions", get(get_sessions))
@@ -766,6 +773,102 @@ async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse
         }
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
+}
+
+#[derive(Deserialize, Default)]
+struct BranchBody {
+    /// Label for the bookmark left on the tip being departed.
+    label: Option<String>,
+    /// Branch from this message (assistant message uuid) instead of the tip.
+    at: Option<String>,
+}
+
+/// Branch here: bookmark the current tip, fork, move the head.
+async fn post_branch(
+    State(s): S,
+    Path(name): Path<String>,
+    body: Option<Json<BranchBody>>,
+) -> impl IntoResponse {
+    let b = body.map(|j| j.0).unwrap_or_default();
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(
+            &s,
+            &node,
+            "branch",
+            &bare,
+            json!({ "label": b.label, "at": b.at }),
+        )
+        .await;
+    }
+    match s
+        .node
+        .branch_agent(&name, b.label.as_deref(), b.at.as_deref())
+        .await
+    {
+        Ok(_) => agent_response(&s, &name),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+/// The agent's bookmarks (tips left behind by branch/swap, plus manual
+/// ones) and the lineage of its current head.
+async fn get_bookmarks(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "bookmarks", &bare, json!({})).await;
+    }
+    Json(bookmarks_json(&s.node, &name)).into_response()
+}
+
+async fn post_bookmark_resume(
+    State(s): S,
+    Path((name, id)): Path<(String, i64)>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "resume_bookmark", &bare, json!({ "id": id })).await;
+    }
+    match s.node.resume_bookmark(&name, id).await {
+        Ok(_) => agent_response(&s, &name),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn delete_bookmark(State(s): S, Path((name, id)): Path<(String, i64)>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "delete_bookmark", &bare, json!({ "id": id })).await;
+    }
+    match s.node.inner.store.delete_bookmark(&name, id) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+fn agent_response(s: &AppState, name: &str) -> axum::response::Response {
+    let rows = s.node.inner.store.agents().unwrap_or_default();
+    match rows.iter().find(|a| a.name == name) {
+        Some(a) => Json(agent_json(s, a)).into_response(),
+        None => err(StatusCode::INTERNAL_SERVER_ERROR, "not registered").into_response(),
+    }
+}
+
+/// Shared by the local handler and the federation op.
+pub fn bookmarks_json(node: &Node, name: &str) -> Value {
+    let head = node
+        .inner
+        .store
+        .agents()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|a| a.name == name)
+        .and_then(|a| a.session_id);
+    let lineage = head
+        .as_deref()
+        .and_then(|h| node.inner.store.lineage_of(h).ok())
+        .unwrap_or_default();
+    json!({
+        "head": head,
+        "lineage": lineage.iter().map(|(p, at)| json!({ "session_id": p, "fork_message": at })).collect::<Vec<_>>(),
+        "bookmarks": node.inner.store.bookmarks(name).unwrap_or_default(),
+    })
 }
 
 async fn delete_agent(State(s): S, Path(name): Path<String>) -> impl IntoResponse {

@@ -44,6 +44,10 @@ pub struct ClaudeConfig {
     pub repo: PathBuf,
     pub session_id: SessionId,
     pub resume: Option<String>,
+    /// With resume: branch to a fresh session id instead of appending.
+    pub fork: bool,
+    /// With resume: truncate history to this message first.
+    pub resume_at: Option<String>,
     pub permission_mode: Option<String>,
     pub model: Option<String>,
     pub policy: PermissionPolicy,
@@ -62,6 +66,8 @@ impl ClaudeConfig {
             repo,
             session_id: SessionId::new(),
             resume: None,
+            fork: false,
+            resume_at: None,
             permission_mode: None,
             model: None,
             policy: PermissionPolicy::ReadOnlyAuto,
@@ -117,6 +123,8 @@ impl ClaudeSession {
         spec.extra_args = cfg.extra_args.clone();
         if let Some(r) = &cfg.resume {
             spec.resume = Some(r.clone());
+            spec.fork_session = cfg.fork;
+            spec.resume_at = cfg.resume_at.clone();
         } else {
             spec.session_id = Some(cfg.session_id.to_string());
         }

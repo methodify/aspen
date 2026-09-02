@@ -140,6 +140,21 @@ aspen dev duo     --repo /path/to/repo            # two agents talk over the bus
 aspen bus log
 ```
 
+## Names, branches, bookmarks
+
+Agents are named **per repo**: `arch@nonlinear`, and `arch@nonlinear@anindor`
+only when the same repo handle exists on two nodes. A repo's handle defaults
+to its directory name (renamable in Library; unique per node). Inside a
+repo, a bare `arch` reaches that repo's arch; across repos, say `arch@repo`.
+Ambiguous names are refused with the candidates, never guessed.
+
+An agent name points at a **head** — the session being continued. **branch**
+(session page, or `/branch label` in the composer) bookmarks the current tip
+and forks; the name continues on the fork, and revive/restart/update follow
+it. **history** lists the lineage and bookmarks; *resume here* on a bookmark
+forks from that point and makes it the head, bookmarking the line you were
+on. Nothing is ever lost or overwritten.
+
 ## Joining a second machine (the mesh)
 
 Three commands, two pastes, no restarts — the daemons can be running the

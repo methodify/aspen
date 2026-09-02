@@ -90,6 +90,24 @@ export interface SessionInfo {
   mcc_skip: boolean | null;
 }
 
+/** A tip left behind by branch/swap, or a manual bookmark. */
+export interface Bookmark {
+  id: number;
+  session_id: string;
+  message_uuid: string | null;
+  label: string | null;
+  reason: "branch" | "swap" | "manual" | string;
+  created_at: number;
+}
+
+/** GET /api/agents/{name}/bookmarks */
+export interface BookmarksInfo {
+  head: string | null;
+  /** Parent chain of the head, nearest first. */
+  lineage: { session_id: string; fork_message: string | null }[];
+  bookmarks: Bookmark[];
+}
+
 /** A remembered repository (GET /api/repos). */
 export interface Repo {
   path: string;
@@ -349,6 +367,17 @@ export const api = {
   deleteAgent: (name: string) =>
     request<Record<string, never>>(`/api/agents/${enc(name)}`, { method: "DELETE" }),
   revive: (name: string) => post<Agent>(`/api/agents/${enc(name)}/revive`),
+  /** Branch here: bookmark the current tip, fork, move the head. */
+  branch: (name: string, label?: string, at?: string) =>
+    post<Agent>(`/api/agents/${enc(name)}/branch`, {
+      ...(label ? { label } : {}),
+      ...(at ? { at } : {}),
+    }),
+  bookmarks: (name: string) => request<BookmarksInfo>(`/api/agents/${enc(name)}/bookmarks`),
+  resumeBookmark: (name: string, id: number) =>
+    post<Agent>(`/api/agents/${enc(name)}/bookmarks/${id}/resume`, {}),
+  deleteBookmark: (name: string, id: number) =>
+    request<{ ok: boolean }>(`/api/agents/${enc(name)}/bookmarks/${id}`, { method: "DELETE" }),
 
   sendMessage: (name: string, text: string) =>
     post<{ uuid: string }>(`/api/agents/${enc(name)}/message`, { text }),
