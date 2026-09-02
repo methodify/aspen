@@ -23,6 +23,10 @@ pub struct AppState {
     pub node: Node,
     pub node_name: String,
     pub token: Option<String>,
+    /// Fired by POST /api/shutdown — the platform-independent way to ask
+    /// for the graceful ladder (Windows has no SIGTERM, and a detached
+    /// process has no window for taskkill to close).
+    pub shutdown: Arc<tokio::sync::Notify>,
 }
 
 type S = State<Arc<AppState>>;
@@ -43,10 +47,12 @@ pub async fn serve(
     } else {
         Some(load_or_create_token(data_dir)?)
     };
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = Arc::new(AppState {
         node,
         node_name: hostname(),
         token: token.clone(),
+        shutdown: shutdown_notify.clone(),
     });
 
     let api = Router::new()
@@ -101,6 +107,7 @@ pub async fn serve(
         .route("/repos/discover", post(post_repos_discover))
         .route("/mesh/repos", get(get_mesh_repos))
         .route("/mesh/reload", post(post_mesh_reload))
+        .route("/shutdown", post(post_shutdown))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
@@ -142,7 +149,7 @@ pub async fn serve(
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            shutdown_signal(shutdown_notify).await;
             eprintln!("\n[aspen] shutting down sessions…");
             // Going down: exits during the ladder must keep each agent's
             // `live` mark — that mark IS the resume ledger, and because it
@@ -174,26 +181,41 @@ pub async fn serve(
 
 /// Resolve on Ctrl-C (SIGINT) or SIGTERM — the latter is what `aspen down`
 /// sends to a detached node, so both take the clean shutdown ladder.
-async fn shutdown_signal() {
+async fn shutdown_signal(api_request: Arc<tokio::sync::Notify>) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
         let mut term = match signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = api_request.notified() => {}
+                }
                 return;
             }
         };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = term.recv() => {}
+            _ = api_request.notified() => {}
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = api_request.notified() => {}
+        }
     }
+}
+
+/// Graceful stop over the API: sessions get the clean ladder, agents keep
+/// their live marks for revive, daemon.json is removed on exit — the
+/// signal `aspen down` waits for.
+async fn post_shutdown(State(s): S) -> impl IntoResponse {
+    s.shutdown.notify_one();
+    Json(json!({ "ok": true, "stopping": true }))
 }
 
 /// The console, embedded. Release builds carry ui/dist inside the binary;

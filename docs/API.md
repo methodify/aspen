@@ -16,6 +16,8 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `POST /api/repos/skip` | `{ path, skip_permissions }` | `{ ok }` | set a repo's skip-permissions default |
 | `POST /api/repos/forget` | `{ path }` | `{ ok }` | forget a repo (sessions on disk are untouched) |
 | `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
+| `POST /api/shutdown` | `{}` | `{ ok, stopping }` | graceful stop (same ladder as SIGTERM); what `aspen down` uses on every platform — Windows has no SIGTERM and a detached process has no window for taskkill |
+| `POST /api/mesh/reload` | `{}` | `{ ok, summary }` | apply mesh files to the running daemon (join live / pick up peers+relay); the mesh CLI calls it after every mutation |
 | `GET /api/mesh/repos` | — | `{ nodes: [{node, self, reachable, repos}] }` | mesh-wide repo registry grouped by node (this node + each peer); an unreachable peer lists no repos |
 | `GET /api/settings` | — | `Settings` | node settings: per-harness default CLI args |
 | `PUT /api/settings` | `Settings` | `{ ok }` | replace settings; arg strings are validated (reserved protocol flags rejected) |

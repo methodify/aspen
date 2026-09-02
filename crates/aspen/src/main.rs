@@ -680,42 +680,107 @@ fn print_log_tail(log_path: &std::path::Path, n: usize) {
     }
 }
 
+/// Is a process with this pid alive? Unix: kill(0). Windows: tasklist.
+pub(crate) fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
+            .unwrap_or(false)
+    }
+}
+
+/// Stop the daemon. Graceful first — POST /api/shutdown runs the same
+/// ladder as SIGTERM on every platform (Windows has no SIGTERM, and a
+/// detached process has no window for taskkill to close). Falls back to a
+/// forced kill only when the API doesn't answer. State is cleared only once
+/// the process is confirmed gone; a daemon we failed to stop stays visible.
 pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
     let path = pidfile(data_dir);
-    let pid: i32 = read_daemon_state(data_dir)
-        .and_then(|s| s.get("pid").and_then(|p| p.as_i64()))
-        .map(|p| p as i32)
+    let state = read_daemon_state(data_dir);
+    let pid: u32 = state
+        .as_ref()
+        .and_then(|s| s.get("pid").and_then(|p| p.as_u64()))
+        .map(|p| p as u32)
         .or_else(|| {
             std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|s| s.trim().parse().ok())
         })
         .ok_or_else(|| anyhow::anyhow!("no running detached node found ({})", path.display()))?;
-    #[cfg(unix)]
-    {
-        // SIGTERM triggers the graceful shutdown ladder.
-        let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
-        if rc != 0 {
-            remove_daemon_state(data_dir);
-            anyhow::bail!("process {pid} not running (cleared stale pidfile)");
+
+    if !process_alive(pid) {
+        remove_daemon_state(data_dir);
+        anyhow::bail!("process {pid} not running (cleared stale state)");
+    }
+
+    // 1. Graceful, over the API.
+    let listen = state
+        .as_ref()
+        .and_then(|s| s["listen"].as_str().map(str::to_owned));
+    let mut graceful = false;
+    if let Some(listen) = &listen {
+        let mut req = ureq::post(&format!("http://{listen}/api/shutdown"))
+            .timeout(std::time::Duration::from_secs(3));
+        let loopback = listen
+            .parse::<std::net::SocketAddr>()
+            .map(|a| a.ip().is_loopback())
+            .unwrap_or(true);
+        if !loopback {
+            if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
+                req = req.set("X-Aspen-Token", tok.trim());
+            }
+        }
+        graceful = req.send_json(serde_json::json!({})).is_ok();
+    }
+
+    // 2. Fallback: signal (unix = still graceful) / forced kill (windows).
+    if !graceful {
+        #[cfg(unix)]
+        {
+            if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+                anyhow::bail!("could not signal process {pid}");
+            }
+        }
+        #[cfg(windows)]
+        {
+            // /T takes the session processes down too (they revive via
+            // their live marks on the next `up`).
+            let ok = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                anyhow::bail!(
+                    "could not stop process {pid} (try Task Manager / `taskkill /F /T /PID {pid}`)"
+                );
+            }
         }
     }
-    #[cfg(windows)]
-    {
-        let ok = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            remove_daemon_state(data_dir);
-            anyhow::bail!("could not stop process {pid} (cleared stale pidfile)");
+
+    // 3. Wait for it to actually go. On a clean exit the daemon removes its
+    // own state file; after a forced kill we clean up for it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while process_alive(pid) {
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("process {pid} still running after 30s");
         }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    // Deliberately NOT removing daemon.json here: the daemon removes its
-    // own state on clean exit, and that removal is what `update --restart`
-    // waits on to know the port is free and the resume ledger is written.
-    println!("sent stop to aspen node (pid {pid})");
+    if !graceful {
+        remove_daemon_state(data_dir);
+    }
+    println!(
+        "aspen node (pid {pid}) stopped{}",
+        if graceful { "" } else { " (forced)" }
+    );
     Ok(())
 }
 
