@@ -11,6 +11,7 @@ import { api } from "../api";
 import type { Activity, ActivitySession, Channel, MeshInfo, WaitingEdge } from "../api";
 import { usePoll } from "../hooks";
 import { Empty, presenceOf, relTime } from "../components";
+import { NewChannelDialog } from "../channels";
 import type { Presence } from "../components";
 
 // ── Layout constants (SVG user units) ─────────────────────────────────────
@@ -203,7 +204,11 @@ function computeLayout(
           recent.has(s.name) || recent.has(`${s.name}@${s.node}`);
         markers.push({ s, x: cx, y: cy, presence, recent: isRecent });
         const pt: Pt = { x: cx, y: cy };
-        byNameNode.set(`${s.name}@${s.node}`, pt);
+        // Remote sessions arrive already node-qualified (`far@beta`);
+        // qualifying again produced `far@beta@beta` and channel members
+        // never resolved to their marker.
+        const qualified = s.name.includes("@") ? s.name : `${s.name}@${s.node}`;
+        byNameNode.set(qualified, pt);
         if (!byName.has(s.name)) byName.set(s.name, pt);
       });
       y = bodyY + Math.ceil(list.length / COLS) * ROW_H + CH_GAP;
@@ -313,6 +318,12 @@ export default function MeshMap() {
   const meshPoll = usePoll<MeshInfo>(api.mesh, 5000);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  // Connect: pick agents on the map, then create a channel joining them.
+  // Shift/Ctrl-click always selects; the header toggle makes plain clicks
+  // select too.
+  const [connectMode, setConnectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [mouse, setMouse] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const sessions = activityPoll.data?.sessions ?? [];
@@ -336,11 +347,27 @@ export default function MeshMap() {
   const customCount = channels.filter((c) => c.kind === "custom").length;
   const lastTraffic = trail.length > 0 ? trail[trail.length - 1] : null;
 
-  const target = (s: ActivitySession): string =>
-    s.remote ? `${s.name}@${s.node}` : s.name;
+  // /api/activity already returns remote sessions as `name@node`; appending
+  // the node again produced `main@anindor-win@anindor-win` (bug).
+  const target = (s: ActivitySession): string => s.name;
 
   function openSession(s: ActivitySession) {
     nav(`/session/${encodeURIComponent(target(s))}`);
+  }
+
+  function toggleSelect(s: ActivitySession) {
+    setSelected((cur) => {
+      const n = new Set(cur);
+      const k = target(s);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
+  }
+
+  function markerClick(s: ActivitySession, e: React.MouseEvent | React.KeyboardEvent) {
+    if (connectMode || e.shiftKey || e.ctrlKey || e.metaKey) toggleSelect(s);
+    else openSession(s);
   }
 
   function onMove(e: React.MouseEvent) {
@@ -360,6 +387,27 @@ export default function MeshMap() {
           {customCount === 1 ? "channel" : "channels"}
         </span>
         <span style={{ flex: 1 }} />
+        {selected.size > 0 ? (
+          <>
+            <span className="mono-meta">
+              {selected.size} selected · {[...selected].map((n) => `@${n}`).join(" ")}
+            </span>
+            <button className="btn primary sm" onClick={() => setDialogOpen(true)}>
+              connect → new channel
+            </button>
+            <button className="btn ghost sm" onClick={() => setSelected(new Set())}>
+              clear
+            </button>
+          </>
+        ) : (
+          <button
+            className={`btn sm${connectMode ? " primary" : " ghost"}`}
+            onClick={() => setConnectMode((v) => !v)}
+            title="pick agents on the map, then create a channel that joins them (shift-click also selects)"
+          >
+            {connectMode ? "connecting: click agents…" : "connect agents"}
+          </button>
+        )}
         {lastTraffic && (
           <span className="mono-meta">last traffic {relTime(lastTraffic.created_at)} ago</span>
         )}
@@ -367,6 +415,20 @@ export default function MeshMap() {
           <span className="mono-meta" style={{ color: "var(--sig-gate)" }}>offline</span>
         )}
       </div>
+
+      {dialogOpen && (
+        <NewChannelDialog
+          agents={sessions.map((s) => target(s))}
+          initialMembers={[...selected].map((n) => `@${n}`)}
+          onClose={() => setDialogOpen(false)}
+          onCreated={(name) => {
+            setDialogOpen(false);
+            setSelected(new Set());
+            setConnectMode(false);
+            nav(`/conversations/${encodeURIComponent(name)}`);
+          }}
+        />
+      )}
 
       <div className="stage-body">
         {mesh && (
@@ -523,7 +585,14 @@ export default function MeshMap() {
               {layout.edges.map((e, i) => {
                 const labelW = e.channel.length * 6.6 + 14;
                 return (
-                  <g key={`edge:${e.channel}:${i}`} className="mm-edge">
+                  <g
+                    key={`edge:${e.channel}:${i}`}
+                    className="mm-edge"
+                    role="link"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => nav(`/conversations/${encodeURIComponent(e.channel)}`)}
+                  >
+                    <title>{`#${e.channel} — open in Conversations`}</title>
                     {e.spokes.map((sp, j) => (
                       <path
                         key={j}
@@ -597,11 +666,11 @@ export default function MeshMap() {
                     className="mm-marker"
                     role="button"
                     tabIndex={0}
-                    onClick={() => openSession(m.s)}
+                    onClick={(ev) => markerClick(m.s, ev)}
                     onKeyDown={(ev) => {
                       if (ev.key === "Enter" || ev.key === " ") {
                         ev.preventDefault();
-                        openSession(m.s);
+                        markerClick(m.s, ev);
                       }
                     }}
                     onMouseEnter={() =>
@@ -652,6 +721,16 @@ export default function MeshMap() {
                         stroke="var(--sig-normal)"
                         strokeWidth={1.25}
                         strokeOpacity={0.9}
+                      />
+                    )}
+
+                    {/* selection ring (connect) */}
+                    {selected.has(target(m.s)) && (
+                      <path
+                        d={chamferSquare(m.x, m.y, MARKER + 10)}
+                        fill="none"
+                        stroke="var(--sig-notice)"
+                        strokeWidth={2}
                       />
                     )}
 
