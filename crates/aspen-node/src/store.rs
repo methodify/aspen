@@ -167,9 +167,52 @@ impl BusStore {
             }
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        Self::normalize_stored_paths(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Fold every stored repo path onto its normalized form (see
+    /// `node::normalize_repo`). Stores written before normalization hold
+    /// paths as Claude Code wrote them or as canonicalize returned them:
+    /// on Windows that means `c:\…` vs `C:\…`, 8.3 short names
+    /// (`BRYONW~1`), and `\\?\` verbatim prefixes — several rows for one
+    /// repo, and lookups that miss. Paths that no longer exist are left as
+    /// they are.
+    fn normalize_stored_paths(conn: &Connection) -> Result<()> {
+        for (table, col) in [("repos", "path"), ("agents", "repo")] {
+            let mut stmt = conn.prepare(&format!("SELECT {col} FROM {table}"))?;
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            drop(stmt);
+            for old in rows {
+                let plain = crate::node::normalize_repo(Path::new(&old))
+                    .to_string_lossy()
+                    .into_owned();
+                if plain == old {
+                    continue;
+                }
+                if table == "repos" {
+                    let exists: bool = conn
+                        .query_row("SELECT 1 FROM repos WHERE path=?1", params![plain], |_| {
+                            Ok(true)
+                        })
+                        .optional()?
+                        .unwrap_or(false);
+                    if exists {
+                        conn.execute("DELETE FROM repos WHERE path=?1", params![old])?;
+                        continue;
+                    }
+                }
+                conn.execute(
+                    &format!("UPDATE {table} SET {col}=?2 WHERE {col}=?1"),
+                    params![old, plain],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn open_in_memory() -> Result<Self> {

@@ -21,8 +21,10 @@ jobs:
             cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          # macOS builds are paused until the mac is in scope (they bill at
+          # 10x on the private plan). Re-enable by uncommenting:
+          # - os: macos-latest
+          #   target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

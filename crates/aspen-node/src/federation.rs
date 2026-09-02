@@ -739,6 +739,31 @@ async fn serve_api_req(
                 }))
                 .collect::<Vec<_>>()))
         }
+        "node_repo_skip" => {
+            let path = body
+                .get("path")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing path"))?;
+            let skip = body
+                .get("skip_permissions")
+                .and_then(|b| b.as_bool())
+                .ok_or_else(|| anyhow!("missing skip_permissions"))?;
+            node.inner.store.set_repo_skip(
+                &crate::node::normalize_repo(std::path::Path::new(path)),
+                skip,
+            )?;
+            Ok(json!({ "ok": true }))
+        }
+        "node_repo_forget" => {
+            let path = body
+                .get("path")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing path"))?;
+            node.inner
+                .store
+                .remove_repo(&crate::node::normalize_repo(std::path::Path::new(path)))?;
+            Ok(json!({ "ok": true }))
+        }
         "node_sessions" => {
             let repo = body
                 .get("repo")
@@ -802,9 +827,7 @@ async fn serve_api_req(
                 ..Default::default()
             };
             let ack = body.get("acknowledge_trust").and_then(|a| a.as_bool()) == Some(true);
-            let repo_path = std::path::Path::new(repo)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(repo));
+            let repo_path = crate::node::normalize_repo(std::path::Path::new(repo));
             let (autorun, trusted) = node.trust_state(&repo_path);
             if ack {
                 let _ = node.record_trust(&repo_path);

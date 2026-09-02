@@ -85,7 +85,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "aspen"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -94,6 +94,7 @@ dependencies = [
  "aspen-wire",
  "axum",
  "clap",
+ "dunce",
  "futures-util",
  "hex",
  "libc",
@@ -113,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-claude"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "aspen-core",
@@ -128,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -141,13 +142,14 @@ dependencies = [
 
 [[package]]
 name = "aspen-node"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "aspen-claude",
  "aspen-core",
  "aspen-wire",
  "async-trait",
+ "dunce",
  "futures-util",
  "rand_core 0.6.4",
  "rusqlite",
@@ -162,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-relay"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "aspen-wire",
@@ -180,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-wire"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "base64",
@@ -564,6 +566,12 @@ dependencies = [
  "quote",
  "syn 3.0.4",
 ]
+
+[[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "ed25519"

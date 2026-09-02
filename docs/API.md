@@ -13,8 +13,8 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust?, title?, extra_args?, node? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. With `node`, the session spawns on that peer over the mesh (returns `name@node`). An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate) |
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
 | `POST /api/repos` | `{ path, skip_permissions? }` | `Repo` | remember a repo (must be a real directory) |
-| `POST /api/repos/skip` | `{ path, skip_permissions }` | `{ ok }` | set a repo's skip-permissions default |
-| `POST /api/repos/forget` | `{ path }` | `{ ok }` | forget a repo (sessions on disk are untouched) |
+| `POST /api/repos/skip` | `{ path, skip_permissions, node? }` | `{ ok }` | set a repo's skip-permissions default; `node` acts on that peer's registry |
+| `POST /api/repos/forget` | `{ path, node? }` | `{ ok }` | forget a repo (sessions on disk are untouched); `node` acts on that peer's registry |
 | `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
 | `POST /api/shutdown` | `{}` | `{ ok, stopping }` | graceful stop (same ladder as SIGTERM); what `aspen down` uses on every platform — Windows has no SIGTERM and a detached process has no window for taskkill |
 | `POST /api/mesh/reload` | `{}` | `{ ok, summary }` | apply mesh files to the running daemon (join live / pick up peers+relay); the mesh CLI calls it after every mutation |

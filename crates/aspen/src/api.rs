@@ -578,9 +578,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
     // The trust gate (reference §7.7): headless sessions never show the
     // workspace-trust dialog, so the console owns it. A repo that would
     // auto-run anything requires explicit consent once.
-    let repo_path = std::path::Path::new(&body.repo)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&body.repo));
+    let repo_path = aspen_node::node::normalize_repo(std::path::Path::new(&body.repo));
     let (autorun, trusted) = s.node.trust_state(&repo_path);
     if body.acknowledge_trust {
         let _ = s.node.record_trust(&repo_path);
@@ -1229,9 +1227,7 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
 // -------------------------------------------------------------- trust gate
 
 async fn post_repo_trust(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
-    let path = std::path::Path::new(&b.path)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
     match s.node.record_trust(&path) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1239,9 +1235,7 @@ async fn post_repo_trust(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoR
 }
 
 async fn post_repo_untrust(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
-    let path = std::path::Path::new(&b.path)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
     match s.node.revoke_trust(&path) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1613,9 +1607,9 @@ struct RepoAddBody {
 }
 
 async fn post_repo(State(s): S, Json(b): Json<RepoAddBody>) -> impl IntoResponse {
-    // Register only real directories, stored canonicalized so they match
-    // spawn's canonicalized repo paths.
-    let path = match std::path::Path::new(&b.path).canonicalize() {
+    // Register only real directories, stored in the one normalized form
+    // every other entry point uses (see aspen_node::node::normalize_repo).
+    let path = match dunce::canonicalize(std::path::Path::new(&b.path)) {
         Ok(p) if p.is_dir() => p,
         Ok(_) => return err(StatusCode::BAD_REQUEST, "not a directory").into_response(),
         Err(e) => return err(StatusCode::BAD_REQUEST, format!("{}: {e}", b.path)).into_response(),
@@ -1633,12 +1627,22 @@ async fn post_repo(State(s): S, Json(b): Json<RepoAddBody>) -> impl IntoResponse
 struct RepoSkipBody {
     path: String,
     skip_permissions: bool,
+    /// Owning node; absent or this node's name = local.
+    node: Option<String>,
 }
 
 async fn post_repo_skip(State(s): S, Json(b): Json<RepoSkipBody>) -> impl IntoResponse {
-    let path = std::path::Path::new(&b.path)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(
+            &s,
+            node,
+            "node_repo_skip",
+            "",
+            json!({ "path": b.path, "skip_permissions": b.skip_permissions }),
+        )
+        .await;
+    }
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
     match s.node.inner.store.set_repo_skip(&path, b.skip_permissions) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
@@ -1648,12 +1652,15 @@ async fn post_repo_skip(State(s): S, Json(b): Json<RepoSkipBody>) -> impl IntoRe
 #[derive(Deserialize)]
 struct RepoPathBody {
     path: String,
+    /// Owning node; absent or this node's name = local.
+    node: Option<String>,
 }
 
 async fn post_repo_forget(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
-    let path = std::path::Path::new(&b.path)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&b.path));
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_repo_forget", "", json!({ "path": b.path })).await;
+    }
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
     match s.node.inner.store.remove_repo(&path) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),

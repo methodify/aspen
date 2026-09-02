@@ -117,6 +117,16 @@ pub struct SpawnOpts {
     pub extra_args: Option<String>,
 }
 
+/// The one way a repo path enters or is looked up in the store. Resolves
+/// symlinks/relative parts like canonicalize, but on Windows yields the
+/// plain `C:\…` form rather than the `\\?\C:\…` verbatim form canonicalize
+/// returns — discovery stores what Claude Code wrote (`C:\…`), and a lookup
+/// in the other form matched zero rows (the "skip does nothing" bug).
+/// A path that doesn't exist comes back as given.
+pub fn normalize_repo(p: &Path) -> PathBuf {
+    dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// The auto-channel name for a repo: its directory name. (Two repos sharing
 /// a basename collide; disambiguation is a later, deliberate feature.)
 pub fn repo_channel(repo: &Path) -> String {
@@ -213,9 +223,8 @@ impl Node {
         if self.inner.live(name).is_some() {
             return Err(anyhow!("an agent named @{name} is already running"));
         }
-        let repo = repo
-            .canonicalize()
-            .map_err(|e| anyhow!("repo {}: {e}", repo.display()))?;
+        let repo =
+            dunce::canonicalize(&repo).map_err(|e| anyhow!("repo {}: {e}", repo.display()))?;
         let channel = repo_channel(&repo);
 
         // Resolve skip-permissions: explicit request wins, else the repo's
@@ -407,11 +416,12 @@ impl Node {
             .collect();
         let mut out = Vec::new();
         for found in aspen_claude::transcript::discover_repos() {
-            let added = !known.contains(&found.path);
+            let path = normalize_repo(&found.path);
+            let added = !known.contains(&path);
             if added {
-                self.inner.store.add_repo(&found.path, None)?;
+                self.inner.store.add_repo(&path, None)?;
             }
-            out.push((found.path, found.sessions, added));
+            out.push((path, found.sessions, added));
         }
         Ok(out)
     }

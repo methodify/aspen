@@ -375,9 +375,14 @@ export const api = {
       path,
       ...(skipPermissions !== undefined ? { skip_permissions: skipPermissions } : {}),
     }),
-  setRepoSkip: (path: string, skipPermissions: boolean) =>
-    post<{ ok: boolean }>("/api/repos/skip", { path, skip_permissions: skipPermissions }),
-  forgetRepo: (path: string) => post<{ ok: boolean }>("/api/repos/forget", { path }),
+  setRepoSkip: (path: string, skipPermissions: boolean, node?: string) =>
+    post<{ ok: boolean }>("/api/repos/skip", {
+      path,
+      skip_permissions: skipPermissions,
+      ...(node ? { node } : {}),
+    }),
+  forgetRepo: (path: string, node?: string) =>
+    post<{ ok: boolean }>("/api/repos/forget", { path, ...(node ? { node } : {}) }),
 
   busLog: (
     n = 200,

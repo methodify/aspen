@@ -78,9 +78,10 @@ daemon state, and logs. Updates never touch it.
 ### Releasing (maintainers)
 
 Push a tag `v*` matching the workspace version. CI builds the console, embeds
-it, compiles `aspen` + `aspen-relay` for Linux (x86_64, aarch64), Windows, and
-macOS, and publishes a GitHub Release with per-target binaries and a
-`SHA256SUMS` the installers and `aspen update` verify against.
+it, compiles `aspen` + `aspen-relay` for Linux (x86_64, aarch64) and Windows,
+and publishes a GitHub Release with per-target binaries and a `SHA256SUMS`
+the installers and `aspen update` verify against. (macOS targets are paused
+in the workflows until the mac is in scope — uncomment to re-enable.)
 
 ## Build from source (one machine)
 

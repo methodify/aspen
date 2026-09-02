@@ -10,6 +10,7 @@ aspen-claude = { path = "../aspen-claude" }
 aspen-wire = { path = "../aspen-wire" }
 tokio = { workspace = true }
 shell-words = "1"
+dunce = "1"
 serde_json = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }

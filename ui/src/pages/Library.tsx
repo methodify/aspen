@@ -310,7 +310,7 @@ function SessionRow({
 
 function RepoStrip({
   repo,
-  isSelf,
+  node,
   selected,
   onSelect,
   onChanged,
@@ -319,10 +319,9 @@ function RepoStrip({
   onError,
 }: {
   repo: Repo;
-  /** False for a peer's repo: skip-toggle and forget manage the LOCAL
-   *  registry, so they're hidden — but sessions and new-session (which
-   *  spawns on the owning node) still work over the mesh. */
-  isSelf: boolean;
+  /** The owning peer for a remote repo; undefined = this node. Every
+   *  control acts on the owning node over the mesh. */
+  node?: string;
   selected: boolean;
   onSelect: () => void;
   onChanged: () => void;
@@ -339,7 +338,7 @@ function RepoStrip({
     if (skipBusy) return;
     setSkipBusy(true);
     try {
-      await api.setRepoSkip(repo.path, next);
+      await api.setRepoSkip(repo.path, next, node);
       onChanged();
     } catch (e) {
       onError(errText(e));
@@ -352,7 +351,7 @@ function RepoStrip({
     if (forgetting) return;
     setForgetting(true);
     try {
-      await api.forgetRepo(repo.path);
+      await api.forgetRepo(repo.path, node);
       setConfirmForget(false);
       onForgotten();
     } catch (e) {
@@ -413,34 +412,29 @@ function RepoStrip({
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        {isSelf && (
-          <>
-            <label
-              className="micro"
-              style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }}
-            >
-              <input
-                type="checkbox"
-                checked={repo.skip_permissions}
-                disabled={skipBusy}
-                onChange={(e) => void toggleSkip(e.target.checked)}
-                style={{ width: "auto" }}
-              />
-              skip permissions
-            </label>
-            <span className="micro" style={{ color: "var(--text-dim)" }}>
-              runs sessions with --dangerously-skip-permissions
-            </span>
-          </>
-        )}
+        <label
+          className="micro"
+          style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }}
+        >
+          <input
+            type="checkbox"
+            checked={repo.skip_permissions}
+            disabled={skipBusy}
+            onChange={(e) => void toggleSkip(e.target.checked)}
+            style={{ width: "auto" }}
+          />
+          skip permissions
+        </label>
+        <span className="micro" style={{ color: "var(--text-dim)" }}>
+          runs sessions with --dangerously-skip-permissions
+        </span>
         <span style={{ flex: 1 }} />
         {!namingNew && (
           <button type="button" className="btn sm" onClick={() => setNamingNew(true)}>
             new session
           </button>
         )}
-        {isSelf &&
-          (!confirmForget ? (
+        {!confirmForget ? (
             <button
               type="button"
               className="btn ghost sm"
@@ -466,7 +460,7 @@ function RepoStrip({
                 cancel
               </button>
             </>
-          ))}
+          )}
       </div>
 
       {namingNew && (
@@ -484,7 +478,7 @@ function RepoStrip({
 
       {confirmForget && (
         <span className="micro" style={{ color: "var(--text-dim)" }}>
-          forgetting removes it from this list only; sessions on disk are kept.
+          forgetting removes it from {node ? `${node}'s` : "this"} registry only; sessions on disk are kept.
         </span>
       )}
     </div>
@@ -648,7 +642,7 @@ function RepositoriesSection({
                   <div key={k} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <RepoStrip
                       repo={r}
-                      isSelf={n.self}
+                      node={n.self ? undefined : n.node}
                       selected={selKey === k}
                       onSelect={() => setSelKey(selKey === k ? null : k)}
                       onChanged={refresh}
