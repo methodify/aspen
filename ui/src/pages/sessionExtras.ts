@@ -172,13 +172,20 @@ export function slashPartialOf(draft: string): string | null {
   return m ? m[1]! : null;
 }
 
-export function filterSlashCommands(
-  commands: SlashCommand[],
-  partial: string,
-  limit = 8,
-): SlashCommand[] {
+/** Every command matching the partial — the list scrolls; a cap would hide
+ *  commands the user can't otherwise discover. Prefix matches first, then
+ *  substring matches, each group alphabetical. */
+export function filterSlashCommands(commands: SlashCommand[], partial: string): SlashCommand[] {
   const p = partial.toLowerCase();
-  return commands.filter((c) => c.name.toLowerCase().startsWith(p)).slice(0, limit);
+  const prefix = commands.filter((c) => c.name.toLowerCase().startsWith(p));
+  const within =
+    p === ""
+      ? []
+      : commands.filter(
+          (c) => !c.name.toLowerCase().startsWith(p) && c.name.toLowerCase().includes(p),
+        );
+  const byName = (a: SlashCommand, b: SlashCommand) => a.name.localeCompare(b.name);
+  return [...prefix.sort(byName), ...within.sort(byName)];
 }
 
 // ---------------------------------------------------------------------------

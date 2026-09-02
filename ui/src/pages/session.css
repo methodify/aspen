@@ -215,25 +215,47 @@
   border: 1px solid var(--line-hi);
   box-shadow: 0 -6px 18px rgb(0 0 0 / 0.35);
 }
+/* The list scrolls; the popup never grows past ~40% of the viewport so the
+   transcript stays visible behind it. */
+.ac-list {
+  max-height: min(40vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .ac-item {
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
   padding: var(--sp-1) var(--sp-3);
   cursor: pointer;
+  white-space: nowrap;      /* one row per command, always */
+  min-width: 0;
 }
 .ac-item.sel { background: var(--bg-strip-2); }
 .ac-item:hover { background: var(--bg-strip); }
-.ac-name { color: var(--sig-normal); font-weight: 500; }
-.ac-args { color: var(--text-dim); font-size: 0.72rem; }
+.ac-name { color: var(--sig-normal); font-weight: 500; flex: none; }
+.ac-args {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;   /* long argument hints truncate, never wrap */
+}
 .ac-desc {
   color: var(--text-dim);
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
   margin-left: auto;
-  max-width: 50%;
+  flex: 0 1 45%;
+  min-width: 0;
+  text-align: right;
+}
+.ac-foot {
+  padding: var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--line);
+  font-size: 0.68rem;
 }
 
 /* ── Charter drawer ─────────────────────────────────────────────────── */

@@ -1376,12 +1376,18 @@ function SessionView({ name }: { name: string }) {
       <div className="composer">
         {acOpen && (
           <div className="ac-pop" role="listbox" aria-label="slash commands">
+            <div className="ac-list">
             {acMatches.map((c, i) => (
               <div
                 key={c.name}
                 role="option"
                 aria-selected={i === acIdx}
                 className={i === acIdx ? "ac-item sel" : "ac-item"}
+                ref={(el) => {
+                  // Arrow keys move the selection; keep it visible in the
+                  // scrolling list.
+                  if (el && i === acIdx) el.scrollIntoView({ block: "nearest" });
+                }}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   pickCommand(c);
@@ -1393,6 +1399,10 @@ function SessionView({ name }: { name: string }) {
                 {c.description && <span className="ac-desc">{c.description}</span>}
               </div>
             ))}
+            </div>
+            <div className="ac-foot mono-meta">
+              {acMatches.length} command{acMatches.length === 1 ? "" : "s"} · ↑↓ move · Tab/Enter pick · Esc close
+            </div>
           </div>
         )}
         <textarea
