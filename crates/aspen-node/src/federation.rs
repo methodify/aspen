@@ -680,6 +680,129 @@ async fn serve_api_req(
             let items = aspen_claude::transcript::rehydrate(&row.repo, sid).unwrap_or_default();
             Ok(json!(items))
         }
+        // -------------------------------------------------- node-scoped ops
+        // These ignore `agent` — they act on the node, for the Library's
+        // mesh-wide view. Repos/sessions recovered here register on THIS
+        // node; a peer that loses the mesh link stops seeing them, which is
+        // the intended "remote content lives on its owning node" model.
+        "node_repos" => {
+            let repos = node.inner.store.repos()?;
+            let agents = node.inner.store.agents().unwrap_or_default();
+            Ok(json!(repos
+                .iter()
+                .map(|r| {
+                    let sessions = aspen_claude::transcript::enumerate_sessions(&r.path)
+                        .map_or(0, |v| v.iter().filter(|si| si.user_messages > 0).count());
+                    let live = agents
+                        .iter()
+                        .filter(|a| a.repo == r.path && node.inner.live(&a.name).is_some())
+                        .count();
+                    json!({
+                        "path": r.path.to_string_lossy(),
+                        "skip_permissions": r.skip_permissions,
+                        "sessions": sessions,
+                        "live": live,
+                    })
+                })
+                .collect::<Vec<_>>()))
+        }
+        "node_discover" => {
+            let found = node.discover_repos()?;
+            Ok(json!(found
+                .iter()
+                .map(|(path, sessions, added)| json!({
+                    "path": path, "sessions": sessions, "added": added,
+                }))
+                .collect::<Vec<_>>()))
+        }
+        "node_sessions" => {
+            let repo = body
+                .get("repo")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing repo"))?;
+            let path = std::path::Path::new(repo);
+            let mcc = crate::mcc::read(path);
+            let rows = aspen_claude::transcript::enumerate_sessions(path)?;
+            Ok(json!(rows
+                .iter()
+                .map(|si| {
+                    let m = mcc.get(&si.session_id);
+                    json!({
+                        "session_id": si.session_id,
+                        "title": si.title,
+                        "entrypoint": si.entrypoint,
+                        "modified": si.modified_epoch,
+                        "user_messages": si.user_messages,
+                        "mcc_name": m.map(|m| m.name.clone()),
+                        "mcc_args": m.and_then(|m| m.args.clone()),
+                        "mcc_skip": m.map(|m| m.skip_permissions),
+                    })
+                })
+                .collect::<Vec<_>>()))
+        }
+        "spawn" => {
+            // Body is a spawn request; run it here and return the agent name.
+            let name = body
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| anyhow!("missing name"))?
+                .to_owned();
+            let repo = body
+                .get("repo")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing repo"))?;
+            let opts = crate::node::SpawnOpts {
+                charter: body
+                    .get("charter")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_owned),
+                model: body
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_owned),
+                resume: body
+                    .get("resume")
+                    .and_then(|r| r.as_str())
+                    .map(str::to_owned),
+                allow_all: body
+                    .get("allow_all")
+                    .and_then(|a| a.as_bool())
+                    .unwrap_or(false),
+                interactive: true,
+                skip_permissions: body.get("skip_permissions").and_then(|s| s.as_bool()),
+                extra_args: body
+                    .get("extra_args")
+                    .and_then(|a| a.as_str())
+                    .filter(|a| !a.trim().is_empty())
+                    .map(str::to_owned),
+                ..Default::default()
+            };
+            let ack = body.get("acknowledge_trust").and_then(|a| a.as_bool()) == Some(true);
+            let repo_path = std::path::Path::new(repo)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(repo));
+            let (autorun, trusted) = node.trust_state(&repo_path);
+            if ack {
+                let _ = node.record_trust(&repo_path);
+            } else if !trusted && autorun.has_autorun {
+                // Mirror the local 428 as a structured error the caller maps
+                // back to a trust prompt.
+                return Ok(json!({
+                    "trust_required": true,
+                    "autorun": autorun,
+                }));
+            }
+            node.spawn_agent(&name, std::path::PathBuf::from(repo), opts)
+                .await?;
+            if let Some(title) = body
+                .get("title")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.trim().is_empty())
+            {
+                let _ = node.inner.store.set_agent_title(&name, Some(title));
+            }
+            Ok(json!({ "name": name }))
+        }
         other => Err(anyhow!("unknown remote op {other:?}")),
     }
 }

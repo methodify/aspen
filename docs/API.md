@@ -10,12 +10,13 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 |---|---|---|---|
 | `GET /api/node` | — | `{ node, version, sha, built }` | identity/health; `sha`/`built` are stamped at compile time |
 | `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state |
-| `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust?, title?, extra_args? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate) |
+| `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust?, title?, extra_args?, node? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. With `node`, the session spawns on that peer over the mesh (returns `name@node`). An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate) |
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
 | `POST /api/repos` | `{ path, skip_permissions? }` | `Repo` | remember a repo (must be a real directory) |
 | `POST /api/repos/skip` | `{ path, skip_permissions }` | `{ ok }` | set a repo's skip-permissions default |
 | `POST /api/repos/forget` | `{ path }` | `{ ok }` | forget a repo (sessions on disk are untouched) |
-| `POST /api/repos/discover` | `{}` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones |
+| `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
+| `GET /api/mesh/repos` | — | `{ nodes: [{node, self, reachable, repos}] }` | mesh-wide repo registry grouped by node (this node + each peer); an unreachable peer lists no repos |
 | `GET /api/settings` | — | `Settings` | node settings: per-harness default CLI args |
 | `PUT /api/settings` | `Settings` | `{ ok }` | replace settings; arg strings are validated (reserved protocol flags rejected) |
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
@@ -24,7 +25,7 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `POST /api/agents/{name}/revive` | — | `Agent` | bring a registered-but-down agent back by resuming its stored session (history intact) |
 | `DELETE /api/agents/{name}` | — | `{}` | shutdown ladder |
 | `GET /api/agents/{name}/transcript` | — | `TranscriptItem[]` | rehydrated history from the runtime's on-disk transcript — render above the live stream when opening a session |
-| `GET /api/sessions?repo=/path` | — | `SessionInfo[]` | enumerate a repo's sessions from disk (newest first); `user_messages == 0` is a warm spawn, hide it. When the repo has an mcc register (`.mcc/sessions`), rows carry `mcc_name`/`mcc_args`/`mcc_skip` (permission flags filtered into `mcc_skip`); the console shows the name and carries name+args over on resume |
+| `GET /api/sessions?repo=/path&node=` | — | `SessionInfo[]` | `node` enumerates on that peer. enumerate a repo's sessions from disk (newest first); `user_messages == 0` is a warm spawn, hide it. When the repo has an mcc register (`.mcc/sessions`), rows carry `mcc_name`/`mcc_args`/`mcc_skip` (permission flags filtered into `mcc_skip`); the console shows the name and carries name+args over on resume |
 | `GET /api/bus/log?n=&sender=&recipient=&thread=&record=&urgency=&q=` | — | `BusMessage[]` | the trail, chronological; all filters optional (`q` = body substring) |
 | `POST /api/bus/send` | `{ to, body, urgency?, thread?, record? }` | `{ notes: string[] }` | send **as @operator**. `to` is `@agent`, `#channel`, `@operator` |
 | `GET /api/operator/inbox` | — | `BusMessage[]` | undelivered messages addressed to the operator |

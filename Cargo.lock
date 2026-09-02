@@ -85,7 +85,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "aspen"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-claude"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "aspen-core",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-node"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-relay"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "aspen-wire",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-wire"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "base64",

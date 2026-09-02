@@ -87,10 +87,13 @@ export interface SessionInfo {
 export interface Repo {
   path: string;
   skip_permissions: boolean;
-  /** epoch seconds */
-  last_used_at: number;
+  /** Present on remote (node_repos) rows; local rows use live_agents. */
+  live?: number;
+  /** epoch seconds (local rows only) */
+  last_used_at?: number;
   sessions: number;
-  live_agents: number;
+  /** local rows only; remote rows carry `live` instead */
+  live_agents?: number;
   trusted?: boolean;
   has_autorun?: boolean;
 }
@@ -110,6 +113,16 @@ export interface StartAgentRequest {
   title?: string;
   /** Per-session harness CLI args, appended after the harness defaults. */
   extra_args?: string;
+  /** Target node; omit or self name = local, a peer name spawns remotely. */
+  node?: string;
+}
+
+/** A node's repos in the mesh-wide Library view (GET /api/mesh/repos). */
+export interface MeshRepoNode {
+  node: string;
+  self: boolean;
+  reachable: boolean;
+  repos: Repo[];
 }
 
 /** One repo found by POST /api/repos/discover. */
@@ -341,8 +354,13 @@ export const api = {
     request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
   reloadAgent: (name: string) =>
     post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
-  sessions: (repo: string) => request<SessionInfo[]>(`/api/sessions?repo=${enc(repo)}`),
-  discoverRepos: () => post<{ found: DiscoveredRepo[] }>("/api/repos/discover", {}),
+  sessions: (repo: string, node?: string) =>
+    request<SessionInfo[]>(
+      `/api/sessions?repo=${enc(repo)}${node ? `&node=${enc(node)}` : ""}`,
+    ),
+  discoverRepos: (node?: string) =>
+    post<{ found: DiscoveredRepo[] }>("/api/repos/discover", node ? { node } : {}),
+  meshRepos: () => request<{ nodes: MeshRepoNode[] }>("/api/mesh/repos"),
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     request<{ ok: boolean }>("/api/settings", {

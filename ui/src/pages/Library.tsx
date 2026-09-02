@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError, type Repo, type SessionInfo, type SkillEntry } from "../api";
+import { api, ApiError, type MeshRepoNode, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
@@ -117,31 +117,6 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
   const [skip, setSkip] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [discovering, setDiscovering] = useState(false);
-  const [discovered, setDiscovered] = useState<string | null>(null);
-
-  async function discover() {
-    if (discovering) return;
-    setError(null);
-    setDiscovered(null);
-    setDiscovering(true);
-    try {
-      const res = await api.discoverRepos();
-      const added = res.found.filter((f) => f.added);
-      setDiscovered(
-        res.found.length === 0
-          ? "nothing found under ~/.claude/projects"
-          : added.length === 0
-            ? `all ${res.found.length} repos already registered`
-            : `added ${added.length}: ${added.map((f) => f.path).join(", ")}`,
-      );
-      if (added.length > 0) onAdded();
-    } catch (err) {
-      setError(errText(err));
-    } finally {
-      setDiscovering(false);
-    }
-  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -194,17 +169,7 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
         <button type="submit" className="btn sm" disabled={busy}>
           {busy ? "adding…" : "add"}
         </button>
-        <button
-          type="button"
-          className="btn ghost sm"
-          disabled={discovering}
-          onClick={() => void discover()}
-          title="find repos from Claude Code's session store (~/.claude/projects)"
-        >
-          {discovering ? "discovering…" : "discover"}
-        </button>
       </div>
-      {discovered && <span className="mono-meta">{discovered}</span>}
       <ErrorBar error={error} />
     </form>
   );
@@ -345,6 +310,7 @@ function SessionRow({
 
 function RepoStrip({
   repo,
+  isSelf,
   selected,
   onSelect,
   onChanged,
@@ -353,6 +319,10 @@ function RepoStrip({
   onError,
 }: {
   repo: Repo;
+  /** False for a peer's repo: skip-toggle and forget manage the LOCAL
+   *  registry, so they're hidden — but sessions and new-session (which
+   *  spawns on the owning node) still work over the mesh. */
+  isSelf: boolean;
   selected: boolean;
   onSelect: () => void;
   onChanged: () => void;
@@ -429,64 +399,74 @@ function RepoStrip({
         <span className="mono-meta">
           {repo.sessions} session{repo.sessions === 1 ? "" : "s"}
         </span>
-        <span
-          className="mono-meta"
-          style={{ color: repo.live_agents > 0 ? "var(--live)" : undefined }}
-        >
-          {repo.live_agents} live
-        </span>
+        {(() => {
+          const live = repo.live_agents ?? repo.live ?? 0;
+          return (
+            <span
+              className="mono-meta"
+              style={{ color: live > 0 ? "var(--live)" : undefined }}
+            >
+              {live} live
+            </span>
+          );
+        })()}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <label
-          className="micro"
-          style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }}
-        >
-          <input
-            type="checkbox"
-            checked={repo.skip_permissions}
-            disabled={skipBusy}
-            onChange={(e) => void toggleSkip(e.target.checked)}
-            style={{ width: "auto" }}
-          />
-          skip permissions
-        </label>
-        <span className="micro" style={{ color: "var(--text-dim)" }}>
-          runs sessions with --dangerously-skip-permissions
-        </span>
+        {isSelf && (
+          <>
+            <label
+              className="micro"
+              style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }}
+            >
+              <input
+                type="checkbox"
+                checked={repo.skip_permissions}
+                disabled={skipBusy}
+                onChange={(e) => void toggleSkip(e.target.checked)}
+                style={{ width: "auto" }}
+              />
+              skip permissions
+            </label>
+            <span className="micro" style={{ color: "var(--text-dim)" }}>
+              runs sessions with --dangerously-skip-permissions
+            </span>
+          </>
+        )}
         <span style={{ flex: 1 }} />
         {!namingNew && (
           <button type="button" className="btn sm" onClick={() => setNamingNew(true)}>
             new session
           </button>
         )}
-        {!confirmForget ? (
-          <button
-            type="button"
-            className="btn ghost sm"
-            onClick={() => setConfirmForget(true)}
-          >
-            forget…
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              className="btn danger sm"
-              disabled={forgetting}
-              onClick={() => void forget()}
-            >
-              {forgetting ? "forgetting…" : "really forget"}
-            </button>
+        {isSelf &&
+          (!confirmForget ? (
             <button
               type="button"
               className="btn ghost sm"
-              onClick={() => setConfirmForget(false)}
+              onClick={() => setConfirmForget(true)}
             >
-              cancel
+              forget…
             </button>
-          </>
-        )}
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn danger sm"
+                disabled={forgetting}
+                onClick={() => void forget()}
+              >
+                {forgetting ? "forgetting…" : "really forget"}
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => setConfirmForget(false)}
+              >
+                cancel
+              </button>
+            </>
+          ))}
       </div>
 
       {namingNew && (
@@ -511,17 +491,29 @@ function RepoStrip({
   );
 }
 
-function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
+function RepositoriesSection({
+  reposPoll,
+  meshPoll,
+}: {
+  reposPoll: Poll<Repo[]>;
+  meshPoll: Poll<{ nodes: MeshRepoNode[] }>;
+}) {
   const navigate = useNavigate();
   const trust = useTrustedStart();
-  const repos = reposPoll.data ?? [];
+  const nodes = meshPoll.data?.nodes ?? [];
 
-  const [selected, setSelected] = useState<string | null>(null);
+  // Selection is node-qualified: two nodes can hold the same path.
+  const [selKey, setSelKey] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [openNodes, setOpenNodes] = useState<Record<string, boolean>>({});
+  const [discovering, setDiscovering] = useState<string | null>(null);
 
-  // Load a repo's discovered sessions whenever the selection changes.
+  const key = (node: string, path: string) => `${node}\u0000${path}`;
+  const selected = selKey ? { node: selKey.split("\u0000")[0], path: selKey.split("\u0000")[1] } : null;
+
+  // Load the selected repo's sessions (from its owning node) on change.
   useEffect(() => {
     if (!selected) {
       setSessions(null);
@@ -531,14 +523,15 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
     let disposed = false;
     setSessions(null);
     setSessionsError(null);
+    const selfNode = nodes.find((n) => n.self)?.node;
+    const remote = selected.node !== selfNode ? selected.node : undefined;
     api
-      .sessions(selected)
+      .sessions(selected.path, remote)
       .then((list) => {
         if (disposed) return;
-        const rows = list
-          .filter((s) => s.user_messages > 0)
-          .sort((a, b) => b.modified - a.modified);
-        setSessions(rows);
+        setSessions(
+          list.filter((s) => s.user_messages > 0).sort((a, b) => b.modified - a.modified),
+        );
       })
       .catch((e: unknown) => {
         if (disposed) return;
@@ -548,110 +541,202 @@ function RepositoriesSection({ reposPoll }: { reposPoll: Poll<Repo[]> }) {
     return () => {
       disposed = true;
     };
-  }, [selected]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selKey]);
 
-  async function newSession(repo: string, name: string) {
+  const selfNode = nodes.find((n) => n.self)?.node;
+  const isSelf = (node: string) => node === selfNode;
+
+  async function newSession(node: string, repo: string, name: string) {
     setActionError(null);
     try {
-      const agent = await trust.start({ name, repo });
+      const agent = await trust.start({
+        name,
+        repo,
+        node: isSelf(node) ? undefined : node,
+      });
       if (agent === null) return; // operator declined the trust review
-      navigate(`/session/${encodeURIComponent(name)}`);
+      navigate(`/session/${encodeURIComponent(agent.name)}`);
     } catch (e) {
       setActionError(errText(e));
     }
   }
 
-  async function resumeSession(repo: string, s: SessionInfo, name: string) {
+  async function resumeSession(node: string, repo: string, s: SessionInfo, name: string) {
     setActionError(null);
     try {
       const agent = await trust.start({
         name,
         repo,
         resume: s.session_id,
-        // mcc register carry-over: its name becomes the title, its args
-        // ride the session (skip-permissions maps to our own model).
+        node: isSelf(node) ? undefined : node,
+        // mcc register carry-over: name → title, args ride, skip maps to us.
         title: s.mcc_name ?? undefined,
         extra_args: s.mcc_args ?? undefined,
         skip_permissions: s.mcc_skip ? true : undefined,
       });
       if (agent === null) return;
-      navigate(`/session/${encodeURIComponent(name)}`);
+      navigate(`/session/${encodeURIComponent(agent.name)}`);
     } catch (e) {
       setActionError(errText(e));
     }
   }
 
+  async function discover(node: string) {
+    setActionError(null);
+    setDiscovering(node);
+    try {
+      await api.discoverRepos(isSelf(node) ? undefined : node);
+      await meshPoll.refresh();
+    } catch (e) {
+      setActionError(errText(e));
+    } finally {
+      setDiscovering(null);
+    }
+  }
+
   function refresh() {
+    void meshPoll.refresh();
     void reposPoll.refresh();
   }
+
+  const meshed = nodes.length > 1;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {trust.dialog}
-      <ErrorBar error={reposPoll.error ? `repos: ${reposPoll.error}` : null} />
+      <ErrorBar error={meshPoll.error ? `repos: ${meshPoll.error}` : null} />
       <ErrorBar error={actionError} />
 
       <AddRepoForm onAdded={refresh} />
       <HarnessDefaults />
 
-      {reposPoll.data !== null && repos.length === 0 ? (
-        <Empty mark="◦">
-          No repositories remembered. Start a session or add a path above.
-        </Empty>
-      ) : (
-        <div className="grid">
-          {repos.map((r) => (
-            <div key={r.path} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <RepoStrip
-                repo={r}
-                selected={selected === r.path}
-                onSelect={() => setSelected(selected === r.path ? null : r.path)}
-                onChanged={refresh}
-                onForgotten={() => {
-                  refresh();
-                  if (selected === r.path) setSelected(null);
-                }}
-                onNewSession={(repo, name) => void newSession(repo, name)}
-                onError={setActionError}
-              />
-
-              {selected === r.path && (
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
-                    paddingLeft: 12,
-                    borderLeft: "1px solid var(--line)",
-                    marginLeft: 8,
-                  }}
-                >
-                  {sessionsError && (
-                    <ErrorBar error={`sessions: ${sessionsError}`} />
-                  )}
-                  {sessions === null && !sessionsError && (
-                    <span className="mono-meta">loading…</span>
-                  )}
-                  {sessions !== null && sessions.length === 0 && !sessionsError && (
-                    <Empty mark="—">No prior sessions in this repository.</Empty>
-                  )}
-                  {sessions?.map((s) => (
-                    <SessionRow
-                      key={s.session_id}
-                      session={s}
-                      onResume={(sess, name) => void resumeSession(r.path, sess, name)}
+      {nodes.map((n) => {
+        // A single (local) node stays flat — no section chrome. With peers,
+        // each node gets a collapsible header; remote sections start closed
+        // so a large remote registry doesn't bury the local one.
+        const open = meshed ? (openNodes[n.node] ?? n.self) : true;
+        const body = (
+          <div className="grid">
+            {n.repos.length === 0 ? (
+              <Empty mark="◦">
+                {n.reachable
+                  ? "No repositories here yet — discover, or start a session."
+                  : "Node unreachable; its repositories are hidden until the link is back."}
+              </Empty>
+            ) : (
+              n.repos.map((r) => {
+                const k = key(n.node, r.path);
+                return (
+                  <div key={k} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <RepoStrip
+                      repo={r}
+                      isSelf={n.self}
+                      selected={selKey === k}
+                      onSelect={() => setSelKey(selKey === k ? null : k)}
+                      onChanged={refresh}
+                      onForgotten={() => {
+                        refresh();
+                        if (selKey === k) setSelKey(null);
+                      }}
+                      onNewSession={(repo, name) => void newSession(n.node, repo, name)}
+                      onError={setActionError}
                     />
-                  ))}
-                </div>
+                    {selKey === k && (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                          paddingLeft: 12,
+                          borderLeft: "1px solid var(--line)",
+                          marginLeft: 8,
+                        }}
+                      >
+                        {sessionsError && <ErrorBar error={`sessions: ${sessionsError}`} />}
+                        {sessions === null && !sessionsError && (
+                          <span className="mono-meta">loading…</span>
+                        )}
+                        {sessions !== null && sessions.length === 0 && !sessionsError && (
+                          <Empty mark="—">No prior sessions in this repository.</Empty>
+                        )}
+                        {sessions?.map((s) => (
+                          <SessionRow
+                            key={s.session_id}
+                            session={s}
+                            onResume={(sess, name) =>
+                              void resumeSession(n.node, r.path, sess, name)
+                            }
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        );
+
+        if (!meshed) return <div key={n.node}>{body}</div>;
+        return (
+          <div key={n.node} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => setOpenNodes((o) => ({ ...o, [n.node]: !open }))}
+                aria-expanded={open}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  color: "var(--text-hi)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span className="micro" style={{ color: "var(--text-dim)" }}>
+                  {open ? "▾" : "▸"}
+                </span>
+                <span className="label" style={{ margin: 0 }}>
+                  {n.node}
+                </span>
+                <span className="chip mono">{n.self ? "this node" : "peer"}</span>
+                {!n.reachable && (
+                  <span className="chip mono" style={{ color: "var(--sig-gate)" }}>
+                    unreachable
+                  </span>
+                )}
+                <span className="mono-meta">
+                  {n.repos.length} repo{n.repos.length === 1 ? "" : "s"}
+                </span>
+              </button>
+              <span style={{ flex: 1 }} />
+              {n.reachable && (
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  disabled={discovering === n.node}
+                  onClick={() => void discover(n.node)}
+                  title={
+                    n.self
+                      ? "find repos from this machine's Claude Code sessions"
+                      : `run discovery on ${n.node} — its repos register there`
+                  }
+                >
+                  {discovering === n.node ? "discovering…" : "discover"}
+                </button>
               )}
             </div>
-          ))}
-        </div>
-      )}
+            {open && body}
+          </div>
+        );
+      })}
     </div>
   );
 }
-
 // ── Skills section ─────────────────────────────────────────────────────────
 
 interface EntryListProps {
@@ -1107,7 +1192,9 @@ function SkillsSection({ repos }: { repos: Repo[] }) {
 
 export default function Library() {
   const reposPoll = usePoll(api.repos, 3000);
+  const meshPoll = usePoll(api.meshRepos, 3000);
   const repos = reposPoll.data ?? [];
+  const nodeCount = meshPoll.data?.nodes.length ?? 1;
   const [section, setSection] = useState<Section>("repos");
 
   const tabs: { id: Section; label: string }[] = [
@@ -1141,12 +1228,13 @@ export default function Library() {
         </div>
         <span style={{ flex: 1 }} />
         <span className="mono-meta">
-          {repos.length} repo{repos.length === 1 ? "" : "s"} remembered
+          {repos.length} local repo{repos.length === 1 ? "" : "s"}
+          {nodeCount > 1 ? ` · ${nodeCount} nodes` : ""}
         </span>
       </div>
       <div className="stage-body">
         {section === "repos" ? (
-          <RepositoriesSection reposPoll={reposPoll} />
+          <RepositoriesSection reposPoll={reposPoll} meshPoll={meshPoll} />
         ) : (
           <SkillsSection repos={repos} />
         )}

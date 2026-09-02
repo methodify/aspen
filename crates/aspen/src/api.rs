@@ -100,6 +100,7 @@ pub async fn serve(
         .route("/bus/post/{post}", get(get_post_receipts))
         .route("/mesh", get(get_mesh))
         .route("/repos/discover", post(post_repos_discover))
+        .route("/mesh/repos", get(get_mesh_repos))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
@@ -247,7 +248,18 @@ async fn headless_root() -> impl IntoResponse {
 
 /// Recover repos from Claude Code's session store on this machine and
 /// register the new ones.
-async fn post_repos_discover(State(s): S) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+struct DiscoverBody {
+    /// Node to run discovery on; absent or this node's name = local.
+    node: Option<String>,
+}
+
+async fn post_repos_discover(State(s): S, body: Option<Json<DiscoverBody>>) -> impl IntoResponse {
+    let node = body.and_then(|b| b.0.node);
+    if let Some(node) = node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        // Run discovery on the peer; its repos register there, not here.
+        return proxy(&s, node, "node_discover", "", json!({})).await;
+    }
     match s.node.discover_repos() {
         Ok(found) => Json(json!({
             "found": found
@@ -484,6 +496,9 @@ struct SpawnBody {
     /// Per-session harness CLI args (raw string), appended after the
     /// harness defaults from settings.
     extra_args: Option<String>,
+    /// Target node for the session. Absent or this node's own name = local;
+    /// a peer name spawns on that node over the mesh.
+    node: Option<String>,
 }
 
 async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoResponse {
@@ -499,6 +514,45 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             "agent names are [A-Za-z0-9_-]+ and not 'operator'",
         )
         .into_response();
+    }
+
+    // Remote spawn: the repo lives on a peer, so start the session there.
+    if let Some(node) = body.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        let Some(mesh) = &s.node.inner.mesh else {
+            return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+        };
+        let req = json!({
+            "name": name, "repo": body.repo, "charter": body.charter,
+            "model": body.model, "resume": body.resume, "allow_all": body.allow_all,
+            "skip_permissions": body.skip_permissions,
+            "acknowledge_trust": body.acknowledge_trust,
+            "title": body.title, "extra_args": body.extra_args,
+        });
+        return match mesh.api_call(node, "spawn", "", req, REMOTE_TIMEOUT).await {
+            // The remote signals an untrusted repo the same way local does:
+            // a 428 the console turns into the trust-review dialog.
+            Ok(v) if v.get("trust_required").and_then(|b| b.as_bool()) == Some(true) => (
+                StatusCode::PRECONDITION_REQUIRED,
+                Json(json!({
+                    "error": "untrusted repo: review what it auto-runs, then retry with acknowledge_trust",
+                    "autorun": v.get("autorun").cloned().unwrap_or(Value::Null),
+                })),
+            )
+                .into_response(),
+            Ok(_) => {
+                // Return the remote agent addressed as name@node, matching
+                // how the roster lists it.
+                Json(json!({
+                    "name": format!("{name}@{node}"),
+                    "node": node,
+                    "remote": true,
+                    "repo": body.repo,
+                    "live": true,
+                }))
+                .into_response()
+            }
+            Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
+        };
     }
     // The trust gate (reference §7.7): headless sessions never show the
     // workspace-trust dialog, so the console owns it. A repo that would
@@ -767,10 +821,16 @@ async fn pump_events(
 #[derive(Deserialize)]
 struct SessionsQuery {
     repo: String,
+    /// Owning node; absent or this node's name = local.
+    node: Option<String>,
 }
 
 /// Enumerate a repo's sessions from disk (the filesystem is the registry).
-async fn get_sessions(Query(q): Query<SessionsQuery>) -> impl IntoResponse {
+async fn get_sessions(State(s): S, Query(q): Query<SessionsQuery>) -> impl IntoResponse {
+    // Remote repo: enumerate on its owning node.
+    if let Some(node) = q.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_sessions", "", json!({ "repo": q.repo })).await;
+    }
     let repo = std::path::Path::new(&q.repo);
     // mcc's register, when the repo has one: names win over derived titles,
     // and configured args ride along for the resume flow.
@@ -1416,6 +1476,70 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------- repos
+
+/// True when `node` names this node (or the mesh isn't set up, so
+/// everything is local).
+fn is_self_node(s: &AppState, node: &str) -> bool {
+    match &s.node.inner.mesh {
+        Some(m) => m.identity.node == node,
+        None => true,
+    }
+}
+
+/// The self node's name, or "local" when not in a mesh.
+fn self_node_name(s: &AppState) -> String {
+    s.node
+        .inner
+        .mesh
+        .as_ref()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| "local".into())
+}
+
+/// Mesh-wide repo registry, grouped by node: this node plus every peer with
+/// a live link. Peers that are down are listed as unreachable with no repos
+/// (their content lives on them; a broken link hides it, by design).
+async fn get_mesh_repos(State(s): S) -> impl IntoResponse {
+    let mut nodes = Vec::new();
+    let local: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .repos()
+        .unwrap_or_default()
+        .iter()
+        .map(|r| repo_json(&s, r))
+        .collect();
+    nodes.push(json!({
+        "node": self_node_name(&s),
+        "self": true,
+        "reachable": true,
+        "repos": local,
+    }));
+
+    if let Some(mesh) = &s.node.inner.mesh {
+        for peer in &mesh.config.peers {
+            let name = &peer.cert.node;
+            let reachable = mesh.link_up(name);
+            let repos = if reachable {
+                mesh.api_call(name, "node_repos", "", json!({}), REMOTE_TIMEOUT)
+                    .await
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            nodes.push(json!({
+                "node": name,
+                "self": false,
+                "reachable": reachable,
+                "repos": repos,
+            }));
+        }
+    }
+    Json(json!({ "nodes": nodes }))
+}
 
 fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
     // How many discovered sessions and how many live agents this repo has.

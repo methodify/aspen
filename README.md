@@ -101,6 +101,14 @@ aspen up -d      # detached; logs to <data-dir>/aspen.log
 aspen down       # stop it (clean shutdown)
 ```
 
+The **Library** shows repositories grouped by node — this node and every
+reachable peer. You can trigger repo discovery on a peer, browse its
+sessions, and start or resume a session there; the work runs on the owning
+node, so leaving the mesh simply hides that node's content (it was never
+copied locally). `aspen config` sets daemon start defaults (`headless`,
+`listen`) and default harness args; `aspen restart` bounces the daemon in
+its current mode.
+
 `aspen up -d --headless` runs an API-only node (no console) on an
 **ephemeral port** — the OS picks a free one, and `aspen status` (and the
 CLI generally) find it via the daemon state file. That makes a second node
