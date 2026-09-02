@@ -143,7 +143,7 @@ pub fn run(data_dir: &Path) -> Result<()> {
                 let dial = p["url"]
                     .as_str()
                     .map(|u| format!(" — dials {u}"))
-                    .unwrap_or_else(|| " — inbound only".into());
+                    .unwrap_or_else(|| " — inbound only (this peer dials us)".into());
                 println!(
                     "  peer '{}'  {updown}{dial}",
                     p["node"].as_str().unwrap_or("?")
@@ -194,7 +194,7 @@ fn disk_mesh(data_dir: &Path) -> Result<()> {
                     p.cert.node,
                     p.url
                         .map(|u| format!(" — dials {u}"))
-                        .unwrap_or_else(|| " — inbound only".into())
+                        .unwrap_or_else(|| " — inbound only (this peer dials us)".into())
                 );
             }
             if let Some(u) = &mesh.relay {

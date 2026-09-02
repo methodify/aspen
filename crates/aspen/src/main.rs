@@ -69,11 +69,23 @@ enum Command {
         /// same machine where one console is enough).
         #[arg(long)]
         headless: bool,
+        /// Force the console on, overriding a headless default from config.
+        #[arg(long, conflicts_with = "headless")]
+        no_headless: bool,
     },
     /// Stop a detached node started with `up -d`.
     Down,
+    /// Restart the daemon in the same mode and port it's running in.
+    Restart,
     /// Show node status: daemon, sessions, mesh.
     Status,
+    /// Get or set daemon start defaults (headless, listen) and harness args.
+    Config {
+        /// Setting name: headless | listen | claude-args. Omit to list all.
+        key: Option<String>,
+        /// New value. Omit to show the current value; "-" clears it.
+        value: Option<String>,
+    },
     /// Update aspen in place from the latest release (or a given version).
     Update {
         /// Install a specific version (tag), e.g. v0.2.0. Default: latest.
@@ -233,16 +245,28 @@ async fn main() -> Result<()> {
             detach,
             no_resume,
             headless,
+            no_headless,
         } => {
             cleanup_old_binary();
-            // Headless nodes take an ephemeral port unless told otherwise:
-            // the fixed port exists for people opening the console, and a
-            // headless node has none. (WSL2 forwards Linux listeners onto
-            // Windows localhost, so fixed ports collide across the sides.)
-            let listen = listen.unwrap_or_else(|| {
-                let port = if headless { 0 } else { 7420 };
-                std::net::SocketAddr::from(([127, 0, 0, 1], port))
-            });
+            let cfg = aspen_node::settings::load(&cli.data_dir).daemon;
+            // headless: explicit flags win, else the configured default.
+            let headless = if headless {
+                true
+            } else if no_headless {
+                false
+            } else {
+                cfg.headless.unwrap_or(false)
+            };
+            // listen: --listen wins, else config, else the built-in default.
+            // Headless nodes take an ephemeral port (the fixed port exists
+            // for the console; WSL2 forwards Linux listeners onto Windows
+            // localhost, so fixed ports collide across the sides).
+            let listen = listen
+                .or_else(|| cfg.listen.as_deref().and_then(|s| s.parse().ok()))
+                .unwrap_or_else(|| {
+                    let port = if headless { 0 } else { 7420 };
+                    std::net::SocketAddr::from(([127, 0, 0, 1], port))
+                });
             // Detached start: re-exec self in a new session, redirect output
             // to a log file, record the pid, and return.
             if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
@@ -268,6 +292,8 @@ async fn main() -> Result<()> {
             result
         }
         Command::Down => stop_detached(&cli.data_dir),
+        Command::Restart => restart_daemon(&cli.data_dir),
+        Command::Config { key, value } => config_command(&cli.data_dir, key, value),
         Command::Status => status::run(&cli.data_dir),
         Command::Repos { command } => match command {
             ReposCommand::Discover => {
@@ -414,6 +440,115 @@ fn auto_revive(data_dir: &std::path::Path, node: Node) {
 
 /// Re-exec self detached (new session, output to a log file), record the
 /// child pid, and return. The child sees ASPEN_DETACHED and runs normally.
+/// Restart the running daemon in the same mode and (requested) port. Reads
+/// daemon.json, stops, waits for the port to free, and starts detached with
+/// the same binary and parameters.
+fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
+    let state = read_daemon_state(data_dir)
+        .ok_or_else(|| anyhow::anyhow!("no running daemon found (nothing to restart)"))?;
+    // The requested address (may be port 0 = ephemeral), not the specific
+    // port the OS handed out.
+    let listen: std::net::SocketAddr = state["requested"]
+        .as_str()
+        .or_else(|| state["listen"].as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], 7420)));
+    let ui = state["ui"].as_str().map(PathBuf::from);
+    let headless = state["headless"].as_bool().unwrap_or(false);
+
+    println!("stopping daemon …");
+    stop_detached(data_dir)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while data_dir.join("daemon.json").exists() {
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("daemon did not shut down within 30s; start it with `aspen up -d`");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    spawn_detached(data_dir, listen, ui.as_deref(), false, headless)
+}
+
+/// Get or set daemon start defaults (settings.json). Keys: headless, listen,
+/// claude-args.
+fn config_command(
+    data_dir: &std::path::Path,
+    key: Option<String>,
+    value: Option<String>,
+) -> Result<()> {
+    use aspen_node::settings;
+    let mut s = settings::load(data_dir);
+
+    let show_all = || {
+        println!(
+            "headless    {}",
+            s.daemon
+                .headless
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "(unset → false)".into())
+        );
+        println!(
+            "listen      {}",
+            s.daemon
+                .listen
+                .clone()
+                .unwrap_or_else(|| "(unset → 127.0.0.1:7420, or ephemeral if headless)".into())
+        );
+        println!(
+            "claude-args {}",
+            match s.harness.get("claude").map(|h| h.args.as_str()) {
+                Some(a) if !a.is_empty() => a.to_owned(),
+                _ => "(none)".into(),
+            }
+        );
+    };
+
+    let Some(key) = key else {
+        show_all();
+        return Ok(());
+    };
+
+    // No value → show just this key by listing all (simple + consistent).
+    let Some(value) = value else {
+        show_all();
+        return Ok(());
+    };
+    let clear = value == "-";
+
+    match key.as_str() {
+        "headless" => {
+            s.daemon.headless = if clear {
+                None
+            } else {
+                Some(
+                    value
+                        .parse::<bool>()
+                        .map_err(|_| anyhow::anyhow!("headless takes true or false"))?,
+                )
+            };
+        }
+        "listen" => {
+            s.daemon.listen = if clear {
+                None
+            } else {
+                // Validate now so a typo fails here, not at next `up`.
+                value
+                    .parse::<std::net::SocketAddr>()
+                    .map_err(|e| anyhow::anyhow!("listen must be host:port ({e})"))?;
+                Some(value.clone())
+            };
+        }
+        "claude-args" => {
+            settings::split_args(if clear { "" } else { &value }, None)?;
+            s.harness.entry("claude".into()).or_default().args =
+                if clear { String::new() } else { value.clone() };
+        }
+        other => anyhow::bail!("unknown setting '{other}' (headless | listen | claude-args)"),
+    }
+    settings::save(data_dir, &s)?;
+    println!("set {key} = {}", if clear { "(cleared)" } else { &value });
+    Ok(())
+}
+
 fn spawn_detached(
     data_dir: &std::path::Path,
     listen: std::net::SocketAddr,
@@ -444,9 +579,13 @@ fn spawn_detached(
     if no_resume {
         cmd.arg("--no-resume");
     }
-    if headless {
-        cmd.arg("--headless");
-    }
+    // Pin the resolved headless decision so the re-exec'd child doesn't
+    // re-derive it from config (which could flip a --no-headless back on).
+    cmd.arg(if headless {
+        "--headless"
+    } else {
+        "--no-headless"
+    });
     cmd.env("ASPEN_DETACHED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
@@ -764,7 +903,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                             p.cert.node,
                             p.url
                                 .map(|u| format!(" — dials {u}"))
-                                .unwrap_or_else(|| " — inbound only".into())
+                                .unwrap_or_else(|| " — inbound only (this peer dials us)".into())
                         );
                     }
                 }

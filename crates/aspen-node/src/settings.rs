@@ -15,6 +15,20 @@ pub struct Settings {
     /// Per-harness defaults, keyed by harness name ("claude").
     #[serde(default)]
     pub harness: BTreeMap<String, HarnessSettings>,
+    /// How `aspen up` should start when flags don't say otherwise.
+    #[serde(default)]
+    pub daemon: DaemonDefaults,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct DaemonDefaults {
+    /// Start headless by default (no console). None = unset (→ false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headless: Option<bool>,
+    /// Default listen address, e.g. "127.0.0.1:7420". None = unset (→ the
+    /// built-in default, which depends on headless).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
