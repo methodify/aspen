@@ -4,6 +4,19 @@ The `aspen up` daemon serves HTTP + WebSocket on `127.0.0.1:7420` (configurable
 via `--listen`). v0 is localhost-only and unauthenticated; the mesh security
 model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 
+## Addresses
+
+Agents are named **per repo**: the address is `name@repo`, and `name@repo@node`
+when the same repo handle exists on more than one node. The repo segment is
+the repo's **handle** (defaults to the directory basename; unique per node;
+`POST /api/repos/rename`). `Agent.name` in every response IS the address —
+route keys, bus addresses, and channel members all use it; `Agent.bare` is
+the short name. When spawning, send the bare name; the node composes the
+address. Bus sends resolve from the sender's context: a bare `name` reaches
+the sender's own repo first, then the single agent of that name anywhere,
+then the single one sharing a custom channel with the sender — anything
+ambiguous is refused with the candidates. `operator` is global.
+
 ## REST
 
 | Method & path | Body | Returns | Notes |
@@ -14,6 +27,7 @@ model (DESIGN.md §8) arrives with federation. All bodies are JSON.
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
 | `POST /api/repos` | `{ path, skip_permissions? }` | `Repo` | remember a repo (must be a real directory) |
 | `POST /api/repos/skip` | `{ path, skip_permissions, node? }` | `{ ok }` | set a repo's skip-permissions default; `node` acts on that peer's registry |
+| `POST /api/repos/rename` | `{ path, handle, node? }` | `{ ok }` | rename a repo's handle (address segment + channel); refused while sessions in it run; cascades to agents, channel members, bus rows |
 | `POST /api/repos/forget` | `{ path, node? }` | `{ ok }` | forget a repo (sessions on disk are untouched); `node` acts on that peer's registry |
 | `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
 | `POST /api/shutdown` | `{}` | `{ ok, stopping }` | graceful stop (same ladder as SIGTERM); what `aspen down` uses on every platform — Windows has no SIGTERM and a detached process has no window for taskkill |

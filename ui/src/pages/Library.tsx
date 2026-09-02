@@ -333,6 +333,27 @@ function RepoStrip({
   const [confirmForget, setConfirmForget] = useState(false);
   const [forgetting, setForgetting] = useState(false);
   const [namingNew, setNamingNew] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [handleDraft, setHandleDraft] = useState(repo.handle ?? "");
+  const [renameBusy, setRenameBusy] = useState(false);
+
+  async function rename() {
+    const next = handleDraft.trim();
+    if (renameBusy || !next || next === repo.handle) {
+      setRenaming(false);
+      return;
+    }
+    setRenameBusy(true);
+    try {
+      await api.renameRepo(repo.path, next, node);
+      setRenaming(false);
+      onChanged();
+    } catch (e) {
+      onError(errText(e));
+    } finally {
+      setRenameBusy(false);
+    }
+  }
 
   async function toggleSkip(next: boolean) {
     if (skipBusy) return;
@@ -395,6 +416,43 @@ function RepoStrip({
             {repo.path}
           </span>
         </button>
+        {/* The handle: address segment (`arch@<handle>`) and channel name. */}
+        {renaming ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void rename();
+            }}
+            style={{ display: "flex", gap: 6, alignItems: "center" }}
+          >
+            <span className="mono-meta">#</span>
+            <input
+              className="mono"
+              value={handleDraft}
+              onChange={(e) => setHandleDraft(e.target.value)}
+              autoFocus
+              spellCheck={false}
+              style={{ width: 160 }}
+              aria-label="repo handle"
+              onKeyDown={(e) => e.key === "Escape" && setRenaming(false)}
+            />
+            <button type="submit" className="btn sm" disabled={renameBusy}>
+              {renameBusy ? "…" : "rename"}
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="chip mono"
+            onClick={() => {
+              setHandleDraft(repo.handle ?? "");
+              setRenaming(true);
+            }}
+            title="repo handle: agents here are addressed as name@handle, and #handle is its channel — click to rename (stop its sessions first)"
+          >
+            #{repo.handle ?? "?"}
+          </button>
+        )}
         <span className="mono-meta">
           {repo.sessions} session{repo.sessions === 1 ? "" : "s"}
         </span>

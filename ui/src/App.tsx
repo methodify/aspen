@@ -67,7 +67,7 @@ function MeshColumn() {
       {agents.map((a) => {
         // Remote names arrive as `name@node`; the rail shows the bare name
         // and carries the node on the identity line instead.
-        const bare = a.remote ? a.name.split("@")[0] : a.name;
+        const bare = a.bare ?? a.name.split("@")[0];
         const identity = [a.title, `#${a.channel}`, a.remote ? a.node : null]
           .filter(Boolean)
           .join(" · ");

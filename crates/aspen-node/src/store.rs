@@ -37,9 +37,9 @@ CREATE INDEX IF NOT EXISTS idx_pending ON messages(recipient, delivered_at);
 CREATE INDEX IF NOT EXISTS idx_ingest ON messages(ingest_uuid);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_uuid ON messages(uuid);
 CREATE TABLE IF NOT EXISTS agents(
-  name            TEXT PRIMARY KEY,
+  name            TEXT PRIMARY KEY,  -- the address: bare@repo-handle
   repo            TEXT NOT NULL,
-  channel         TEXT NOT NULL,
+  channel         TEXT NOT NULL,     -- the repo handle (== repo channel)
   session_id      TEXT,
   charter         TEXT,
   created_at      REAL NOT NULL,
@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS repos(
   path             TEXT PRIMARY KEY,
   skip_permissions INTEGER NOT NULL DEFAULT 0,
   added_at         REAL NOT NULL,
-  last_used_at     REAL
+  last_used_at     REAL,
+  handle           TEXT
 );
 CREATE TABLE IF NOT EXISTS channels(
   name        TEXT PRIMARY KEY,
@@ -112,6 +113,9 @@ pub struct RepoRow {
     pub path: PathBuf,
     pub skip_permissions: bool,
     pub last_used_at: Option<f64>,
+    /// The repo's handle: its address segment and channel name. Defaults
+    /// to the directory basename, unique per node, operator-renamable.
+    pub handle: String,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +163,7 @@ impl BusStore {
             "ALTER TABLE agents ADD COLUMN title TEXT",
             "ALTER TABLE agents ADD COLUMN extra_args TEXT",
             "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE repos ADD COLUMN handle TEXT",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 if !e.to_string().contains("duplicate column") {
@@ -166,8 +171,11 @@ impl BusStore {
                 }
             }
         }
+        conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_handle ON repos(handle)")?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Self::normalize_stored_paths(&conn)?;
+        Self::assign_repo_handles(&conn)?;
+        Self::scope_agent_names(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -211,6 +219,94 @@ impl BusStore {
                     params![old, plain],
                 )?;
             }
+        }
+        Ok(())
+    }
+
+    /// Give every repo a handle: the directory basename, suffixed `-2`,
+    /// `-3`… when two repos on this node share a basename. Handles are the
+    /// address segment and the channel name, so they must be unique.
+    fn assign_repo_handles(conn: &Connection) -> Result<()> {
+        let mut stmt =
+            conn.prepare("SELECT path FROM repos WHERE handle IS NULL ORDER BY added_at, path")?;
+        let paths: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for path in paths {
+            let base = Path::new(&path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "repo".into());
+            let mut handle = base.clone();
+            let mut n = 2;
+            while conn
+                .query_row(
+                    "SELECT 1 FROM repos WHERE handle=?1",
+                    params![handle],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some()
+            {
+                handle = format!("{base}-{n}");
+                n += 1;
+            }
+            conn.execute(
+                "UPDATE repos SET handle=?2 WHERE path=?1",
+                params![path, handle],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Agent names are per repo: the key is `bare@handle`. Stores from
+    /// before scoped names hold bare keys; rewrite them (and every place a
+    /// bare local name appears: channel members, bus rows).
+    fn scope_agent_names(conn: &Connection) -> Result<()> {
+        let mut stmt =
+            conn.prepare("SELECT name, repo, channel FROM agents WHERE name NOT LIKE '%@%'")?;
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for (bare, repo, _channel) in rows {
+            // The handle wins over the old channel (they only differ for
+            // basename collisions, where the handle got a suffix).
+            let handle: String = conn
+                .query_row(
+                    "SELECT handle FROM repos WHERE path=?1",
+                    params![repo],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten()
+                .unwrap_or_else(|| {
+                    Path::new(&repo)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "repo".into())
+                });
+            let key = format!("{bare}@{handle}");
+            conn.execute(
+                "UPDATE agents SET name=?2, channel=?3 WHERE name=?1",
+                params![bare, key, handle],
+            )?;
+            conn.execute(
+                "UPDATE channel_members SET member=?2 WHERE member=?1 OR member=?3",
+                params![bare, key, format!("@{bare}")],
+            )?;
+            for col in ["sender", "recipient"] {
+                conn.execute(
+                    &format!("UPDATE messages SET {col}=?2 WHERE {col}=?1"),
+                    params![bare, key],
+                )?;
+            }
+            conn.execute(
+                "UPDATE messages SET to_display=?2 WHERE to_display=?1",
+                params![format!("@{bare}"), format!("@{key}")],
+            )?;
         }
         Ok(())
     }
@@ -347,6 +443,94 @@ impl BusStore {
         Ok(())
     }
 
+    /// The handle for a repo path, registering the repo if needed. This is
+    /// the one way a spawn learns its address segment / channel.
+    pub fn ensure_handle(&self, path: &Path) -> Result<String> {
+        self.add_repo(path, None)?;
+        let conn = self.conn.lock().unwrap();
+        Self::assign_repo_handles(&conn)?;
+        let h: Option<String> = conn.query_row(
+            "SELECT handle FROM repos WHERE path=?1",
+            params![path.to_string_lossy()],
+            |r| r.get(0),
+        )?;
+        h.ok_or_else(|| anyhow::anyhow!("no handle for {}", path.display()))
+    }
+
+    /// Rename a repo's handle. Refused while any agent in the repo is
+    /// running (their addresses would change under them); otherwise every
+    /// stored address that carries the old handle is rewritten.
+    pub fn rename_handle(&self, path: &Path, new: &str, live_names: &[String]) -> Result<()> {
+        let new = new.trim();
+        if new.is_empty()
+            || !new
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            anyhow::bail!("handle must be [A-Za-z0-9._-]+");
+        }
+        let conn = self.conn.lock().unwrap();
+        let old: String = conn
+            .query_row(
+                "SELECT handle FROM repos WHERE path=?1",
+                params![path.to_string_lossy()],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("repo not registered: {}", path.display()))?;
+        if old == new {
+            return Ok(());
+        }
+        if conn
+            .query_row("SELECT 1 FROM repos WHERE handle=?1", params![new], |_| {
+                Ok(())
+            })
+            .optional()?
+            .is_some()
+        {
+            anyhow::bail!("handle '{new}' is already used by another repo on this node");
+        }
+        if live_names.iter().any(|n| n.ends_with(&format!("@{old}"))) {
+            anyhow::bail!("stop the sessions in #{old} before renaming it");
+        }
+        conn.execute(
+            "UPDATE repos SET handle=?2 WHERE path=?1",
+            params![path.to_string_lossy(), new],
+        )?;
+        let suffix_old = format!("@{old}");
+        let suffix_new = format!("@{new}");
+        // agents keyed bare@old → bare@new; channel column too
+        let mut stmt = conn.prepare("SELECT name FROM agents WHERE channel=?1")?;
+        let names: Vec<String> = stmt
+            .query_map(params![old], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for name in names {
+            let newname = name.replacen(&suffix_old, &suffix_new, 1);
+            conn.execute(
+                "UPDATE agents SET name=?2, channel=?3 WHERE name=?1",
+                params![name, newname, new],
+            )?;
+            conn.execute(
+                "UPDATE channel_members SET member=?2 WHERE member=?1",
+                params![name, newname],
+            )?;
+            for col in ["sender", "recipient"] {
+                conn.execute(
+                    &format!("UPDATE messages SET {col}=?2 WHERE {col}=?1"),
+                    params![name, newname],
+                )?;
+            }
+        }
+        // channel_members may reference the repo channel itself (#old)
+        conn.execute(
+            "UPDATE channel_members SET member=?2 WHERE member=?1",
+            params![format!("#{old}"), format!("#{new}")],
+        )?;
+        Ok(())
+    }
+
     pub fn set_repo_skip(&self, path: &Path, skip: bool) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let n = conn.execute(
@@ -368,7 +552,7 @@ impl BusStore {
     pub fn repos(&self) -> Result<Vec<RepoRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT path, skip_permissions, last_used_at FROM repos ORDER BY last_used_at DESC",
+            "SELECT path, skip_permissions, last_used_at, handle FROM repos ORDER BY last_used_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -376,6 +560,7 @@ impl BusStore {
                     path: PathBuf::from(r.get::<_, String>(0)?),
                     skip_permissions: r.get::<_, i64>(1)? != 0,
                     last_used_at: r.get(2)?,
+                    handle: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -458,6 +643,53 @@ impl BusStore {
     }
 
     /// True if a custom channel row exists (vs an implicit repo channel).
+    /// Rewrite legacy `bare@node` channel members (pre-scoped-names) to
+    /// `bare@repo@node` once the node's roster tells us the repo — only
+    /// when exactly one agent of that bare name lives there.
+    pub fn heal_legacy_remote_members(&self, node: &str, keys: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT member FROM channel_members WHERE member LIKE ?1")?;
+        let members: Vec<String> = stmt
+            .query_map(params![format!("%@{node}")], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for m in members {
+            let raw = m.trim_start_matches('@');
+            // Legacy = exactly two segments, the second being the node.
+            if raw.matches('@').count() != 1 {
+                continue;
+            }
+            let bare = raw.split('@').next().unwrap_or("");
+            let matches: Vec<&String> = keys
+                .iter()
+                .filter(|k| k.split('@').next() == Some(bare))
+                .collect();
+            if let [key] = matches.as_slice() {
+                conn.execute(
+                    "UPDATE channel_members SET member=?2 WHERE member=?1",
+                    params![m, format!("{key}@{node}")],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The custom channels an address belongs to (member stored as
+    /// `key`, `@key`, or `key@node`).
+    pub fn channels_of(&self, member: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT channel FROM channel_members WHERE member=?1 OR member=?2 ORDER BY channel",
+        )?;
+        let rows = stmt
+            .query_map(params![member, format!("@{member}")], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn channel_exists(&self, name: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         Ok(conn

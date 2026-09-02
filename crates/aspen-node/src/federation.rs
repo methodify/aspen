@@ -192,10 +192,7 @@ impl MeshState {
 fn bus_payload(m: &StoredMessage, dest_node: &str) -> Value {
     // A recipient qualified with the destination node travels bare — on
     // that node it IS the local name.
-    let recipient = m
-        .recipient
-        .strip_suffix(&format!("@{dest_node}"))
-        .unwrap_or(&m.recipient);
+    let recipient = crate::addr::strip_node(&m.recipient, dest_node);
     json!({
         "t": "bus",
         "uuid": m.uuid, "thread": m.thread, "sender": m.sender,
@@ -406,9 +403,9 @@ async fn link_loop(
                     .get("sender")
                     .and_then(|s| s.as_str())
                     .unwrap_or("?");
-                // Cross-node sender identity gains its home suffix unless it
-                // already carries one.
-                let sender = if sender.contains('@') {
+                // Cross-node sender identity gains its home node unless it
+                // already carries one (`name@repo` → `name@repo@peer`).
+                let sender = if sender == "operator" || crate::addr::node_of(sender).is_some() {
                     sender.to_owned()
                 } else {
                     format!("{sender}@{peer}")
@@ -456,7 +453,13 @@ async fn link_loop(
                     .unwrap_or_default();
                 let names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
                 mesh.remote.lock().unwrap().insert(peer.to_owned(), agents);
+                // Channel members from before scoped names (`main@node`)
+                // can only be resolved once we see that node's roster.
+                let _ = inner.store.heal_legacy_remote_members(peer, &names);
                 for name in names {
+                    // Remote keys are addressed here as key@node; a bare
+                    // key can also be homed there (delivery finds it).
+                    inner.tick_delivery(&format!("{name}@{peer}"));
                     inner.tick_delivery(&name);
                 }
             }
@@ -723,6 +726,7 @@ async fn serve_api_req(
                         .count();
                     json!({
                         "path": r.path.to_string_lossy(),
+                        "handle": r.handle,
                         "skip_permissions": r.skip_permissions,
                         "sessions": sessions,
                         "live": live,
@@ -751,6 +755,23 @@ async fn serve_api_req(
             node.inner.store.set_repo_skip(
                 &crate::node::normalize_repo(std::path::Path::new(path)),
                 skip,
+            )?;
+            Ok(json!({ "ok": true }))
+        }
+        "node_repo_rename" => {
+            let path = body
+                .get("path")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing path"))?;
+            let handle = body
+                .get("handle")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing handle"))?;
+            let live: Vec<String> = inner.sessions.lock().unwrap().keys().cloned().collect();
+            node.inner.store.rename_handle(
+                &crate::node::normalize_repo(std::path::Path::new(path)),
+                handle,
+                &live,
             )?;
             Ok(json!({ "ok": true }))
         }
@@ -839,16 +860,18 @@ async fn serve_api_req(
                     "autorun": autorun,
                 }));
             }
-            node.spawn_agent(&name, std::path::PathBuf::from(repo), opts)
+            let sess = node
+                .spawn_agent(&name, std::path::PathBuf::from(repo), opts)
                 .await?;
+            let key = sess.name.clone();
             if let Some(title) = body
                 .get("title")
                 .and_then(|t| t.as_str())
                 .filter(|t| !t.trim().is_empty())
             {
-                let _ = node.inner.store.set_agent_title(&name, Some(title));
+                let _ = node.inner.store.set_agent_title(&key, Some(title));
             }
-            Ok(json!({ "name": name }))
+            Ok(json!({ "name": key }))
         }
         other => Err(anyhow!("unknown remote op {other:?}")),
     }

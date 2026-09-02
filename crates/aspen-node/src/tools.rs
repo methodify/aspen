@@ -23,7 +23,8 @@ pub fn build_mcp(inner: Arc<NodeInner>, me: String) -> McpServer {
         server.register(Tool {
             name: "bus_send",
             description: "Send a message to a peer agent, a repo channel, or the human operator \
-on the aspen bus. `to` is '@name', '#channel', or '@operator'. `urgency` is delivery timing, \
+on the aspen bus. `to` is '@name' (a peer in your repo), '@name@repo' (a peer in another repo; \
+add '@node' only if that repo exists on several nodes), '#channel', or '@operator'. `urgency` is delivery timing, \
 nothing else: 'gating' interrupts the recipient mid-turn; 'normal' (default) is delivered now \
 if they are idle (waking them) or at their turn boundary if they are busy; 'notice' is an \
 ambient fact that never wakes or interrupts anyone. A peer who is not running receives at \
@@ -49,6 +50,7 @@ lost — check bus_status before concluding anything from silence."
     // ----------------------------------------------------------- bus_status
     {
         let inner = inner.clone();
+        let me = me.clone();
         server.register(Tool {
             name: "bus_status",
             description: "Who is on this bus: every agent, their repo channel, whether their \
@@ -57,7 +59,7 @@ them. Check here when a peer seems unresponsive before concluding a message was 
 silence usually means mid-turn or not running; it never means the bus dropped something."
                 .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
-            handler: Box::new(move |_args| bus_status(&inner)),
+            handler: Box::new(move |_args| bus_status(&inner, &me)),
         });
     }
 
@@ -125,7 +127,7 @@ pub fn send_message(
     let recipients: Vec<String> = if to == "@operator" {
         vec!["operator".into()]
     } else if let Some(name) = to.strip_prefix('@') {
-        vec![name.to_owned()]
+        vec![resolve_agent(inner, from, name)?]
     } else if let Some(channel) = to.strip_prefix('#') {
         let mut members: Vec<String> = Vec::new();
         // A custom channel carries explicit members (which may span repos
@@ -189,6 +191,152 @@ pub fn send_message(
     Ok(out)
 }
 
+/// The self node's mesh name, if in a mesh.
+fn self_node(inner: &Arc<NodeInner>) -> Option<String> {
+    inner.mesh().map(|m| m.identity.node.clone())
+}
+
+/// Every agent this node knows about, as (key, node) — local agents with
+/// node = None, roster-known remote agents with their node.
+fn known_agents(inner: &Arc<NodeInner>) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = inner
+        .store
+        .agents()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| (a.name, None))
+        .collect();
+    if let Some(mesh) = inner.mesh() {
+        for (node, agents) in mesh.remote.lock().unwrap().iter() {
+            for a in agents {
+                out.push((a.name.clone(), Some(node.clone())));
+            }
+        }
+    }
+    out
+}
+
+/// Resolve an agent address from the sender's context to a recipient key:
+/// a local key (`arch@nl`) or a fully qualified remote one (`arch@nl@beta`).
+///
+/// - `name@repo@node`: taken literally (local if node is us).
+/// - `name@repo`: local if such an agent (or at least the repo) is here;
+///   else the one node whose roster has it; ambiguous → error.
+/// - `name`: the sender's own repo first; else the single agent of that
+///   name anywhere; else the single one sharing a custom channel with the
+///   sender; else refused with the candidates — never a silent far guess.
+pub fn resolve_agent(inner: &Arc<NodeInner>, from: &str, to: &str) -> Result<String, String> {
+    let a = crate::addr::Addr::parse(to)?;
+    if a.is_operator() {
+        return Ok("operator".into());
+    }
+    let me = self_node(inner);
+    if let (Some(repo), Some(node)) = (&a.repo, &a.node) {
+        return Ok(if me.as_deref() == Some(node.as_str()) {
+            crate::addr::local_key(&a.name, repo)
+        } else {
+            format!("{}@{}@{}", a.name, repo, node)
+        });
+    }
+    let known = known_agents(inner);
+    if let Some(repo) = &a.repo {
+        let key = crate::addr::local_key(&a.name, repo);
+        if known.iter().any(|(k, n)| k == &key && n.is_none()) {
+            return Ok(key);
+        }
+        let remote: Vec<&String> = known
+            .iter()
+            .filter(|(k, n)| k == &key && n.is_some())
+            .map(|(_, n)| n.as_ref().unwrap())
+            .collect();
+        return match remote.as_slice() {
+            [node] => Ok(format!("{key}@{node}")),
+            [] => {
+                // The repo is here but the agent isn't registered yet — let
+                // the message wait for it, as bare names always could.
+                let repo_here = inner
+                    .store
+                    .repos()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|r| r.handle == *repo);
+                if repo_here {
+                    Ok(key)
+                } else {
+                    Err(format!(
+                        "no agent {key} on this node or any linked node — bus_status lists who exists"
+                    ))
+                }
+            }
+            many => Err(format!(
+                "{key} exists on several nodes ({}) — say which: {key}@<node>",
+                many.iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        };
+    }
+    // Bare name: the sender's own repo first.
+    if let Some(my_repo) = crate::addr::repo_of(from) {
+        let key = crate::addr::local_key(&a.name, my_repo);
+        if known.iter().any(|(k, n)| k == &key && n.is_none()) {
+            return Ok(key);
+        }
+    }
+    let matches: Vec<&(String, Option<String>)> = known
+        .iter()
+        .filter(|(k, _)| crate::addr::bare(k) == a.name)
+        .collect();
+    let qualify = |(k, n): &(String, Option<String>)| match n {
+        Some(node) => format!("{k}@{node}"),
+        None => k.clone(),
+    };
+    match matches.as_slice() {
+        [] => Err(format!(
+            "no agent named '{}' anywhere on the bus — bus_status lists who exists",
+            a.name
+        )),
+        [one] => Ok(qualify(one)),
+        many => {
+            // Disambiguate through shared custom channels with the sender.
+            let mine: std::collections::HashSet<String> = inner
+                .store
+                .channels_of(from)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let shared: Vec<String> = many
+                .iter()
+                .filter(|(k, n)| {
+                    let full = match n {
+                        Some(node) => format!("{k}@{node}"),
+                        None => k.clone(),
+                    };
+                    inner
+                        .store
+                        .channels_of(&full)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|c| mine.contains(c))
+                })
+                .map(|m| qualify(m))
+                .collect();
+            if let [one] = shared.as_slice() {
+                return Ok(one.clone());
+            }
+            Err(format!(
+                "'{}' is ambiguous — choose one of: {}",
+                a.name,
+                many.iter()
+                    .map(|m| qualify(m))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }
+    }
+}
+
 /// Canonicalize a channel-member address to a recipient key: `@operator`
 /// and `operator` → "operator"; `@name` → "name"; `name@node` kept as-is
 /// (the delivery engine forwards it).
@@ -211,22 +359,27 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
             // Homed on a peer node? Say what will actually happen. Both
             // node-qualified (`name@node`) and roster-known bare names.
             if let Some(mesh) = inner.mesh() {
-                let found = match recipient.split_once('@') {
-                    Some((bare, node)) => Some((
-                        node.to_owned(),
-                        crate::federation::RemoteAgent {
-                            name: bare.to_owned(),
-                            channel: String::new(),
-                            live: mesh
-                                .remote
-                                .lock()
-                                .unwrap()
-                                .get(node)
-                                .map(|v| v.iter().any(|a| a.name == bare && a.live))
-                                .unwrap_or(false),
-                            turn_state: None,
-                        },
-                    )),
+                // `key@node` names its home outright; a bare key may be
+                // homed on a peer whose roster lists it.
+                let found = match crate::addr::node_of(recipient) {
+                    Some(node) => {
+                        let key = crate::addr::strip_node(recipient, node);
+                        let ra = mesh
+                            .remote
+                            .lock()
+                            .unwrap()
+                            .get(node)
+                            .and_then(|v| v.iter().find(|a| a.name == key).cloned());
+                        Some((
+                            node.to_owned(),
+                            ra.unwrap_or(crate::federation::RemoteAgent {
+                                name: key.to_owned(),
+                                channel: String::new(),
+                                live: false,
+                                turn_state: None,
+                            }),
+                        ))
+                    }
                     None => mesh.find_remote(recipient),
                 };
                 if let Some((node, ra)) = found {
@@ -269,12 +422,16 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
     }
 }
 
-fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
+fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
     let agents = inner.store.agents().map_err(|e| e.to_string())?;
     if agents.is_empty() {
         return Ok("No agents registered on this bus yet.".into());
     }
-    let mut lines = vec!["Bus roster:".to_owned()];
+    let my_repo = crate::addr::repo_of(me);
+    let self_node = self_node(inner).unwrap_or_else(|| "local".into());
+    let mut lines = vec![format!(
+        "You are {me}. Bus roster (addresses as you should write them):"
+    )];
     for a in agents {
         let state = match inner.live(&a.name) {
             None => "not running".to_owned(),
@@ -284,8 +441,13 @@ fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
             },
         };
         let pending = inner.store.pending_count(&a.name).unwrap_or(0);
-        let mut line = format!("  @{} — #{} — {}", a.name, a.channel, state);
-        if pending > 0 {
+        let shown = crate::addr::display_for(&a.name, my_repo, &self_node, false);
+        let mut line = if a.name == me {
+            format!("  {shown} (you) — #{}", a.channel)
+        } else {
+            format!("  {shown} — #{} — {}", a.channel, state)
+        };
+        if pending > 0 && a.name != me {
             line.push_str(&format!(", {pending} pending"));
         }
         lines.push(line);
@@ -305,10 +467,13 @@ fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
                 } else {
                     "not running".to_owned()
                 };
-                let pending = inner.store.pending_count(&a.name).unwrap_or(0);
+                let pending = inner
+                    .store
+                    .pending_count(&format!("{}@{}", a.name, node))
+                    .unwrap_or(0);
                 let mut line = format!(
-                    "  @{} — #{} — on node '{}' — {}",
-                    a.name, a.channel, node, state
+                    "  {}@{} — #{} — on node '{}' — {}",
+                    a.name, node, a.channel, node, state
                 );
                 if pending > 0 {
                     line.push_str(&format!(", {pending} pending here"));
@@ -321,6 +486,24 @@ fn bus_status(inner: &Arc<NodeInner>) -> Result<String, String> {
     lines.push(format!(
         "  @operator — the human — {op_pending} unread in their inbox"
     ));
+    // The channels this agent belongs to, with co-members — a channel
+    // someone put you in is only useful if you know you're in it.
+    let mine = inner.store.channels_of(me).unwrap_or_default();
+    if !mine.is_empty() {
+        lines.push("Your custom channels (post with '#name'):".into());
+        for c in mine {
+            let members: Vec<String> = inner
+                .store
+                .custom_channel_members(&c)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| canonical_member(&m))
+                .filter(|m| m != me)
+                .map(|m| crate::addr::display_for(&m, my_repo, &self_node, false))
+                .collect();
+            lines.push(format!("  #{c} — with {}", members.join(", ")));
+        }
+    }
     Ok(lines.join("\n"))
 }
 

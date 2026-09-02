@@ -559,3 +559,15 @@ Resolved 2026-08-30 with the operator:
 
 Still to verify live, not blocking: `system`-typed stdin injection as a
 cleaner lane for roster updates than user-message headers.
+
+- **2026-09-02 — Scoped agent names.** Addresses are `name@repo[@node]`;
+  the repo segment is the repo *handle* (basename by default, unique per
+  node, operator-renamable, auto-suffixed `-2` on collision; it is also the
+  channel name). Bare names resolve from the sender's context (own repo →
+  unique anywhere → unique via a shared custom channel → refuse with
+  candidates); display is relative to the reader (shortest unambiguous
+  form). Rationale: the operator runs `pdt`/`arch`/`main` in most projects
+  and node-global names collided. Rejected alternative: path form
+  `repo/name@node` (reads worse in headers; spells the repo two ways).
+  Migration folds existing stores; legacy `name@node` channel members heal
+  when that node's roster arrives.

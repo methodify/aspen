@@ -13,7 +13,11 @@ export interface NodeInfo {
 export type TurnState = "idle" | "busy";
 
 export interface Agent {
+  /** The address: `bare@repo` locally, `bare@repo@node` for a remote
+   *  agent. Route key and bus address alike. */
   name: string;
+  /** The short name (`arch`); names are per repo. */
+  bare?: string;
   /** null for remote agents (their repo lives on another node). */
   repo: string | null;
   channel: string;
@@ -89,6 +93,8 @@ export interface SessionInfo {
 /** A remembered repository (GET /api/repos). */
 export interface Repo {
   path: string;
+  /** Address segment + channel name; defaults to the basename, renamable. */
+  handle?: string;
   skip_permissions: boolean;
   /** Present on remote (node_repos) rows; local rows use live_agents. */
   live?: number;
@@ -384,6 +390,8 @@ export const api = {
       skip_permissions: skipPermissions,
       ...(node ? { node } : {}),
     }),
+  renameRepo: (path: string, handle: string, node?: string) =>
+    post<{ ok: boolean }>("/api/repos/rename", { path, handle, ...(node ? { node } : {}) }),
   forgetRepo: (path: string, node?: string) =>
     post<{ ok: boolean }>("/api/repos/forget", { path, ...(node ? { node } : {}) }),
 

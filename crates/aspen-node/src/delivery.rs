@@ -32,8 +32,10 @@ pub async fn run(inner: Arc<NodeInner>, mut rx: mpsc::UnboundedReceiver<String>)
             // link is up; otherwise rows stay pending (next spawn here, or
             // next link-up).
             if let Some(mesh) = inner.mesh() {
-                let home = match recipient.split_once('@') {
-                    Some((_, node)) => Some(node.to_owned()),
+                // `name@repo@node` names its home; `name@repo` may be homed
+                // on a peer whose roster lists that key.
+                let home = match crate::addr::node_of(&recipient) {
+                    Some(node) => Some(node.to_owned()),
                     None => mesh.find_remote(&recipient).map(|(node, _)| node),
                 };
                 if let Some(node) = home {

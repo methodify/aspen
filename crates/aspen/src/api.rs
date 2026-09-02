@@ -105,6 +105,7 @@ pub async fn serve(
         .route("/bus/post/{post}", get(get_post_receipts))
         .route("/mesh", get(get_mesh))
         .route("/repos/discover", post(post_repos_discover))
+        .route("/repos/rename", post(post_repo_rename))
         .route("/mesh/repos", get(get_mesh_repos))
         .route("/mesh/reload", post(post_mesh_reload))
         .route("/shutdown", post(post_shutdown))
@@ -264,6 +265,42 @@ async fn headless_root() -> impl IntoResponse {
     )
 }
 
+#[derive(Deserialize)]
+struct RepoRenameBody {
+    path: String,
+    handle: String,
+    node: Option<String>,
+}
+
+/// Rename a repo's handle — its address segment and channel name. Refused
+/// while sessions in it are running (their addresses would change).
+async fn post_repo_rename(State(s): S, Json(b): Json<RepoRenameBody>) -> impl IntoResponse {
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(
+            &s,
+            node,
+            "node_repo_rename",
+            "",
+            json!({ "path": b.path, "handle": b.handle }),
+        )
+        .await;
+    }
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
+    let live: Vec<String> = s
+        .node
+        .inner
+        .sessions
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    match s.node.inner.store.rename_handle(&path, &b.handle, &live) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
+}
+
 /// Recover repos from Claude Code's session store on this machine and
 /// register the new ones.
 #[derive(Deserialize, Default)]
@@ -395,15 +432,17 @@ fn err(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Value
     (status, Json(json!({ "error": e.to_string() })))
 }
 
-/// A `name@node` address targeting a DIFFERENT node resolves to (bare,
-/// node) for mesh proxying; `name@<this-node>` collapses to local.
+/// A fully qualified `name@repo@node` address targeting a DIFFERENT node
+/// resolves to (local key, node) for mesh proxying; one naming this node
+/// collapses to local. `name@repo` is always local.
 fn remote_parts(s: &AppState, name: &str) -> Option<(String, String)> {
-    let (bare, node) = name.split_once('@')?;
+    let node = aspen_node::addr::node_of(name)?;
     let mesh = s.node.inner.mesh()?;
     if node == mesh.identity.node {
         return None;
     }
-    Some((bare.to_owned(), node.to_owned()))
+    let key = aspen_node::addr::strip_node(name, node).to_owned();
+    Some((key, node.to_owned()))
 }
 
 const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -447,6 +486,7 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         .unwrap_or((None, None));
     json!({
         "name": a.name,
+        "bare": aspen_node::addr::bare(&a.name),
         "title": a.title,
         "busy_since": busy_since,
         "last_tool": last_tool,
@@ -477,6 +517,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                     for a in agents {
                         out.push(json!({
                             "name": format!("{}@{}", a.name, node),
+                            "bare": aspen_node::addr::bare(&a.name),
                             "repo": null,
                             "channel": a.channel,
                             "session_id": null,
@@ -523,6 +564,8 @@ struct SpawnBody {
 }
 
 async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoResponse {
+    // The operator gives the bare name; the address is bare@<repo handle>,
+    // composed by the node (names are per repo).
     let name = body.name.trim().trim_start_matches('@').to_owned();
     if name.is_empty()
         || name == "operator"
@@ -532,7 +575,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
     {
         return err(
             StatusCode::BAD_REQUEST,
-            "agent names are [A-Za-z0-9_-]+ and not 'operator'",
+            "agent names are [A-Za-z0-9_-]+ (no '@' — the repo is added for you) and not 'operator'",
         )
         .into_response();
     }
@@ -560,11 +603,17 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
                 })),
             )
                 .into_response(),
-            Ok(_) => {
-                // Return the remote agent addressed as name@node, matching
-                // how the roster lists it.
+            Ok(v) => {
+                // The peer answers with the registered key (bare@repo);
+                // qualify it with the node, matching the roster.
+                let key = v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(&name)
+                    .to_owned();
                 Json(json!({
-                    "name": format!("{name}@{node}"),
+                    "name": format!("{key}@{node}"),
+                    "bare": aspen_node::addr::bare(&key),
                     "node": node,
                     "remote": true,
                     "repo": body.repo,
@@ -607,12 +656,14 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         .spawn_agent(&name, PathBuf::from(body.repo), opts)
         .await
     {
-        Ok(_) => {
+        Ok(sess) => {
+            // The registered key is bare@<repo handle>.
+            let key = sess.name.clone();
             if let Some(title) = body.title.as_deref().filter(|t| !t.trim().is_empty()) {
-                let _ = s.node.inner.store.set_agent_title(&name, Some(title));
+                let _ = s.node.inner.store.set_agent_title(&key, Some(title));
             }
             let rows = s.node.inner.store.agents().unwrap_or_default();
-            match rows.iter().find(|a| a.name == name) {
+            match rows.iter().find(|a| a.name == key) {
                 Some(a) => Json(agent_json(&s, a)).into_response(),
                 None => err(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1584,6 +1635,7 @@ fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
     let (autorun, trusted) = s.node.trust_state(&r.path);
     json!({
         "path": r.path.to_string_lossy(),
+        "handle": r.handle,
         "skip_permissions": r.skip_permissions,
         "last_used_at": r.last_used_at,
         "sessions": sessions,

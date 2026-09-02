@@ -127,8 +127,9 @@ pub fn normalize_repo(p: &Path) -> PathBuf {
     dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// The auto-channel name for a repo: its directory name. (Two repos sharing
-/// a basename collide; disambiguation is a later, deliberate feature.)
+/// The default handle for a repo: its directory basename. The store
+/// assigns the real handle (suffixed on collision) — see
+/// `BusStore::ensure_handle`; this is only the seed.
 pub fn repo_channel(repo: &Path) -> String {
     repo.file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -214,18 +215,32 @@ impl Node {
     }
 
     /// Spawn a named agent in a repo and join it to the bus.
+    /// `name` is the bare agent name (`arch`) or an existing key
+    /// (`arch@nonlinear`, as revive passes it). The agent's key is always
+    /// `bare@<repo handle>`; that key is the name everywhere below.
     pub async fn spawn_agent(
         &self,
         name: &str,
         repo: PathBuf,
         opts: SpawnOpts,
     ) -> Result<Arc<ManagedSession>> {
-        if self.inner.live(name).is_some() {
-            return Err(anyhow!("an agent named @{name} is already running"));
-        }
         let repo =
             dunce::canonicalize(&repo).map_err(|e| anyhow!("repo {}: {e}", repo.display()))?;
-        let channel = repo_channel(&repo);
+        let channel = self.inner.store.ensure_handle(&repo)?;
+        let bare = crate::addr::bare(name).to_owned();
+        if let Some(given) = crate::addr::repo_of(name) {
+            if given != channel {
+                return Err(anyhow!(
+                    "{name} names repo '{given}' but {} is #{channel}",
+                    repo.display()
+                ));
+            }
+        }
+        let key = crate::addr::local_key(&bare, &channel);
+        let name = key.as_str();
+        if self.inner.live(name).is_some() {
+            return Err(anyhow!("an agent named {name} is already running"));
+        }
 
         // Resolve skip-permissions: explicit request wins, else the repo's
         // stored default, else off.
@@ -253,7 +268,17 @@ impl Node {
         } else {
             PermissionPolicy::ReadOnlyAuto
         };
-        cfg.charter = Some(charter_text(name, &channel, opts.charter.as_deref()));
+        let node_name = self
+            .inner
+            .mesh()
+            .map(|m| m.identity.node.clone())
+            .unwrap_or_else(|| "this node".into());
+        cfg.charter = Some(charter_text(
+            name,
+            &channel,
+            &node_name,
+            opts.charter.as_deref(),
+        ));
         // Harness defaults (settings.json, read live) + this session's args.
         let defaults = self
             .inner
@@ -596,12 +621,15 @@ impl Node {
 
 /// The charter preamble every Aspen agent gets, ahead of any user-provided
 /// charter: who you are on the bus, in the runtime's own system prompt.
-fn charter_text(name: &str, channel: &str, user_charter: Option<&str>) -> String {
+fn charter_text(key: &str, channel: &str, node: &str, user_charter: Option<&str>) -> String {
+    let bare = crate::addr::bare(key);
     let mut t = format!(
-        "You are @{name}, an agent session on the aspen mesh, in repo channel #{channel}. \
-         Peers message you via the bus; those messages arrive prefixed with an [aspen bus] \
-         header naming the sender. Reply to peers with the bus_send tool — never by writing \
-         files at them. The human operator is @operator."
+        "You are {key} — agent '{bare}' in repo channel #{channel} on node '{node}' of the aspen mesh. \
+         Agents are named per repo, so address peers as name@repo (name alone reaches a peer in \
+         your own repo; add @node only when the same repo exists on several nodes). Peers message \
+         you via the bus; those messages arrive prefixed with an [aspen bus] header naming the \
+         sender. Reply to peers with the bus_send tool — never by writing files at them. The human \
+         operator is @operator."
     );
     if let Some(c) = user_charter {
         t.push_str("\n\nYour charter:\n");

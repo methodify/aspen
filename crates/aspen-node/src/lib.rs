@@ -7,6 +7,7 @@
 //! proof of ingestion), and delivery notes at send time instead of silent
 //! downgrades.
 
+pub mod addr;
 pub mod delivery;
 pub mod federation;
 pub mod mcc;
