@@ -5,6 +5,9 @@
 export interface NodeInfo {
   node: string;
   version: string;
+  /** Build stamp of the daemon serving the API. */
+  sha?: string;
+  built?: string;
 }
 
 export type TurnState = "idle" | "busy";

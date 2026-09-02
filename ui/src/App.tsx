@@ -93,6 +93,35 @@ function MeshColumn() {
   );
 }
 
+/** Daemon (API) version next to the UI's own build stamp. They come from the
+ *  same workspace version, so a difference means this page is stale — a
+ *  cached bundle after `aspen update --restart` — and needs a reload. */
+function VersionBadge({ node }: { node: NodeInfo | null }) {
+  const ui = __ASPEN_UI_VERSION__;
+  const uiSha = __ASPEN_UI_SHA__;
+  if (!node) return null;
+  const stale = node.version !== ui || (node.sha && uiSha !== "unknown" && node.sha !== uiSha);
+  const title = `api ${node.version}${node.sha ? ` (${node.sha})` : ""} · ui ${ui} (${uiSha})${
+    stale ? " — reload to pick up the new console" : ""
+  }`;
+  return stale ? (
+    <button
+      type="button"
+      className="btn ghost sm"
+      onClick={() => window.location.reload()}
+      title={title}
+      style={{ color: "var(--sig-normal)" }}
+    >
+      api {node.version} · ui {ui} — reload
+    </button>
+  ) : (
+    <span className="micro" title={title} style={{ color: "var(--text-dim)" }}>
+      v{node.version}
+      {node.sha ? ` ${node.sha}` : ""}
+    </span>
+  );
+}
+
 function StatusBar() {
   const { agents, node } = useAppData();
   const [theme, toggleTheme] = useTheme();
@@ -104,6 +133,7 @@ function StatusBar() {
       <span className="brand">ASP<b>E</b>N</span>
       <span className="mono-meta">{node ? `node ${node.node}` : "connecting…"}</span>
       <span className="spacer" />
+      <VersionBadge node={node} />
       <span className="micro" style={{ color: "var(--live)" }}>{busy} BUSY</span>
       <span className="micro" style={{ color: "var(--idle)" }}>{idle} IDLE</span>
       <span className="micro" style={{ color: "var(--offline)" }}>{off} OFF</span>
