@@ -65,6 +65,12 @@ aspen update --restart   # …and bounce a running daemon onto it: sessions
 aspen update --version v0.2.0 --force
 ```
 
+On Windows a running daemon holds `aspen.exe` open, so `aspen update` alone
+can't replace it in place — use `aspen update --restart` (it stops the
+daemon, swaps the binary, and brings it back), or `aspen down` first. On
+Linux/macOS a plain `aspen update` works with the daemon up; `--restart`
+then bounces it onto the new binary.
+
 All node state lives in `~/.aspen` (override with `--data-dir`): the bus
 store, mesh identity and certificates, trusted-repo decisions, the API token,
 daemon state, and logs. Updates never touch it.

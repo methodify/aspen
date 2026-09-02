@@ -58,7 +58,28 @@ pub fn run(data_dir: &Path, version: Option<&str>, force: bool, restart: bool) -
 
     if remote_version == current && !force {
         println!("aspen {current} is already the latest ({tag}). Use --force to reinstall.");
-        return maybe_restart(data_dir, restart, false, &exe);
+        // Nothing to replace, but --restart still bounces the daemon.
+        if restart {
+            match stop_daemon(data_dir)? {
+                Some(params) => start_daemon(&exe, data_dir, &params)?,
+                None => println!("no running daemon to restart."),
+            }
+        } else if crate::read_daemon_state(data_dir).is_some() {
+            println!("(daemon is running on this same version.)");
+        }
+        return Ok(());
+    }
+
+    // On Windows a running process holds its .exe open without share-delete,
+    // so the file can't be replaced while the daemon is up. --restart stops
+    // it first (below); a plain update can't, so say so rather than fail with
+    // a bare OS error. (Unix replaces via inode swap, daemon or not.)
+    #[cfg(windows)]
+    if !restart && crate::read_daemon_state(data_dir).is_some() {
+        bail!(
+            "a daemon is running and holds aspen.exe open — Windows can't replace it in place. \
+             Re-run as `aspen update --restart`, or `aspen down` first."
+        );
     }
 
     let asset_name = format!(
@@ -93,14 +114,41 @@ pub fn run(data_dir: &Path, version: Option<&str>, force: bool, restart: bool) -
         bail!("checksum mismatch for {asset_name}: expected {expected}, got {actual}");
     }
 
-    replace_binary(&exe, &bytes)
-        .with_context(|| format!("installing new binary over {}", exe.display()))?;
+    // Stop the daemon BEFORE replacing: on Windows it holds the .exe open,
+    // and stopping now also lets the resume ledger land before the new
+    // binary reads it. Capture how to relaunch it.
+    let restart_params = if restart {
+        stop_daemon(data_dir)?
+    } else {
+        None
+    };
+
+    if let Err(e) = replace_binary(&exe, &bytes)
+        .with_context(|| format!("installing new binary over {}", exe.display()))
+    {
+        // We may have just stopped a healthy daemon; bring it back on the
+        // old binary (replace_binary rolls back, so exe is intact) so a
+        // failed update doesn't leave the node down.
+        if let Some(params) = &restart_params {
+            eprintln!("update failed after stopping the daemon — restarting the previous binary…");
+            let _ = start_daemon(&exe, data_dir, params);
+        }
+        return Err(e);
+    }
     println!(
         "updated: aspen {current} → {remote_version} ({})",
         exe.display()
     );
 
-    maybe_restart(data_dir, restart, true, &exe)
+    if restart {
+        match restart_params {
+            Some(params) => start_daemon(&exe, data_dir, &params)?,
+            None => println!("no running daemon was found to restart."),
+        }
+    } else if crate::read_daemon_state(data_dir).is_some() {
+        println!("daemon still running on the old binary — restart with: aspen update --restart (or aspen down && aspen up -d)");
+    }
+    Ok(())
 }
 
 fn get_json(agent: &ureq::Agent, url: &str, token: Option<&str>) -> Result<serde_json::Value> {
@@ -205,16 +253,19 @@ fn replace_binary(exe: &Path, bytes: &[u8]) -> Result<()> {
 /// onto the (possibly new) binary. Uses daemon.json to stop the old process,
 /// waits for its clean shutdown (which writes the resume ledger), then
 /// starts the new binary detached — which auto-revives the sessions.
-fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> Result<()> {
-    if !restart {
-        if updated && crate::read_daemon_state(data_dir).is_some() {
-            println!("daemon still running on the old binary — restart with: aspen update --restart (or aspen down && aspen up -d)");
-        }
-        return Ok(());
-    }
+/// How to relaunch the daemon after an update — captured from daemon.json
+/// before it's stopped.
+struct RestartParams {
+    listen: String,
+    ui: Option<String>,
+    headless: bool,
+}
+
+/// Stop a running daemon and wait until it has fully released the port and
+/// state file. Returns how to relaunch it, or None if none was running.
+fn stop_daemon(data_dir: &Path) -> Result<Option<RestartParams>> {
     let Some(state) = crate::read_daemon_state(data_dir) else {
-        println!("no running daemon found — nothing to restart.");
-        return Ok(());
+        return Ok(None);
     };
     // Prefer the *requested* address: an ephemeral node restarts on port 0
     // (a fresh OS-assigned port), not on the one it happened to hold.
@@ -223,8 +274,11 @@ fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> R
         .or(state["listen"].as_str())
         .unwrap_or("127.0.0.1:7420")
         .to_owned();
-    let ui = state["ui"].as_str().map(str::to_owned);
-    let headless = state["headless"].as_bool().unwrap_or(false);
+    let params = RestartParams {
+        listen: listen.clone(),
+        ui: state["ui"].as_str().map(str::to_owned),
+        headless: state["headless"].as_bool().unwrap_or(false),
+    };
 
     println!("stopping daemon …");
     crate::stop_detached(data_dir)?;
@@ -238,7 +292,8 @@ fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> R
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     // The listener may still be draining connections for a moment after the
-    // state file goes away; wait until the port actually rebinds.
+    // state file goes away; wait until the port actually rebinds. (Port 0 is
+    // ephemeral — binding it always succeeds, so the loop just falls through.)
     if let Ok(addr) = listen.parse::<std::net::SocketAddr>() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::net::TcpListener::bind(addr).is_err() {
@@ -248,15 +303,19 @@ fn maybe_restart(data_dir: &Path, restart: bool, updated: bool, exe: &Path) -> R
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
+    Ok(Some(params))
+}
 
+/// Launch the daemon detached with the captured parameters.
+fn start_daemon(exe: &Path, data_dir: &Path, params: &RestartParams) -> Result<()> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--data-dir")
         .arg(data_dir)
-        .args(["up", "-d", "--listen", &listen]);
-    if let Some(ui) = ui {
-        cmd.args(["--ui", &ui]);
+        .args(["up", "-d", "--listen", &params.listen]);
+    if let Some(ui) = &params.ui {
+        cmd.args(["--ui", ui]);
     }
-    if headless {
+    if params.headless {
         cmd.arg("--headless");
     }
     let status = cmd.status().context("starting new daemon")?;
