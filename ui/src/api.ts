@@ -140,6 +140,25 @@ export interface GitState {
   checked_at: number;
 }
 
+/** One entry in the fleet event log (GET /api/history). */
+export interface FleetEvent {
+  id: number;
+  ts: number;
+  agent: string;
+  kind: "ask" | "turn" | "tool" | "prompt" | "exit" | "spawn" | "revive" | "branch" | string;
+  detail: Record<string, unknown> | null;
+  node: string;
+}
+
+export interface History {
+  from: number;
+  to: number;
+  /** This node's name — `x@y@self` in peer-reported data is our local `x@y`. */
+  self: string;
+  events: FleetEvent[];
+  messages: (BusMessage & { node?: string })[];
+}
+
 /** A declared pathway between two endpoints (GET /api/links). Endpoints:
  *  `agent:name@repo[@node]`, `repo:handle[@node]`, `node:name`, `operator`. */
 export interface Link {
@@ -444,6 +463,10 @@ export const api = {
   discoverRepos: (node?: string) =>
     post<{ found: DiscoveredRepo[] }>("/api/repos/discover", node ? { node } : {}),
   meshRepos: () => request<{ nodes: MeshRepoNode[] }>("/api/mesh/repos"),
+  history: (from: number, to: number, agent?: string) =>
+    request<History>(
+      `/api/history?from=${from}&to=${to}${agent ? `&agent=${enc(agent)}` : ""}`,
+    ),
   links: () => request<Link[]>("/api/links"),
   addLink: (l: { from: string; to: string; two_way?: boolean; purpose?: string; urgency?: string }) =>
     post<{ ok: boolean; id: number }>("/api/links", l),

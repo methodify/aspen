@@ -7,6 +7,7 @@ import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
 import Mesh from "./pages/Mesh";
+import History from "./pages/History";
 import Palette from "./Palette";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
 
@@ -38,6 +39,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean }[] = [
   { to: "/", key: "N", label: "Now", end: true },
   { to: "/flow", key: "F", label: "Flow" },
   { to: "/mesh", key: "M", label: "Mesh" },
+  { to: "/history", key: "H", label: "History" },
 ];
 
 // ── working set: pinned + recently opened sessions (per browser) ──────────
@@ -258,6 +260,7 @@ export default function App() {
               <Route path="/flow/:channel" element={<Conversations />} />
               <Route path="/session/:name" element={<Session />} />
               <Route path="/mesh" element={<Mesh />} />
+              <Route path="/history" element={<History />} />
               {/* old surfaces → their new homes */}
               <Route path="/command" element={<Navigate to="/" replace />} />
               <Route path="/sessions" element={<Navigate to="/" replace />} />

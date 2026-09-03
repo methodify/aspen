@@ -1,0 +1,18 @@
+/* History — lanes, overview brush, log. */
+.hist-overview { display: block; background: var(--bg-well); border: 1px solid var(--line); cursor: crosshair; margin-bottom: 6px; }
+.hist-lanes { display: block; background: var(--bg-panel); border: 1px solid var(--line); }
+.hist-lanes text { user-select: none; }
+.hist-legend { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; color: var(--text-dim); padding: 6px 2px 10px; }
+.hist-legend .sw { display: inline-block; width: 12px; height: 8px; vertical-align: middle; margin-right: 4px; }
+.hist-legend .sw.tick { width: 2px; height: 10px; background: var(--text-hi); }
+.hist-legend .sw.diamond { width: 8px; height: 8px; background: var(--sig-normal); transform: rotate(45deg); }
+.hist-legend .sw.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sig-normal); }
+.hist-log { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.hist-row { display: flex; align-items: baseline; gap: 10px; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 0.82rem; }
+.hist-row.hot { background: var(--bg-strip-2); }
+.hist-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mid); }
+.kind-turn { color: var(--live); }
+.kind-prompt { color: var(--sig-normal); }
+.kind-exit { color: var(--sig-gate); }
+.kind-bus-gating { color: var(--sig-gate); }
+.kind-bus-notice { color: var(--sig-notice); }

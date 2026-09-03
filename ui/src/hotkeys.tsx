@@ -47,6 +47,7 @@ export function scopeForPath(pathname: string): string {
   if (pathname.startsWith("/flow")) return "flow";
   if (pathname.startsWith("/session/")) return "session";
   if (pathname.startsWith("/mesh")) return "mesh";
+  if (pathname.startsWith("/history")) return "history";
   return "global";
 }
 
@@ -56,6 +57,7 @@ const SCOPE_LABELS: Record<string, string> = {
   flow: "Flow",
   session: "Session",
   mesh: "Mesh",
+  history: "History",
 };
 
 function isEditable(target: EventTarget | null): boolean {
@@ -226,6 +228,7 @@ export function GlobalHotkeys() {
     { key: "n", description: "go to Now", handler: () => nav("/") },
     { key: "f", description: "go to Flow", handler: () => nav("/flow") },
     { key: "m", description: "go to Mesh", handler: () => nav("/mesh") },
+    { key: "h", description: "go to History", handler: () => nav("/history") },
     { key: "⌘K", description: "command palette" },
     { key: "?", description: "this help" },
   ]);

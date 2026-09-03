@@ -16,7 +16,10 @@ work on; a bus connects them; a mesh connects the machines.
   asks, current tool, files touched, context, cost), **Flow** (the bus as a
   timeline: channels, DMs, receipts, who is waiting on whom, what is stuck),
   **Mesh** (nodes → repos → agents with their channels, editable in place,
-  as a map or a list), and the interactive **Session** view. The rail is
+  as a map or a list — where you also declare **links**: directed pathways
+  with a purpose that agents are told about), **History** (what happened
+  across the fleet: lanes per agent, turns, tools, prompts, messages, with
+  a brushable day), and the interactive **Session** view. The rail is
   your working set — pinned and recent sessions — not a copy of the fleet.
 
 Built on Claude Code's headless NDJSON protocol; designed so a second agent

@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS bookmarks(
   created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bookmark_agent ON bookmarks(agent);
+CREATE TABLE IF NOT EXISTS events(
+  id     INTEGER PRIMARY KEY,
+  ts     REAL NOT NULL,
+  agent  TEXT NOT NULL,
+  kind   TEXT NOT NULL,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent, ts);
 CREATE TABLE IF NOT EXISTS links(
   id         INTEGER PRIMARY KEY,
   src        TEXT NOT NULL,
@@ -144,6 +153,16 @@ pub struct RepoRow {
     /// The repo's handle: its address segment and channel name. Defaults
     /// to the directory basename, unique per node, operator-renamable.
     pub handle: String,
+}
+
+/// One entry in the fleet event log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FleetEvent {
+    pub id: i64,
+    pub ts: f64,
+    pub agent: String,
+    pub kind: String,
+    pub detail: serde_json::Value,
 }
 
 /// A declared pathway between two endpoints (see topology.rs).
@@ -485,6 +504,75 @@ impl BusStore {
             )
             .optional()?
             .is_some())
+    }
+
+    // ----------------------------------------------------------------- events
+
+    /// Append to the fleet event log (History). `detail` is free-form JSON.
+    pub fn record_event(&self, agent: &str, kind: &str, detail: serde_json::Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO events(ts, agent, kind, detail) VALUES(?1, ?2, ?3, ?4)",
+            params![now_epoch(), agent, kind, detail.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Events in [from, to], optionally for one agent, newest last.
+    pub fn events(
+        &self,
+        from: f64,
+        to: f64,
+        agent: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<FleetEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from(
+            "SELECT id, ts, agent, kind, detail FROM events WHERE ts >= ?1 AND ts <= ?2",
+        );
+        if agent.is_some() {
+            sql.push_str(" AND agent = ?3");
+        }
+        sql.push_str(" ORDER BY ts DESC LIMIT ?4");
+        let mut stmt = conn.prepare(&sql)?;
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok(FleetEvent {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                agent: r.get(2)?,
+                kind: r.get(3)?,
+                detail: r
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(serde_json::Value::Null),
+            })
+        };
+        let rows = if let Some(a) = agent {
+            stmt.query_map(params![from, to, a, limit], map)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(params![from, to, "", limit], map)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut rows = rows;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// Bus rows in a time window (for the History timeline).
+    pub fn messages_between(&self, from: f64, to: f64, limit: i64) -> Result<Vec<StoredMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
+                    created_at,delivered_at,delivered_via,ingested_at,post
+             FROM messages WHERE created_at >= ?1 AND created_at <= ?2 ORDER BY created_at DESC LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![from, to, limit], row_to_message)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut rows = rows;
+        rows.reverse();
+        Ok(rows)
     }
 
     // ------------------------------------------------------------------ links

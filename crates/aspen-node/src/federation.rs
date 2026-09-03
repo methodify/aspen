@@ -794,6 +794,30 @@ async fn serve_api_req(
                 }))
                 .collect::<Vec<_>>()))
         }
+        "history" => {
+            let g = |k: &str| body.get(k).and_then(|v| v.as_f64());
+            let to = g("to").unwrap_or_else(crate::store::now_epoch);
+            let from = g("from").unwrap_or(to - 86400.0);
+            let n = body.get("n").and_then(|v| v.as_i64()).unwrap_or(2000);
+            let agent = body.get("agent").and_then(|a| a.as_str());
+            let events = node.inner.store.events(from, to, agent, n)?;
+            let messages: Vec<Value> = node
+                .inner
+                .store
+                .messages_between(from, to, n)?
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id, "uuid": m.uuid, "thread": m.thread, "sender": m.sender,
+                        "recipient": m.recipient, "to_display": m.to_display, "urgency": m.urgency,
+                        "body": m.body, "record": m.record_ref, "created_at": m.created_at,
+                        "delivered_at": m.delivered_at, "delivered_via": m.delivered_via,
+                        "ingested_at": m.ingested_at, "post": m.post,
+                    })
+                })
+                .collect();
+            Ok(json!({ "events": events, "messages": messages }))
+        }
         "link_add" => {
             let g = |k: &str| body.get(k).and_then(|v| v.as_str()).map(str::to_owned);
             let (Some(src), Some(dst)) = (g("src"), g("dst")) else {

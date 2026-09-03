@@ -40,6 +40,7 @@ whoever messaged you are always allowed.
 | `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
 | `POST /api/shutdown` | `{}` | `{ ok, stopping }` | graceful stop (same ladder as SIGTERM); what `aspen down` uses on every platform — Windows has no SIGTERM and a detached process has no window for taskkill |
 | `POST /api/mesh/reload` | `{}` | `{ ok, summary }` | apply mesh files to the running daemon (join live / pick up peers+relay); the mesh CLI calls it after every mutation |
+| `GET /api/history?from=&to=&agent=&n=&mesh=` | — | `{ from, to, self, events: FleetEvent[], messages }` | the fleet timeline: events (`ask` with from=operator/bus, `turn` with duration/cost/reply, `tool`, `prompt`, `exit`, `spawn`/`revive`/`branch`) plus bus rows in the window, this node and reachable peers, each tagged with `node`; defaults to the last 24h |
 | `GET /api/links` | — | `Link[]` | declared links: `{ id, src, dst, two_way, purpose, urgency }`; endpoints are `agent:name@repo[@node]`, `repo:handle[@node]`, `node:name`, `operator` |
 | `POST /api/links` | `{ from, to, two_way?, purpose?, urgency? }` | `{ ok, id }` | declare a link (bare `@x` / `#x` accepted); mirrored to any peer node hosting an endpoint |
 | `DELETE /api/links/{id}` | — | `{ ok }` | remove a link (mirrored) |

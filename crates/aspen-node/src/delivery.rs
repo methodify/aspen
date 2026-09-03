@@ -78,6 +78,16 @@ async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::
     };
     let text = compose(&pending);
     sess.mark_busy();
+    let _ = inner.store.record_event(
+        &sess.name,
+        "ask",
+        serde_json::json!({
+            "from": "bus",
+            "senders": pending.iter().map(|m| m.sender.clone()).collect::<std::collections::BTreeSet<_>>(),
+            "count": pending.len(),
+            "gating": has_gating,
+        }),
+    );
     let ingest_uuid = sess.handle.send_user(text).await?;
     let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
     inner.store.mark_delivered(&ids, via, Some(&ingest_uuid))?;

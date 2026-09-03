@@ -391,6 +391,21 @@ impl Node {
             opts.extra_args.as_deref(),
         )?;
         let _ = self.inner.store.set_agent_live(name, true);
+        let _ = self.inner.store.record_event(
+            name,
+            if opts.fork {
+                "branch"
+            } else if opts.resume.is_some() {
+                "revive"
+            } else {
+                "spawn"
+            },
+            serde_json::json!({
+                "session": effective_session_id,
+                "from": opts.resume,
+                "at": opts.resume_at,
+            }),
+        );
         // Remember the repo (and, when the operator asked to skip here,
         // adopt that as the repo's default going forward).
         let _ = self.inner.store.add_repo(&repo, opts.skip_permissions);
@@ -449,6 +464,11 @@ impl Node {
             s.last_ask_at = Some(crate::store::now_epoch());
             s.idle_since = None;
         }
+        let _ = self.inner.store.record_event(
+            name,
+            "ask",
+            serde_json::json!({ "from": "operator", "text": snippet(&text, 200) }),
+        );
         sess.mark_busy();
         sess.handle.send_user(text).await
     }
@@ -850,6 +870,25 @@ async fn pump(
                 *sess.busy_since.lock().unwrap() = None;
                 *sess.last_tool.lock().unwrap() = None;
                 {
+                    let prev_cost = sess.summary.lock().unwrap().cost_usd;
+                    let _ = inner.store.record_event(
+                        &sess.name,
+                        "turn",
+                        serde_json::json!({
+                            "duration_ms": raw.get("duration_ms").and_then(|d| d.as_u64()),
+                            "cost_usd": total_cost_usd,
+                            "cost_delta": match (total_cost_usd, prev_cost) {
+                                (Some(c), Some(p)) => Some((c - p).max(0.0)),
+                                (Some(c), None) => Some(*c),
+                                _ => None,
+                            },
+                            "reply": result_text.as_deref().map(|x| snippet(x, 160)),
+                            "tokens": raw.get("usage").and_then(|u| {
+                                let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                                Some(n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"))
+                            }),
+                        }),
+                    );
                     let mut s = sess.summary.lock().unwrap();
                     s.turns += 1;
                     s.idle_since = Some(crate::store::now_epoch());
@@ -890,6 +929,19 @@ async fn pump(
                 tool_name, input, ..
             } => {
                 {
+                    let path = ["file_path", "notebook_path", "path"]
+                        .iter()
+                        .find_map(|k| input.get(k).and_then(|v| v.as_str()))
+                        .map(str::to_owned);
+                    let cmd = input
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(|c| snippet(c, 80));
+                    let _ = inner.store.record_event(
+                        &sess.name,
+                        "tool",
+                        serde_json::json!({ "name": tool_name, "path": path, "command": cmd }),
+                    );
                     let mut s = sess.summary.lock().unwrap();
                     s.tool_calls += 1;
                     for k in ["file_path", "notebook_path", "path"] {
@@ -905,6 +957,13 @@ async fn pump(
                 }
                 sess.mark_busy();
                 *sess.last_tool.lock().unwrap() = Some(tool_name.clone());
+            }
+            SessionEvent::PermissionAsked { tool_name, .. } => {
+                let _ = inner.store.record_event(
+                    &sess.name,
+                    "prompt",
+                    serde_json::json!({ "tool": tool_name }),
+                );
             }
             SessionEvent::UserReplay { uuid } => {
                 let _ = inner.store.mark_ingested(uuid);
@@ -937,6 +996,14 @@ async fn pump(
             SessionEvent::Exited { code } => {
                 inner.sessions.lock().unwrap().remove(&sess.name);
                 let _ = inner.store.set_agent_exit(&sess.name, *code);
+                let _ = inner.store.record_event(
+                    &sess.name,
+                    "exit",
+                    serde_json::json!({
+                        "code": code,
+                        "daemon_shutdown": inner.shutting_down.load(std::sync::atomic::Ordering::SeqCst),
+                    }),
+                );
                 if !inner
                     .shutting_down
                     .load(std::sync::atomic::Ordering::SeqCst)

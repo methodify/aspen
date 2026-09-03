@@ -31,6 +31,7 @@ const NAV_TARGETS: { label: string; to: string }[] = [
   { label: "Flow", to: "/flow" },
   { label: "Mesh", to: "/mesh" },
   { label: "Mesh · list", to: "/mesh?view=list" },
+  { label: "History", to: "/history" },
 ];
 
 const presenceColor: Record<Presence, string> = {

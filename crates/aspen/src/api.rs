@@ -115,6 +115,7 @@ pub async fn serve(
         .route("/repos/rename", post(post_repo_rename))
         .route("/mesh/repos", get(get_mesh_repos))
         .route("/mesh/reload", post(post_mesh_reload))
+        .route("/history", get(get_history))
         .route("/links", get(get_links).post(post_link))
         .route("/links/{id}", delete(delete_link))
         .route("/shutdown", post(post_shutdown))
@@ -1651,6 +1652,125 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------- repos
+
+// ---------------------------------------------------------------- history
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    /// Window, epoch seconds. Defaults: the last 24h.
+    from: Option<f64>,
+    to: Option<f64>,
+    agent: Option<String>,
+    n: Option<i64>,
+    /// Include peers' events (default true).
+    mesh: Option<bool>,
+}
+
+/// The fleet's timeline: events (asks, turns, tools, prompts, exits,
+/// spawns/branches) plus bus messages in a window, this node and every
+/// reachable peer, each item tagged with its node.
+async fn get_history(State(s): S, Query(q): Query<HistoryQuery>) -> impl IntoResponse {
+    let now = aspen_node::store::now_epoch();
+    let to = q.to.unwrap_or(now);
+    let from = q.from.unwrap_or(to - 86400.0);
+    let n = q.n.unwrap_or(2000).clamp(1, 20000);
+    let me = self_node_name(&s);
+    let mut events: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .events(from, to, q.agent.as_deref(), n)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| json!({ "id": e.id, "ts": e.ts, "agent": e.agent, "kind": e.kind, "detail": e.detail, "node": me }))
+        .collect();
+    let mut messages: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .messages_between(from, to, n)
+        .unwrap_or_default()
+        .iter()
+        .filter(|m| {
+            q.agent
+                .as_deref()
+                .is_none_or(|a| m.sender == a || m.recipient == a)
+        })
+        .map(|m| {
+            let mut v = message_json(m);
+            v["node"] = json!(me);
+            v
+        })
+        .collect();
+
+    if q.mesh.unwrap_or(true) {
+        if let Some(mesh) = s.node.inner.mesh() {
+            let calls = mesh
+                .peers()
+                .into_iter()
+                .filter(|p| mesh.link_up(&p.cert.node))
+                .map(|peer| {
+                    let mesh = mesh.clone();
+                    let agent = q.agent.clone();
+                    async move {
+                        let name = peer.cert.node.clone();
+                        let r = mesh
+                            .api_call(
+                                &name,
+                                "history",
+                                "",
+                                json!({ "from": from, "to": to, "agent": agent, "n": n }),
+                                LIST_TIMEOUT,
+                            )
+                            .await
+                            .ok();
+                        (name, r)
+                    }
+                });
+            for (name, r) in futures_util::future::join_all(calls).await {
+                let Some(v) = r else { continue };
+                for e in v
+                    .get("events")
+                    .and_then(|e| e.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let mut e = e;
+                    e["node"] = json!(name);
+                    // Remote agents are addressed here as key@node.
+                    if let Some(a) = e.get("agent").and_then(|a| a.as_str()) {
+                        e["agent"] = json!(format!("{a}@{name}"));
+                    }
+                    events.push(e);
+                }
+                for m in v
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let mut m = m;
+                    m["node"] = json!(name);
+                    messages.push(m);
+                }
+            }
+        }
+    }
+    events.sort_by(|a, b| {
+        a["ts"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["ts"].as_f64().unwrap_or(0.0))
+    });
+    messages.sort_by(|a, b| {
+        a["created_at"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["created_at"].as_f64().unwrap_or(0.0))
+    });
+    Json(json!({ "from": from, "to": to, "self": me, "events": events, "messages": messages }))
+        .into_response()
+}
 
 // ------------------------------------------------------------------ links
 
