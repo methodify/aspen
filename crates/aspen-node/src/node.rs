@@ -883,9 +883,9 @@ async fn pump(
                                 _ => None,
                             },
                             "reply": result_text.as_deref().map(|x| snippet(x, 160)),
-                            "tokens": raw.get("usage").and_then(|u| {
+                            "tokens": raw.get("usage").map(|u| {
                                 let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-                                Some(n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"))
+                                n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens")
                             }),
                         }),
                     );
