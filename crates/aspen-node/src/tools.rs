@@ -377,6 +377,8 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
                                 channel: String::new(),
                                 live: false,
                                 turn_state: None,
+                                summary: None,
+                                title: None,
                             }),
                         ))
                     }

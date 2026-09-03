@@ -507,6 +507,10 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
             TurnState::Busy => "busy",
         }),
         "pending": s.node.inner.store.pending_count(&a.name).unwrap_or(0),
+        "summary": live.as_ref().map(|m| aspen_node::node::summary_json(m)),
+        "git": aspen_node::gitstate::get(&a.repo),
+        "last_exit_code": a.last_exit_code,
+        "last_exit_at": a.last_exit_at,
     })
 }
 
@@ -525,6 +529,8 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                         out.push(json!({
                             "name": format!("{}@{}", a.name, node),
                             "bare": aspen_node::addr::bare(&a.name),
+                            "title": a.title,
+                            "summary": if reachable { a.summary.clone() } else { None },
                             "repo": null,
                             "channel": a.channel,
                             "session_id": null,
@@ -1739,6 +1745,7 @@ fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
     json!({
         "path": r.path.to_string_lossy(),
         "handle": r.handle,
+        "git": aspen_node::gitstate::get(&r.path),
         "skip_permissions": r.skip_permissions,
         "last_used_at": r.last_used_at,
         "sessions": sessions,
@@ -1922,6 +1929,8 @@ struct LogQuery {
     record: Option<String>,
     urgency: Option<String>,
     q: Option<String>,
+    /// Only rows not yet delivered (stuck / queued).
+    pending: Option<bool>,
 }
 
 async fn get_bus_log(State(s): S, Query(q): Query<LogQuery>) -> impl IntoResponse {
@@ -1931,6 +1940,7 @@ async fn get_bus_log(State(s): S, Query(q): Query<LogQuery>) -> impl IntoRespons
         q.thread.as_deref().filter(|v| !v.is_empty()),
         q.record.as_deref().filter(|v| !v.is_empty()),
         q.urgency.as_deref().filter(|v| !v.is_empty()),
+        q.pending.unwrap_or(false),
         q.q.as_deref().filter(|v| !v.is_empty()),
         q.n.unwrap_or(50),
     );

@@ -27,11 +27,10 @@ interface Item {
 }
 
 const NAV_TARGETS: { label: string; to: string }[] = [
-  { label: "Command", to: "/" },
-  { label: "Conversations", to: "/conversations" },
-  { label: "Sessions", to: "/sessions" },
-  { label: "Map", to: "/map" },
-  { label: "Library", to: "/library" },
+  { label: "Now", to: "/" },
+  { label: "Flow", to: "/flow" },
+  { label: "Mesh", to: "/mesh" },
+  { label: "Mesh · list", to: "/mesh?view=list" },
 ];
 
 const presenceColor: Record<Presence, string> = {
@@ -190,7 +189,7 @@ export default function Palette() {
         const untrusted = e instanceof ApiError && e.status === 428;
         setStatus({
           text: untrusted
-            ? "untrusted repository — start it from Sessions (s) or Library (l) to review what it auto-runs"
+            ? "untrusted repository — start it from Now (n) or Mesh (m) to review what it auto-runs"
             : e instanceof Error
               ? e.message
               : String(e),
@@ -422,7 +421,7 @@ export default function Palette() {
               {c.topic && <span className="pal-sub">{c.topic}</span>}
             </>
           ),
-          run: () => goto(`/conversations/${encodeURIComponent(c.name)}`),
+          run: () => goto(`/flow/${encodeURIComponent(c.name)}`),
         },
       });
     }

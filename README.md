@@ -11,11 +11,13 @@ work on; a bus connects them; a mesh connects the machines.
   passive, honest trail.
 - One minimal **rendezvous** relay stitches nodes together across any network
   topology, holding nothing it can read.
-- One **operator console** (web) is the window into all of it — designed as a
-  switchboard, not a dashboard (see [`docs/V2.md`](docs/V2.md)): a Command
-  triage home, first-class **Conversations** (channels that span repos and
-  nodes, with delivery/ingest ticks and a Route gesture), interactive
-  Sessions, a spatial **Map** of the mesh, and a Library of repos and skills.
+- One **operator console** (web) organized around the operator's questions,
+  not data types: **Now** (what needs you, and what every agent is doing —
+  asks, current tool, files touched, context, cost), **Flow** (the bus as a
+  timeline: channels, DMs, receipts, who is waiting on whom, what is stuck),
+  **Mesh** (nodes → repos → agents with their channels, editable in place,
+  as a map or a list), and the interactive **Session** view. The rail is
+  your working set — pinned and recent sessions — not a copy of the fleet.
 
 Built on Claude Code's headless NDJSON protocol; designed so a second agent
 runtime is an adapter, not a rewrite.

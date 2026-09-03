@@ -43,23 +43,19 @@ const Ctx = createContext<HotkeysCtx | null>(null);
 
 /** Route → surface scope. Keep in sync with the App's routes. */
 export function scopeForPath(pathname: string): string {
-  if (pathname === "/") return "command";
-  if (pathname.startsWith("/conversations")) return "conversations";
+  if (pathname === "/") return "now";
+  if (pathname.startsWith("/flow")) return "flow";
   if (pathname.startsWith("/session/")) return "session";
-  if (pathname.startsWith("/sessions")) return "sessions";
-  if (pathname.startsWith("/map")) return "map";
-  if (pathname.startsWith("/library")) return "library";
+  if (pathname.startsWith("/mesh")) return "mesh";
   return "global";
 }
 
 const SCOPE_LABELS: Record<string, string> = {
   global: "Everywhere",
-  command: "Command",
-  conversations: "Conversations",
+  now: "Now",
+  flow: "Flow",
   session: "Session",
-  sessions: "Sessions",
-  map: "Map",
-  library: "Library",
+  mesh: "Mesh",
 };
 
 function isEditable(target: EventTarget | null): boolean {
@@ -227,11 +223,9 @@ function HelpDialog({
 export function GlobalHotkeys() {
   const nav = useNavigate();
   useHotkeys("global", [
-    { key: "c", description: "go to Command", handler: () => nav("/") },
-    { key: "v", description: "go to Conversations", handler: () => nav("/conversations") },
-    { key: "s", description: "go to Sessions", handler: () => nav("/sessions") },
-    { key: "m", description: "go to Map", handler: () => nav("/map") },
-    { key: "l", description: "go to Library", handler: () => nav("/library") },
+    { key: "n", description: "go to Now", handler: () => nav("/") },
+    { key: "f", description: "go to Flow", handler: () => nav("/flow") },
+    { key: "m", description: "go to Mesh", handler: () => nav("/mesh") },
     { key: "⌘K", description: "command palette" },
     { key: "?", description: "this help" },
   ]);

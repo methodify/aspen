@@ -35,6 +35,11 @@ pub struct RemoteAgent {
     pub channel: String,
     pub live: bool,
     pub turn_state: Option<String>,
+    /// Work summary + title, so a peer's fleet view is as rich as ours.
+    #[serde(default)]
+    pub summary: Option<Value>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 pub struct MeshState {
@@ -211,11 +216,13 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
             json!({
                 "name": a.name,
                 "channel": a.channel,
+                "title": a.title,
                 "live": live.is_some(),
-                "turn_state": live.map(|s| match s.turn_state() {
+                "turn_state": live.as_ref().map(|s| match s.turn_state() {
                     TurnState::Idle => "idle",
                     TurnState::Busy => "busy",
                 }),
+                "summary": live.as_ref().map(|s| crate::node::summary_json(s)),
             })
         })
         .collect();
@@ -770,6 +777,7 @@ async fn serve_api_req(
                     json!({
                         "path": r.path.to_string_lossy(),
                         "handle": r.handle,
+                        "git": crate::gitstate::get(&r.path),
                         "skip_permissions": r.skip_permissions,
                         "sessions": sessions,
                         "live": live,

@@ -18,6 +18,12 @@ export interface Agent {
   name: string;
   /** The short name (`arch`); names are per repo. */
   bare?: string;
+  /** Work summary while live (null when down or unreachable). */
+  summary?: WorkSummary | null;
+  /** The repo's git state (local agents). */
+  git?: GitState | null;
+  last_exit_code?: number | null;
+  last_exit_at?: number | null;
   /** null for remote agents (their repo lives on another node). */
   repo: string | null;
   channel: string;
@@ -108,11 +114,38 @@ export interface BookmarksInfo {
   bookmarks: Bookmark[];
 }
 
+/** What an agent is doing — accumulated by the node since this process started. */
+export interface WorkSummary {
+  last_ask: string | null;
+  last_ask_at: number | null;
+  last_reply: string | null;
+  turns: number;
+  idle_since: number | null;
+  busy_since: number | null;
+  last_tool: string | null;
+  cost_usd: number | null;
+  context_tokens: number | null;
+  context_window: number | null;
+  files_touched: number;
+  files: string[];
+  tool_calls: number;
+}
+
+/** Repo git state (branch, dirty count, ahead/behind), refreshed by the node. */
+export interface GitState {
+  branch: string | null;
+  dirty: number;
+  ahead: number;
+  behind: number;
+  checked_at: number;
+}
+
 /** A remembered repository (GET /api/repos). */
 export interface Repo {
   path: string;
   /** Address segment + channel name; defaults to the basename, renamable. */
   handle?: string;
+  git?: GitState | null;
   skip_permissions: boolean;
   /** Present on remote (node_repos) rows; local rows use live_agents. */
   live?: number;
@@ -433,11 +466,14 @@ export const api = {
       record?: string;
       urgency?: string;
       q?: string;
+      /** only rows not yet delivered */
+      pending?: boolean;
     },
   ) => {
     const qs = new URLSearchParams({ n: String(n) });
     for (const [k, v] of Object.entries(filters ?? {})) {
-      if (v) qs.set(k, v);
+      if (v === true) qs.set(k, "true");
+      else if (typeof v === "string" && v) qs.set(k, v);
     }
     return request<BusMessage[]>(`/api/bus/log?${qs.toString()}`);
   },

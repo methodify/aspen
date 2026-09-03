@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS agents(
   last_spawned_at REAL,
   title           TEXT,
   extra_args      TEXT,
-  live            INTEGER NOT NULL DEFAULT 0
+  live            INTEGER NOT NULL DEFAULT 0,
+  last_exit_code  INTEGER,
+  last_exit_at    REAL
 );
 CREATE TABLE IF NOT EXISTS repos(
   path             TEXT PRIMARY KEY,
@@ -159,6 +161,9 @@ pub struct AgentRow {
     /// Per-session harness CLI args (a raw string, split at spawn time);
     /// re-applied on revive. Harness defaults live in settings, not here.
     pub extra_args: Option<String>,
+    /// How and when the process last exited (None = never / clean daemon stop).
+    pub last_exit_code: Option<i64>,
+    pub last_exit_at: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -193,6 +198,8 @@ impl BusStore {
             "ALTER TABLE agents ADD COLUMN extra_args TEXT",
             "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE repos ADD COLUMN handle TEXT",
+            "ALTER TABLE agents ADD COLUMN last_exit_code INTEGER",
+            "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 if !e.to_string().contains("duplicate column") {
@@ -383,7 +390,7 @@ impl BusStore {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, repo, channel, session_id, charter, title, extra_args FROM agents ORDER BY name",
+            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at FROM agents ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -395,6 +402,8 @@ impl BusStore {
                     charter: r.get(4)?,
                     title: r.get(5)?,
                     extra_args: r.get(6)?,
+                    last_exit_code: r.get(7)?,
+                    last_exit_at: r.get(8)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -406,6 +415,15 @@ impl BusStore {
     /// NOT when the daemon itself shuts down. So whatever is still marked
     /// live at the next `aspen up` is exactly what was running when the
     /// daemon went away, cleanly or not.
+    pub fn set_agent_exit(&self, name: &str, code: Option<i32>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET last_exit_code=?2, last_exit_at=?3 WHERE name=?1",
+            params![name, code.map(|c| c as i64), now_epoch()],
+        )?;
+        Ok(())
+    }
+
     pub fn set_agent_live(&self, name: &str, live: bool) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -1059,6 +1077,7 @@ impl BusStore {
         thread: Option<&str>,
         record: Option<&str>,
         urgency: Option<&str>,
+        pending_only: bool,
         q: Option<&str>,
         limit: i64,
     ) -> Result<Vec<StoredMessage>> {
@@ -1086,6 +1105,9 @@ impl BusStore {
         }
         if let Some(v) = urgency {
             push(&mut sql, " AND urgency=?", v);
+        }
+        if pending_only {
+            sql.push_str(" AND delivered_at IS NULL");
         }
         if let Some(v) = q {
             push(&mut sql, " AND body LIKE ?", &format!("%{v}%"));

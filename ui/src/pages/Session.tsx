@@ -1473,7 +1473,7 @@ function SessionView({ name }: { name: string }) {
             {reviving ? "resuming…" : `resume @${name}`}
           </button>
           <span className="mono-meta">
-            or from <Link to="/sessions">Sessions</Link> / <Link to="/library">Library</Link>
+            or from <Link to="/">Now</Link> / <Link to="/mesh?view=list">Mesh</Link>
           </span>
         </div>
       )}

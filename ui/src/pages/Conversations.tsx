@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api,
+  type Activity,
   type BusMessage,
   type Channel,
   type ChannelPost,
@@ -67,15 +68,15 @@ export default function Conversations() {
   const repoChannels = channels.filter((c) => c.kind === "repo");
   const customChannels = channels.filter((c) => c.kind === "custom");
 
-  const openChannel = (name: string) => nav(`/conversations/${encodeURIComponent(name)}`);
-  const openTrail = () => nav("/conversations?view=trail");
+  const openChannel = (name: string) => nav(`/flow/${encodeURIComponent(name)}`);
+  const openTrail = () => nav("/flow?view=trail");
   const openDm = (a: string, b: string) =>
-    nav(`/conversations?dm=${encodeURIComponent(a)},${encodeURIComponent(b)}`);
+    nav(`/flow?dm=${encodeURIComponent(a)},${encodeURIComponent(b)}`);
 
   return (
     <>
       <div className="stage-head">
-        <span className="t-display">Conversations</span>
+        <span className="t-display">Flow</span>
         {isTrail && <span className="mono-meta">full trail</span>}
         {dmPair && <span className="mono-meta">@{dmPair[0]} ↔ @{dmPair[1]}</span>}
         {current && <span className="mono-meta">#{current.name}</span>}
@@ -393,6 +394,73 @@ function DmThread({ a, b }: { a: string; b: string }) {
 
 /* ── Full trail — the deep, filterable lookback ─────────────────────── */
 
+/** The bus as flow, not log: who is waiting on whom right now, and what is
+ *  stuck — pending rows whose recipient can't take delivery (down, or on
+ *  an unreachable node). */
+function FlowState() {
+  const nav = useNavigate();
+  const { agents } = useAppData();
+  const activityPoll = usePoll<Activity>(api.activity, 3000);
+  const pendingPoll = usePoll<BusMessage[]>(
+    useMemo(() => () => api.busLog(200, { pending: true }), []),
+    5000,
+  );
+  const waiting = activityPoll.data?.waiting ?? [];
+  const byName = new Map(agents.map((a) => [a.name, a] as const));
+  // Group pending rows by recipient and say why they're stuck.
+  const stuck = useMemo(() => {
+    const groups = new Map<string, { count: number; oldest: number; why: string }>();
+    for (const m of pendingPoll.data ?? []) {
+      if (m.recipient === "operator") continue;
+      const a = byName.get(m.recipient);
+      const why =
+        !a
+          ? "no such agent on record"
+          : a.remote && !a.live
+            ? `on ${a.node}, unreachable or down`
+            : !a.live
+              ? "not running — delivers at next start"
+              : a.turn_state === "busy"
+                ? "mid-turn — delivers at the boundary"
+                : "queued";
+      const g = groups.get(m.recipient) ?? { count: 0, oldest: m.created_at, why };
+      g.count += 1;
+      g.oldest = Math.min(g.oldest, m.created_at);
+      groups.set(m.recipient, g);
+    }
+    return [...groups.entries()].filter(([, g]) => g.why !== "queued" && g.why !== "mid-turn — delivers at the boundary");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPoll.data, agents]);
+
+  if (waiting.length === 0 && stuck.length === 0) return null;
+  return (
+    <div className="flow-state">
+      {waiting.map((w) => (
+        <div key={`w:${w.agent}:${w.on}`} className="flow-row">
+          <span className="chip mono" style={{ color: "var(--sig-normal)" }}>waiting</span>
+          <span className="mono">@{w.agent}</span>
+          <span className="dim">→</span>
+          <span className="mono">@{w.on}</span>
+          <span className="mono-meta">{relTime(w.since)} ago · “{w.snippet}”</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(w.on)}`)}>open @{w.on.split("@")[0]}</button>
+        </div>
+      ))}
+      {stuck.map(([to, g]) => (
+        <div key={`s:${to}`} className="flow-row">
+          <span className="chip mono" style={{ color: "var(--sig-gate)" }}>stuck</span>
+          <span className="mono">{g.count} for @{to}</span>
+          <span className="mono-meta">{g.why} · oldest {relTime(g.oldest)} ago</span>
+          <span style={{ flex: 1 }} />
+          {byName.get(to) && !byName.get(to)!.live && !byName.get(to)!.remote && (
+            <button className="btn sm" onClick={() => void api.revive(to)}>revive</button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TrailView() {
   const [fSender, setFSender] = useState("");
   const [fRecipient, setFRecipient] = useState("");
@@ -431,6 +499,7 @@ function TrailView() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <FlowState />
       <div className="trail-filters">
         <input placeholder="sender" value={fSender} onChange={(e) => setFSender(e.target.value)} />
         <input placeholder="recipient" value={fRecipient} onChange={(e) => setFRecipient(e.target.value)} />
@@ -613,7 +682,7 @@ function RouteDialog({ post, channels, onClose }: { post: ChannelPost; channels:
                   className="btn ghost sm"
                   onClick={() => {
                     onClose();
-                    nav(`/conversations/${encodeURIComponent(c)}`);
+                    nav(`/flow/${encodeURIComponent(c)}`);
                   }}
                 >
                   watch in #{c}

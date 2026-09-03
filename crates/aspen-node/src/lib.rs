@@ -10,6 +10,7 @@
 pub mod addr;
 pub mod delivery;
 pub mod federation;
+pub mod gitstate;
 pub mod mcc;
 pub mod mesh;
 pub mod node;

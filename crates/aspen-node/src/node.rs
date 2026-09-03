@@ -21,6 +21,30 @@ pub enum TurnState {
     Busy,
 }
 
+/// What an agent is doing, for the operator's fleet view — accumulated from
+/// the event stream since this process started (a revive starts fresh).
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct WorkSummary {
+    /// The operator's last ask (snippet) and when.
+    pub last_ask: Option<String>,
+    pub last_ask_at: Option<f64>,
+    /// The runtime's last result text (snippet).
+    pub last_reply: Option<String>,
+    /// Turns completed since spawn.
+    pub turns: u32,
+    /// When the current idle began (None while busy).
+    pub idle_since: Option<f64>,
+    /// Cumulative cost as reported by the runtime's last result.
+    pub cost_usd: Option<f64>,
+    /// Context estimate from the last result's usage (tokens in the last
+    /// request) and the model's window when reported.
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    /// Files this session has edited/written (tool inputs with a path).
+    pub files_touched: std::collections::BTreeSet<String>,
+    pub tool_calls: u32,
+}
+
 pub struct ManagedSession {
     pub name: String,
     pub repo: PathBuf,
@@ -41,6 +65,7 @@ pub struct ManagedSession {
     /// When spawned as a fork: (parent session, fork point). The pump
     /// records lineage once the runtime announces the child's id.
     pub fork_from: Option<(String, Option<String>)>,
+    pub summary: Mutex<WorkSummary>,
 }
 
 impl ManagedSession {
@@ -134,6 +159,39 @@ pub fn normalize_repo(p: &Path) -> PathBuf {
     dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// The work summary as the API/roster carries it (files as a count + a
+/// short list; busy_since/last_tool folded in).
+pub fn summary_json(s: &ManagedSession) -> serde_json::Value {
+    let w = s.summary.lock().unwrap().clone();
+    let (busy_since, last_tool) = s.presence_detail();
+    let files: Vec<&String> = w.files_touched.iter().collect();
+    serde_json::json!({
+        "last_ask": w.last_ask,
+        "last_ask_at": w.last_ask_at,
+        "last_reply": w.last_reply,
+        "turns": w.turns,
+        "idle_since": w.idle_since,
+        "busy_since": busy_since,
+        "last_tool": last_tool,
+        "cost_usd": w.cost_usd,
+        "context_tokens": w.context_tokens,
+        "context_window": w.context_window,
+        "files_touched": files.len(),
+        "files": files.iter().rev().take(8).collect::<Vec<_>>(),
+        "tool_calls": w.tool_calls,
+    })
+}
+
+/// First line-ish of a text, trimmed to `n` chars, for cards.
+fn snippet(text: &str, n: usize) -> String {
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= n {
+        one
+    } else {
+        format!("{}…", one.chars().take(n).collect::<String>())
+    }
+}
+
 /// The default handle for a repo: its directory basename. The store
 /// assigns the real handle (suffixed on collision) — see
 /// `BusStore::ensure_handle`; this is only the seed.
@@ -160,6 +218,7 @@ impl Node {
         if node.inner.mesh().is_some() {
             crate::federation::ensure_dialers(node.inner.clone());
         }
+        crate::gitstate::spawn_refresher(node.inner.clone(), 10);
         Ok(node)
     }
 
@@ -352,6 +411,10 @@ impl Node {
             } else {
                 None
             },
+            summary: Mutex::new(WorkSummary {
+                idle_since: Some(crate::store::now_epoch()),
+                ..Default::default()
+            }),
         });
         self.inner
             .sessions
@@ -376,6 +439,12 @@ impl Node {
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         delivery::flush_notices(&self.inner, &sess).await;
+        {
+            let mut s = sess.summary.lock().unwrap();
+            s.last_ask = Some(snippet(&text, 160));
+            s.last_ask_at = Some(crate::store::now_epoch());
+            s.idle_since = None;
+        }
         sess.mark_busy();
         sess.handle.send_user(text).await
     }
@@ -767,10 +836,45 @@ async fn pump(
 ) {
     while let Some(ev) = rx.recv().await {
         match &ev {
-            SessionEvent::TurnEnded { .. } => {
+            SessionEvent::TurnEnded {
+                total_cost_usd,
+                result_text,
+                raw,
+                ..
+            } => {
                 *sess.turn_state.lock().unwrap() = TurnState::Idle;
                 *sess.busy_since.lock().unwrap() = None;
                 *sess.last_tool.lock().unwrap() = None;
+                {
+                    let mut s = sess.summary.lock().unwrap();
+                    s.turns += 1;
+                    s.idle_since = Some(crate::store::now_epoch());
+                    if total_cost_usd.is_some() {
+                        s.cost_usd = *total_cost_usd;
+                    }
+                    if let Some(txt) = result_text.as_deref().filter(|x| !x.trim().is_empty()) {
+                        s.last_reply = Some(snippet(txt, 200));
+                    }
+                    // Context estimate: tokens in the last request.
+                    if let Some(u) = raw.get("usage") {
+                        let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                        let total = n("input_tokens")
+                            + n("cache_read_input_tokens")
+                            + n("cache_creation_input_tokens");
+                        if total > 0 {
+                            s.context_tokens = Some(total);
+                        }
+                    }
+                    if let Some(mu) = raw.get("modelUsage").and_then(|m| m.as_object()) {
+                        if let Some(w) = mu
+                            .values()
+                            .filter_map(|v| v.get("contextWindow").and_then(|c| c.as_u64()))
+                            .max()
+                        {
+                            s.context_window = Some(w);
+                        }
+                    }
+                }
                 // A boundary is a delivery opportunity for anything that
                 // arrived for us while nothing could be written.
                 inner.tick_delivery(&sess.name);
@@ -778,7 +882,23 @@ async fn pump(
             SessionEvent::TextDelta { .. } => {
                 sess.mark_busy();
             }
-            SessionEvent::ToolUse { tool_name, .. } => {
+            SessionEvent::ToolUse {
+                tool_name, input, ..
+            } => {
+                {
+                    let mut s = sess.summary.lock().unwrap();
+                    s.tool_calls += 1;
+                    for k in ["file_path", "notebook_path", "path"] {
+                        if let Some(p) = input.get(k).and_then(|v| v.as_str()) {
+                            if matches!(
+                                tool_name.as_str(),
+                                "Edit" | "Write" | "MultiEdit" | "NotebookEdit"
+                            ) {
+                                s.files_touched.insert(p.to_owned());
+                            }
+                        }
+                    }
+                }
                 sess.mark_busy();
                 *sess.last_tool.lock().unwrap() = Some(tool_name.clone());
             }
@@ -810,8 +930,9 @@ async fn pump(
                     }
                 }
             }
-            SessionEvent::Exited { .. } => {
+            SessionEvent::Exited { code } => {
                 inner.sessions.lock().unwrap().remove(&sess.name);
+                let _ = inner.store.set_agent_exit(&sess.name, *code);
                 if !inner
                     .shutting_down
                     .load(std::sync::atomic::Ordering::SeqCst)

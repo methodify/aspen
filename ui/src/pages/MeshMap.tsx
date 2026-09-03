@@ -5,7 +5,7 @@
 // "conversations across repos/nodes" made visible. Everything is polled every
 // 2s; color comes only from the Switchboard tokens.
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Activity, ActivitySession, Channel, MeshInfo, WaitingEdge } from "../api";
@@ -311,7 +311,7 @@ function waitGeom(from: Pt, to: Pt): {
   return { d: `M ${a.x} ${a.y} Q ${c.x} ${c.y} ${b.x} ${b.y}`, label, head };
 }
 
-export default function MeshMap() {
+export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
   const nav = useNavigate();
   const activityPoll = usePoll<Activity>(api.activity, 2000);
   const channelsPoll = usePoll<Channel[]>(api.channels, 2000);
@@ -380,7 +380,8 @@ export default function MeshMap() {
     <>
       <style>{MAP_CSS}</style>
       <div className="stage-head">
-        <span className="t-display">Mesh Map</span>
+        <span className="t-display">Mesh</span>
+        {toggle}
         <span className="mono-meta">
           {nodeCount} {nodeCount === 1 ? "node" : "nodes"} · {sessions.length}{" "}
           {sessions.length === 1 ? "session" : "sessions"} · {customCount} custom{" "}
@@ -425,7 +426,7 @@ export default function MeshMap() {
             setDialogOpen(false);
             setSelected(new Set());
             setConnectMode(false);
-            nav(`/conversations/${encodeURIComponent(name)}`);
+            nav(`/flow/${encodeURIComponent(name)}`);
           }}
         />
       )}
@@ -590,7 +591,7 @@ export default function MeshMap() {
                     className="mm-edge"
                     role="link"
                     style={{ cursor: "pointer" }}
-                    onClick={() => nav(`/conversations/${encodeURIComponent(e.channel)}`)}
+                    onClick={() => nav(`/flow/${encodeURIComponent(e.channel)}`)}
                   >
                     <title>{`#${e.channel} — open in Conversations`}</title>
                     {e.spokes.map((sp, j) => (

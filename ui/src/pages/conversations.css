@@ -91,3 +91,8 @@
   word-break: break-word;
   text-overflow: clip;
 }
+
+/* Flow state: waiting edges + stuck mail, above the trail. */
+.flow-state { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.flow-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 0.82rem; }
+.flow-row .dim { color: var(--text-dim); }

@@ -4,7 +4,7 @@
 // skills + commands; saves reload live sessions). Reskin + merge of the old
 // Repos and Skills pages — same endpoints, same flows, no native prompts.
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError, type MeshRepoNode, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
@@ -24,7 +24,6 @@ function slugify(title: string | null): string {
   return base || "session";
 }
 
-type Section = "repos" | "skills";
 
 const REPO_STORAGE_KEY = "aspen.skills.repo";
 
@@ -334,6 +333,7 @@ function RepoStrip({
   const [forgetting, setForgetting] = useState(false);
   const [namingNew, setNamingNew] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [handleDraft, setHandleDraft] = useState(repo.handle ?? "");
   const [renameBusy, setRenameBusy] = useState(false);
 
@@ -492,6 +492,17 @@ function RepoStrip({
             new session
           </button>
         )}
+        {!node && (
+          <button
+            type="button"
+            className="btn ghost sm"
+            aria-expanded={skillsOpen}
+            onClick={() => setSkillsOpen((v) => !v)}
+            title="this repo's skills and commands (.claude/*.md); saves reload live sessions"
+          >
+            skills {skillsOpen ? "▴" : "▾"}
+          </button>
+        )}
         {!confirmForget ? (
             <button
               type="button"
@@ -532,6 +543,12 @@ function RepoStrip({
           }}
           onCancel={() => setNamingNew(false)}
         />
+      )}
+
+      {skillsOpen && (
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <SkillsSection repos={[repo]} />
+        </div>
       )}
 
       {confirmForget && (
@@ -1261,42 +1278,19 @@ function SkillsSection({ repos }: { repos: Repo[] }) {
 
 // ── Library shell ──────────────────────────────────────────────────────────
 
-export default function Library() {
+/** The Mesh's list view: repos by node, editable in place; skills open
+ *  as a drawer on a repo. (The map is the same data, drawn.) */
+export default function MeshList({ toggle }: { toggle: ReactNode }) {
   const reposPoll = usePoll(api.repos, 15000);
   const meshPoll = usePoll(api.meshRepos, 15000);
   const repos = reposPoll.data ?? [];
   const nodeCount = meshPoll.data?.nodes.length ?? 1;
-  const [section, setSection] = useState<Section>("repos");
-
-  const tabs: { id: Section; label: string }[] = [
-    { id: "repos", label: "Repositories" },
-    { id: "skills", label: "Skills" },
-  ];
 
   return (
     <>
       <div className="stage-head">
-        <span className="t-display">Library</span>
-        <div className="class-select" role="tablist" aria-label="library section">
-          {tabs.map((t) => {
-            const active = section === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setSection(t.id)}
-                style={{
-                  background: active ? "var(--bg-strip-2)" : "var(--bg-well)",
-                  color: active ? "var(--text-hi)" : "var(--text-dim)",
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
+        <span className="t-display">Mesh</span>
+        {toggle}
         <span style={{ flex: 1 }} />
         <span className="mono-meta">
           {repos.length} local repo{repos.length === 1 ? "" : "s"}
@@ -1304,11 +1298,7 @@ export default function Library() {
         </span>
       </div>
       <div className="stage-body">
-        {section === "repos" ? (
-          <RepositoriesSection reposPoll={reposPoll} meshPoll={meshPoll} />
-        ) : (
-          <SkillsSection repos={repos} />
-        )}
+        <RepositoriesSection reposPoll={reposPoll} meshPoll={meshPoll} />
       </div>
     </>
   );
