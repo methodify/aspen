@@ -14,6 +14,7 @@ pub mod gitstate;
 pub mod mcc;
 pub mod mesh;
 pub mod node;
+pub mod pending;
 pub mod permit;
 pub mod settings;
 pub mod skills;

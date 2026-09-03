@@ -65,6 +65,45 @@ pub struct MeshState {
     pub remote_subs: Mutex<HashMap<String, (String, mpsc::UnboundedSender<Value>)>>,
     /// Epoch seconds when the relay session came up; None when down/unused.
     pub relay_connected_at: Mutex<Option<f64>>,
+    /// Per-peer diagnostics for the console: why isn't X linked?
+    pub health: Mutex<HashMap<String, PeerHealth>>,
+}
+
+/// What we know about a peer's link, for humans.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PeerHealth {
+    pub last_error: Option<String>,
+    pub last_error_at: Option<f64>,
+    pub last_up: Option<f64>,
+    pub last_down: Option<f64>,
+    pub last_roster: Option<f64>,
+    /// The peer's daemon version/sha, from its roster.
+    pub version: Option<String>,
+    pub sha: Option<String>,
+    /// Fingerprint of the cert the peer presented (short hash of its key).
+    pub fingerprint: Option<String>,
+}
+
+/// The daemon's own version stamp, set by the binary at startup (the node
+/// crate can't see the bin crate's version).
+pub static VERSION: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+/// Short, human fingerprint of a public key: first 8 hex of its sha256.
+pub fn fingerprint(key: &[u8]) -> String {
+    use sha2::Digest as _;
+    let h = sha2::Sha256::digest(key);
+    h.iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+impl MeshState {
+    pub fn note(&self, peer: &str, f: impl FnOnce(&mut PeerHealth)) {
+        let mut h = self.health.lock().unwrap();
+        f(h.entry(peer.to_owned()).or_default());
+    }
 }
 
 impl MeshState {
@@ -81,6 +120,7 @@ impl MeshState {
             served_subs: Mutex::new(HashMap::new()),
             remote_subs: Mutex::new(HashMap::new()),
             relay_connected_at: Mutex::new(None),
+            health: Mutex::new(HashMap::new()),
         }
     }
 
@@ -226,7 +266,8 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
             })
         })
         .collect();
-    json!({ "t": "roster", "agents": list })
+    let (version, sha) = VERSION.get().cloned().unwrap_or_default();
+    json!({ "t": "roster", "agents": list, "version": version, "sha": sha })
 }
 
 /// Push the current roster to every connected peer (spawns/exits/timer).
@@ -303,7 +344,19 @@ pub async fn run_link(
         .ok_or_else(|| anyhow!("link closed before peer hello"))?;
     let peer_hello: Hello = serde_json::from_str(&first)?;
     let peer_cert = peer_hello.hello;
-    peer_cert.verify_against(&mesh.root_public())?;
+    if let Err(e) = peer_cert.verify_against(&mesh.root_public()) {
+        mesh.note(&peer_cert.node, |h| {
+            h.last_error = Some(format!(
+                "cert from '{}' does not verify against this mesh's root: {e}",
+                peer_cert.node
+            ));
+            h.last_error_at = Some(crate::store::now_epoch());
+        });
+        return Err(e);
+    }
+    mesh.note(&peer_cert.node, |h| {
+        h.fingerprint = Some(fingerprint(&peer_cert.ed_public));
+    });
     if peer_cert.node == mesh.identity.node {
         bail!("peer presented this node's own name");
     }
@@ -345,6 +398,11 @@ pub async fn run_link(
         .unwrap()
         .insert(peer.clone(), out_tx.clone());
     tracing::info!(peer = %peer, "federation link up");
+    mesh.note(&peer, |h| {
+        h.last_up = Some(crate::store::now_epoch());
+        h.last_error = None;
+        h.last_error_at = None;
+    });
     let _ = mesh.send_to(&peer, &roster_payload(&inner));
     // Anything pending for agents homed there can move now.
     let homed: Vec<String> = mesh
@@ -375,6 +433,7 @@ pub async fn run_link(
         .unwrap()
         .retain(|_, (served_by, _)| served_by != &peer);
     tracing::info!(peer = %peer, "federation link down");
+    mesh.note(&peer, |h| h.last_down = Some(crate::store::now_epoch()));
     result
 }
 
@@ -460,6 +519,25 @@ async fn link_loop(
                     .unwrap_or_default();
                 let names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
                 mesh.remote.lock().unwrap().insert(peer.to_owned(), agents);
+                {
+                    let v = payload
+                        .get("version")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_owned);
+                    let s = payload
+                        .get("sha")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_owned);
+                    mesh.note(peer, |h| {
+                        h.last_roster = Some(crate::store::now_epoch());
+                        if v.is_some() {
+                            h.version = v;
+                        }
+                        if s.is_some() {
+                            h.sha = s;
+                        }
+                    });
+                }
                 // Channel members from before scoped names (`main@node`)
                 // can only be resolved once we see that node's roster.
                 let _ = inner.store.heal_legacy_remote_members(peer, &names);
@@ -1029,6 +1107,12 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
                         }
                         Err(e) => {
                             tracing::debug!(peer = %name, error = %e, "dial failed");
+                            if let Some(m) = inner.mesh() {
+                                m.note(&name, |h| {
+                                    h.last_error = Some(format!("dial {url} failed: {e}"));
+                                    h.last_error_at = Some(crate::store::now_epoch());
+                                });
+                            }
                         }
                     }
                 }

@@ -12,6 +12,7 @@ import type { Activity, ActivitySession, Channel, Link, MeshInfo, WaitingEdge } 
 import { usePoll } from "../hooks";
 import { Empty, presenceOf, relTime } from "../components";
 import { Modal, NewChannelDialog } from "../channels";
+import { MeshPanel } from "../meshPanel";
 import type { Presence } from "../components";
 
 // ── Layout constants (SVG user units) ─────────────────────────────────────
@@ -569,76 +570,7 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
       )}
 
       <div className="stage-body">
-        {mesh && (
-          <div
-            className="strip"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 10,
-              marginBottom: "var(--sp-4)",
-              padding: "8px 14px",
-            }}
-          >
-            {mesh.in_mesh ? (
-              <>
-                <span className="label">Mesh</span>
-                <span className="mono" style={{ color: "var(--text-hi)" }}>
-                  mesh {mesh.mesh} · node {mesh.node}
-                </span>
-                {(mesh.peers ?? []).map((p) => (
-                  <span
-                    key={p.node}
-                    className="chip"
-                    title={p.url ?? undefined}
-                    style={{ gap: 6 }}
-                  >
-                    <span
-                      aria-hidden
-                      style={{
-                        width: 7,
-                        height: 7,
-                        borderRadius: "50%",
-                        display: "inline-block",
-                        background: p.link_up ? "var(--live)" : "var(--offline)",
-                        boxShadow: p.link_up ? "0 0 5px var(--live)" : "none",
-                      }}
-                    />
-                    {p.node}
-                    <span style={{ color: p.link_up ? "var(--text-dim)" : "var(--offline)" }}>
-                      {p.link_up ? "linked" : "unreachable"} · {p.agents}{" "}
-                      {p.agents === 1 ? "agent" : "agents"}
-                    </span>
-                  </span>
-                ))}
-                {mesh.relay?.url && (
-                  <span
-                    className="chip"
-                    title={mesh.relay.url}
-                    style={{
-                      color:
-                        mesh.relay.connected_at != null ? "var(--live)" : "var(--sig-gate)",
-                      borderColor:
-                        mesh.relay.connected_at != null ? "var(--live)" : "var(--sig-gate)",
-                    }}
-                  >
-                    {mesh.relay.connected_at != null
-                      ? `relay · connected ${relTime(mesh.relay.connected_at)}`
-                      : "relay · down"}
-                  </span>
-                )}
-              </>
-            ) : (
-              <>
-                <span style={{ color: "var(--text-mid)", fontSize: "0.8125rem" }}>
-                  standalone node {mesh.node} — not joined to a mesh
-                </span>
-                <span className="mono-meta">aspen mesh init | join</span>
-              </>
-            )}
-          </div>
-        )}
+        <MeshPanel />
         {sessions.length === 0 ? (
           <Empty mark="◈">No sessions in the mesh yet.</Empty>
         ) : (

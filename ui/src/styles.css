@@ -543,3 +543,16 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Mesh membership + ceremony panel ─────────────────────────────── */
+.mesh-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.mesh-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mesh-head code, .mesh-section code { font: 500 0.78rem/1 var(--font-mono); background: var(--bg-well); padding: 1px 5px; border: 1px solid var(--line); }
+.mesh-body { display: flex; flex-direction: column; gap: 14px; }
+.mesh-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.mesh-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mesh-peer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 0; font-size: 0.82rem; }
+.mesh-inspect { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: var(--bg-well); border: 1px solid var(--line); }
+.mesh-queue { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.mesh-outcome { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.mesh-panel textarea { resize: vertical; }

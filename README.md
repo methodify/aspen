@@ -179,7 +179,12 @@ aspen mesh join aspen:bundle:…           # installs the cert, registers A as
                                          # a peer, dials it — link comes up
 ```
 
-Omit `--url` if A will dial B instead (then `aspen mesh peers-add … --url`
+The console can drive this too, without ever holding the keys: the Mesh
+page shows membership and link health, inspects pasted blobs (with a
+duplicate-name warning before anything runs), and **queues** each step;
+`aspen mesh apply` in a shell reviews and executes the queue, and the
+resulting blob shows up in the console with a **deep link** you open on
+the other node's console to prefill the next step. Omit `--url` if A will dial B instead (then `aspen mesh peers-add … --url`
 on A). Names must be distinct per node — the hostname default collides on a
 Windows+WSL box, so name them (`anindor`, `anindor-win`). For peers with no
 direct path, a rendezvous relay:

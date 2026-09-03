@@ -155,6 +155,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "shell-words",
  "tokio",
  "tokio-tungstenite 0.27.0",

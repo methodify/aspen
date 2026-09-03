@@ -13,6 +13,7 @@ use aspen_core::SessionEvent;
 use aspen_node::{Node, SpawnOpts};
 
 mod api;
+mod meshops;
 mod status;
 mod update;
 
@@ -160,6 +161,14 @@ enum MeshCommand {
     /// Tell the running daemon to re-read mesh files (done automatically
     /// after every mesh command; use this if the daemon was down then).
     Reload,
+    /// Execute the mesh changes the console queued (mesh-pending.json),
+    /// reviewing each one. This is the shell-side half of the ceremony:
+    /// the console authors, a shell with the keys applies.
+    Apply {
+        /// Apply everything without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// Print this node's cert blob (give it to peers via `peers add`).
     Export,
     /// Register a peer's cert blob, optionally with a dial URL.
@@ -248,6 +257,10 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    let _ = aspen_node::federation::VERSION.set((
+        env!("CARGO_PKG_VERSION").to_owned(),
+        env!("ASPEN_GIT_SHA").to_owned(),
+    ));
     let cli = Cli::parse();
     match cli.command {
         Command::Up {
@@ -838,9 +851,24 @@ fn notify_daemon_reload(data_dir: &std::path::Path) -> bool {
     }
 }
 
+fn relative(epoch: f64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(epoch);
+    let s = (now - epoch).max(0.0) as u64;
+    if s < 60 {
+        format!("{s}s ago")
+    } else if s < 3600 {
+        format!("{}m ago", s / 60)
+    } else {
+        format!("{}h ago", s / 3600)
+    }
+}
+
 fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
     use aspen_node::mesh::{MeshConfig, MeshFiles};
-    use aspen_wire::identity::{self, JoinRequest, MeshRoot, NodeCert, NodeIdentity};
+    use aspen_wire::identity::{self, MeshRoot, NodeIdentity};
 
     let files = MeshFiles::new(data_dir);
     let default_node = || {
@@ -890,122 +918,22 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
         }
         MeshCommand::Enroll { node } => {
             let node_name = node.unwrap_or_else(default_node);
-            let id = match files.load_identity()? {
-                Some(existing) if existing.cert.is_some() => {
-                    anyhow::bail!("this node already has a certified identity")
-                }
-                Some(existing) => existing,
-                None => {
-                    let id = NodeIdentity::create(&node_name);
-                    files.save_identity(&id)?;
-                    id
-                }
-            };
-            println!("enroll blob for '{}' — run `aspen mesh certify <blob>` where the root key lives:\n{}",
-                id.node, identity::to_blob("enroll", &id.join_request())?);
+            let d = meshops::enroll(&files, &node_name)?;
+            println!("{}:\n{}", d.summary, d.artifact.unwrap_or_default());
             Ok(())
         }
         MeshCommand::Certify { blob, url } => {
-            let root = files.load_root()?.ok_or_else(|| {
-                anyhow::anyhow!("no root key here — run this on the mesh's root node")
-            })?;
-            let req: JoinRequest = identity::from_blob("enroll", &blob)?;
-            // Names route the mesh; a duplicate would make two nodes
-            // indistinguishable. The classic trap: hostname-default names
-            // on the Windows and WSL sides of one machine.
-            if files.load_identity()?.is_some_and(|id| id.node == req.node) {
-                anyhow::bail!(
-                    "'{}' is THIS node's name — re-enroll the other node with a distinct one: aspen mesh enroll --node <name>",
-                    req.node
-                );
-            }
-            if files
-                .verified_peers()?
-                .iter()
-                .any(|p| p.cert.node == req.node)
-            {
-                anyhow::bail!(
-                    "a peer named '{}' already exists in this mesh — re-enroll with a distinct name: aspen mesh enroll --node <name>",
-                    req.node
-                );
-            }
-            let cert = root.certify(&req)?;
-            files.add_peer(cert.clone(), None).ok(); // register them here too
-            let me = files
-                .load_identity()?
-                .and_then(|id| id.cert)
-                .ok_or_else(|| anyhow::anyhow!("this node has no cert of its own"))?;
-            let relay = files.load_mesh()?.and_then(|m| m.relay);
-            let bundle = aspen_node::mesh::JoinBundle {
-                cert: cert.clone(),
-                certifier: me,
-                certifier_url: url.clone(),
-                relay,
-            };
-            println!(
-                "join bundle for '{}' — run `aspen mesh join <blob>` on that node:\n{}",
-                cert.node,
-                identity::to_blob("bundle", &bundle)?
-            );
-            println!(
-                "\n(peer '{}' is registered here as inbound-only; the bundle carries this node's cert{}{} so `join` wires the link.)",
-                cert.node,
-                if url.is_some() {
-                    " + dial URL"
-                } else {
-                    " (no dial URL — pass --url if the joiner should dial this node)"
-                },
-                if bundle.relay.is_some() { " + relay" } else { "" },
-            );
+            let d = meshops::certify(&files, &blob, url.as_deref())?;
+            println!("{}\n\n{}", d.summary, d.artifact.unwrap_or_default());
             notify_daemon_reload(data_dir);
             Ok(())
         }
         MeshCommand::Join { blob } => {
-            // A join bundle (from `certify`) or a bare cert blob (legacy).
-            let bundle: Option<aspen_node::mesh::JoinBundle> =
-                identity::from_blob("bundle", &blob).ok();
-            let cert: NodeCert = match &bundle {
-                Some(b) => b.cert.clone(),
-                None => identity::from_blob("cert", &blob)?,
-            };
-            let mut id = files.load_identity()?.ok_or_else(|| {
-                anyhow::anyhow!("no identity here — run `aspen mesh enroll` first")
-            })?;
-            id.install_cert(cert.clone())?;
-            files.save_identity(&id)?;
-            if files.load_mesh()?.is_none() {
-                // First join: trust the root key this cert carries (verified
-                // against itself at install; the operator carried the blob).
-                files.save_mesh(&MeshConfig {
-                    mesh: cert.mesh.clone(),
-                    root_public: cert.root_public.clone(),
-                    peers: vec![],
-                    relay: None,
-                })?;
-            }
-            println!("joined mesh '{}' as node '{}'.", cert.mesh, cert.node);
-            if let Some(b) = bundle {
-                // Wire the certifier as a peer straight from the bundle.
-                files.add_peer(b.certifier.clone(), b.certifier_url.clone())?;
-                println!(
-                    "peer '{}' registered{}",
-                    b.certifier.node,
-                    match &b.certifier_url {
-                        Some(u) => format!(" — dialing {u}"),
-                        None => " — inbound only (it dials us, or a relay carries it)".into(),
-                    }
-                );
-                if let Some(relay) = b.relay {
-                    let mut m = files.load_mesh()?.expect("saved above");
-                    if m.relay.is_none() {
-                        m.relay = Some(relay.clone());
-                        files.save_mesh(&m)?;
-                        println!("relay set from bundle: {relay}");
-                    }
-                }
-            } else {
-                println!("(bare cert: add peers with `aspen mesh peers-add`; `aspen mesh export` prints this node's cert)");
-            }
+            let d = meshops::join(&files, &blob)?;
+            println!("{}", d.summary);
+            println!(
+                "(this node's cert blob is saved — print it any time with `aspen mesh export`)"
+            );
             notify_daemon_reload(data_dir);
             Ok(())
         }
@@ -1026,22 +954,8 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             Ok(())
         }
         MeshCommand::PeersAdd { blob, url } => {
-            let cert: NodeCert = identity::from_blob("cert", &blob)?;
-            if files
-                .load_identity()?
-                .is_some_and(|id| id.node == cert.node)
-            {
-                anyhow::bail!(
-                    "that cert names '{}' — this node's own name. Two nodes can't share a name; re-enroll the other node as something else.",
-                    cert.node
-                );
-            }
-            files.add_peer(cert.clone(), url.clone())?;
-            println!(
-                "peer '{}' registered{}",
-                cert.node,
-                url.map(|u| format!(" (dialing {u})")).unwrap_or_default()
-            );
+            let d = meshops::peers_add(&files, &blob, url.as_deref())?;
+            println!("{}", d.summary);
             notify_daemon_reload(data_dir);
             Ok(())
         }
@@ -1053,16 +967,111 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             Ok(())
         }
         MeshCommand::Relay { url } => {
-            let mut mesh = files
-                .load_mesh()?
-                .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
-            mesh.relay = url.clone();
-            files.save_mesh(&mesh)?;
-            match url {
-                Some(u) => println!("relay set: {u}"),
-                None => println!("relay cleared (takes effect at next daemon start)"),
-            }
+            let d = meshops::relay(&files, url.as_deref())?;
+            println!("{}", d.summary);
             notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        MeshCommand::Apply { yes } => {
+            use aspen_node::pending;
+            let q = pending::load(data_dir);
+            if q.proposals.is_empty() {
+                println!(
+                    "nothing queued (the console queues mesh changes here; see the Mesh page)."
+                );
+                return Ok(());
+            }
+            println!(
+                "{} queued mesh change(s) from the console:",
+                q.proposals.len()
+            );
+            let mut any = false;
+            for p in &q.proposals {
+                let g = |k: &str| p.args.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+                let describe = match p.kind.as_str() {
+                    "enroll" => format!(
+                        "enroll this node as '{}'",
+                        g("node").unwrap_or_else(&default_node)
+                    ),
+                    "certify" => format!(
+                        "certify the enroll blob ({}…){}",
+                        g("blob")
+                            .map(|b| b.chars().take(24).collect::<String>())
+                            .unwrap_or_default(),
+                        g("url")
+                            .map(|u| format!(" with dial URL {u}"))
+                            .unwrap_or_default()
+                    ),
+                    "join" => format!(
+                        "join with the bundle ({}…)",
+                        g("blob")
+                            .map(|b| b.chars().take(24).collect::<String>())
+                            .unwrap_or_default()
+                    ),
+                    "peers_add" => format!(
+                        "register a peer{}",
+                        g("url")
+                            .map(|u| format!(" dialing {u}"))
+                            .unwrap_or_default()
+                    ),
+                    "relay" => format!(
+                        "set relay to {}",
+                        g("url").unwrap_or_else(|| "(cleared)".into())
+                    ),
+                    other => format!("unknown kind {other}"),
+                };
+                println!(
+                    "\n  [{}] {} — queued {}",
+                    p.id,
+                    describe,
+                    relative(p.created_at)
+                );
+                if !yes {
+                    print!("  apply? [y/N] ");
+                    std::io::stdout().flush().ok();
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).ok();
+                    if !matches!(line.trim(), "y" | "Y" | "yes") {
+                        println!(
+                            "  skipped (still queued; withdraw it in the console or apply later)"
+                        );
+                        continue;
+                    }
+                }
+                let result = match p.kind.as_str() {
+                    "enroll" => meshops::enroll(&files, &g("node").unwrap_or_else(&default_node)),
+                    "certify" => meshops::certify(
+                        &files,
+                        &g("blob").unwrap_or_default(),
+                        g("url").as_deref(),
+                    ),
+                    "join" => meshops::join(&files, &g("blob").unwrap_or_default()),
+                    "peers_add" => meshops::peers_add(
+                        &files,
+                        &g("blob").unwrap_or_default(),
+                        g("url").as_deref(),
+                    ),
+                    "relay" => meshops::relay(&files, g("url").as_deref()),
+                    other => Err(anyhow::anyhow!("unknown proposal kind {other}")),
+                };
+                match result {
+                    Ok(d) => {
+                        println!("  ✓ {}", d.summary);
+                        if let Some(a) = &d.artifact {
+                            println!("  artifact (also shown in the console):\n  {a}");
+                        }
+                        pending::settle(data_dir, &p.id, true, d.summary, d.artifact)?;
+                        any = true;
+                    }
+                    Err(e) => {
+                        println!("  ✗ {e:#}");
+                        pending::settle(data_dir, &p.id, false, format!("{e:#}"), None)?;
+                    }
+                }
+            }
+            if any {
+                notify_daemon_reload(data_dir);
+            }
             Ok(())
         }
         MeshCommand::Status => {

@@ -115,6 +115,12 @@ pub async fn serve(
         .route("/repos/rename", post(post_repo_rename))
         .route("/mesh/repos", get(get_mesh_repos))
         .route("/mesh/reload", post(post_mesh_reload))
+        .route("/mesh/inspect", post(post_mesh_inspect))
+        .route(
+            "/mesh/pending",
+            get(get_mesh_pending).post(post_mesh_pending),
+        )
+        .route("/mesh/pending/{id}", delete(delete_mesh_pending))
         .route("/history", get(get_history))
         .route("/links", get(get_links).post(post_link))
         .route("/links/{id}", delete(delete_link))
@@ -1356,38 +1362,222 @@ async fn get_post_receipts(State(s): S, Path(post): Path<String>) -> impl IntoRe
 
 /// Mesh legibility: identity, peers with live link state, relay health.
 async fn get_mesh(State(s): S) -> impl IntoResponse {
+    let data_dir = s.node.inner.data_dir.clone();
+    let pending = data_dir
+        .as_deref()
+        .map(aspen_node::pending::load)
+        .unwrap_or_default();
     let Some(mesh) = s.node.inner.mesh() else {
-        return Json(json!({ "in_mesh": false, "node": s.node_name })).into_response();
+        // Not in a mesh — but the files may say otherwise (enrolled, not
+        // joined), and the console can still author the ceremony.
+        let files = data_dir.as_deref().map(aspen_node::mesh::MeshFiles::new);
+        let identity = files
+            .as_ref()
+            .and_then(|f| f.load_identity().ok().flatten());
+        return Json(json!({
+            "in_mesh": false,
+            "node": s.node_name,
+            "identity": identity.map(|id| json!({
+                "node": id.node,
+                "fingerprint": aspen_node::federation::fingerprint(&id.ed_public),
+                "certified": id.cert.is_some(),
+                "enroll_blob": aspen_wire::identity::to_blob("enroll", &id.join_request()).ok(),
+            })),
+            "pending": pending,
+        }))
+        .into_response();
     };
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
+    let health = mesh.health.lock().unwrap();
     let peers: Vec<Value> = mesh
         .peers()
         .iter()
         .map(|p| {
             let name = &p.cert.node;
+            let h = health.get(name).cloned().unwrap_or_default();
             json!({
                 "node": name,
                 "url": p.url,
                 "link_up": links.contains_key(name),
                 "agents": remote.get(name).map(|v| v.len()).unwrap_or(0),
+                "fingerprint": aspen_node::federation::fingerprint(&p.cert.ed_public),
+                "health": h,
             })
         })
         .collect();
+    let (version, sha) = aspen_node::federation::VERSION
+        .get()
+        .cloned()
+        .unwrap_or_default();
+    let cert_blob = mesh
+        .identity
+        .cert
+        .as_ref()
+        .and_then(|c| aspen_wire::identity::to_blob("cert", c).ok());
+    let has_root = data_dir
+        .as_deref()
+        .map(aspen_node::mesh::MeshFiles::new)
+        .and_then(|f| f.load_root().ok().flatten())
+        .is_some();
     Json(json!({
         "in_mesh": true,
         "mesh": mesh.mesh_name(),
         "node": mesh.identity.node,
+        "identity": {
+            "node": mesh.identity.node,
+            "fingerprint": aspen_node::federation::fingerprint(&mesh.identity.ed_public),
+            "certified": true,
+            "cert_blob": cert_blob,
+            "version": version,
+            "sha": sha,
+            "has_root": has_root,
+        },
+        "root_public": aspen_wire::b64::encode(&mesh.root_public()),
         "peers": peers,
         "relay": {
             "url": mesh.relay_url(),
             "connected_at": *mesh.relay_connected_at.lock().unwrap(),
         },
+        "pending": pending,
     }))
     .into_response()
 }
 
-// -------------------------------------------------------------- trust gate
+// ---------------------------------------------------------- mesh ceremony
+
+#[derive(Deserialize)]
+struct InspectBody {
+    blob: String,
+}
+
+/// Read-only: parse an enroll / cert / bundle blob and say what it is and
+/// what accepting it would do here, with warnings (duplicate names…).
+async fn post_mesh_inspect(State(s): S, Json(b): Json<InspectBody>) -> impl IntoResponse {
+    use aspen_node::mesh::JoinBundle;
+    use aspen_wire::identity::{self, JoinRequest, NodeCert};
+    let blob = b.blob.trim();
+    let files = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .map(aspen_node::mesh::MeshFiles::new);
+    let my_name = files
+        .as_ref()
+        .and_then(|f| f.load_identity().ok().flatten())
+        .map(|id| id.node);
+    let peer_names: Vec<String> = files
+        .as_ref()
+        .and_then(|f| f.verified_peers().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.cert.node)
+        .collect();
+    let mut warnings: Vec<String> = Vec::new();
+    let dup = |name: &str, warnings: &mut Vec<String>| {
+        if my_name.as_deref() == Some(name) {
+            warnings.push(format!(
+                "'{name}' is THIS node's name — re-enroll the other node with a distinct name"
+            ));
+        } else if peer_names.iter().any(|p| p == name) {
+            warnings.push(format!("a peer named '{name}' already exists in this mesh"));
+        }
+    };
+    if let Ok(req) = identity::from_blob::<JoinRequest>("enroll", blob) {
+        dup(&req.node, &mut warnings);
+        return Json(json!({
+            "kind": "enroll", "node": req.node,
+            "fingerprint": aspen_node::federation::fingerprint(&req.ed_public),
+            "warnings": warnings,
+            "next": "certify here (needs the root key on this node)",
+        }))
+        .into_response();
+    }
+    if let Ok(bun) = identity::from_blob::<JoinBundle>("bundle", blob) {
+        return Json(json!({
+            "kind": "bundle", "node": bun.cert.node, "mesh": bun.cert.mesh,
+            "fingerprint": aspen_node::federation::fingerprint(&bun.cert.ed_public),
+            "certifier": bun.certifier.node,
+            "certifier_fingerprint": aspen_node::federation::fingerprint(&bun.certifier.ed_public),
+            "certifier_url": bun.certifier_url, "relay": bun.relay,
+            "warnings": warnings,
+            "next": "join here (installs this node's cert and registers the certifier as a peer)",
+        }))
+        .into_response();
+    }
+    if let Ok(cert) = identity::from_blob::<NodeCert>("cert", blob) {
+        dup(&cert.node, &mut warnings);
+        return Json(json!({
+            "kind": "cert", "node": cert.node, "mesh": cert.mesh,
+            "fingerprint": aspen_node::federation::fingerprint(&cert.ed_public),
+            "warnings": warnings,
+            "next": "peers-add here (registers this node as a peer, optionally with a dial URL)",
+        }))
+        .into_response();
+    }
+    err(
+        StatusCode::BAD_REQUEST,
+        "not an aspen enroll/cert/bundle blob",
+    )
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ProposeBody {
+    kind: String,
+    #[serde(default)]
+    args: Value,
+}
+
+/// Queue a mesh change for `aspen mesh apply`. The daemon never executes
+/// these — see pending.rs.
+async fn post_mesh_pending(State(s): S, Json(b): Json<ProposeBody>) -> impl IntoResponse {
+    if !["enroll", "certify", "join", "peers_add", "relay"].contains(&b.kind.as_str()) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "kind must be enroll|certify|join|peers_add|relay",
+        )
+        .into_response();
+    }
+    let Some(dir) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "node has no data dir").into_response();
+    };
+    match aspen_node::pending::propose(dir, &b.kind, b.args, "console") {
+        Ok(p) => {
+            Json(json!({ "ok": true, "proposal": p, "apply": "aspen mesh apply" })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn get_mesh_pending(State(s): S) -> impl IntoResponse {
+    let q = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .map(aspen_node::pending::load)
+        .unwrap_or_default();
+    Json(q)
+}
+
+async fn delete_mesh_pending(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
+    let Some(dir) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "node has no data dir").into_response();
+    };
+    if id == "outcomes" {
+        let _ = aspen_node::pending::clear_outcomes(dir);
+        return Json(json!({ "ok": true })).into_response();
+    }
+    match aspen_node::pending::withdraw(dir, &id) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => err(StatusCode::NOT_FOUND, "no such proposal").into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+// -------------------------------------------------------------- trust gate// -------------------------------------------------------------- trust gate
 
 async fn post_repo_trust(State(s): S, Json(b): Json<RepoPathBody>) -> impl IntoResponse {
     let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));

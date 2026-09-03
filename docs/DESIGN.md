@@ -362,6 +362,39 @@ many people are in the mesh.
 goes public — whichever comes first. Until then this section is the
 documented IOU.
 
+### 8.1a Where the API's authority stops: trust (decided 2026-09-03)
+
+Mesh mutations — `init`, `certify`, `join`, `peers-add`, `relay` — are
+**shell-only**. The reasoning: loopback is unauthenticated by design (same
+user, same box), so the meaningful attacker is a *token holder elsewhere*
+(a leaked console URL carries `?token=`). Today that token commands
+sessions; if it could also certify a node, it would extend trust to
+hardware the operator has never seen — a different category. So: trust
+operations require possession of the root key's host shell, never a
+bearer token.
+
+What the console does instead — without authority:
+
+- **See**: members with cert fingerprints, versions (skew flagged), link
+  state with since-when, dial URL or inbound-only, relay; this node's cert
+  blob and the root public key (public material, copyable).
+- **Diagnose**: the daemon records per peer the last dial error, cert
+  verification failures, last up/down, last roster — surfaced as plain
+  sentences ("dial ws://… failed: Connection refused · 9s ago").
+- **Inspect**: paste an enroll/cert/bundle blob → what it is, fingerprints,
+  what accepting it would do here, warnings (duplicate name) — read-only.
+- **Author**: queue a step into `<data-dir>/mesh-pending.json`; a human
+  runs `aspen mesh apply` in a shell, reviews, executes (same code as the
+  subcommands), and outcomes (incl. public artifacts: enroll blob, join
+  bundle) are recorded for the console to show.
+- **Deep links**: artifacts travel between consoles as URL *fragments*
+  (`/mesh#enroll=…`, `#join=…`) — never sent to a server, never logged —
+  which open the receiving console's panel prefilled for review.
+
+Net ceremony: `enroll` queued on B → `apply` on B → deep link/paste to A →
+`apply` on A → deep link/paste to B → `apply` on B. Two shells you needed
+anyway; every step reviewed in the UI; the API never gained trust.
+
 ### 8.2 Release authenticity **[revisit before going public]**
 
 `aspen update` and the installers verify the downloaded binary against the

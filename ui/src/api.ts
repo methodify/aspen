@@ -334,19 +334,80 @@ export interface DmPair {
   messages: number;
 }
 
+
+export interface PeerHealth {
+  last_error: string | null;
+  last_error_at: number | null;
+  last_up: number | null;
+  last_down: number | null;
+  last_roster: number | null;
+  version: string | null;
+  sha: string | null;
+  fingerprint: string | null;
+}
+
 export interface MeshPeer {
   node: string;
   url: string | null;
   link_up: boolean;
   agents: number;
+  fingerprint?: string;
+  health?: PeerHealth;
+}
+
+/** A queued mesh change (the console authors; `aspen mesh apply` executes). */
+export interface MeshProposal {
+  id: string;
+  kind: "enroll" | "certify" | "join" | "peers_add" | "relay" | string;
+  args: Record<string, unknown>;
+  created_at: number;
+  source: string;
+}
+export interface MeshOutcome {
+  id: string;
+  kind: string;
+  ok: boolean;
+  message: string;
+  artifact?: string | null;
+  applied_at: number;
+}
+export interface MeshPending {
+  proposals: MeshProposal[];
+  outcomes: MeshOutcome[];
 }
 
 export interface MeshInfo {
   in_mesh: boolean;
   mesh?: string;
   node: string;
+  identity?: {
+    node: string;
+    fingerprint: string;
+    certified: boolean;
+    cert_blob?: string | null;
+    enroll_blob?: string | null;
+    version?: string;
+    sha?: string;
+    has_root?: boolean;
+  } | null;
+  root_public?: string;
   peers?: MeshPeer[];
   relay?: { url: string | null; connected_at: number | null };
+  pending?: MeshPending;
+}
+
+/** POST /api/mesh/inspect — what a pasted blob is and would do here. */
+export interface BlobInfo {
+  kind: "enroll" | "bundle" | "cert";
+  node: string;
+  mesh?: string;
+  fingerprint: string;
+  certifier?: string;
+  certifier_fingerprint?: string;
+  certifier_url?: string | null;
+  relay?: string | null;
+  warnings: string[];
+  next: string;
 }
 
 /** { handshake, inventory } — the runtime's own view of a session. */
@@ -569,6 +630,12 @@ export const api = {
     request<RepoAutorun>(`/api/repo/autorun?repo=${enc(repo)}`),
 
   mesh: () => request<MeshInfo>("/api/mesh"),
+  meshInspect: (blob: string) => post<BlobInfo>("/api/mesh/inspect", { blob }),
+  meshPending: () => request<MeshPending>("/api/mesh/pending"),
+  meshPropose: (kind: string, args: Record<string, unknown>) =>
+    post<{ ok: boolean; proposal: MeshProposal; apply: string }>("/api/mesh/pending", { kind, args }),
+  meshWithdraw: (id: string) => request<{ ok: boolean }>(`/api/mesh/pending/${enc(id)}`, { method: "DELETE" }),
+  meshClearOutcomes: () => request<{ ok: boolean }>("/api/mesh/pending/outcomes", { method: "DELETE" }),
   trustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/trust", { path }),
   untrustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/untrust", { path }),
 

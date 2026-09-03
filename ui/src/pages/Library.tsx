@@ -10,6 +10,7 @@ import { api, ApiError, type MeshRepoNode, type Repo, type SessionInfo, type Ski
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
+import { MeshPanel } from "../meshPanel";
 
 function errText(e: unknown): string {
   return e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -680,6 +681,7 @@ function RepositoriesSection({
       <ErrorBar error={meshPoll.error ? `repos: ${meshPoll.error}` : null} />
       <ErrorBar error={actionError} />
 
+      <MeshPanel />
       <AddRepoForm onAdded={refresh} />
       <HarnessDefaults />
       <LinksSection />
