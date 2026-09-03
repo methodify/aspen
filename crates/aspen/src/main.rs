@@ -81,7 +81,7 @@ enum Command {
     Status,
     /// Get or set daemon start defaults (headless, listen) and harness args.
     Config {
-        /// Setting name: headless | listen | claude-args. Omit to list all.
+        /// Setting name: headless | listen | topology | claude-args. Omit to list all.
         key: Option<String>,
         /// New value. Omit to show the current value; "-" clears it.
         value: Option<String>,
@@ -512,6 +512,12 @@ fn config_command(
                 .unwrap_or_else(|| "(unset → 127.0.0.1:7420, or ephemeral if headless)".into())
         );
         println!(
+            "topology    {}",
+            s.topology
+                .clone()
+                .unwrap_or_else(|| "(unset → open)".into())
+        );
+        println!(
             "claude-args {}",
             match s.harness.get("claude").map(|h| h.args.as_str()) {
                 Some(a) if !a.is_empty() => a.to_owned(),
@@ -555,12 +561,23 @@ fn config_command(
                 Some(value.clone())
             };
         }
+        "topology" => {
+            s.topology = if clear {
+                None
+            } else if value == "open" || value == "closed" {
+                Some(value.clone())
+            } else {
+                anyhow::bail!("topology takes open or closed");
+            };
+        }
         "claude-args" => {
             settings::split_args(if clear { "" } else { &value }, None)?;
             s.harness.entry("claude".into()).or_default().args =
                 if clear { String::new() } else { value.clone() };
         }
-        other => anyhow::bail!("unknown setting '{other}' (headless | listen | claude-args)"),
+        other => {
+            anyhow::bail!("unknown setting '{other}' (headless | listen | topology | claude-args)")
+        }
     }
     settings::save(data_dir, &s)?;
     println!("set {key} = {}", if clear { "(cleared)" } else { &value });

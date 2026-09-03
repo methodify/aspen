@@ -19,6 +19,7 @@ pub mod settings;
 pub mod skills;
 pub mod store;
 pub mod tools;
+pub mod topology;
 pub mod trust;
 
 pub use node::{Node, SpawnOpts, TurnState};

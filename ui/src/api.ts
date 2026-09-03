@@ -140,6 +140,18 @@ export interface GitState {
   checked_at: number;
 }
 
+/** A declared pathway between two endpoints (GET /api/links). Endpoints:
+ *  `agent:name@repo[@node]`, `repo:handle[@node]`, `node:name`, `operator`. */
+export interface Link {
+  id: number;
+  src: string;
+  dst: string;
+  two_way: boolean;
+  purpose: string | null;
+  urgency: string | null;
+  created_at: number;
+}
+
 /** A remembered repository (GET /api/repos). */
 export interface Repo {
   path: string;
@@ -432,6 +444,10 @@ export const api = {
   discoverRepos: (node?: string) =>
     post<{ found: DiscoveredRepo[] }>("/api/repos/discover", node ? { node } : {}),
   meshRepos: () => request<{ nodes: MeshRepoNode[] }>("/api/mesh/repos"),
+  links: () => request<Link[]>("/api/links"),
+  addLink: (l: { from: string; to: string; two_way?: boolean; purpose?: string; urgency?: string }) =>
+    post<{ ok: boolean; id: number }>("/api/links", l),
+  deleteLink: (id: number) => request<{ ok: boolean }>(`/api/links/${id}`, { method: "DELETE" }),
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     request<{ ok: boolean }>("/api/settings", {

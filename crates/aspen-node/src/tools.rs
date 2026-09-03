@@ -123,11 +123,36 @@ pub fn send_message(
         ));
     }
 
+    let mut topology_note: Option<String> = None;
     // Resolve the address to concrete recipients.
     let recipients: Vec<String> = if to == "@operator" {
         vec!["operator".into()]
     } else if let Some(name) = to.strip_prefix('@') {
-        vec![resolve_agent(inner, from, name)?]
+        let target = resolve_agent(inner, from, name)?;
+        // Topology: inside the sender's neighborhood, or a reply to someone
+        // who messaged them — fine. Outside it: note (open) or refuse (closed).
+        if from != "operator"
+            && target != "operator"
+            && !crate::topology::in_neighborhood(inner, from, &target)
+            && !inner.store.has_messaged(&target, from).unwrap_or(false)
+        {
+            let closed = inner
+                .data_dir
+                .as_deref()
+                .map(crate::settings::load)
+                .and_then(|s| s.topology)
+                .as_deref()
+                == Some("closed");
+            if closed {
+                return Err(format!(
+                    "no declared link between you and {target} (topology is closed) — ask the operator to link you, or use a shared channel"
+                ));
+            }
+            topology_note = Some(format!(
+                "note: {target} is outside your declared links/channels — delivered anyway (open topology); the operator can declare a link to make this a standing pathway."
+            ));
+        }
+        vec![target]
     } else if let Some(channel) = to.strip_prefix('#') {
         let mut members: Vec<String> = Vec::new();
         // A custom channel carries explicit members (which may span repos
@@ -187,6 +212,9 @@ pub fn send_message(
             .map_err(|e| e.to_string())?;
         inner.tick_delivery(recipient);
         out.push(delivery_note(inner, recipient, urgency));
+    }
+    if let Some(n) = topology_note {
+        out.push(n);
     }
     Ok(out)
 }
@@ -282,6 +310,17 @@ pub fn resolve_agent(inner: &Arc<NodeInner>, from: &str, to: &str) -> Result<Str
         let key = crate::addr::local_key(&a.name, my_repo);
         if known.iter().any(|(k, n)| k == &key && n.is_none()) {
             return Ok(key);
+        }
+    }
+    // Then a single match reachable through the sender's links — the
+    // hotline case: `triage` from alpha resolves via alpha→triage@nl.
+    {
+        let via_links: Vec<String> = crate::topology::link_targets(inner, from)
+            .into_iter()
+            .filter(|t| crate::addr::bare(t) == a.name)
+            .collect();
+        if let [one] = via_links.as_slice() {
+            return Ok(one.clone());
         }
     }
     let matches: Vec<&(String, Option<String>)> = known
@@ -431,9 +470,27 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
     }
     let my_repo = crate::addr::repo_of(me);
     let self_node = self_node(inner).unwrap_or_else(|| "local".into());
-    let mut lines = vec![format!(
-        "You are {me}. Bus roster (addresses as you should write them):"
-    )];
+    let mut lines = vec![format!("You are {me}.")];
+    // Topology first: this is who you're wired to, and why.
+    let guidance = crate::topology::guidance(inner, me);
+    if !guidance.is_empty() {
+        lines.push("Your neighborhood (declared by the operator):".into());
+        for g in guidance.lines() {
+            lines.push(format!("  {g}"));
+        }
+    }
+    let neighborhood = crate::topology::neighborhood(inner, me);
+    let near: std::collections::HashSet<String> = neighborhood
+        .repo_mates
+        .iter()
+        .cloned()
+        .chain(neighborhood.links.iter().flat_map(|r| r.targets.clone()))
+        .chain(neighborhood.channels.iter().flat_map(|(_, m)| m.clone()))
+        .collect();
+    lines.push(
+        "Everyone on the bus (addresses as you should write them; * = in your neighborhood):"
+            .into(),
+    );
     for a in agents {
         let state = match inner.live(&a.name) {
             None => "not running".to_owned(),
@@ -444,10 +501,11 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
         };
         let pending = inner.store.pending_count(&a.name).unwrap_or(0);
         let shown = crate::addr::display_for(&a.name, my_repo, &self_node, false);
+        let star = if near.contains(&a.name) { "*" } else { "" };
         let mut line = if a.name == me {
             format!("  {shown} (you) — #{}", a.channel)
         } else {
-            format!("  {shown} — #{} — {}", a.channel, state)
+            format!("  {shown}{star} — #{} — {}", a.channel, state)
         };
         if pending > 0 && a.name != me {
             line.push_str(&format!(", {pending} pending"));
@@ -473,8 +531,13 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
                     .store
                     .pending_count(&format!("{}@{}", a.name, node))
                     .unwrap_or(0);
+                let star = if near.contains(&format!("{}@{}", a.name, node)) {
+                    "*"
+                } else {
+                    ""
+                };
                 let mut line = format!(
-                    "  {}@{} — #{} — on node '{}' — {}",
+                    "  {}@{}{star} — #{} — on node '{}' — {}",
                     a.name, node, a.channel, node, state
                 );
                 if pending > 0 {
@@ -488,24 +551,6 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
     lines.push(format!(
         "  @operator — the human — {op_pending} unread in their inbox"
     ));
-    // The channels this agent belongs to, with co-members — a channel
-    // someone put you in is only useful if you know you're in it.
-    let mine = inner.store.channels_of(me).unwrap_or_default();
-    if !mine.is_empty() {
-        lines.push("Your custom channels (post with '#name'):".into());
-        for c in mine {
-            let members: Vec<String> = inner
-                .store
-                .custom_channel_members(&c)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| canonical_member(&m))
-                .filter(|m| m != me)
-                .map(|m| crate::addr::display_for(&m, my_repo, &self_node, false))
-                .collect();
-            lines.push(format!("  #{c} — with {}", members.join(", ")));
-        }
-    }
     Ok(lines.join("\n"))
 }
 

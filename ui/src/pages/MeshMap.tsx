@@ -8,10 +8,10 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import type { Activity, ActivitySession, Channel, MeshInfo, WaitingEdge } from "../api";
+import type { Activity, ActivitySession, Channel, Link, MeshInfo, WaitingEdge } from "../api";
 import { usePoll } from "../hooks";
 import { Empty, presenceOf, relTime } from "../components";
-import { NewChannelDialog } from "../channels";
+import { Modal, NewChannelDialog } from "../channels";
 import type { Presence } from "../components";
 
 // ── Layout constants (SVG user units) ─────────────────────────────────────
@@ -322,8 +322,19 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
   // Shift/Ctrl-click always selects; the header toggle makes plain clicks
   // select too.
   const [connectMode, setConnectMode] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Selection is an ORDERED list of endpoints: `agent:key[@node]`,
+  // `repo:handle@node`, `node:name`, `operator`. Two → link (from → to in
+  // selection order); three or more agents → channel.
+  const [selected, setSelected] = useState<string[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [linkDialog, setLinkDialog] = useState(false);
+  const [linkTwoWay, setLinkTwoWay] = useState(false);
+  const [linkPurpose, setLinkPurpose] = useState("");
+  const [linkUrgency, setLinkUrgency] = useState("");
+  const [linkErr, setLinkErr] = useState<string | null>(null);
+  const [selectedLink, setSelectedLink] = useState<Link | null>(null);
+  const linksPoll = usePoll<Link[]>(api.links, 5000);
+  const links = linksPoll.data ?? [];
   const [mouse, setMouse] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const sessions = activityPoll.data?.sessions ?? [];
@@ -355,19 +366,86 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
     nav(`/session/${encodeURIComponent(target(s))}`);
   }
 
+  const selfNode = mesh?.node ?? null;
+  const agentEndpoint = (s: ActivitySession) =>
+    s.remote ? `agent:${s.name}` : `agent:${s.name}`;
+  const repoEndpoint = (node: string, handle: string) => `repo:${handle}@${node}`;
+
+  function toggleEndpoint(ep: string) {
+    setSelectedLink(null);
+    setSelected((cur) => (cur.includes(ep) ? cur.filter((x) => x !== ep) : [...cur, ep]));
+  }
+
   function toggleSelect(s: ActivitySession) {
-    setSelected((cur) => {
-      const n = new Set(cur);
-      const k = target(s);
-      if (n.has(k)) n.delete(k);
-      else n.add(k);
-      return n;
-    });
+    toggleEndpoint(agentEndpoint(s));
   }
 
   function markerClick(s: ActivitySession, e: React.MouseEvent | React.KeyboardEvent) {
     if (connectMode || e.shiftKey || e.ctrlKey || e.metaKey) toggleSelect(s);
     else openSession(s);
+  }
+
+  const allAgents = selected.every((ep) => ep.startsWith("agent:"));
+  const humanEp = (ep: string) => {
+    if (ep === "operator") return "@operator";
+    if (ep.startsWith("agent:")) return `@${ep.slice(6)}`;
+    if (ep.startsWith("repo:")) return `#${ep.slice(5)}`;
+    if (ep.startsWith("node:")) return `node ${ep.slice(5)}`;
+    return ep;
+  };
+
+  async function createLink() {
+    if (selected.length !== 2) return;
+    setLinkErr(null);
+    try {
+      await api.addLink({
+        from: selected[0],
+        to: selected[1],
+        two_way: linkTwoWay,
+        purpose: linkPurpose.trim() || undefined,
+        urgency: linkUrgency || undefined,
+      });
+      setLinkDialog(false);
+      setLinkPurpose("");
+      setLinkUrgency("");
+      setLinkTwoWay(false);
+      setSelected([]);
+      setConnectMode(false);
+      await linksPoll.refresh();
+    } catch (e) {
+      setLinkErr(e instanceof Error ? e.message : "link failed");
+    }
+  }
+
+  async function removeLink(l: Link) {
+    try {
+      await api.deleteLink(l.id);
+      setSelectedLink(null);
+      await linksPoll.refresh();
+    } catch (e) {
+      setLinkErr(e instanceof Error ? e.message : "remove failed");
+    }
+  }
+
+  /** Anchor point for an endpoint on the current layout. */
+  function anchor(ep: string): Pt | null {
+    if (ep === "operator") return layout.operator;
+    if (ep.startsWith("agent:")) {
+      const key = ep.slice(6);
+      const m = layout.markers.find((mk) => (mk.s.name.includes("@") && key === mk.s.name) || key === `${mk.s.name}@${mk.s.node}` || key === mk.s.name);
+      return m ? { x: m.x, y: m.y } : null;
+    }
+    if (ep.startsWith("repo:")) {
+      const rest = ep.slice(5);
+      const [handle, node] = rest.includes("@") ? [rest.slice(0, rest.lastIndexOf("@")), rest.slice(rest.lastIndexOf("@") + 1)] : [rest, selfNode ?? ""];
+      const c = layout.channelLabels.find((cl) => cl.text === handle && (cl.node === node || !node));
+      return c ? { x: c.x + 24, y: c.y + 8 } : null;
+    }
+    if (ep.startsWith("node:")) {
+      const rg = layout.regions.find((r) => r.node === ep.slice(5));
+      return rg ? { x: rg.x + rg.w / 2, y: rg.y + 14 } : null;
+    }
+    return null;
   }
 
   function onMove(e: React.MouseEvent) {
@@ -388,25 +466,42 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
           {customCount === 1 ? "channel" : "channels"}
         </span>
         <span style={{ flex: 1 }} />
-        {selected.size > 0 ? (
+        {selectedLink ? (
           <>
             <span className="mono-meta">
-              {selected.size} selected · {[...selected].map((n) => `@${n}`).join(" ")}
+              link {humanEp(selectedLink.src)} {selectedLink.two_way ? "↔" : "→"} {humanEp(selectedLink.dst)}
+              {selectedLink.purpose ? ` — ${selectedLink.purpose}` : ""}
             </span>
-            <button className="btn primary sm" onClick={() => setDialogOpen(true)}>
-              connect → new channel
-            </button>
-            <button className="btn ghost sm" onClick={() => setSelected(new Set())}>
-              clear
-            </button>
+            <button className="btn danger sm" onClick={() => void removeLink(selectedLink)}>remove link</button>
+            <button className="btn ghost sm" onClick={() => setSelectedLink(null)}>cancel</button>
+          </>
+        ) : selected.length > 0 ? (
+          <>
+            <span className="mono-meta">
+              {selected.length} selected · {selected.map(humanEp).join(" ")}
+            </span>
+            {selected.length === 2 && (
+              <button className="btn primary sm" onClick={() => setLinkDialog(true)} title="declare a directed pathway from the first selected to the second">
+                link {humanEp(selected[0])} → {humanEp(selected[1])}
+              </button>
+            )}
+            {selected.length >= 2 && allAgents && (
+              <button className={`btn sm${selected.length === 2 ? " ghost" : " primary"}`} onClick={() => setDialogOpen(true)}>
+                new channel
+              </button>
+            )}
+            {selected.length > 2 && !allAgents && (
+              <span className="mono-meta" style={{ color: "var(--sig-normal)" }}>a link has two ends; channels take agents</span>
+            )}
+            <button className="btn ghost sm" onClick={() => setSelected([])}>clear</button>
           </>
         ) : (
           <button
             className={`btn sm${connectMode ? " primary" : " ghost"}`}
             onClick={() => setConnectMode((v) => !v)}
-            title="pick agents on the map, then create a channel that joins them (shift-click also selects)"
+            title="pick two endpoints (agents, repos, nodes, the operator) for a link, or agents for a channel — shift-click also selects"
           >
-            {connectMode ? "connecting: click agents…" : "connect agents"}
+            {connectMode ? "connecting: click endpoints…" : "connect"}
           </button>
         )}
         {lastTraffic && (
@@ -420,15 +515,57 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
       {dialogOpen && (
         <NewChannelDialog
           agents={sessions.map((s) => target(s))}
-          initialMembers={[...selected].map((n) => `@${n}`)}
+          initialMembers={selected.filter((e) => e.startsWith("agent:")).map((e) => `@${e.slice(6)}`)}
           onClose={() => setDialogOpen(false)}
           onCreated={(name) => {
             setDialogOpen(false);
-            setSelected(new Set());
+            setSelected([]);
             setConnectMode(false);
             nav(`/flow/${encodeURIComponent(name)}`);
           }}
         />
+      )}
+
+      {linkDialog && selected.length === 2 && (
+        <Modal title="New link" onClose={() => setLinkDialog(false)}>
+          <div className="mono" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+            <span>{humanEp(selected[0])}</span>
+            <button
+              className="btn ghost sm"
+              onClick={() => setLinkTwoWay((v) => !v)}
+              title="toggle direction: one-way (from → to; replies always allowed) or two-way"
+            >
+              {linkTwoWay ? "↔" : "→"}
+            </button>
+            <span>{humanEp(selected[1])}</span>
+            <button className="btn ghost sm" onClick={() => setSelected([selected[1], selected[0]])} title="swap ends">
+              swap
+            </button>
+          </div>
+          <div className="label" style={{ marginBottom: 4 }}>
+            Purpose — what the {linkTwoWay ? "agents on both ends are" : `agents at ${humanEp(selected[0])} are`} told this link is for
+          </div>
+          <input
+            style={{ width: "100%", marginBottom: 10 }}
+            placeholder="e.g. file task-tracker bugs and questions here"
+            value={linkPurpose}
+            onChange={(e) => setLinkPurpose(e.target.value)}
+            autoFocus
+            onKeyDown={(e) => e.key === "Enter" && void createLink()}
+          />
+          <div className="label" style={{ marginBottom: 4 }}>Default urgency (optional)</div>
+          <select value={linkUrgency} onChange={(e) => setLinkUrgency(e.target.value)} style={{ marginBottom: 12 }}>
+            <option value="">none</option>
+            <option value="normal">normal</option>
+            <option value="gating">gating</option>
+            <option value="notice">notice</option>
+          </select>
+          {linkErr && <div className="error-bar">{linkErr}</div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button className="btn ghost" onClick={() => setLinkDialog(false)}>cancel</button>
+            <button className="btn primary" onClick={() => void createLink()}>declare link</button>
+          </div>
+        </Modal>
       )}
 
       <div className="stage-body">
@@ -548,14 +685,17 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                   <text
                     x={rg.x + INNER_PAD_X}
                     y={rg.y + NODE_HEADER / 2 + 5}
-                    fill="var(--text-mid)"
+                    fill={selected.includes(`node:${rg.node}`) ? "var(--sig-notice)" : "var(--text-mid)"}
                     style={{
                       font: "700 13px/1 var(--font-display)",
                       letterSpacing: "0.16em",
                       textTransform: "uppercase",
+                      cursor: "pointer",
                     }}
+                    onClick={() => toggleEndpoint(`node:${rg.node}`)}
                   >
-                    {rg.node}
+                    <title>{`node ${rg.node} — click to select every agent here as a link endpoint`}</title>
+                    {selected.includes(`node:${rg.node}`) ? "▣ " : ""}{rg.node}
                   </text>
                   <text
                     x={rg.x + rg.w - INNER_PAD_X}
@@ -570,17 +710,64 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
               ))}
 
               {/* Channel sub-labels */}
-              {layout.channelLabels.map((c) => (
-                <text
-                  key={`${c.node}:${c.text}`}
-                  x={c.x}
-                  y={c.y + 12}
-                  fill="var(--text-dim)"
-                  style={{ font: "500 11px/1 var(--font-mono)", letterSpacing: "0.04em" }}
-                >
-                  #{c.text}
-                </text>
-              ))}
+              {layout.channelLabels.map((c) => {
+                const ep = repoEndpoint(c.node, c.text);
+                const sel = selected.includes(ep);
+                return (
+                  <text
+                    key={`${c.node}:${c.text}`}
+                    x={c.x}
+                    y={c.y + 12}
+                    fill={sel ? "var(--sig-notice)" : "var(--text-dim)"}
+                    style={{ font: `${sel ? 700 : 500} 11px/1 var(--font-mono)`, letterSpacing: "0.04em", cursor: "pointer" }}
+                    onClick={() => toggleEndpoint(ep)}
+                  >
+                    <title>{`#${c.text} on ${c.node} — click to select the repo as a link endpoint`}</title>
+                    {sel ? "▣ " : ""}#{c.text}
+                  </text>
+                );
+              })}
+
+              {/* Declared links: directed pathways between endpoints */}
+              {links.map((l) => {
+                const a = anchor(l.src);
+                const b = anchor(l.dst);
+                if (!a || !b) return null;
+                const g = waitGeom(a, b);
+                const sel = selectedLink?.id === l.id;
+                return (
+                  <g
+                    key={`link:${l.id}`}
+                    className="mm-link"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setSelectedLink(sel ? null : l)}
+                  >
+                    <title>{`${humanEp(l.src)} ${l.two_way ? "↔" : "→"} ${humanEp(l.dst)}${l.purpose ? ` — ${l.purpose}` : ""} (click to remove)`}</title>
+                    <path d={g.d} fill="none" stroke="transparent" strokeWidth={12} />
+                    <path
+                      d={g.d}
+                      fill="none"
+                      stroke={sel ? "var(--sig-gate)" : "var(--text-hi)"}
+                      strokeWidth={sel ? 2.5 : 2}
+                      strokeOpacity={0.85}
+                    />
+                    <path d={g.head} fill={sel ? "var(--sig-gate)" : "var(--text-hi)"} />
+                    {l.two_way && <circle cx={a.x} cy={a.y} r={3.5} fill="var(--text-hi)" />}
+                    {(() => {
+                      const text = (l.purpose ?? "link").slice(0, 28) + ((l.purpose ?? "").length > 28 ? "…" : "");
+                      const w = text.length * 6.2 + 12;
+                      return (
+                        <>
+                          <rect x={g.label.x - w / 2} y={g.label.y - 9} width={w} height={16} fill="var(--bg-panel)" stroke="var(--text-hi)" strokeWidth={1} />
+                          <text x={g.label.x} y={g.label.y + 3} textAnchor="middle" fill="var(--text-hi)" style={{ font: "500 10px/1 var(--font-mono)" }}>
+                            {text}
+                          </text>
+                        </>
+                      );
+                    })()}
+                  </g>
+                );
+              })}
 
               {/* Custom-channel edges (the centerpiece) */}
               {layout.edges.map((e, i) => {
@@ -726,7 +913,7 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                     )}
 
                     {/* selection ring (connect) */}
-                    {selected.has(target(m.s)) && (
+                    {selected.includes(agentEndpoint(m.s)) && (
                       <path
                         d={chamferSquare(m.x, m.y, MARKER + 10)}
                         fill="none"
@@ -782,8 +969,20 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
               })}
 
               {/* Operator marker (distinct, --sig-normal) */}
-              <g>
-                <title>@operator · the console</title>
+              <g style={{ cursor: "pointer" }} onClick={() => toggleEndpoint("operator")}>
+                <title>@operator · the console — click to select as a link endpoint</title>
+                {selected.includes("operator") && (
+                  <path
+                    d={`M ${layout.operator.x} ${layout.operator.y - OPERATOR_R - 6} L ${
+                      layout.operator.x + OPERATOR_R + 6
+                    } ${layout.operator.y} L ${layout.operator.x} ${
+                      layout.operator.y + OPERATOR_R + 6
+                    } L ${layout.operator.x - OPERATOR_R - 6} ${layout.operator.y} Z`}
+                    fill="none"
+                    stroke="var(--sig-notice)"
+                    strokeWidth={2}
+                  />
+                )}
                 <path
                   d={`M ${layout.operator.x} ${layout.operator.y - OPERATOR_R} L ${
                     layout.operator.x + OPERATOR_R
@@ -841,6 +1040,13 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                   <path d="M 0 4 Q 11 -4 22 4" fill="none" stroke="var(--sig-notice)" strokeWidth={1.5} />
                 </svg>
                 <span style={{ color: "var(--text-dim)" }}>custom channel</span>
+              </span>
+              <span className="micro" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <svg width={22} height={8} aria-hidden>
+                  <path d="M 0 4 L 16 4" fill="none" stroke="var(--text-hi)" strokeWidth={2} />
+                  <path d="M 22 4 L 15 1 L 15 7 Z" fill="var(--text-hi)" />
+                </svg>
+                <span style={{ color: "var(--text-dim)" }}>link</span>
               </span>
               <span className="micro" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <svg width={22} height={8} aria-hidden>

@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS bookmarks(
   created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bookmark_agent ON bookmarks(agent);
+CREATE TABLE IF NOT EXISTS links(
+  id         INTEGER PRIMARY KEY,
+  src        TEXT NOT NULL,
+  dst        TEXT NOT NULL,
+  two_way    INTEGER NOT NULL DEFAULT 0,
+  purpose    TEXT,
+  urgency    TEXT,
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS lineage(
   child_session  TEXT PRIMARY KEY,
   parent_session TEXT NOT NULL,
@@ -135,6 +144,18 @@ pub struct RepoRow {
     /// The repo's handle: its address segment and channel name. Defaults
     /// to the directory basename, unique per node, operator-renamable.
     pub handle: String,
+}
+
+/// A declared pathway between two endpoints (see topology.rs).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Link {
+    pub id: i64,
+    pub src: String,
+    pub dst: String,
+    pub two_way: bool,
+    pub purpose: Option<String>,
+    pub urgency: Option<String>,
+    pub created_at: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -449,6 +470,89 @@ impl BusStore {
         conn.execute(
             "UPDATE agents SET session_id=?2 WHERE name=?1",
             params![name, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Has `sender` ever messaged `recipient`? (Replies are always allowed.)
+    pub fn has_messaged(&self, sender: &str, recipient: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM messages WHERE sender=?1 AND recipient=?2 LIMIT 1",
+                params![sender, recipient],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    // ------------------------------------------------------------------ links
+
+    pub fn add_link(
+        &self,
+        src: &str,
+        dst: &str,
+        two_way: bool,
+        purpose: Option<&str>,
+        urgency: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        // One link per (src, dst); re-adding updates it.
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM links WHERE src=?1 AND dst=?2",
+                params![src, dst],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE links SET two_way=?2, purpose=?3, urgency=?4 WHERE id=?1",
+                params![id, two_way as i64, purpose, urgency],
+            )?;
+            return Ok(id);
+        }
+        conn.execute(
+            "INSERT INTO links(src, dst, two_way, purpose, urgency, created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![src, dst, two_way as i64, purpose, urgency, now_epoch()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn links(&self) -> Result<Vec<Link>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, src, dst, two_way, purpose, urgency, created_at FROM links ORDER BY created_at",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Link {
+                    id: r.get(0)?,
+                    src: r.get(1)?,
+                    dst: r.get(2)?,
+                    two_way: r.get::<_, i64>(3)? != 0,
+                    purpose: r.get(4)?,
+                    urgency: r.get(5)?,
+                    created_at: r.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_link(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM links WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    /// Delete by endpoints (used when mirroring a peer's deletion).
+    pub fn delete_link_by_ends(&self, src: &str, dst: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM links WHERE src=?1 AND dst=?2",
+            params![src, dst],
         )?;
         Ok(())
     }

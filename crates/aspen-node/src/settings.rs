@@ -18,6 +18,10 @@ pub struct Settings {
     /// How `aspen up` should start when flags don't say otherwise.
     #[serde(default)]
     pub daemon: DaemonDefaults,
+    /// "open" (default): sends outside declared topology deliver with a
+    /// note. "closed": they are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

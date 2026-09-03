@@ -17,6 +17,14 @@ the sender's own repo first, then the single agent of that name anywhere,
 then the single one sharing a custom channel with the sender — anything
 ambiguous is refused with the candidates. `operator` is global.
 
+**Topology.** Links are declared pathways between endpoints with a purpose;
+an agent's neighborhood = its repo-mates + link targets + channel
+co-members (+ the operator). `bus_status` leads with the neighborhood and
+the charter carries it; bare names also resolve through links. In *open*
+topology (default) a send outside the neighborhood delivers with a note;
+in *closed* (`aspen config topology closed`) it is refused. Replies to
+whoever messaged you are always allowed.
+
 ## REST
 
 | Method & path | Body | Returns | Notes |
@@ -32,6 +40,9 @@ ambiguous is refused with the candidates. `operator` is global.
 | `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
 | `POST /api/shutdown` | `{}` | `{ ok, stopping }` | graceful stop (same ladder as SIGTERM); what `aspen down` uses on every platform — Windows has no SIGTERM and a detached process has no window for taskkill |
 | `POST /api/mesh/reload` | `{}` | `{ ok, summary }` | apply mesh files to the running daemon (join live / pick up peers+relay); the mesh CLI calls it after every mutation |
+| `GET /api/links` | — | `Link[]` | declared links: `{ id, src, dst, two_way, purpose, urgency }`; endpoints are `agent:name@repo[@node]`, `repo:handle[@node]`, `node:name`, `operator` |
+| `POST /api/links` | `{ from, to, two_way?, purpose?, urgency? }` | `{ ok, id }` | declare a link (bare `@x` / `#x` accepted); mirrored to any peer node hosting an endpoint |
+| `DELETE /api/links/{id}` | — | `{ ok }` | remove a link (mirrored) |
 | `GET /api/mesh/repos` | — | `{ nodes: [{node, self, reachable, repos}] }` | mesh-wide repo registry grouped by node (this node + each peer); an unreachable peer lists no repos |
 | `GET /api/settings` | — | `Settings` | node settings: per-harness default CLI args |
 | `PUT /api/settings` | `Settings` | `{ ok }` | replace settings; arg strings are validated (reserved protocol flags rejected) |

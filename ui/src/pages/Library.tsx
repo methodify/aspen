@@ -682,6 +682,7 @@ function RepositoriesSection({
 
       <AddRepoForm onAdded={refresh} />
       <HarnessDefaults />
+      <LinksSection />
 
       {nodes.reduce((acc, n) => acc + n.repos.length, 0) > 8 && (
         <input
@@ -1280,6 +1281,48 @@ function SkillsSection({ repos }: { repos: Repo[] }) {
 
 /** The Mesh's list view: repos by node, editable in place; skills open
  *  as a drawer on a repo. (The map is the same data, drawn.) */
+function humanEndpoint(ep: string): string {
+  if (ep === "operator") return "@operator";
+  if (ep.startsWith("agent:")) return `@${ep.slice(6)}`;
+  if (ep.startsWith("repo:")) return `#${ep.slice(5)}`;
+  if (ep.startsWith("node:")) return `node ${ep.slice(5)}`;
+  return ep;
+}
+
+/** Declared links, as a list (the map draws them). */
+function LinksSection() {
+  const poll = usePoll(api.links, 5000);
+  const links = poll.data ?? [];
+  const [err, setErr] = useState<string | null>(null);
+  if (links.length === 0) return null;
+  return (
+    <div className="strip flat" style={{ display: "flex", flexDirection: "column", gap: 6, padding: 14 }}>
+      <span className="label">Links · {links.length}</span>
+      <span className="micro" style={{ color: "var(--text-dim)" }}>
+        declared pathways; the purpose is what the agents on the from-side are told. Draw new ones on the map.
+      </span>
+      <ErrorBar error={err} />
+      {links.map((l) => (
+        <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+          <span className="mono" style={{ color: "var(--text-hi)" }}>{humanEndpoint(l.src)}</span>
+          <span className="mono-meta">{l.two_way ? "↔" : "→"}</span>
+          <span className="mono" style={{ color: "var(--text-hi)" }}>{humanEndpoint(l.dst)}</span>
+          {l.purpose && <span style={{ color: "var(--text-mid)" }}>— {l.purpose}</span>}
+          {l.urgency && <span className="chip mono">{l.urgency}</span>}
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            className="btn ghost sm"
+            onClick={() => void api.deleteLink(l.id).then(poll.refresh).catch((e) => setErr(errText(e)))}
+          >
+            remove
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function MeshList({ toggle }: { toggle: ReactNode }) {
   const reposPoll = usePoll(api.repos, 15000);
   const meshPoll = usePoll(api.meshRepos, 15000);

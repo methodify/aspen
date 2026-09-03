@@ -115,6 +115,8 @@ pub async fn serve(
         .route("/repos/rename", post(post_repo_rename))
         .route("/mesh/repos", get(get_mesh_repos))
         .route("/mesh/reload", post(post_mesh_reload))
+        .route("/links", get(get_links).post(post_link))
+        .route("/links/{id}", delete(delete_link))
         .route("/shutdown", post(post_shutdown))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/repos/trust", post(post_repo_trust))
@@ -1649,6 +1651,134 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------- repos
+
+// ------------------------------------------------------------------ links
+
+#[derive(Deserialize)]
+struct LinkBody {
+    /// Endpoints: `agent:name@repo[@node]`, `repo:handle[@node]`,
+    /// `node:name`, `operator` (bare `@x`/`#x` accepted).
+    from: String,
+    to: String,
+    #[serde(default)]
+    two_way: bool,
+    purpose: Option<String>,
+    urgency: Option<String>,
+}
+
+fn endpoint_node(s: &AppState, e: &aspen_node::topology::Endpoint) -> Option<String> {
+    use aspen_node::topology::Endpoint;
+    let n = match e {
+        Endpoint::Agent { node, .. } | Endpoint::Repo { node, .. } => node.clone(),
+        Endpoint::Node(n) => Some(n.clone()),
+        Endpoint::Operator => None,
+    };
+    n.filter(|n| !is_self_node(s, n))
+}
+
+/// Declare a link. Stored here, and mirrored to any peer node an endpoint
+/// lives on, so agents on both ends are told about it.
+async fn post_link(State(s): S, Json(b): Json<LinkBody>) -> impl IntoResponse {
+    use aspen_node::topology::Endpoint;
+    let (from, to) = match (Endpoint::parse(&b.from), Endpoint::parse(&b.to)) {
+        (Ok(f), Ok(t)) => (f, t),
+        (Err(e), _) | (_, Err(e)) => return err(StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    if from == to {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "a link needs two different endpoints",
+        )
+        .into_response();
+    }
+    if let Some(u) = b.urgency.as_deref() {
+        if !["gating", "normal", "notice"].contains(&u) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "urgency must be gating|normal|notice",
+            )
+            .into_response();
+        }
+    }
+    let (src, dst) = (from.to_string(), to.to_string());
+    let id = match s.node.inner.store.add_link(
+        &src,
+        &dst,
+        b.two_way,
+        b.purpose.as_deref(),
+        b.urgency.as_deref(),
+    ) {
+        Ok(id) => id,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    // Mirror to peers that host an endpoint.
+    let mut peers: Vec<String> = [endpoint_node(&s, &from), endpoint_node(&s, &to)]
+        .into_iter()
+        .flatten()
+        .collect();
+    peers.dedup();
+    if let Some(mesh) = s.node.inner.mesh() {
+        for peer in peers {
+            let _ = mesh
+                .api_call(
+                    &peer,
+                    "link_add",
+                    "",
+                    json!({ "src": src, "dst": dst, "two_way": b.two_way, "purpose": b.purpose, "urgency": b.urgency }),
+                    REMOTE_TIMEOUT,
+                )
+                .await;
+        }
+    }
+    Json(json!({ "ok": true, "id": id })).into_response()
+}
+
+async fn get_links(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.links() {
+        Ok(ls) => Json(ls).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn delete_link(State(s): S, Path(id): Path<i64>) -> impl IntoResponse {
+    use aspen_node::topology::Endpoint;
+    let Some(link) = s
+        .node
+        .inner
+        .store
+        .links()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|l| l.id == id)
+    else {
+        return err(StatusCode::NOT_FOUND, "no such link").into_response();
+    };
+    let _ = s.node.inner.store.delete_link(id);
+    let ends = [
+        Endpoint::parse(&link.src).ok(),
+        Endpoint::parse(&link.dst).ok(),
+    ];
+    let mut peers: Vec<String> = ends
+        .iter()
+        .flatten()
+        .filter_map(|e| endpoint_node(&s, e))
+        .collect();
+    peers.dedup();
+    if let Some(mesh) = s.node.inner.mesh() {
+        for peer in peers {
+            let _ = mesh
+                .api_call(
+                    &peer,
+                    "link_del",
+                    "",
+                    json!({ "src": link.src, "dst": link.dst }),
+                    REMOTE_TIMEOUT,
+                )
+                .await;
+        }
+    }
+    Json(json!({ "ok": true })).into_response()
+}
 
 /// Apply mesh files to the running daemon (join live, pick up peers/relay).
 /// The mesh CLI calls this after every mutation so no restart is needed.

@@ -794,6 +794,30 @@ async fn serve_api_req(
                 }))
                 .collect::<Vec<_>>()))
         }
+        "link_add" => {
+            let g = |k: &str| body.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+            let (Some(src), Some(dst)) = (g("src"), g("dst")) else {
+                return Err(anyhow!("missing src/dst"));
+            };
+            node.inner.store.add_link(
+                &src,
+                &dst,
+                body.get("two_way")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false),
+                g("purpose").as_deref(),
+                g("urgency").as_deref(),
+            )?;
+            Ok(json!({ "ok": true }))
+        }
+        "link_del" => {
+            let g = |k: &str| body.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+            let (Some(src), Some(dst)) = (g("src"), g("dst")) else {
+                return Err(anyhow!("missing src/dst"));
+            };
+            node.inner.store.delete_link_by_ends(&src, &dst)?;
+            Ok(json!({ "ok": true }))
+        }
         "node_repo_skip" => {
             let path = body
                 .get("path")

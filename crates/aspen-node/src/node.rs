@@ -341,12 +341,16 @@ impl Node {
             .mesh()
             .map(|m| m.identity.node.clone())
             .unwrap_or_else(|| "this node".into());
-        cfg.charter = Some(charter_text(
-            name,
-            &channel,
-            &node_name,
-            opts.charter.as_deref(),
-        ));
+        let mut charter = charter_text(name, &channel, &node_name, opts.charter.as_deref());
+        // Links are instructions: what the operator wired, explained.
+        let guidance = crate::topology::guidance(&self.inner, name);
+        if !guidance.is_empty() {
+            charter.push_str(
+                "\n\nYour neighborhood on the bus (declared by the operator; bus_status shows it live):\n",
+            );
+            charter.push_str(&guidance);
+        }
+        cfg.charter = Some(charter);
         // Harness defaults (settings.json, read live) + this session's args.
         let defaults = self
             .inner

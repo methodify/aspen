@@ -571,3 +571,12 @@ cleaner lane for roster updates than user-message headers.
   `repo/name@node` (reads worse in headers; spells the repo two ways).
   Migration folds existing stores; legacy `name@node` channel members heal
   when that node's roster arrives.
+- **2026-09-02 — Links (topology).** Endpoints: agent / repo (dynamic:
+  whoever is in it) / node / operator. A link is directed (or two-way)
+  with a *purpose* — links are instructions: the charter and `bus_status`
+  derive a "your neighborhood" paragraph from topology, so wiring the mesh
+  explains it. Visibility follows topology (neighborhood first, everyone
+  else marked). Bare names resolve own-repo → via links → unique anywhere →
+  refuse. Enforcement is a dial: open (note) / closed (refuse); replies
+  always allowed. Links mirror to the peer hosting the far endpoint. Drawn
+  on the Mesh map from any two selected endpoints; channels stay rooms.
