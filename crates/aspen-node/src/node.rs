@@ -218,7 +218,7 @@ impl Node {
         if node.inner.mesh().is_some() {
             crate::federation::ensure_dialers(node.inner.clone());
         }
-        crate::gitstate::spawn_refresher(node.inner.clone(), 10);
+        crate::gitstate::spawn_refresher(node.inner.clone(), 30);
         Ok(node)
     }
 

@@ -25,9 +25,23 @@ pub fn get(path: &Path) -> Option<GitState> {
     cache().lock().unwrap().get(path).cloned()
 }
 
+/// A child process the daemon runs quietly. On Windows a detached daemon
+/// has no console, so every child would pop a console window of its own
+/// (a dozen repos → a dozen flashes every refresh) unless suppressed.
+pub fn quiet_command(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// Blocking probe. `git status --porcelain=v2 --branch`.
 fn probe(path: &Path) -> Option<GitState> {
-    let out = std::process::Command::new("git")
+    let out = quiet_command("git")
         .args(["-C"])
         .arg(path)
         .args([
@@ -36,6 +50,7 @@ fn probe(path: &Path) -> Option<GitState> {
             "--branch",
             "--untracked-files=normal",
         ])
+        .stdin(std::process::Stdio::null())
         .output()
         .ok()?;
     if !out.status.success() {

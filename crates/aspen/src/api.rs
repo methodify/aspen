@@ -428,7 +428,7 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| {
-            std::process::Command::new("hostname")
+            aspen_node::gitstate::quiet_command("hostname")
                 .output()
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
