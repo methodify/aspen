@@ -57,9 +57,11 @@ curl -fsSL https://raw.githubusercontent.com/methodify/aspen/main/install.sh | s
 irm https://raw.githubusercontent.com/methodify/aspen/main/install.ps1 | iex
 ```
 
-While the repo is private, set `GITHUB_TOKEN` (a PAT with repo read access)
-before running the installer. `ASPEN_VERSION` pins a tag; `ASPEN_INSTALL_DIR`
+No token needed (the repo is public; `GITHUB_TOKEN` is still honored to lift
+the API rate limit). `ASPEN_VERSION` pins a tag; `ASPEN_INSTALL_DIR`
 overrides the destination.
+
+Linux binaries need glibc 2.28 or newer (Ubuntu 20.04+, Debian 10+, RHEL 8+).
 
 Updating in place, from the daemon's own machine:
 
@@ -114,9 +116,11 @@ daemon state, and logs. Updates never touch it.
 ### Releasing (maintainers)
 
 Push a tag `v*` matching the workspace version. CI builds the console, embeds
-it, compiles `aspen` + `aspen-relay` for Linux (x86_64, aarch64) and Windows,
-and publishes a GitHub Release with per-target binaries and a `SHA256SUMS`
-the installers and `aspen update` verify against. (macOS targets are paused
+it, compiles `aspen` + `aspen-relay` for Linux (x86_64, aarch64 — linked
+against glibc 2.28 via `cargo-zigbuild`, so the binaries run on any distro
+from Ubuntu 20.04 / Debian 10 / RHEL 8 on) and Windows, and publishes a
+GitHub Release with per-target binaries and a `SHA256SUMS` the installers
+and `aspen update` verify against. (macOS targets are paused
 in the workflows until the mac is in scope — uncomment to re-enable.)
 
 ## Build from source (one machine)

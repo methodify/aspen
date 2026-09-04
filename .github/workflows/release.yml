@@ -13,12 +13,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux targets are linked against glibc 2.28 via cargo-zigbuild so
+          # the binary runs on any distro from that era on (Ubuntu 20.04/22.04,
+          # Debian 10+, RHEL 8+). Building on the runner's own glibc (2.39 on
+          # ubuntu-latest) produced a binary older machines refused with
+          # "version `GLIBC_2.39' not found".
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            zig: true
           # Cross-compiled: the hosted arm runner label is public-repo-only.
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            cross: true
+            zig: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           # macOS builds are paused until the mac is in scope (they bill at
@@ -40,16 +46,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: install cross linker
-        if: matrix.cross
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          {
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
-            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
-            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
-          } >> "$GITHUB_ENV"
+      - name: install zig + cargo-zigbuild
+        if: matrix.zig
+        run: pip3 install --user ziglang
+      - uses: taiki-e/install-action@v2
+        if: matrix.zig
+        with:
+          tool: cargo-zigbuild
+      - name: build binaries (console embedded, glibc 2.28 baseline)
+        if: matrix.zig
+        run: cargo zigbuild --release --target ${{ matrix.target }}.2.28 -p aspen -p aspen-relay
       - name: build binaries (console embedded)
+        if: ${{ !matrix.zig }}
         run: cargo build --release --target ${{ matrix.target }} -p aspen -p aspen-relay
       - name: stage release assets
         shell: bash
