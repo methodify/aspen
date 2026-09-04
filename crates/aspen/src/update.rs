@@ -139,8 +139,8 @@ pub fn run(data_dir: &Path, o: Opts<'_>) -> Result<()> {
         .timeout(std::time::Duration::from_secs(120))
         .build();
     let fetched: Result<Vec<u8>> = (|| {
-        let bin_url =
-            find(&asset_name).with_context(|| format!("release {tag} has no asset {asset_name}"))?;
+        let bin_url = find(&asset_name)
+            .with_context(|| format!("release {tag} has no asset {asset_name}"))?;
         let sums_url = find("SHA256SUMS").context("release has no SHA256SUMS")?;
         println!("downloading {asset_name} {tag} …");
         let sums = String::from_utf8(download(&agent, &sums_url, ch.token.as_deref())?)
@@ -215,7 +215,9 @@ pub fn run(data_dir: &Path, o: Opts<'_>) -> Result<()> {
     };
 
     // Start the new daemon and make sure it is really the new one.
-    match start_daemon(&exe, data_dir, &params).and_then(|()| health_check(data_dir, remote_version)) {
+    match start_daemon(&exe, data_dir, &params)
+        .and_then(|()| health_check(data_dir, remote_version))
+    {
         Ok(()) => {
             let _ = write_outcome(data_dir, &outcome(true, false, None));
             Ok(())
@@ -241,7 +243,9 @@ pub fn run(data_dir: &Path, o: Opts<'_>) -> Result<()> {
                         &outcome(
                             false,
                             false,
-                            Some(format!("health check failed ({e:#}); rollback also failed: {rbe:#}")),
+                            Some(format!(
+                                "health check failed ({e:#}); rollback also failed: {rbe:#}"
+                            )),
                         ),
                     );
                     bail!("update failed ({e:#}) and rollback failed ({rbe:#}) — start the node by hand: aspen up -d");
@@ -270,7 +274,11 @@ fn rollback(data_dir: &Path, exe: &Path, current: &str, trigger: &str) -> Result
     let started_at = aspen_node::store::now_epoch();
     let params = stop_daemon(data_dir)?;
     restore_slot(exe)?;
-    println!("rolled back: {} restored from {}", exe.display(), slot.display());
+    println!(
+        "rolled back: {} restored from {}",
+        exe.display(),
+        slot.display()
+    );
     let ver = std::process::Command::new(exe)
         .arg("--version")
         .output()
@@ -412,7 +420,8 @@ fn replace_binary(exe: &Path, bytes: &[u8]) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
         let _ = std::fs::remove_file(&slot);
-        std::fs::copy(exe, &slot).with_context(|| format!("keeping a copy in {}", slot.display()))?;
+        std::fs::copy(exe, &slot)
+            .with_context(|| format!("keeping a copy in {}", slot.display()))?;
         if let Err(e) = std::fs::rename(&staged, exe) {
             let _ = std::fs::remove_file(&staged);
             return Err(e.into());

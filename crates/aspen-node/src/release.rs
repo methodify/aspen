@@ -22,8 +22,7 @@ pub struct Channel {
 pub fn channel() -> Channel {
     Channel {
         repo: std::env::var("ASPEN_RELEASE_REPO").unwrap_or_else(|_| DEFAULT_REPO.into()),
-        api: std::env::var("ASPEN_GITHUB_API")
-            .unwrap_or_else(|_| "https://api.github.com".into()),
+        api: std::env::var("ASPEN_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into()),
         token: std::env::var("GITHUB_TOKEN")
             .or_else(|_| std::env::var("GH_TOKEN"))
             .ok()
@@ -57,11 +56,12 @@ pub fn fetch(ch: &Channel, version: Option<&str>) -> Result<ReleaseInfo> {
         .build();
     let url = match version {
         Some(tag) => {
-            let tag = if tag.starts_with('v') || tag.chars().next().is_none_or(|c| !c.is_ascii_digit()) {
-                tag.to_owned()
-            } else {
-                format!("v{tag}")
-            };
+            let tag =
+                if tag.starts_with('v') || tag.chars().next().is_none_or(|c| !c.is_ascii_digit()) {
+                    tag.to_owned()
+                } else {
+                    format!("v{tag}")
+                };
             format!("{}/repos/{}/releases/tags/{tag}", ch.api, ch.repo)
         }
         None => format!("{}/repos/{}/releases/latest", ch.api, ch.repo),
@@ -106,7 +106,12 @@ pub fn parse(v: &serde_json::Value) -> Result<ReleaseInfo> {
         .collect();
     let asset_urls = assets_raw
         .iter()
-        .filter_map(|a| Some((a["name"].as_str()?.to_owned(), a["url"].as_str()?.to_owned())))
+        .filter_map(|a| {
+            Some((
+                a["name"].as_str()?.to_owned(),
+                a["url"].as_str()?.to_owned(),
+            ))
+        })
         .collect();
     Ok(ReleaseInfo {
         version,

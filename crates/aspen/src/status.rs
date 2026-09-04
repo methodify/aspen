@@ -165,7 +165,10 @@ pub fn run(data_dir: &Path) -> Result<()> {
                         .filter(|w| !w.is_empty())
                         .map(|w| format!(
                             " — waiting on: {}",
-                            w.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
+                            w.iter()
+                                .filter_map(|x| x.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ))
                         .unwrap_or_default()
                 ),

@@ -580,13 +580,15 @@ async fn link_loop(
                             h.sha = s;
                         }
                         if let Some(svc) = &svc {
-                            let g = |k: &str| svc.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+                            let g =
+                                |k: &str| svc.get(k).and_then(|x| x.as_str()).map(str::to_owned);
                             h.update_available = g("available");
                             h.service_state = g("state");
                             h.service_detail = g("state_detail");
                             h.policy = g("policy");
                             h.inventory = svc.get("inventory").cloned().filter(|v| !v.is_null());
-                            h.last_outcome = svc.get("last_outcome").cloned().filter(|v| !v.is_null());
+                            h.last_outcome =
+                                svc.get("last_outcome").cloned().filter(|v| !v.is_null());
                         }
                     });
                 }
@@ -1130,7 +1132,9 @@ async fn serve_api_req(
         }
         "node_update_check" => {
             let r = crate::servicing::check_async(inner.clone()).await?;
-            Ok(json!({ "ok": true, "latest": r.version, "behind": inner.servicing.newer().is_some() }))
+            Ok(
+                json!({ "ok": true, "latest": r.version, "behind": inner.servicing.newer().is_some() }),
+            )
         }
         "node_update_status" => Ok(crate::servicing::status_json(inner)),
         "node_update_policy" => {

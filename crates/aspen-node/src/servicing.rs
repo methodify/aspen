@@ -366,23 +366,22 @@ pub fn request(inner: &Arc<NodeInner>, when: &str, by: &str) -> Result<NodeState
         "now" => "now",
         _ => "quiet",
     };
-    let target = s
-        .newer()
-        .map(|r| r.version)
-        .ok_or_else(|| {
-            anyhow!(
-                "no newer release known (running {}; latest seen {})",
-                s.current,
-                s.available
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|r| r.version.clone())
-                    .unwrap_or_else(|| "none — check first".into())
-            )
-        })?;
+    let target = s.newer().map(|r| r.version).ok_or_else(|| {
+        anyhow!(
+            "no newer release known (running {}; latest seen {})",
+            s.current,
+            s.available
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|r| r.version.clone())
+                .unwrap_or_else(|| "none — check first".into())
+        )
+    })?;
     if s.exe.is_none() {
-        return Err(anyhow!("this daemon has no known executable path to update"));
+        return Err(anyhow!(
+            "this daemon has no known executable path to update"
+        ));
     }
     let mut st = s.state.lock().unwrap();
     match &*st {
@@ -427,7 +426,9 @@ pub fn cancel(inner: &Arc<NodeInner>, by: &str) -> Result<bool> {
             );
             Ok(true)
         }
-        NodeState::Updating { .. } => Err(anyhow!("the updater is already running; too late to cancel")),
+        NodeState::Updating { .. } => Err(anyhow!(
+            "the updater is already running; too late to cancel"
+        )),
         NodeState::Ready => Ok(false),
     }
 }
@@ -502,7 +503,10 @@ pub fn on_hint(inner: &Arc<NodeInner>, version: &str) {
     if !release::is_newer(version, &s.current) {
         return;
     }
-    tracing::info!(version, "update hint from a peer; checking the release channel");
+    tracing::info!(
+        version,
+        "update hint from a peer; checking the release channel"
+    );
     let recent = s
         .last_check
         .lock()
@@ -573,7 +577,11 @@ fn drain_tick(inner: &Arc<NodeInner>) {
     }
     let st = s.state();
     let NodeState::Draining {
-        since, by, when, target, ..
+        since,
+        by,
+        when,
+        target,
+        ..
     } = st
     else {
         evaluate_policy(inner);
@@ -676,7 +684,11 @@ fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
                 "update_started",
                 json!({ "to": target, "by": by, "from": s.current }),
             );
-            tracing::info!(target, by, "update: updater launched; this daemon will be stopped");
+            tracing::info!(
+                target,
+                by,
+                "update: updater launched; this daemon will be stopped"
+            );
         }
         Err(e) => {
             *s.state.lock().unwrap() = NodeState::Ready;
@@ -694,8 +706,12 @@ fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
 /// updater writes the file *after* it health-checks the new daemon, i.e.
 /// after that daemon has already started.
 pub fn consume_outcome(inner: &Arc<NodeInner>) {
-    let Some(dir) = inner.data_dir.as_deref() else { return };
-    let Some(mut o) = read_outcome(dir) else { return };
+    let Some(dir) = inner.data_dir.as_deref() else {
+        return;
+    };
+    let Some(mut o) = read_outcome(dir) else {
+        return;
+    };
     if !o.recorded {
         let kind = if o.rolled_back {
             "update_rolled_back"
@@ -716,9 +732,7 @@ pub fn consume_outcome(inner: &Arc<NodeInner>) {
         let _ = write_outcome(dir, &o);
     }
     let mut cur = inner.servicing.last_outcome.lock().unwrap();
-    let changed = cur
-        .as_ref()
-        .is_none_or(|c| c.finished_at != o.finished_at);
+    let changed = cur.as_ref().is_none_or(|c| c.finished_at != o.finished_at);
     if changed {
         *cur = Some(o);
     }
@@ -888,7 +902,13 @@ fn rollout_update(inner: &Arc<NodeInner>, f: impl FnOnce(&mut Rollout)) {
     }
 }
 
-async fn run_rollout(inner: Arc<NodeInner>, order: Vec<String>, me: String, target: String, when: String) {
+async fn run_rollout(
+    inner: Arc<NodeInner>,
+    order: Vec<String>,
+    me: String,
+    target: String,
+    when: String,
+) {
     const COMEBACK_SECS: f64 = 10.0 * 60.0;
     let finish = |inner: &Arc<NodeInner>, stopped: bool, failed: Option<(String, String)>| {
         rollout_update(inner, |r| {
@@ -951,7 +971,11 @@ async fn run_rollout(inner: Arc<NodeInner>, order: Vec<String>, me: String, targ
             )
             .await;
         if let Err(e) = res {
-            finish(&inner, false, Some((node, format!("update request failed: {e}"))));
+            finish(
+                &inner,
+                false,
+                Some((node, format!("update request failed: {e}"))),
+            );
             return;
         }
         // Wait: while the peer drains (no timeout — the operator can stop

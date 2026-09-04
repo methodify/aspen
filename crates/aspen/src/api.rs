@@ -587,7 +587,14 @@ async fn post_update(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoRe
 async fn delete_update(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoResponse {
     let b = body.map(|b| b.0).unwrap_or_default();
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
-        return proxy(&s, node, "node_update_cancel", "", json!({ "by": format!("operator@{}", s.node_name) })).await;
+        return proxy(
+            &s,
+            node,
+            "node_update_cancel",
+            "",
+            json!({ "by": format!("operator@{}", s.node_name) }),
+        )
+        .await;
     }
     match aspen_node::servicing::cancel(&s.node.inner, "operator") {
         Ok(c) => Json(json!({ "ok": true, "cancelled": c })).into_response(),
@@ -647,7 +654,13 @@ async fn put_update_policy(State(s): S, Json(b): Json<PolicyBody>) -> impl IntoR
                 let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
                 for p in peers {
                     let r = mesh
-                        .api_call(&p, "node_update_policy", "", json!({ "policy": b.policy }), LIST_TIMEOUT)
+                        .api_call(
+                            &p,
+                            "node_update_policy",
+                            "",
+                            json!({ "policy": b.policy }),
+                            LIST_TIMEOUT,
+                        )
                         .await;
                     results.insert(
                         p,
@@ -661,7 +674,14 @@ async fn put_update_policy(State(s): S, Json(b): Json<PolicyBody>) -> impl IntoR
             Json(json!({ "ok": true, "results": results })).into_response()
         }
         Some(node) if !is_self_node(&s, node) => {
-            proxy(&s, node, "node_update_policy", "", json!({ "policy": b.policy })).await
+            proxy(
+                &s,
+                node,
+                "node_update_policy",
+                "",
+                json!({ "policy": b.policy }),
+            )
+            .await
         }
         _ => match set_local(&s) {
             Ok(()) => Json(json!({ "ok": true })).into_response(),
