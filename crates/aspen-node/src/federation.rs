@@ -82,7 +82,21 @@ pub struct PeerHealth {
     pub sha: Option<String>,
     /// Fingerprint of the cert the peer presented (short hash of its key).
     pub fingerprint: Option<String>,
+    /// Servicing, from the peer's roster: a newer release it knows of, its
+    /// state (ready/draining/updating) with detail, policy mode, inventory
+    /// (os/arch/claude version/started_at), and its last update outcome.
+    pub update_available: Option<String>,
+    pub service_state: Option<String>,
+    pub service_detail: Option<String>,
+    pub policy: Option<String>,
+    pub inventory: Option<Value>,
+    pub last_outcome: Option<Value>,
 }
+
+/// Federation frame protocol. Bump only when a frame format changes
+/// incompatibly; a peer on a different number is refused at hello with a
+/// health error that says so (docs/SERVICING.md §9).
+pub const PROTOCOL: u32 = 1;
 
 /// The daemon's own version stamp, set by the binary at startup (the node
 /// crate can't see the bin crate's version).
@@ -267,7 +281,17 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         })
         .collect();
     let (version, sha) = VERSION.get().cloned().unwrap_or_default();
-    json!({ "t": "roster", "agents": list, "version": version, "sha": sha })
+    let policy = inner
+        .data_dir
+        .as_deref()
+        .map(crate::settings::load)
+        .unwrap_or_default()
+        .update;
+    let mode = policy.mode.as_deref().unwrap_or("notify");
+    json!({
+        "t": "roster", "agents": list, "version": version, "sha": sha,
+        "servicing": inner.servicing.roster_json(mode),
+    })
 }
 
 /// Push the current roster to every connected peer (spawns/exits/timer).
@@ -304,6 +328,12 @@ struct Hello {
     hello: NodeCert,
     #[serde(with = "aspen_wire::b64")]
     nonce: Vec<u8>,
+    /// Absent on pre-servicing daemons → treated as 1.
+    #[serde(default = "proto_one")]
+    proto: u32,
+}
+fn proto_one() -> u32 {
+    1
 }
 
 /// Run one authenticated link over a pair of text-frame channels. The
@@ -334,6 +364,7 @@ pub async fn run_link(
         .send(serde_json::to_string(&Hello {
             hello: my_cert,
             nonce: my_nonce.clone(),
+            proto: PROTOCOL,
         })?)
         .map_err(|_| anyhow!("link closed before hello"))?;
 
@@ -357,6 +388,17 @@ pub async fn run_link(
     mesh.note(&peer_cert.node, |h| {
         h.fingerprint = Some(fingerprint(&peer_cert.ed_public));
     });
+    if peer_hello.proto != PROTOCOL {
+        let msg = format!(
+            "peer '{}' speaks federation protocol {}, this node speaks {} — update the older side",
+            peer_cert.node, peer_hello.proto, PROTOCOL
+        );
+        mesh.note(&peer_cert.node, |h| {
+            h.last_error = Some(msg.clone());
+            h.last_error_at = Some(crate::store::now_epoch());
+        });
+        bail!("{msg}");
+    }
     if peer_cert.node == mesh.identity.node {
         bail!("peer presented this node's own name");
     }
@@ -528,6 +570,7 @@ async fn link_loop(
                         .get("sha")
                         .and_then(|x| x.as_str())
                         .map(str::to_owned);
+                    let svc = payload.get("servicing").cloned();
                     mesh.note(peer, |h| {
                         h.last_roster = Some(crate::store::now_epoch());
                         if v.is_some() {
@@ -535,6 +578,15 @@ async fn link_loop(
                         }
                         if s.is_some() {
                             h.sha = s;
+                        }
+                        if let Some(svc) = &svc {
+                            let g = |k: &str| svc.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+                            h.update_available = g("available");
+                            h.service_state = g("state");
+                            h.service_detail = g("state_detail");
+                            h.policy = g("policy");
+                            h.inventory = svc.get("inventory").cloned().filter(|v| !v.is_null());
+                            h.last_outcome = svc.get("last_outcome").cloned().filter(|v| !v.is_null());
                         }
                     });
                 }
@@ -546,6 +598,12 @@ async fn link_loop(
                     // key can also be homed there (delivery finds it).
                     inner.tick_delivery(&format!("{name}@{peer}"));
                     inner.tick_delivery(&name);
+                }
+            }
+            "update_hint" => {
+                // A hint, never authority: we check the channel ourselves.
+                if let Some(v) = payload.get("version").and_then(|v| v.as_str()) {
+                    crate::servicing::on_hint(inner, v);
                 }
             }
             "api_req" => {
@@ -1049,6 +1107,53 @@ async fn serve_api_req(
                 let _ = node.inner.store.set_agent_title(&key, Some(title));
             }
             Ok(json!({ "name": key }))
+        }
+        // ------------------------------------------------- servicing ops
+        // Control-class (a peer makes this machine fetch and run a binary,
+        // from the release channel this machine verifies itself). Own-mesh
+        // peers only — the `service` capability once the capability layer
+        // exists (DESIGN §8.1).
+        "node_update" => {
+            let when = body.get("when").and_then(|w| w.as_str()).unwrap_or("quiet");
+            let by = body
+                .get("by")
+                .and_then(|b| b.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| "peer".into());
+            let st = crate::servicing::request(inner, when, &by)?;
+            Ok(serde_json::to_value(st)?)
+        }
+        "node_update_cancel" => {
+            let by = body.get("by").and_then(|b| b.as_str()).unwrap_or("peer");
+            let cancelled = crate::servicing::cancel(inner, by)?;
+            Ok(json!({ "ok": true, "cancelled": cancelled }))
+        }
+        "node_update_check" => {
+            let r = crate::servicing::check_async(inner.clone()).await?;
+            Ok(json!({ "ok": true, "latest": r.version, "behind": inner.servicing.newer().is_some() }))
+        }
+        "node_update_status" => Ok(crate::servicing::status_json(inner)),
+        "node_update_policy" => {
+            let policy: crate::settings::UpdateSettings =
+                serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| anyhow!("bad policy: {e}"))?;
+            policy.validate()?;
+            let dir = inner
+                .data_dir
+                .as_deref()
+                .ok_or_else(|| anyhow!("node has no data dir"))?;
+            let mut s = crate::settings::load(dir);
+            s.update = policy;
+            crate::settings::save(dir, &s)?;
+            Ok(json!({ "ok": true }))
+        }
+        "node_logs" => {
+            let n = body.get("lines").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+            let dir = inner
+                .data_dir
+                .as_deref()
+                .ok_or_else(|| anyhow!("node has no data dir"))?;
+            Ok(json!({ "lines": crate::servicing::tail_log(dir, n) }))
         }
         other => Err(anyhow!("unknown remote op {other:?}")),
     }

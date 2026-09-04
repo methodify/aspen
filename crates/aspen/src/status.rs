@@ -119,6 +119,88 @@ pub fn run(data_dir: &Path) -> Result<()> {
     }
     println!();
 
+    // Servicing: what the daemon knows about releases and its own state.
+    if let Some((base, listen)) = &api {
+        if let Ok(u) = query(base, "/api/update", data_dir, listen) {
+            let policy = &u["policy"];
+            let mode = policy["mode"].as_str().unwrap_or("notify");
+            let mut pol = format!("policy {mode}");
+            if let Some(w) = policy["window"].as_str() {
+                pol.push_str(&format!(" · window {w}"));
+            }
+            if let Some(sk) = policy["soak"].as_str() {
+                pol.push_str(&format!(" · soak {sk}"));
+            }
+            if let Some(v) = u["available"]["version"].as_str() {
+                let skipped = u["skipped"].as_bool() == Some(true);
+                println!(
+                    "update: v{v} available{} — {pol}",
+                    if skipped { " (snoozed)" } else { "" }
+                );
+            } else if u["withdrawn"].as_bool() == Some(true) {
+                println!(
+                    "update: running v{} is newer than the latest published (v{}) — withdrawn? — {pol}",
+                    u["current"].as_str().unwrap_or("?"),
+                    u["latest"].as_str().unwrap_or("?")
+                );
+            } else {
+                match u["last_check"]["ok"].as_bool() {
+                    Some(true) => println!("update: up to date — {pol}"),
+                    Some(false) => println!(
+                        "update: last check failed: {} — {pol}",
+                        u["last_check"]["error"].as_str().unwrap_or("?")
+                    ),
+                    None => println!("update: not checked yet — {pol}"),
+                }
+            }
+            let st = &u["state"];
+            match st["state"].as_str() {
+                Some("draining") => println!(
+                    "        DRAINING for v{} ({}, by {}){}",
+                    st["target"].as_str().unwrap_or("?"),
+                    st["when"].as_str().unwrap_or("quiet"),
+                    st["by"].as_str().unwrap_or("?"),
+                    st["waiting_on"]
+                        .as_array()
+                        .filter(|w| !w.is_empty())
+                        .map(|w| format!(
+                            " — waiting on: {}",
+                            w.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
+                        ))
+                        .unwrap_or_default()
+                ),
+                Some("updating") => println!(
+                    "        UPDATING to v{} — the updater is running; this daemon will restart",
+                    st["target"].as_str().unwrap_or("?")
+                ),
+                _ => {}
+            }
+            let o = &u["last_outcome"];
+            if o.is_object() {
+                println!(
+                    "        last update: {} → {} {}{}",
+                    o["from"].as_str().unwrap_or("?"),
+                    o["to"].as_str().unwrap_or("?"),
+                    if o["rolled_back"].as_bool() == Some(true) {
+                        "ROLLED BACK"
+                    } else if o["ok"].as_bool() == Some(true) {
+                        "ok"
+                    } else {
+                        "FAILED"
+                    },
+                    o["error"]
+                        .as_str()
+                        .map(|e| format!(" — {e}"))
+                        .unwrap_or_default()
+                );
+            }
+            if let Some(cv) = u["inventory"]["claude_version"].as_str() {
+                println!("harness: {cv}");
+            }
+            println!();
+        }
+    }
+
     // Mesh: live link health when possible, disk configuration otherwise.
     let live_mesh = api
         .as_ref()
@@ -144,8 +226,25 @@ pub fn run(data_dir: &Path) -> Result<()> {
                     .as_str()
                     .map(|u| format!(" — dials {u}"))
                     .unwrap_or_else(|| " — inbound only (this peer dials us)".into());
+                let h = &p["health"];
+                let mut svc = String::new();
+                if let Some(v) = h["version"].as_str() {
+                    svc.push_str(&format!(" · v{v}"));
+                    if v != env!("CARGO_PKG_VERSION") {
+                        svc.push_str(" (skew)");
+                    }
+                }
+                if let Some(a) = h["update_available"].as_str() {
+                    svc.push_str(&format!(" · v{a} available"));
+                }
+                if let Some(st) = h["service_state"].as_str().filter(|s| *s != "ready") {
+                    svc.push_str(&format!(" · {st}"));
+                    if let Some(d) = h["service_detail"].as_str() {
+                        svc.push_str(&format!(" ({d})"));
+                    }
+                }
                 println!(
-                    "  peer '{}'  {updown}{dial}",
+                    "  peer '{}'  {updown}{dial}{svc}",
                     p["node"].as_str().unwrap_or("?")
                 );
             }

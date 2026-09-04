@@ -8,6 +8,95 @@ export interface NodeInfo {
   /** Build stamp of the daemon serving the API. */
   sha?: string;
   built?: string;
+  /** Servicing summary (GET /api/update has the rest). */
+  update_available?: string | null;
+  update_skipped?: boolean;
+  withdrawn?: boolean;
+  service_state?: "ready" | "draining" | "updating";
+  service_detail?: string | null;
+  started_at?: number;
+}
+
+/** The self-update policy (settings.update; docs/SERVICING.md §2). */
+export interface UpdatePolicy {
+  mode?: "notify" | "auto" | null;
+  window?: string | null;
+  soak?: string | null;
+  skip?: string | null;
+  check?: boolean | null;
+}
+
+export interface ReleaseInfo {
+  version: string;
+  tag: string;
+  published_at: number | null;
+  notes: string | null;
+  assets: string[];
+}
+
+export type ServiceState =
+  | { state: "ready" }
+  | {
+      state: "draining";
+      since: number;
+      by: string;
+      when: "quiet" | "now";
+      waiting_on: string[];
+      overdue: boolean;
+      target: string;
+    }
+  | { state: "updating"; since: number; by: string; target: string };
+
+export interface UpdateOutcome {
+  from: string;
+  to: string;
+  ok: boolean;
+  rolled_back: boolean;
+  error: string | null;
+  trigger: string;
+  started_at: number;
+  finished_at: number;
+}
+
+export interface Inventory {
+  os: string;
+  arch: string;
+  claude_version: string | null;
+  started_at: number;
+  pid: number;
+}
+
+export interface Rollout {
+  target: string;
+  when: string;
+  order: string[];
+  done: string[];
+  current: string | null;
+  failed: [string, string] | null;
+  stopped: boolean;
+  finished: boolean;
+  started_at: number;
+  finished_at: number | null;
+}
+
+/** GET /api/update — one node's full servicing status. */
+export interface UpdateStatus {
+  current: string;
+  sha?: string | null;
+  available: ReleaseInfo | null;
+  latest: string | null;
+  behind: boolean;
+  withdrawn: boolean;
+  skipped: boolean;
+  soaked: boolean | null;
+  last_check: { at: number; ok: boolean; error: string | null } | null;
+  state: ServiceState;
+  policy: UpdatePolicy;
+  policy_effective: { auto: boolean; in_window: boolean; quiet_secs: number };
+  waiting_on: string[];
+  inventory: Inventory;
+  last_outcome: UpdateOutcome | null;
+  rollout: Rollout | null;
 }
 
 export type TurnState = "idle" | "busy";
@@ -223,9 +312,10 @@ export interface DiscoveredRepo {
   added: boolean;
 }
 
-/** Node settings (GET/PUT /api/settings). */
+/** Node settings (GET/PUT /api/settings). PUT merges top-level keys. */
 export interface Settings {
-  harness: Record<string, { args: string }>;
+  harness?: Record<string, { args: string }>;
+  update?: UpdatePolicy;
 }
 
 export interface BusSendRequest {
@@ -344,6 +434,13 @@ export interface PeerHealth {
   version: string | null;
   sha: string | null;
   fingerprint: string | null;
+  /** Servicing, from the peer's roster. */
+  update_available?: string | null;
+  service_state?: "ready" | "draining" | "updating" | null;
+  service_detail?: string | null;
+  policy?: string | null;
+  inventory?: Inventory | null;
+  last_outcome?: Partial<UpdateOutcome> | null;
 }
 
 export interface MeshPeer {
@@ -630,6 +727,30 @@ export const api = {
     request<RepoAutorun>(`/api/repo/autorun?repo=${enc(repo)}`),
 
   mesh: () => request<MeshInfo>("/api/mesh"),
+
+  // servicing (docs/SERVICING.md)
+  update: (node?: string) => request<UpdateStatus>(`/api/update${node ? `?node=${enc(node)}` : ""}`),
+  requestUpdate: (when: "quiet" | "now", node?: string) =>
+    post<ServiceState>("/api/update", { when, ...(node ? { node } : {}) }),
+  cancelUpdate: (node?: string) =>
+    request<{ ok: boolean; cancelled: boolean }>("/api/update", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(node ? { node } : {}),
+    }),
+  checkUpdate: (node?: string) =>
+    post<{ ok: boolean; latest: string; behind: boolean }>("/api/update/check", node ? { node } : {}),
+  /** `node: "*"` sets the policy on this node and every linked peer. */
+  setUpdatePolicy: (policy: UpdatePolicy, node?: string) =>
+    request<{ ok: boolean; results?: Record<string, { ok: boolean; error?: string }> }>("/api/update/policy", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ policy, ...(node ? { node } : {}) }),
+    }),
+  updateFleet: (when: "quiet" | "now") => post<Rollout>("/api/update/fleet", { when }),
+  stopFleet: () => request<{ ok: boolean; stopping: boolean }>("/api/update/fleet", { method: "DELETE" }),
+  logs: (node?: string, lines = 200) =>
+    request<{ lines: string[] }>(`/api/logs?lines=${lines}${node ? `&node=${enc(node)}` : ""}`),
   meshInspect: (blob: string) => post<BlobInfo>("/api/mesh/inspect", { blob }),
   meshPending: () => request<MeshPending>("/api/mesh/pending"),
   meshPropose: (kind: string, args: Record<string, unknown>) =>

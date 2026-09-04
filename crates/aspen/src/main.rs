@@ -80,9 +80,12 @@ enum Command {
     Restart,
     /// Show node status: daemon, sessions, mesh.
     Status,
-    /// Get or set daemon start defaults (headless, listen) and harness args.
+    /// Get or set daemon start defaults (headless, listen), harness args,
+    /// and the update policy.
     Config {
-        /// Setting name: headless | listen | topology | claude-args. Omit to list all.
+        /// Setting name: headless | listen | topology | claude-args |
+        /// update | update-window | update-soak | update-skip | update-check.
+        /// Omit to list all.
         key: Option<String>,
         /// New value. Omit to show the current value; "-" clears it.
         value: Option<String>,
@@ -96,9 +99,30 @@ enum Command {
         #[arg(long)]
         force: bool,
         /// Restart a running daemon on the new binary after updating
-        /// (sessions are revived automatically on startup).
+        /// (sessions are revived automatically on startup). The new daemon
+        /// is health-checked; if it doesn't come up, the previous binary is
+        /// put back.
         #[arg(long)]
         restart: bool,
+        /// Only report what the release channel has; change nothing.
+        #[arg(long, conflicts_with_all = ["force", "restart", "rollback"])]
+        check: bool,
+        /// Put the previous binary back (the rollback slot kept by the last
+        /// update) and restart a running daemon onto it.
+        #[arg(long, conflicts_with_all = ["force", "version"])]
+        rollback: bool,
+        /// Launched by the daemon (policy or an operator's request); no
+        /// behavior change beyond labeling the outcome.
+        #[arg(long, hide = true)]
+        unattended: bool,
+        /// Who asked (policy | operator | peer:<node>), for the outcome.
+        #[arg(long, hide = true, default_value = "cli")]
+        trigger: String,
+    },
+    /// Tail the daemon log (<data-dir>/aspen.log).
+    Logs {
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
     },
     /// Developer harness commands against a live agent runtime.
     Dev {
@@ -255,6 +279,8 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "aspen=info,aspen_claude=info,aspen_node=info".into()),
         )
         .with_writer(std::io::stderr)
+        // Detached daemons log to a file: no color codes there.
+        .with_ansi(std::env::var_os("ASPEN_DETACHED").is_none())
         .init();
 
     let _ = aspen_node::federation::VERSION.set((
@@ -271,7 +297,6 @@ async fn main() -> Result<()> {
             headless,
             no_headless,
         } => {
-            cleanup_old_binary();
             let cfg = aspen_node::settings::load(&cli.data_dir).daemon;
             // headless: explicit flags win, else the configured default.
             let headless = if headless {
@@ -303,6 +328,10 @@ async fn main() -> Result<()> {
             if !no_resume {
                 auto_revive(&cli.data_dir, node.clone());
             }
+            // Servicing: report the last updater's outcome, learn the
+            // harness version, start the release check + drain loops.
+            aspen_node::servicing::on_start(&node.inner);
+            aspen_node::servicing::spawn_loops(node.inner.clone());
             // daemon.json is written by serve() once the port is bound and
             // removed here only if it is still ours — a failed bind must not
             // clobber a healthy daemon's state file.
@@ -342,7 +371,28 @@ async fn main() -> Result<()> {
             version,
             force,
             restart,
-        } => update::run(&cli.data_dir, version.as_deref(), force, restart),
+            check,
+            rollback,
+            unattended,
+            trigger,
+        } => update::run(
+            &cli.data_dir,
+            update::Opts {
+                version: version.as_deref(),
+                force,
+                restart,
+                unattended,
+                trigger: &trigger,
+                rollback,
+                check,
+            },
+        ),
+        Command::Logs { lines } => {
+            for l in aspen_node::servicing::tail_log(&cli.data_dir, lines) {
+                println!("{l}");
+            }
+            Ok(())
+        }
         Command::Dev { command } => match command {
             DevCommand::Oneshot {
                 repo,
@@ -425,15 +475,6 @@ pub(crate) fn remove_daemon_state(data_dir: &std::path::Path) {
 pub(crate) fn read_daemon_state(data_dir: &std::path::Path) -> Option<serde_json::Value> {
     let s = std::fs::read_to_string(state_path(data_dir)).ok()?;
     serde_json::from_str(&s).ok()
-}
-
-/// Windows self-replace leaves the previous binary as `aspen.exe.old`;
-/// clean it up once the new binary runs.
-fn cleanup_old_binary() {
-    if let Ok(exe) = std::env::current_exe() {
-        let old = exe.with_extension("exe.old");
-        let _ = std::fs::remove_file(old);
-    }
 }
 
 /// Revive whatever was live when the daemon last went away — cleanly
@@ -537,6 +578,29 @@ fn config_command(
                 _ => "(none)".into(),
             }
         );
+        let u = &s.update;
+        println!(
+            "update      {}   (notify: check + badge, never apply; auto: apply when quiet)",
+            u.mode.clone().unwrap_or_else(|| "(unset → notify)".into())
+        );
+        println!(
+            "update-window {}   (HH:MM-HH:MM local; auto only fires inside it)",
+            u.window.clone().unwrap_or_else(|| "(none)".into())
+        );
+        println!(
+            "update-soak {}   (minimum release age before auto applies, e.g. 24h)",
+            u.soak.clone().unwrap_or_else(|| "(none)".into())
+        );
+        println!(
+            "update-skip {}   (a version to ignore)",
+            u.skip.clone().unwrap_or_else(|| "(none)".into())
+        );
+        println!(
+            "update-check {}   (false = never contact the release channel)",
+            u.check
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "(unset → true)".into())
+        );
     };
 
     let Some(key) = key else {
@@ -588,10 +652,40 @@ fn config_command(
             s.harness.entry("claude".into()).or_default().args =
                 if clear { String::new() } else { value.clone() };
         }
+        "update" | "update-mode" => {
+            s.update.mode = if clear { None } else { Some(value.clone()) };
+        }
+        "update-window" => {
+            s.update.window = if clear { None } else { Some(value.clone()) };
+        }
+        "update-soak" => {
+            s.update.soak = if clear { None } else { Some(value.clone()) };
+        }
+        "update-skip" => {
+            s.update.skip = if clear {
+                None
+            } else {
+                Some(value.trim_start_matches('v').to_owned())
+            };
+        }
+        "update-check" => {
+            s.update.check = if clear {
+                None
+            } else {
+                Some(
+                    value
+                        .parse::<bool>()
+                        .map_err(|_| anyhow::anyhow!("update-check takes true or false"))?,
+                )
+            };
+        }
         other => {
-            anyhow::bail!("unknown setting '{other}' (headless | listen | topology | claude-args)")
+            anyhow::bail!(
+                "unknown setting '{other}' (headless | listen | topology | claude-args | update | update-window | update-soak | update-skip | update-check)"
+            )
         }
     }
+    s.update.validate()?;
     settings::save(data_dir, &s)?;
     println!("set {key} = {}", if clear { "(cleared)" } else { &value });
     Ok(())
@@ -851,7 +945,7 @@ fn notify_daemon_reload(data_dir: &std::path::Path) -> bool {
     }
 }
 
-fn relative(epoch: f64) -> String {
+pub(crate) fn relative(epoch: f64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())

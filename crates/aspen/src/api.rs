@@ -11,7 +11,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -126,6 +126,17 @@ pub async fn serve(
         .route("/links/{id}", delete(delete_link))
         .route("/shutdown", post(post_shutdown))
         .route("/settings", get(get_settings).put(put_settings))
+        .route(
+            "/update",
+            get(get_update).post(post_update).delete(delete_update),
+        )
+        .route("/update/check", post(post_update_check))
+        .route("/update/policy", put(put_update_policy))
+        .route(
+            "/update/fleet",
+            post(post_update_fleet).delete(delete_update_fleet),
+        )
+        .route("/logs", get(get_logs))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
@@ -356,22 +367,36 @@ async fn get_settings(State(s): S) -> impl IntoResponse {
     Json(serde_json::to_value(settings).unwrap_or_default())
 }
 
+/// Merge semantics: only the top-level keys present in the body change
+/// (so a console saving harness args doesn't wipe the update policy).
 async fn put_settings(State(s): S, Json(body): Json<Value>) -> impl IntoResponse {
-    let settings: aspen_node::settings::Settings = match serde_json::from_value(body) {
+    let Some(dir) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "node has no data dir").into_response();
+    };
+    let mut merged = serde_json::to_value(aspen_node::settings::load(dir)).unwrap_or_default();
+    let Some(obj) = body.as_object() else {
+        return err(StatusCode::BAD_REQUEST, "settings must be an object").into_response();
+    };
+    if let Some(m) = merged.as_object_mut() {
+        for (k, v) in obj {
+            m.insert(k.clone(), v.clone());
+        }
+    }
+    let settings: aspen_node::settings::Settings = match serde_json::from_value(merged) {
         Ok(v) => v,
         Err(e) => {
             return err(StatusCode::BAD_REQUEST, format!("bad settings shape: {e}")).into_response()
         }
     };
-    // Validate arg strings now so a typo surfaces here, not at next spawn.
+    // Validate now so a typo surfaces here, not at next spawn / next check.
     for (harness, h) in &settings.harness {
         if let Err(e) = aspen_node::settings::split_args(&h.args, None) {
             return err(StatusCode::BAD_REQUEST, format!("{harness}: {e:#}")).into_response();
         }
     }
-    let Some(dir) = s.node.inner.data_dir.as_deref() else {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "node has no data dir").into_response();
-    };
+    if let Err(e) = settings.update.validate() {
+        return err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
+    }
     match aspen_node::settings::save(dir, &settings) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
@@ -486,12 +511,191 @@ async fn proxy(
 // ------------------------------------------------------------------- handlers
 
 async fn get_node(State(s): S) -> Json<Value> {
+    let svc = &s.node.inner.servicing;
+    let st = svc.state();
+    let policy = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .map(aspen_node::settings::load)
+        .unwrap_or_default()
+        .update;
+    let newer = svc.newer();
     Json(json!({
         "node": s.node_name,
         "version": env!("CARGO_PKG_VERSION"),
         "sha": env!("ASPEN_GIT_SHA"),
         "built": env!("ASPEN_BUILD_DATE"),
+        // Servicing summary for the badge; GET /api/update has the rest.
+        "update_available": newer.as_ref().map(|r| r.version.clone()),
+        "update_skipped": newer.as_ref().is_some_and(|r| policy.skip.as_deref() == Some(r.version.as_str())),
+        "withdrawn": svc.withdrawn(),
+        "service_state": st.name(),
+        "service_detail": st.detail(),
+        "started_at": svc.inventory.started_at,
     }))
+}
+
+// ---------------------------------------------------------------- servicing
+
+#[derive(Deserialize, Default)]
+struct UpdateBody {
+    /// quiet (default) | now
+    when: Option<String>,
+    /// Act on a peer instead of this node.
+    node: Option<String>,
+}
+
+/// Full servicing status: release seen, policy, state, inventory, last
+/// outcome, rollout progress. `?node=` asks a peer for its own.
+async fn get_update(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoResponse {
+    if let Some(node) = q.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_update_status", "", json!({})).await;
+    }
+    Json(aspen_node::servicing::status_json(&s.node.inner)).into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct NodeQuery {
+    node: Option<String>,
+    lines: Option<usize>,
+}
+
+/// Ask a node to update: drain (refuse spawns, wait for quiet), then run
+/// the updater. `when: now` skips the quiet gate — sessions mid-turn lose
+/// that turn (they are revived).
+async fn post_update(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoResponse {
+    let b = body.map(|b| b.0).unwrap_or_default();
+    let when = b.when.clone().unwrap_or_else(|| "quiet".into());
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(
+            &s,
+            node,
+            "node_update",
+            "",
+            json!({ "when": when, "by": format!("operator@{}", s.node_name) }),
+        )
+        .await;
+    }
+    match aspen_node::servicing::request(&s.node.inner, &when, "operator") {
+        Ok(st) => Json(serde_json::to_value(st).unwrap_or_default()).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn delete_update(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoResponse {
+    let b = body.map(|b| b.0).unwrap_or_default();
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_update_cancel", "", json!({ "by": format!("operator@{}", s.node_name) })).await;
+    }
+    match aspen_node::servicing::cancel(&s.node.inner, "operator") {
+        Ok(c) => Json(json!({ "ok": true, "cancelled": c })).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn post_update_check(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoResponse {
+    let b = body.map(|b| b.0).unwrap_or_default();
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_update_check", "", json!({})).await;
+    }
+    match aspen_node::servicing::check_async(s.node.inner.clone()).await {
+        Ok(r) => Json(json!({
+            "ok": true, "latest": r.version, "tag": r.tag,
+            "behind": s.node.inner.servicing.newer().is_some(),
+        }))
+        .into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PolicyBody {
+    /// A node name, or "*" for this node and every linked peer.
+    node: Option<String>,
+    policy: aspen_node::settings::UpdateSettings,
+}
+
+/// Set the update policy on this node, a peer, or the whole mesh (`*`).
+async fn put_update_policy(State(s): S, Json(b): Json<PolicyBody>) -> impl IntoResponse {
+    if let Err(e) = b.policy.validate() {
+        return err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
+    }
+    let set_local = |s: &AppState| -> Result<()> {
+        let dir = s
+            .node
+            .inner
+            .data_dir
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("node has no data dir"))?;
+        let mut cur = aspen_node::settings::load(dir);
+        cur.update = b.policy.clone();
+        aspen_node::settings::save(dir, &cur)
+    };
+    match b.node.as_deref() {
+        Some("*") => {
+            let mut results = serde_json::Map::new();
+            results.insert(
+                s.node_name.clone(),
+                match set_local(&s) {
+                    Ok(()) => json!({ "ok": true }),
+                    Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+                },
+            );
+            if let Some(mesh) = s.node.inner.mesh() {
+                let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
+                for p in peers {
+                    let r = mesh
+                        .api_call(&p, "node_update_policy", "", json!({ "policy": b.policy }), LIST_TIMEOUT)
+                        .await;
+                    results.insert(
+                        p,
+                        match r {
+                            Ok(_) => json!({ "ok": true }),
+                            Err(e) => json!({ "ok": false, "error": e.to_string() }),
+                        },
+                    );
+                }
+            }
+            Json(json!({ "ok": true, "results": results })).into_response()
+        }
+        Some(node) if !is_self_node(&s, node) => {
+            proxy(&s, node, "node_update_policy", "", json!({ "policy": b.policy })).await
+        }
+        _ => match set_local(&s) {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        },
+    }
+}
+
+/// Rolling update of every linked peer, then this node (docs/SERVICING §7).
+async fn post_update_fleet(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoResponse {
+    let when = body
+        .and_then(|b| b.0.when)
+        .unwrap_or_else(|| "quiet".into());
+    match aspen_node::servicing::start_rollout(&s.node.inner, &when) {
+        Ok(r) => Json(serde_json::to_value(r).unwrap_or_default()).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn delete_update_fleet(State(s): S) -> impl IntoResponse {
+    let stopped = aspen_node::servicing::stop_rollout(&s.node.inner);
+    Json(json!({ "ok": true, "stopping": stopped }))
+}
+
+/// Tail this node's (or a peer's) daemon log.
+async fn get_logs(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoResponse {
+    let lines = q.lines.unwrap_or(200);
+    if let Some(node) = q.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_logs", "", json!({ "lines": lines })).await;
+    }
+    let Some(dir) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::NOT_FOUND, "node has no data dir").into_response();
+    };
+    Json(json!({ "lines": aspen_node::servicing::tail_log(dir, lines) })).into_response()
 }
 
 fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {

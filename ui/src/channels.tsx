@@ -1,6 +1,7 @@
 // Custom-channel creation: the one dialog for wiring a bus connection
 // between agents/nodes/operator, used from Conversations and the Map.
 
+import { createPortal } from "react-dom";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
 
@@ -86,12 +87,14 @@ export function Modal({ title, children, onClose }: { title: string; children: R
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
-  return (
+  // Portaled to <body>: a modal opened from inside a strip would otherwise
+  // be clipped by that strip's stacking context.
+  return createPortal(
     <div
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}
       onClick={onClose}
     >
-      <div className="strip" style={{ width: 480, maxWidth: "90vw", maxHeight: "85vh", overflow: "auto", background: "var(--bg-panel)" }} onClick={(e) => e.stopPropagation()}>
+      <div className="strip" style={{ width: "fit-content", minWidth: 480, maxWidth: "90vw", maxHeight: "85vh", overflow: "auto", background: "var(--bg-panel)" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
           <span className="t-display">{title}</span>
           <span style={{ flex: 1 }} />
@@ -99,6 +102,7 @@ export function Modal({ title, children, onClose }: { title: string; children: R
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

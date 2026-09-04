@@ -103,6 +103,8 @@ pub struct NodeInner {
     /// Set when the daemon is going down: session exits during the ladder
     /// must not clear the agents' `live` mark (they'll be revived).
     pub shutting_down: std::sync::atomic::AtomicBool,
+    /// Self-update state, inventory, rollout (servicing.rs).
+    pub servicing: crate::servicing::Servicing,
 }
 
 impl NodeInner {
@@ -275,6 +277,13 @@ impl Node {
             mesh: std::sync::RwLock::new(mesh),
             data_dir,
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            servicing: crate::servicing::Servicing::new(
+                crate::federation::VERSION
+                    .get()
+                    .map(|(v, _)| v.clone())
+                    .unwrap_or_else(|| "0.0.0".into()),
+                std::env::current_exe().ok(),
+            ),
         });
         tokio::spawn(delivery::run(inner.clone(), delivery_rx));
         Self { inner }
@@ -307,6 +316,14 @@ impl Node {
         if self.inner.live(name).is_some() {
             return Err(anyhow!("an agent named {name} is already running"));
         }
+        // Draining for an update: no new work until the node is back.
+        if !self.inner.servicing.accepting_spawns() {
+            return Err(anyhow!(
+                "node is updating ({}); start sessions once it is back, or cancel the update",
+                self.inner.servicing.state().name()
+            ));
+        }
+        self.inner.servicing.note_spawn();
 
         // Resolve skip-permissions: explicit request wins, else the repo's
         // stored default, else off.

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, type Agent, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
 import { Meter, presenceOf, useTheme } from "./components";
@@ -179,11 +179,32 @@ function MeshColumn() {
 function VersionBadge({ node }: { node: NodeInfo | null }) {
   const ui = __ASPEN_UI_VERSION__;
   const uiSha = __ASPEN_UI_SHA__;
+  const nav = useNavigate();
   if (!node) return null;
   const stale = node.version !== ui || (node.sha && uiSha !== "unknown" && node.sha !== uiSha);
   const title = `api ${node.version}${node.sha ? ` (${node.sha})` : ""} · ui ${ui} (${uiSha})${
     stale ? " — reload to pick up the new console" : ""
   }`;
+  const available = node.update_available && !node.update_skipped ? node.update_available : null;
+  const servicing = node.service_state && node.service_state !== "ready" ? node.service_state : null;
+  if (!stale && (available || servicing)) {
+    return (
+      <button
+        type="button"
+        className="btn ghost sm"
+        onClick={() => nav("/mesh?view=list#nodes")}
+        title={
+          servicing
+            ? `this node is ${servicing}${node.service_detail ? ` — ${node.service_detail}` : ""}`
+            : `v${available} is available — open Nodes to update`
+        }
+        style={{ color: "var(--sig-normal)" }}
+      >
+        ● v{node.version}
+        {servicing ? ` · ${servicing}` : ` → v${available}`}
+      </button>
+    );
+  }
   return stale ? (
     <button
       type="button"
@@ -232,7 +253,7 @@ function StatusBar() {
 export default function App() {
   const agentsPoll = usePoll(api.agents, 2000);
   const inboxPoll = usePoll(api.inbox, 5000);
-  const nodePoll = usePoll(api.node, 30000);
+  const nodePoll = usePoll(api.node, 15000);
 
   const data: AppData = {
     agents: agentsPoll.data ?? [],

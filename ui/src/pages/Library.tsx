@@ -11,6 +11,7 @@ import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
 import { MeshPanel } from "../meshPanel";
+import { ServicingPanel } from "../servicing";
 
 function errText(e: unknown): string {
   return e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -682,6 +683,7 @@ function RepositoriesSection({
       <ErrorBar error={actionError} />
 
       <MeshPanel />
+      <ServicingPanel />
       <AddRepoForm onAdded={refresh} />
       <HarnessDefaults />
       <LinksSection />

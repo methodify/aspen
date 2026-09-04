@@ -77,6 +77,36 @@ daemon, swaps the binary, and brings it back), or `aspen down` first. On
 Linux/macOS a plain `aspen update` works with the daemon up; `--restart`
 then bounces it onto the new binary.
 
+`--restart` keeps the previous binary in a rollback slot (`aspen.prev` /
+`aspen.exe.old`), health-checks the new daemon, and puts the old one back if
+it doesn't come up; `aspen update --rollback` does that by hand, and
+`aspen update --check` only reports.
+
+### Auto-update, drain, and the fleet
+
+Nodes check the release channel themselves (at start, every 6 hours, and
+when a peer hints) and show what they find in the console (the version
+badge, a card under *Needs you*, and *Mesh → list → Nodes*). Whether they
+*apply* it is a per-node policy:
+
+```bash
+aspen config update auto              # notify (default) | auto
+aspen config update-window 02:00-06:00
+aspen config update-soak 24h          # don't take a release younger than this
+aspen config update-skip 0.4.0        # snooze one version
+```
+
+`auto` never interrupts work: the node *drains* — refuses new sessions and
+waits until every session has been idle five minutes with nothing pending —
+then runs the equivalent of `aspen update --restart` and revives everything.
+The same drain is what the console's **update** button does, for this node
+or any peer; **update now** restarts through whatever is running, after
+naming the sessions it will interrupt. **update fleet** rolls the mesh one
+node at a time, this node last, and stops at the first node that doesn't
+come back. `aspen status` and `aspen logs` show the state from a shell;
+the node rows in the console show version, harness version, uptime, and
+each node's log. Design reference: [`docs/SERVICING.md`](docs/SERVICING.md).
+
 All node state lives in `~/.aspen` (override with `--data-dir`): the bus
 store, mesh identity and certificates, trusted-repo decisions, the API token,
 daemon state, and logs. Updates never touch it.

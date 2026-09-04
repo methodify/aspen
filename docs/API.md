@@ -29,7 +29,7 @@ whoever messaged you are always allowed.
 
 | Method & path | Body | Returns | Notes |
 |---|---|---|---|
-| `GET /api/node` | — | `{ node, version, sha, built }` | identity/health; `sha`/`built` are stamped at compile time |
+| `GET /api/node` | — | `{ node, version, sha, built, update_available, update_skipped, withdrawn, service_state, service_detail, started_at }` | identity/health; `sha`/`built` are stamped at compile time. The servicing fields are the badge's summary (`service_state`: ready / draining / updating) |
 | `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state |
 | `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust?, title?, extra_args?, node? }` | `Agent` | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one. `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. With `node`, the session spawns on that peer over the mesh (returns `name@node`). An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate) |
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
@@ -50,8 +50,16 @@ whoever messaged you are always allowed.
 | `POST /api/links` | `{ from, to, two_way?, purpose?, urgency? }` | `{ ok, id }` | declare a link (bare `@x` / `#x` accepted); mirrored to any peer node hosting an endpoint |
 | `DELETE /api/links/{id}` | — | `{ ok }` | remove a link (mirrored) |
 | `GET /api/mesh/repos` | — | `{ nodes: [{node, self, reachable, repos}] }` | mesh-wide repo registry grouped by node (this node + each peer); an unreachable peer lists no repos |
-| `GET /api/settings` | — | `Settings` | node settings: per-harness default CLI args |
-| `PUT /api/settings` | `Settings` | `{ ok }` | replace settings; arg strings are validated (reserved protocol flags rejected) |
+| `GET /api/settings` | — | `Settings` | node settings: per-harness default CLI args, daemon defaults, topology, `update` policy |
+| `PUT /api/settings` | partial `Settings` | `{ ok }` | **merge**: only the top-level keys present change; arg strings and the update policy are validated |
+| `GET /api/update?node=` | — | `UpdateStatus` | servicing (docs/SERVICING.md): `current`, `available` (newer release: version/tag/published_at/notes), `latest`, `behind`, `withdrawn`, `skipped`, `soaked`, `last_check`, `state` (`ready` / `draining{since,by,when,waiting_on,overdue,target}` / `updating`), `policy`, `policy_effective`, `waiting_on` (what a quiet drain would wait on right now), `inventory{os,arch,claude_version,started_at,pid}`, `last_outcome`, `rollout`. With `node`, a peer's own status |
+| `POST /api/update` | `{ when?: quiet\|now, node? }` | `ServiceState` | ask a node to update: drain (refuse spawns, wait for the quiet gate), then run the unattended updater. `now` skips the gate — turns in flight are lost (sessions revive). 409 if nothing newer is known or an updater already runs |
+| `DELETE /api/update` | `{ node? }` | `{ ok, cancelled }` | cancel a drain (not an updater already running) |
+| `POST /api/update/check` | `{ node? }` | `{ ok, latest, tag, behind }` | check the release channel now |
+| `PUT /api/update/policy` | `{ node?: name\|"*", policy: UpdatePolicy }` | `{ ok, results? }` | set the update policy (`mode: notify\|auto`, `window`, `soak`, `skip`, `check`) on this node, a peer, or (`*`) every linked node |
+| `POST /api/update/fleet` | `{ when? }` | `Rollout` | rolling update: every linked peer one at a time (each when quiet), this node last; stops at the first node that doesn't come back on the target |
+| `DELETE /api/update/fleet` | — | `{ ok, stopping }` | stop the rollout after the node in progress |
+| `GET /api/logs?node=&lines=` | — | `{ lines[] }` | tail `aspen.log` on this node or a peer (max 2000 lines) |
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
 | `POST /api/agents/{name}/interrupt` | — | `{}` | abort the in-flight turn |
 | `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input?, updated_permissions? }` | `{}` | answer a prompt. Deny: `message` shown to the model. Allow: `updated_input` replaces tool input — for AskUserQuestion send `{questions: <echo>, answers: {"<question text>": "<option label>"}, response?}` (§7.6). `updated_permissions`: echo the prompt's `suggestions` verbatim for "always allow" |

@@ -28,6 +28,7 @@ import { useHotkeys } from "../hotkeys";
 import { useTrustedStart } from "../trust";
 import { NewSessionPanel } from "../sessionStart";
 import { NodeChip, PermCard, QuestionCard } from "../needs";
+import { UpdateCard } from "../servicing";
 import {
   ClassBadge,
   ClassSelect,
@@ -189,7 +190,7 @@ function WorkCard({
 
 export default function Now() {
   const nav = useNavigate();
-  const { agents, refreshAgents, refreshInbox } = useAppData();
+  const { agents, refreshAgents, refreshInbox, node } = useAppData();
   const activityPoll = usePoll<Activity>(api.activity, 3000);
   const needsPoll = usePoll<Needs>(api.needs, 2000);
   const trust = useTrustedStart();
@@ -236,7 +237,11 @@ export default function Now() {
   const exited = agents.filter(
     (a) => !a.live && a.last_exit_at != null && now - a.last_exit_at < FINISHED_WINDOW_S,
   );
-  const needsCount = prompts.length + inbox.length + finished.length + waiting.length + exited.length;
+  const updateNeed =
+    node && ((node.update_available && !node.update_skipped) || (node.service_state && node.service_state !== "ready") || node.withdrawn)
+      ? 1
+      : 0;
+  const needsCount = prompts.length + inbox.length + finished.length + waiting.length + exited.length + updateNeed;
 
   async function sendReply(to: string) {
     if (!replyText.trim()) return;
@@ -312,6 +317,7 @@ export default function Now() {
             <span className="label">Needs you</span>
             <span className="mono-meta">{needsCount === 0 ? "nothing — the fleet is running itself" : `${needsCount}`}</span>
           </div>
+          <UpdateCard />
           {prompts.map((p) =>
             p.is_question ? (
               <QuestionCard key={`${p.agent}:${p.request_id}`} prompt={p} onAnswered={() => void needsPoll.refresh()} />

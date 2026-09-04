@@ -16,6 +16,8 @@ pub mod mesh;
 pub mod node;
 pub mod pending;
 pub mod permit;
+pub mod release;
+pub mod servicing;
 pub mod settings;
 pub mod skills;
 pub mod store;

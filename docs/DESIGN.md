@@ -335,6 +335,7 @@ capability a peer node has over this node today, with no further policy:
 | list this node's repo registry; enumerate a repo's sessions | v0.1.6 | `node_repos`, `node_sessions` |
 | trigger repo discovery here (writes this node's registry) | v0.1.6 | `node_discover` |
 | **spawn a session here, acknowledging the trust gate on this node's behalf** | v0.1.6 | `spawn` with `acknowledge_trust` |
+| **make this node fetch and install a release** (from the channel this node verifies itself), set its update policy, read its log | v0.4.0 | `node_update*`, `node_logs` — the `service` capability once the layer exists; never for a foreign-mesh peer |
 
 The last row is the one to notice: the trust gate exists so nothing auto-runs
 a repo's hooks/MCP without a human looking, and a peer can now satisfy it
@@ -394,6 +395,18 @@ What the console does instead — without authority:
 Net ceremony: `enroll` queued on B → `apply` on B → deep link/paste to A →
 `apply` on A → deep link/paste to B → `apply` on B. Two shells you needed
 anyway; every step reviewed in the UI; the API never gained trust.
+
+### 8.1b Servicing (decided 2026-09-03)
+
+Nodes check the release channel themselves, drain (refuse spawns, wait
+for every session to be idle and nothing pending), then run the same
+`aspen update --restart` an operator would — with a rollback slot, a
+health check, and an outcome record the next daemon reports. Peers only
+*hint* that a release exists; no frame ever carries a binary or a fetch
+URL. The rolling fleet update is serial and health-gated, this node last.
+Full model, policy knobs, and consequences: [`SERVICING.md`](SERVICING.md).
+The one that matters for §8.2: **auto-update makes release signing a
+precondition for going public**, not a nicety.
 
 ### 8.2 Release authenticity **[revisit before going public]**
 
@@ -620,3 +633,14 @@ cleaner lane for roster updates than user-message headers.
   work mesh is the first multi-operator mesh. Two daemons on one machine
   give hard isolation today with no code. Full thinking, open decisions,
   and the build order: [`proposals/multi-mesh.md`](proposals/multi-mesh.md).
+- **2026-09-03 — Servicing.** Nodes know when a release exists (own
+  check + peer hints), carry a three-knob policy (`notify`/`auto`,
+  window, soak) settable from the console and fanned out to the mesh,
+  update themselves only through a *drain* (refuse new work, wait for the
+  quiet gate) via the unattended updater with rollback slot + health check
+  + outcome events, and can be told to update one at a time from any
+  console (rolling, this node last). Two verbs on purpose: *update* waits
+  for quiet, *update now* interrupts and names the sessions it will
+  interrupt — no policy value produces "now". Inventory (harness version,
+  OS, uptime), remote logs, and a federation protocol number came with it.
+  Design reference: [`SERVICING.md`](SERVICING.md).
