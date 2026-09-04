@@ -27,6 +27,7 @@ runtime is an adapter, not a rewrite.
 
 - Product design: [`docs/DESIGN.md`](docs/DESIGN.md)
 - Node API: [`docs/API.md`](docs/API.md)
+- Proposals (parked, revisit): [`docs/proposals/`](docs/proposals/)
 - Rendezvous: [`rendezvous/README.md`](rendezvous/README.md)
 - Protocol ground truth: [`docs/reference/`](docs/reference/)
 

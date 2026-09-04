@@ -613,3 +613,10 @@ cleaner lane for roster updates than user-message headers.
   refuse. Enforcement is a dial: open (note) / closed (refuse); replies
   always allowed. Links mirror to the peer hosting the far endpoint. Drawn
   on the Mesh map from any two selected endpoints; channels stay rooms.
+- **2026-09-03 — Multi-mesh membership: parked as a proposal.** A node in
+  more than one mesh (personal + work) is feasible at the identity layer
+  (one keypair, one cert per mesh) but turns on *exposure* (which repos a
+  mesh may see) and requires the per-peer capability layer first, because a
+  work mesh is the first multi-operator mesh. Two daemons on one machine
+  give hard isolation today with no code. Full thinking, open decisions,
+  and the build order: [`proposals/multi-mesh.md`](proposals/multi-mesh.md).
