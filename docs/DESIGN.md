@@ -396,6 +396,15 @@ Net ceremony: `enroll` queued on B → `apply` on B → deep link/paste to A →
 `apply` on A → deep link/paste to B → `apply` on B. Two shells you needed
 anyway; every step reviewed in the UI; the API never gained trust.
 
+The panel is shaped by the node's **stage** (2026-09-04): *solo* (no
+identity: a mesh is optional — start one here, or join one), *enrolled*
+(hand over the blob, paste the bundle), *root* (add a node as three
+steps, remove nodes, the root key's whereabouts), *member* (where the
+root key lives — rosters carry `has_root` — with a link into that
+console; register peers by cert; leave). `init`, `peers_remove`, and
+`leave` joined the proposal kinds; the CLI grew `peers-remove` and
+`leave [--discard-root]`, the latter refused while holding the root key.
+
 ### 8.1b Servicing (decided 2026-09-03)
 
 Nodes check the release channel themselves, drain (refuse spawns, wait

@@ -7,7 +7,7 @@
 use anyhow::{anyhow, bail, Result};
 
 use aspen_node::mesh::{JoinBundle, MeshConfig, MeshFiles};
-use aspen_wire::identity::{self, JoinRequest, NodeCert, NodeIdentity};
+use aspen_wire::identity::{self, JoinRequest, MeshRoot, NodeCert, NodeIdentity};
 
 pub struct Done {
     pub summary: String,
@@ -19,6 +19,68 @@ fn done(summary: impl Into<String>, artifact: Option<String>) -> Done {
         summary: summary.into(),
         artifact,
     }
+}
+
+/// Create a mesh here: a new root key, and this node certified under it.
+/// An uncertified identity left by an earlier `enroll` is reused (same
+/// keypair, its name), so changing one's mind costs nothing.
+pub fn init(files: &MeshFiles, mesh: &str, node_name: &str) -> Result<Done> {
+    if files.load_mesh()?.is_some() {
+        bail!("this node already belongs to a mesh (see `aspen mesh status`)");
+    }
+    let mesh = mesh.trim();
+    if mesh.is_empty()
+        || !mesh
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!("mesh name must be letters, digits, - or _ (got {mesh:?})");
+    }
+    let root = MeshRoot::create(mesh);
+    let mut id = match files.load_identity()? {
+        Some(existing) if existing.cert.is_some() => bail!(
+            "this node already has a certified identity ('{}')",
+            existing.node
+        ),
+        Some(existing) => existing,
+        None => NodeIdentity::create(node_name),
+    };
+    let cert = root.certify(&id.join_request())?;
+    id.install_cert(cert)?;
+    files.save_root(&root)?;
+    files.save_identity(&id)?;
+    files.save_mesh(&MeshConfig {
+        mesh: mesh.to_owned(),
+        root_public: root.root_public.clone(),
+        peers: vec![],
+        relay: None,
+    })?;
+    let blob = identity::to_blob("cert", id.cert.as_ref().unwrap())?;
+    Ok(done(
+        format!(
+            "mesh '{mesh}' created; this node is '{}' and holds the ROOT KEY ({}) — back it up",
+            id.node,
+            files.data_dir.join("root.key").display()
+        ),
+        Some(blob),
+    ))
+}
+
+/// Forget a peer.
+pub fn peers_remove(files: &MeshFiles, node: &str) -> Result<Done> {
+    if files.remove_peer(node)? {
+        Ok(done(
+            format!("peer '{node}' removed from this node's mesh config"),
+            None,
+        ))
+    } else {
+        bail!("no peer named '{node}'")
+    }
+}
+
+/// Leave the mesh (see MeshFiles::leave).
+pub fn leave(files: &MeshFiles, discard_root: bool) -> Result<Done> {
+    Ok(done(files.leave(discard_root)?, None))
 }
 
 /// Generate this node's identity (or reuse an uncertified one) and hand

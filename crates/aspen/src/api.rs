@@ -1799,9 +1799,13 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
             json!({
                 "node": name,
                 "url": p.url,
+                // Where that node's console probably is: its dial URL minus
+                // the federation path (a guess when it listens headless).
+                "console_url": p.url.as_deref().and_then(console_url_of),
                 "link_up": links.contains_key(name),
                 "agents": remote.get(name).map(|v| v.len()).unwrap_or(0),
                 "fingerprint": aspen_node::federation::fingerprint(&p.cert.ed_public),
+                "has_root": h.has_root,
                 "health": h,
             })
         })
@@ -1832,6 +1836,7 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
             "version": version,
             "sha": sha,
             "has_root": has_root,
+            "root_key_path": if has_root { data_dir.as_deref().map(|d| d.join("root.key").to_string_lossy().into_owned()) } else { None },
         },
         "root_public": aspen_wire::b64::encode(&mesh.root_public()),
         "peers": peers,
@@ -1842,6 +1847,18 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
         "pending": pending,
     }))
     .into_response()
+}
+
+/// ws://host:port/api/federation/ws → http://host:port
+fn console_url_of(dial: &str) -> Option<String> {
+    let (scheme, rest) = dial.split_once("://")?;
+    let host = rest.split('/').next()?;
+    let http = match scheme {
+        "ws" => "http",
+        "wss" => "https",
+        other => other,
+    };
+    Some(format!("{http}://{host}"))
 }
 
 // ---------------------------------------------------------- mesh ceremony
@@ -1933,10 +1950,21 @@ struct ProposeBody {
 /// Queue a mesh change for `aspen mesh apply`. The daemon never executes
 /// these — see pending.rs.
 async fn post_mesh_pending(State(s): S, Json(b): Json<ProposeBody>) -> impl IntoResponse {
-    if !["enroll", "certify", "join", "peers_add", "relay"].contains(&b.kind.as_str()) {
+    if ![
+        "enroll",
+        "certify",
+        "join",
+        "peers_add",
+        "relay",
+        "init",
+        "peers_remove",
+        "leave",
+    ]
+    .contains(&b.kind.as_str())
+    {
         return err(
             StatusCode::BAD_REQUEST,
-            "kind must be enroll|certify|join|peers_add|relay",
+            "kind must be enroll|certify|join|peers_add|relay|init|peers_remove|leave",
         )
         .into_response();
     }

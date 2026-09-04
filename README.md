@@ -223,6 +223,10 @@ are filtered out by their entrypoint.
 
 ## Joining a second machine (the mesh)
 
+The console's Mesh panel walks every stage — start a mesh here, join one,
+add a node, remove one, leave — and queues each step for `aspen mesh apply`
+on that machine. The shell equivalents, for reference:
+
 Three commands, two pastes, no restarts — the daemons can be running the
 whole time (mesh commands apply to a running daemon live).
 
@@ -254,6 +258,12 @@ direct path, a rendezvous relay:
 aspen mesh relay wss://relay.example.com/relay   # on each node; rides the
                                                  # bundle for later joiners
 ```
+
+Taking a node out: `aspen mesh peers-remove <node>` on each node that lists
+it (certs aren't revoked; the other nodes just stop dialing/accepting it),
+and `aspen mesh leave` on the node itself (keeps its keypair for a future
+enroll). The root node refuses to leave unless `--discard-root`, since the
+root key *is* the mesh.
 
 Either console can now see and drive agents on the other node
 (`@agent@node` addressing), and the Library shows both nodes' repos. Bus traffic and remote sessions travel

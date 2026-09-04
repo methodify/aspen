@@ -222,6 +222,16 @@ enum MeshCommand {
         #[arg(long)]
         url: Option<String>,
     },
+    /// Forget a peer (stop dialing/accepting it here). Its cert is not
+    /// revoked — remove it on every node that lists it.
+    PeersRemove { node: String },
+    /// Leave the mesh: drop membership and this node's cert; keep the
+    /// keypair for a future enroll.
+    Leave {
+        /// This node holds the root key: delete it too, ending the mesh.
+        #[arg(long)]
+        discard_root: bool,
+    },
     /// Print this mesh's ROOT PUBLIC key (safe to give a relay).
     RootPubkey,
     /// Set (or clear) the rendezvous relay URL this node dials.
@@ -1134,8 +1144,8 @@ pub(crate) fn relative(epoch: f64) -> String {
 }
 
 fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
-    use aspen_node::mesh::{MeshConfig, MeshFiles};
-    use aspen_wire::identity::{self, MeshRoot, NodeIdentity};
+    use aspen_node::mesh::MeshFiles;
+    use aspen_wire::identity;
 
     let files = MeshFiles::new(data_dir);
     let default_node = || {
@@ -1155,31 +1165,26 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
 
     match cmd {
         MeshCommand::Init { mesh, node } => {
-            if files.load_mesh()?.is_some() {
-                anyhow::bail!("this node already belongs to a mesh (see `aspen mesh status`)");
-            }
             let node_name = node.unwrap_or_else(default_node);
-            let root = MeshRoot::create(&mesh);
-            let mut id = NodeIdentity::create(&node_name);
-            let cert = root.certify(&id.join_request())?;
-            id.install_cert(cert)?;
-            files.save_root(&root)?;
-            files.save_identity(&id)?;
-            files.save_mesh(&MeshConfig {
-                mesh: mesh.clone(),
-                root_public: root.root_public.clone(),
-                peers: vec![],
-                relay: None,
-            })?;
-            println!("mesh '{mesh}' created; this node is '{node_name}'.");
-            println!("ROOT KEY at {} — it IS the mesh. Back it up; never copy it to nodes that don't certify.", data_dir.join("root.key").display());
+            let d = meshops::init(&files, &mesh, &node_name)?;
+            println!("{}.", d.summary);
+            println!("The root key IS the mesh: never copy it to nodes that don't certify.");
             println!(
-                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes; saved in identity.json — re-print anytime with `aspen mesh export`):\n{}",
-                identity::to_blob(
-                    "cert",
-                    files.load_identity()?.unwrap().cert.as_ref().unwrap()
-                )?
+                "\nThis node's cert blob (for `aspen mesh peers-add` on other nodes; re-print anytime with `aspen mesh export`):\n{}",
+                d.artifact.unwrap_or_default()
             );
+            notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        MeshCommand::PeersRemove { node } => {
+            let d = meshops::peers_remove(&files, &node)?;
+            println!("{}", d.summary);
+            notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        MeshCommand::Leave { discard_root } => {
+            let d = meshops::leave(&files, discard_root)?;
+            println!("{}", d.summary);
             notify_daemon_reload(data_dir);
             Ok(())
         }
@@ -1285,6 +1290,20 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                         "set relay to {}",
                         g("url").unwrap_or_else(|| "(cleared)".into())
                     ),
+                    "init" => format!(
+                        "CREATE mesh '{}' here as node '{}' (mints the root key on this machine)",
+                        g("mesh").unwrap_or_default(),
+                        g("node").unwrap_or_else(&default_node)
+                    ),
+                    "peers_remove" => format!("forget peer '{}'", g("node").unwrap_or_default()),
+                    "leave" => format!(
+                        "LEAVE the mesh{}",
+                        if p.args.get("discard_root").and_then(|b| b.as_bool()) == Some(true) {
+                            " and DISCARD THE ROOT KEY (ends the mesh)"
+                        } else {
+                            ""
+                        }
+                    ),
                     other => format!("unknown kind {other}"),
                 };
                 println!(
@@ -1319,6 +1338,16 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                         g("url").as_deref(),
                     ),
                     "relay" => meshops::relay(&files, g("url").as_deref()),
+                    "init" => meshops::init(
+                        &files,
+                        &g("mesh").unwrap_or_default(),
+                        &g("node").unwrap_or_else(&default_node),
+                    ),
+                    "peers_remove" => meshops::peers_remove(&files, &g("node").unwrap_or_default()),
+                    "leave" => meshops::leave(
+                        &files,
+                        p.args.get("discard_root").and_then(|b| b.as_bool()) == Some(true),
+                    ),
                     other => Err(anyhow::anyhow!("unknown proposal kind {other}")),
                 };
                 match result {

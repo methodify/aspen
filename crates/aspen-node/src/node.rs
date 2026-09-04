@@ -234,19 +234,51 @@ impl Node {
         let files = crate::mesh::MeshFiles::new(data_dir);
         let (identity, mut config) = match (files.load_identity()?, files.load_mesh()?) {
             (Some(id), Some(cfg)) if id.cert.is_some() => (id, cfg),
-            _ => return Ok("no certified mesh membership on disk".into()),
+            _ => {
+                // Left the mesh (or never joined): drop the live state so
+                // links close and dialers stop.
+                let had = self.inner.mesh.write().unwrap().take();
+                return Ok(match had {
+                    Some(m) => {
+                        m.links.lock().unwrap().clear();
+                        m.remote.lock().unwrap().clear();
+                        format!("left mesh '{}': links closed", m.mesh_name())
+                    }
+                    None => "no certified mesh membership on disk".into(),
+                });
+            }
         };
         config.peers = files.verified_peers()?;
         let summary;
         if let Some(mesh) = self.inner.mesh() {
             let mut cur = mesh.config.write().unwrap();
             let before = cur.peers.len();
+            let gone: Vec<String> = cur
+                .peers
+                .iter()
+                .map(|p| p.cert.node.clone())
+                .filter(|n| !config.peers.iter().any(|p| &p.cert.node == n))
+                .collect();
             *cur = config;
+            drop(cur);
+            // A removed peer's live link closes now; its dialer sees it is
+            // no longer configured and exits.
+            for n in &gone {
+                mesh.links.lock().unwrap().remove(n);
+                mesh.remote.lock().unwrap().remove(n);
+                mesh.dialing.lock().unwrap().remove(n);
+            }
+            let cur = mesh.config.read().unwrap();
             summary = format!(
-                "mesh '{}' config reloaded: {} peer(s) (was {}), relay {}",
+                "mesh '{}' config reloaded: {} peer(s) (was {}){}, relay {}",
                 cur.mesh,
                 cur.peers.len(),
                 before,
+                if gone.is_empty() {
+                    String::new()
+                } else {
+                    format!(", removed {}", gone.join(", "))
+                },
                 cur.relay.as_deref().unwrap_or("none")
             );
         } else {

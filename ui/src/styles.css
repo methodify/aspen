@@ -556,5 +556,12 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .mesh-queue { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--line); }
 .mesh-outcome { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
 .mesh-panel textarea { resize: vertical; }
+.mesh-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.mesh-choice { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--bg-well); border: 1px solid var(--line); }
+.mesh-step { display: flex; gap: 12px; align-items: flex-start; padding: 6px 0; }
+.mesh-step-n { flex: 0 0 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-hi); font: 600 0.72rem/1 var(--font-mono); color: var(--text-mid); }
+.mesh-step-n.done { color: var(--live); border-color: var(--live); }
+.mesh-step-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.mesh-step-title { font-size: 0.85rem; color: var(--text-hi); }
 .svc-notes { margin: 0; padding: 8px 10px; background: var(--bg-well); border: 1px solid var(--line); font: 400 0.8rem/1.45 var(--font-mono); white-space: pre-wrap; max-height: 260px; overflow: auto; color: var(--text-mid); }
 .svc-log { margin: 0; padding: 8px 10px; background: var(--bg-well); border: 1px solid var(--line); font: 400 0.74rem/1.4 var(--font-mono); white-space: pre-wrap; word-break: break-all; max-height: 60vh; overflow: auto; color: var(--text-mid); }

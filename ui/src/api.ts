@@ -467,16 +467,20 @@ export interface PeerHealth {
 export interface MeshPeer {
   node: string;
   url: string | null;
+  /** That node's console, derived from its dial URL (a guess when headless). */
+  console_url?: string | null;
   link_up: boolean;
   agents: number;
   fingerprint?: string;
+  /** The peer holds the mesh's root key — certify happens there. */
+  has_root?: boolean | null;
   health?: PeerHealth;
 }
 
 /** A queued mesh change (the console authors; `aspen mesh apply` executes). */
 export interface MeshProposal {
   id: string;
-  kind: "enroll" | "certify" | "join" | "peers_add" | "relay" | string;
+  kind: "enroll" | "certify" | "join" | "peers_add" | "relay" | "init" | "peers_remove" | "leave" | string;
   args: Record<string, unknown>;
   created_at: number;
   source: string;
@@ -507,6 +511,7 @@ export interface MeshInfo {
     version?: string;
     sha?: string;
     has_root?: boolean;
+    root_key_path?: string | null;
   } | null;
   root_public?: string;
   peers?: MeshPeer[];

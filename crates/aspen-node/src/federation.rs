@@ -91,6 +91,8 @@ pub struct PeerHealth {
     pub policy: Option<String>,
     pub inventory: Option<Value>,
     pub last_outcome: Option<Value>,
+    /// The peer holds the mesh's root key (certify happens there).
+    pub has_root: Option<bool>,
 }
 
 /// Federation frame protocol. Bump only when a frame format changes
@@ -288,9 +290,16 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         .unwrap_or_default()
         .update;
     let mode = policy.mode.as_deref().unwrap_or("notify");
+    let has_root = inner
+        .data_dir
+        .as_deref()
+        .map(crate::mesh::MeshFiles::new)
+        .and_then(|f| f.load_root().ok().flatten())
+        .is_some();
     json!({
         "t": "roster", "agents": list, "version": version, "sha": sha,
         "servicing": inner.servicing.roster_json(mode),
+        "has_root": has_root,
     })
 }
 
@@ -571,8 +580,12 @@ async fn link_loop(
                         .and_then(|x| x.as_str())
                         .map(str::to_owned);
                     let svc = payload.get("servicing").cloned();
+                    let has_root = payload.get("has_root").and_then(|b| b.as_bool());
                     mesh.note(peer, |h| {
                         h.last_roster = Some(crate::store::now_epoch());
+                        if has_root.is_some() {
+                            h.has_root = has_root;
+                        }
                         if v.is_some() {
                             h.version = v;
                         }
@@ -1211,8 +1224,14 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
         let inner = inner.clone();
         tokio::spawn(async move {
             loop {
+                // Stop when the mesh is gone or this peer was removed.
+                let Some(m) = inner.mesh() else { break };
+                if !m.peers().iter().any(|p| p.cert.node == name) {
+                    m.dialing.lock().unwrap().remove(&name);
+                    break;
+                }
                 // Only one live link per peer; if an inbound one exists, wait.
-                let already = inner.mesh().is_some_and(|m| m.link_up(&name));
+                let already = m.link_up(&name);
                 if !already {
                     match tokio_tungstenite::connect_async(&url).await {
                         Ok((ws, _)) => {

@@ -104,6 +104,56 @@ impl MeshFiles {
         mesh.peers.push(PeerConfig { cert, url });
         self.save_mesh(&mesh)
     }
+
+    /// Forget a peer. Its cert stays valid (only the root can revoke, and
+    /// we have no revocation yet) — this node simply stops dialing and
+    /// refusing it is up to the link check on the next hello.
+    pub fn remove_peer(&self, node: &str) -> Result<bool> {
+        let Some(mut mesh) = self.load_mesh()? else {
+            bail!("this node has not joined a mesh");
+        };
+        let before = mesh.peers.len();
+        mesh.peers.retain(|p| p.cert.node != node);
+        let removed = mesh.peers.len() != before;
+        if removed {
+            self.save_mesh(&mesh)?;
+        }
+        Ok(removed)
+    }
+
+    /// Leave the mesh: drop mesh.json and this node's cert (the keypair is
+    /// kept so a re-enroll keeps the same identity). The root key is left
+    /// alone unless `discard_root`, since deleting it ends the mesh for
+    /// everyone who was certified by it.
+    pub fn leave(&self, discard_root: bool) -> Result<String> {
+        let mesh = self
+            .load_mesh()?
+            .ok_or_else(|| anyhow::anyhow!("this node is not in a mesh"))?;
+        let has_root = self.load_root()?.is_some();
+        if has_root && !discard_root {
+            bail!(
+                "this node holds the ROOT KEY of mesh '{}' — leaving would orphan every node it certified. Move the mesh elsewhere first, or pass --discard-root to end it.",
+                mesh.mesh
+            );
+        }
+        if let Some(mut id) = self.load_identity()? {
+            id.cert = None;
+            self.save_identity(&id)?;
+        }
+        std::fs::remove_file(self.mesh_path())?;
+        if has_root {
+            std::fs::remove_file(self.root_path())?;
+        }
+        Ok(format!(
+            "left mesh '{}'{}; identity keys kept for a future enroll",
+            mesh.mesh,
+            if has_root {
+                " and discarded its root key"
+            } else {
+                ""
+            }
+        ))
+    }
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
