@@ -119,6 +119,16 @@ enum Command {
         #[arg(long, hide = true, default_value = "cli")]
         trigger: String,
     },
+    /// Claude Code hook relay (installed by `aspen hooks install`): reads the
+    /// hook's JSON on stdin and nudges the local daemon. Always exits 0.
+    #[command(hide = true)]
+    Hook,
+    /// Claude Code hooks that let Aspen notice sessions started, resumed, or
+    /// forked outside it (SessionStart/SessionEnd → the local daemon).
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
+    },
     /// Tail the daemon log (<data-dir>/aspen.log).
     Logs {
         #[arg(short = 'n', long, default_value_t = 50)]
@@ -144,6 +154,16 @@ enum Command {
         #[command(subcommand)]
         command: MeshCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum HooksCommand {
+    /// Add the SessionStart/SessionEnd hooks to ~/.claude/settings.json.
+    Install,
+    /// Remove them.
+    Uninstall,
+    /// Show whether they are installed.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -332,6 +352,9 @@ async fn main() -> Result<()> {
             // harness version, start the release check + drain loops.
             aspen_node::servicing::on_start(&node.inner);
             aspen_node::servicing::spawn_loops(node.inner.clone());
+            // Adoption: notice forks/resumes of our agents' sessions made
+            // outside Aspen (docs/SERVICING.md-adjacent; see adoption.rs).
+            aspen_node::adoption::spawn_scanner(node.inner.clone(), 15);
             // daemon.json is written by serve() once the port is bound and
             // removed here only if it is still ours — a failed bind must not
             // clobber a healthy daemon's state file.
@@ -387,6 +410,8 @@ async fn main() -> Result<()> {
                 check,
             },
         ),
+        Command::Hook => hook_relay(&cli.data_dir),
+        Command::Hooks { command } => hooks_command(&cli.data_dir, command),
         Command::Logs { lines } => {
             for l in aspen_node::servicing::tail_log(&cli.data_dir, lines) {
                 println!("{l}");
@@ -689,6 +714,154 @@ fn config_command(
     settings::save(data_dir, &s)?;
     println!("set {key} = {}", if clear { "(cleared)" } else { &value });
     Ok(())
+}
+
+/// `aspen hook`: forward Claude Code's hook payload to the daemon. Quiet and
+/// fast — this runs on the session's start path. Aspen's own sessions are
+/// skipped (their environment carries our entrypoint).
+fn hook_relay(data_dir: &std::path::Path) -> Result<()> {
+    if std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("aspen") {
+        return Ok(());
+    }
+    let mut input = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
+    let body: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::json!({}));
+    let Some(state) = read_daemon_state(data_dir) else {
+        return Ok(());
+    };
+    let Some(listen) = state["listen"].as_str() else {
+        return Ok(());
+    };
+    let mut req = ureq::post(&format!("http://{listen}/api/hooks/session"))
+        .timeout(std::time::Duration::from_secs(2));
+    let loopback = listen
+        .parse::<std::net::SocketAddr>()
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or(true);
+    if !loopback {
+        if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
+            req = req.set("X-Aspen-Token", tok.trim());
+        }
+    }
+    let _ = req.send_json(body);
+    Ok(())
+}
+
+fn claude_settings_path() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs_home().join(".claude"))
+        .join("settings.json")
+}
+
+/// The hook command line: this binary, this data dir, `hook`.
+fn hook_command_line(data_dir: &std::path::Path) -> Result<String> {
+    let exe = std::env::current_exe()?;
+    Ok(format!(
+        "\"{}\" --data-dir \"{}\" hook",
+        exe.display(),
+        data_dir.display()
+    ))
+}
+
+fn is_our_hook(entry: &serde_json::Value) -> bool {
+    entry["hooks"].as_array().is_some_and(|hs| {
+        hs.iter().any(|h| {
+            h["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("aspen") && c.trim_end().ends_with(" hook"))
+        })
+    })
+}
+
+fn hooks_command(data_dir: &std::path::Path, cmd: HooksCommand) -> Result<()> {
+    let path = claude_settings_path();
+    let mut settings: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !settings.is_object() {
+        anyhow::bail!("{} is not a JSON object", path.display());
+    }
+    let events = ["SessionStart", "SessionEnd"];
+    match cmd {
+        HooksCommand::Status => {
+            for ev in events {
+                let installed = settings["hooks"][ev]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(is_our_hook));
+                println!(
+                    "{ev:<13} {}",
+                    if installed {
+                        "installed"
+                    } else {
+                        "not installed"
+                    }
+                );
+            }
+            println!("settings: {}", path.display());
+            Ok(())
+        }
+        HooksCommand::Install => {
+            let line = hook_command_line(data_dir)?;
+            let hooks = settings
+                .as_object_mut()
+                .unwrap()
+                .entry("hooks")
+                .or_insert_with(|| serde_json::json!({}));
+            if !hooks.is_object() {
+                anyhow::bail!("settings.hooks is not an object");
+            }
+            for ev in events {
+                let arr = hooks
+                    .as_object_mut()
+                    .unwrap()
+                    .entry(ev)
+                    .or_insert_with(|| serde_json::json!([]));
+                let Some(list) = arr.as_array_mut() else {
+                    anyhow::bail!("settings.hooks.{ev} is not an array");
+                };
+                list.retain(|e| !is_our_hook(e));
+                list.push(serde_json::json!({
+                    "hooks": [{ "type": "command", "command": line, "timeout": 5 }]
+                }));
+            }
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
+            println!(
+                "installed SessionStart + SessionEnd hooks in {}",
+                path.display()
+            );
+            println!("  {line}");
+            println!("Sessions started, resumed, or forked outside Aspen now reach the daemon within a second (new claude processes only).");
+            Ok(())
+        }
+        HooksCommand::Uninstall => {
+            let mut removed = 0;
+            if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                for ev in events {
+                    if let Some(list) = hooks.get_mut(ev).and_then(|a| a.as_array_mut()) {
+                        let before = list.len();
+                        list.retain(|e| !is_our_hook(e));
+                        removed += before - list.len();
+                        if list.is_empty() {
+                            hooks.remove(ev);
+                        }
+                    }
+                }
+                if hooks.is_empty() {
+                    settings.as_object_mut().unwrap().remove("hooks");
+                }
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
+            println!(
+                "removed {removed} hook entr{} from {}",
+                if removed == 1 { "y" } else { "ies" },
+                path.display()
+            );
+            Ok(())
+        }
+    }
 }
 
 fn spawn_detached(

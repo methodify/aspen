@@ -644,3 +644,18 @@ cleaner lane for roster updates than user-message headers.
   interrupt — no policy value produces "now". Inventory (harness version,
   OS, uptime), remote logs, and a federation protocol number came with it.
   Design reference: [`SERVICING.md`](SERVICING.md).
+- **2026-09-04 — Adoption: branches made outside Aspen.** The runtime's
+  protocol has no branch signal (a fork is a relaunch; rewind is
+  TUI-only), so Aspen watches the transcripts: a `--fork-session` copy
+  keeps the parent's uuids (2.1.x rewrites `sessionId` and `entrypoint` on
+  the copied lines and writes no `forkedFrom`), so the parent is the agent
+  head sharing the longest uuid prefix, a wholly-contained candidate
+  winning over a sibling. Forks of an agent's session and an agent's head
+  growing while it is down are raised as needs with three verbs — carry
+  (name moves, old tip bookmarked), split (a new agent takes the branch),
+  ignore — and the default when nobody answers is ignore: a name never
+  moves on its own. Sessions merely started in a repo are not raised
+  (noise). The same carry/split choice is offered when branching inside
+  Aspen (`as`). `aspen hooks install` adds SessionStart/SessionEnd hooks
+  that nudge the daemon for second-level latency; Aspen's own processes
+  are filtered by `CLAUDE_CODE_ENTRYPOINT`.

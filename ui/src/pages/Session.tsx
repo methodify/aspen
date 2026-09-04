@@ -6,7 +6,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -444,6 +444,7 @@ function TurnEndMarker({ item }: { item: TurnEndItem }) {
 // The page
 
 function SessionView({ name }: { name: string }) {
+  const nav = useNavigate();
   const { agents, agentsLoaded, refreshAgents } = useAppData();
   const agent = agents.find((a) => a.name === name);
 
@@ -504,6 +505,8 @@ function SessionView({ name }: { name: string }) {
   const [history, setHistory] = useState<BookmarksInfo | null>(null);
   const [branching, setBranching] = useState(false);
   const [branchLabel, setBranchLabel] = useState<string | null>(null);
+  const [branchAs, setBranchAs] = useState("");
+  const [resumeAs, setResumeAs] = useState<{ id: number; name: string } | null>(null);
   const [charterDraft, setCharterDraft] = useState<string | null>(null);
   const [charterSaving, setCharterSaving] = useState(false);
   const [charterOverride, setCharterOverride] = useState<string | null | undefined>(undefined);
@@ -680,7 +683,9 @@ function SessionView({ name }: { name: string }) {
     // Aspen-level command: /branch [label] — handled here, never sent.
     if (/^\/branch(\s|$)/.test(text)) {
       setDraft("");
-      await branchHere(text.replace(/^\/branch\s*/, ""));
+      const rest = text.replace(/^\/branch\s*/, "");
+      const m = /^(.*?)(?:\s+as\s+@?([A-Za-z0-9_-]+))?\s*$/.exec(rest);
+      await branchHere(m?.[1] ?? rest, m?.[2]);
       return;
     }
     const localKey = crypto.randomUUID();
@@ -709,16 +714,24 @@ function SessionView({ name }: { name: string }) {
     }
   }
 
-  /// Branch here: the tip becomes a bookmark (labeled), the session forks,
-  /// and this name continues on the fork. The head moves at the first turn
-  /// on the branch (the runtime announces the new id then).
-  async function branchHere(label: string) {
+  /// Branch here. Carry (no `as`): the tip becomes a bookmark (labeled),
+  /// the session forks, and this name continues on the fork — the head
+  /// moves at the first turn on the branch. Split (`as` given): the fork
+  /// starts as a NEW agent and this one keeps its session; we open it.
+  /// Also: `/branch [label] [as <name>]`.
+  async function branchHere(label: string, as?: string) {
     if (branching) return;
     setBranching(true);
     setBranchLabel(null);
+    setBranchAs("");
     setActionError(null);
     try {
-      await api.branch(name, label.trim() || undefined);
+      const asName = as?.trim() || undefined;
+      const res = await api.branch(name, label.trim() || undefined, undefined, asName);
+      if (asName) {
+        nav(`/session/${encodeURIComponent(res.name)}`);
+        return;
+      }
       setCtlNote(`branched — the previous tip is bookmarked${label.trim() ? ` as “${label.trim()}”` : ""}`);
       await loadHistory();
       setHistoryOpen(true);
@@ -729,10 +742,14 @@ function SessionView({ name }: { name: string }) {
     }
   }
 
-  async function resumeBookmark(id: number) {
+  async function resumeBookmark(id: number, as?: string) {
     setActionError(null);
     try {
-      await api.resumeBookmark(name, id);
+      const res = await api.resumeBookmark(name, id, as?.trim() || undefined);
+      if (as?.trim()) {
+        nav(`/session/${encodeURIComponent(res.name)}`);
+        return;
+      }
       setCtlNote("resumed the bookmark — the line you were on is bookmarked too");
       await loadHistory();
     } catch (e) {
@@ -1162,17 +1179,30 @@ function SessionView({ name }: { name: string }) {
                 className="mono"
                 value={branchLabel}
                 onChange={(e) => setBranchLabel(e.target.value)}
-                placeholder="label for the tip you're leaving (optional)"
+                placeholder="bookmark label (optional)"
                 autoFocus
-                style={{ width: 260 }}
+                style={{ width: 180 }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void branchHere(branchLabel);
+                  if (e.key === "Enter") void branchHere(branchLabel, branchAs);
                   if (e.key === "Escape") setBranchLabel(null);
                 }}
                 aria-label="bookmark label"
               />
-              <button className="btn sm" disabled={branching} onClick={() => void branchHere(branchLabel)}>
-                {branching ? "branching…" : "branch here"}
+              <input
+                className="mono"
+                value={branchAs}
+                onChange={(e) => setBranchAs(e.target.value)}
+                placeholder="continue as @… (optional)"
+                style={{ width: 170 }}
+                title="empty: @name follows the branch and the tip is bookmarked. A name: the branch becomes a new agent and this one keeps its session."
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void branchHere(branchLabel, branchAs);
+                  if (e.key === "Escape") setBranchLabel(null);
+                }}
+                aria-label="continue the branch as a new agent"
+              />
+              <button className="btn sm" disabled={branching} onClick={() => void branchHere(branchLabel, branchAs)}>
+                {branching ? "branching…" : branchAs.trim() ? `split → @${branchAs.trim()}` : "branch here"}
               </button>
               <button className="btn ghost sm" onClick={() => setBranchLabel(null)}>
                 cancel
@@ -1348,7 +1378,7 @@ function SessionView({ name }: { name: string }) {
                 {history.lineage.length > 0 &&
                   ` ← ${history.lineage.map((l) => l.session_id.slice(0, 8)).join(" ← ")}`}
                 {" · "}
-                the name follows the head; branching leaves the tip here as a bookmark.
+                the name follows the head; branching leaves the tip here as a bookmark. “as new agent” starts a sibling instead.
               </div>
               {history.bookmarks.length === 0 ? (
                 <div className="dim">no bookmarks yet — branch to leave one.</div>
@@ -1367,9 +1397,36 @@ function SessionView({ name }: { name: string }) {
                     <span className="mono-meta">{b.session_id.slice(0, 8)}</span>
                     <span className="mono-meta">{relTime(b.created_at)} ago</span>
                     <span style={{ flex: 1 }} />
-                    <button className="btn sm" onClick={() => void resumeBookmark(b.id)}>
-                      resume here
-                    </button>
+                    {resumeAs?.id === b.id ? (
+                      <>
+                        <input
+                          className="mono"
+                          value={resumeAs.name}
+                          onChange={(e) => setResumeAs({ id: b.id, name: e.target.value })}
+                          autoFocus
+                          placeholder="new agent name"
+                          style={{ width: 140 }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void resumeBookmark(b.id, resumeAs.name);
+                            if (e.key === "Escape") setResumeAs(null);
+                          }}
+                          aria-label="resume the bookmark as a new agent"
+                        />
+                        <button className="btn primary sm" onClick={() => void resumeBookmark(b.id, resumeAs.name)}>
+                          start @{resumeAs.name.trim() || "…"}
+                        </button>
+                        <button className="btn ghost sm" onClick={() => setResumeAs(null)}>cancel</button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="btn sm" onClick={() => void resumeBookmark(b.id)} title="this name moves to a fork of the bookmark; the line you're on is bookmarked">
+                          resume here
+                        </button>
+                        <button className="btn ghost sm" onClick={() => setResumeAs({ id: b.id, name: "" })} title="a new agent starts from this bookmark; this one stays where it is">
+                          as new agent…
+                        </button>
+                      </>
+                    )}
                     <button
                       className="btn ghost sm"
                       onClick={() =>

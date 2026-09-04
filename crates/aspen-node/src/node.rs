@@ -556,11 +556,15 @@ impl Node {
     /// to a fresh fork of it (optionally from an earlier message). The
     /// process is restarted on the fork; live marks are kept so the agent
     /// revives on the new head from now on.
+    /// Branch here. `as_name` = None: the name follows the fork and the tip
+    /// is left as a bookmark (carry). `as_name` = Some: the fork becomes a
+    /// NEW agent with that name and this one keeps its session (split).
     pub async fn branch_agent(
         &self,
         name: &str,
         label: Option<&str>,
         at_message: Option<&str>,
+        as_name: Option<&str>,
     ) -> Result<Arc<ManagedSession>> {
         let rows = self.inner.store.agents()?;
         let row = rows
@@ -575,6 +579,9 @@ impl Node {
             return Err(anyhow!(
                 "{name}'s session has no transcript yet — nothing to branch from"
             ));
+        }
+        if let Some(as_name) = as_name {
+            return self.split_agent(name, as_name, &head, at_message).await;
         }
         // Bookmark the tip we're leaving.
         self.inner.store.add_bookmark(
@@ -592,12 +599,22 @@ impl Node {
 
     /// Resume a bookmark: bookmark the current tip (reason "swap"), then
     /// fork from the bookmark's session/point and make that the head.
-    pub async fn resume_bookmark(&self, name: &str, id: i64) -> Result<Arc<ManagedSession>> {
+    pub async fn resume_bookmark(
+        &self,
+        name: &str,
+        id: i64,
+        as_name: Option<&str>,
+    ) -> Result<Arc<ManagedSession>> {
         let bm = self
             .inner
             .store
             .bookmark(name, id)?
             .ok_or_else(|| anyhow!("no bookmark {id} for {name}"))?;
+        if let Some(as_name) = as_name {
+            return self
+                .split_agent(name, as_name, &bm.session_id, bm.message_uuid.as_deref())
+                .await;
+        }
         let rows = self.inner.store.agents()?;
         let row = rows
             .iter()
@@ -612,6 +629,61 @@ impl Node {
         }
         self.fork_to(name, &bm.session_id, bm.message_uuid.as_deref())
             .await
+    }
+
+    /// Split: a NEW agent `as_name` (bare, same repo) starts as a fork of
+    /// `from` at `at_message`; `name` keeps its session untouched. Both are
+    /// siblings from here — the lineage table links the fork to its parent.
+    pub async fn split_agent(
+        &self,
+        name: &str,
+        as_name: &str,
+        from: &str,
+        at_message: Option<&str>,
+    ) -> Result<Arc<ManagedSession>> {
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        let bare = crate::addr::bare(as_name.trim());
+        if bare.is_empty()
+            || !bare
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(anyhow!(
+                "'{as_name}' is not a valid agent name (letters, digits, - and _)"
+            ));
+        }
+        if bare == crate::addr::bare(name) {
+            return Err(anyhow!("choose a different name for the split, or branch without one to carry {name} to the fork"));
+        }
+        let key = crate::addr::local_key(bare, &row.channel);
+        if rows.iter().any(|a| a.name == key) {
+            return Err(anyhow!("an agent named {key} already exists in this repo"));
+        }
+        let interactive = self
+            .inner
+            .live(name)
+            .map(|s| s.broker.is_some())
+            .unwrap_or(true);
+        let opts = SpawnOpts {
+            charter: row.charter.clone(),
+            resume: Some(from.to_owned()),
+            fork: true,
+            resume_at: at_message.map(str::to_owned),
+            interactive,
+            extra_args: row.extra_args.clone(),
+            ..Default::default()
+        };
+        let sess = self.spawn_agent(bare, row.repo.clone(), opts).await?;
+        let _ = self.inner.store.record_event(
+            &sess.name,
+            "split",
+            serde_json::json!({ "from": name, "session": from, "at": at_message }),
+        );
+        Ok(sess)
     }
 
     /// Stop the running process (if any) and relaunch as a fork of `from`.

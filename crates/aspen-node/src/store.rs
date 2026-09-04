@@ -103,6 +103,26 @@ CREATE TABLE IF NOT EXISTS lineage(
   agent          TEXT NOT NULL,
   created_at     REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS seen_sessions(
+  repo       TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  PRIMARY KEY(repo, session_id)
+);
+CREATE TABLE IF NOT EXISTS adoptions(
+  id             INTEGER PRIMARY KEY,
+  repo           TEXT NOT NULL,
+  session_id     TEXT NOT NULL UNIQUE,
+  kind           TEXT NOT NULL,
+  of_agent       TEXT,
+  parent_session TEXT,
+  fork_message   TEXT,
+  title          TEXT,
+  entrypoint     TEXT,
+  first_seen     REAL NOT NULL,
+  resolved       TEXT,
+  resolved_at    REAL,
+  resolved_as    TEXT
+);
 ";
 
 pub fn now_epoch() -> f64 {
@@ -163,6 +183,28 @@ pub struct FleetEvent {
     pub agent: String,
     pub kind: String,
     pub detail: serde_json::Value,
+}
+
+/// A session that appeared outside Aspen and relates to an agent: a fork
+/// of its head, or its head being driven from elsewhere (adoption.rs).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Adoption {
+    pub id: i64,
+    pub repo: PathBuf,
+    pub session_id: String,
+    /// fork | resumed
+    pub kind: String,
+    pub of_agent: Option<String>,
+    pub parent_session: Option<String>,
+    pub fork_message: Option<String>,
+    pub title: Option<String>,
+    pub entrypoint: Option<String>,
+    pub first_seen: f64,
+    /// carry | split | ignore | revive, once answered.
+    pub resolved: Option<String>,
+    pub resolved_at: Option<f64>,
+    /// The agent that took the session (split/carry).
+    pub resolved_as: Option<String>,
 }
 
 /// A declared pathway between two endpoints (see topology.rs).
@@ -643,6 +685,195 @@ impl BusStore {
             params![src, dst],
         )?;
         Ok(())
+    }
+
+    // ------------------------------------------------------------ adoptions
+
+    /// Sessions already looked at for a repo. Empty = the detector has never
+    /// run here (it baselines instead of announcing history).
+    pub fn seen_sessions(&self, repo: &Path) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT session_id FROM seen_sessions WHERE repo=?1")?;
+        let rows = stmt
+            .query_map(params![repo.to_string_lossy()], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn mark_seen(&self, repo: &Path, sessions: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for s in sessions {
+            conn.execute(
+                "INSERT OR IGNORE INTO seen_sessions(repo, session_id) VALUES(?1, ?2)",
+                params![repo.to_string_lossy(), s],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every session id Aspen has ever attached a name to: heads, bookmarks,
+    /// lineage children. The detector treats these as "ours".
+    pub fn known_sessions(&self) -> Result<std::collections::HashSet<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut out = std::collections::HashSet::new();
+        for sql in [
+            "SELECT session_id FROM agents WHERE session_id IS NOT NULL",
+            "SELECT session_id FROM bookmarks",
+            "SELECT child_session FROM lineage",
+            "SELECT parent_session FROM lineage",
+        ] {
+            let mut stmt = conn.prepare(sql)?;
+            for r in stmt.query_map([], |r| r.get::<_, String>(0))? {
+                out.insert(r?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Which agent owns a session: its head, or a bookmark of it.
+    pub fn agent_for_session(&self, session: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let head: Option<String> = conn
+            .query_row(
+                "SELECT name FROM agents WHERE session_id=?1",
+                params![session],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if head.is_some() {
+            return Ok(head);
+        }
+        let bm: Option<String> = conn
+            .query_row(
+                "SELECT agent FROM bookmarks WHERE session_id=?1 ORDER BY created_at DESC LIMIT 1",
+                params![session],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if bm.is_some() {
+            return Ok(bm);
+        }
+        Ok(conn
+            .query_row(
+                "SELECT agent FROM lineage WHERE child_session=?1",
+                params![session],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Record (or reopen) an adoption. Returns the row id, or None if an
+    /// unresolved row for the session already exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_adoption(
+        &self,
+        repo: &Path,
+        session_id: &str,
+        kind: &str,
+        of_agent: Option<&str>,
+        parent_session: Option<&str>,
+        fork_message: Option<&str>,
+        title: Option<&str>,
+        entrypoint: Option<&str>,
+    ) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let existing: Option<(i64, Option<String>)> = conn
+            .query_row(
+                "SELECT id, resolved FROM adoptions WHERE session_id=?1",
+                params![session_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match existing {
+            Some((_, None)) => Ok(None),
+            Some((id, Some(_))) => {
+                conn.execute(
+                    "UPDATE adoptions SET kind=?2, of_agent=?3, title=?4, entrypoint=?5,
+                     first_seen=?6, resolved=NULL, resolved_at=NULL, resolved_as=NULL WHERE id=?1",
+                    params![id, kind, of_agent, title, entrypoint, now_epoch()],
+                )?;
+                Ok(Some(id))
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO adoptions(repo, session_id, kind, of_agent, parent_session,
+                     fork_message, title, entrypoint, first_seen)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        repo.to_string_lossy(),
+                        session_id,
+                        kind,
+                        of_agent,
+                        parent_session,
+                        fork_message,
+                        title,
+                        entrypoint,
+                        now_epoch()
+                    ],
+                )?;
+                Ok(Some(conn.last_insert_rowid()))
+            }
+        }
+    }
+
+    pub fn adoptions(&self, unresolved_only: bool) -> Result<Vec<Adoption>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, repo, session_id, kind, of_agent, parent_session, fork_message, title,
+                    entrypoint, first_seen, resolved, resolved_at, resolved_as
+             FROM adoptions {} ORDER BY first_seen DESC LIMIT 200",
+            if unresolved_only {
+                "WHERE resolved IS NULL"
+            } else {
+                ""
+            }
+        ))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Adoption {
+                    id: r.get(0)?,
+                    repo: PathBuf::from(r.get::<_, String>(1)?),
+                    session_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    of_agent: r.get(4)?,
+                    parent_session: r.get(5)?,
+                    fork_message: r.get(6)?,
+                    title: r.get(7)?,
+                    entrypoint: r.get(8)?,
+                    first_seen: r.get(9)?,
+                    resolved: r.get(10)?,
+                    resolved_at: r.get(11)?,
+                    resolved_as: r.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn adoption(&self, id: i64) -> Result<Option<Adoption>> {
+        Ok(self.adoptions(false)?.into_iter().find(|a| a.id == id))
+    }
+
+    pub fn resolve_adoption(&self, id: i64, how: &str, as_agent: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE adoptions SET resolved=?2, resolved_at=?3, resolved_as=?4 WHERE id=?1",
+            params![id, how, now_epoch(), as_agent],
+        )?;
+        Ok(())
+    }
+
+    /// When an adoption for this session was last answered (any kind).
+    pub fn adoption_resolved_at(&self, session: &str) -> Result<Option<f64>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT resolved_at FROM adoptions WHERE session_id=?1",
+                params![session],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     // ------------------------------------------------------ bookmarks/lineage

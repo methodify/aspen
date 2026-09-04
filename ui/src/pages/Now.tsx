@@ -27,7 +27,7 @@ import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
 import { useTrustedStart } from "../trust";
 import { NewSessionPanel } from "../sessionStart";
-import { NodeChip, PermCard, QuestionCard } from "../needs";
+import { AdoptionCard, NodeChip, PermCard, QuestionCard } from "../needs";
 import { UpdateCard } from "../servicing";
 import {
   ClassBadge,
@@ -210,6 +210,7 @@ export default function Now() {
 
   const prompts = needsPoll.data?.prompts ?? [];
   const inbox = needsPoll.data?.inbox ?? [];
+  const adoptions = needsPoll.data?.adoptions ?? [];
   const waiting = activityPoll.data?.waiting ?? [];
 
   const q = query.trim().toLowerCase();
@@ -241,7 +242,8 @@ export default function Now() {
     node && ((node.update_available && !node.update_skipped) || (node.service_state && node.service_state !== "ready") || node.withdrawn)
       ? 1
       : 0;
-  const needsCount = prompts.length + inbox.length + finished.length + waiting.length + exited.length + updateNeed;
+  const needsCount =
+    prompts.length + inbox.length + adoptions.length + finished.length + waiting.length + exited.length + updateNeed;
 
   async function sendReply(to: string) {
     if (!replyText.trim()) return;
@@ -318,6 +320,9 @@ export default function Now() {
             <span className="mono-meta">{needsCount === 0 ? "nothing — the fleet is running itself" : `${needsCount}`}</span>
           </div>
           <UpdateCard />
+          {adoptions.map((a) => (
+            <AdoptionCard key={`ad:${a.node ?? ""}:${a.id}`} a={a} onDone={() => void Promise.all([needsPoll.refresh(), refreshAgents()])} />
+          ))}
           {prompts.map((p) =>
             p.is_question ? (
               <QuestionCard key={`${p.agent}:${p.request_id}`} prompt={p} onAnswered={() => void needsPoll.refresh()} />

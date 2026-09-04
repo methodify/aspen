@@ -8,6 +8,7 @@
 //! downgrades.
 
 pub mod addr;
+pub mod adoption;
 pub mod delivery;
 pub mod federation;
 pub mod gitstate;

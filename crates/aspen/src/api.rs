@@ -137,6 +137,10 @@ pub async fn serve(
             post(post_update_fleet).delete(delete_update_fleet),
         )
         .route("/logs", get(get_logs))
+        .route("/adoptions", get(get_adoptions))
+        .route("/adoptions/scan", post(post_adoptions_scan))
+        .route("/adoptions/{id}", post(post_adoption))
+        .route("/hooks/session", post(post_hook_session))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
@@ -1020,6 +1024,9 @@ struct BranchBody {
     label: Option<String>,
     /// Branch from this message (assistant message uuid) instead of the tip.
     at: Option<String>,
+    /// Continue the fork as a NEW agent with this name; this agent keeps
+    /// its session (split). Absent: this name follows the fork (carry).
+    r#as: Option<String>,
 }
 
 /// Branch here: bookmark the current tip, fork, move the head.
@@ -1035,16 +1042,22 @@ async fn post_branch(
             &node,
             "branch",
             &bare,
-            json!({ "label": b.label, "at": b.at }),
+            json!({ "label": b.label, "at": b.at, "as": b.r#as }),
         )
         .await;
     }
     match s
         .node
-        .branch_agent(&name, b.label.as_deref(), b.at.as_deref())
+        .branch_agent(
+            &name,
+            b.label.as_deref(),
+            b.at.as_deref(),
+            b.r#as.as_deref(),
+        )
         .await
     {
-        Ok(_) => agent_response(&s, &name),
+        // A split answers with the NEW agent; a carry with this one.
+        Ok(sess) => agent_response(&s, &sess.name),
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
 }
@@ -1058,15 +1071,30 @@ async fn get_bookmarks(State(s): S, Path(name): Path<String>) -> impl IntoRespon
     Json(bookmarks_json(&s.node, &name)).into_response()
 }
 
+#[derive(Deserialize, Default)]
+struct ResumeBookmarkBody {
+    /// Continue the bookmark as a NEW agent with this name (split).
+    r#as: Option<String>,
+}
+
 async fn post_bookmark_resume(
     State(s): S,
     Path((name, id)): Path<(String, i64)>,
+    body: Option<Json<ResumeBookmarkBody>>,
 ) -> impl IntoResponse {
+    let b = body.map(|j| j.0).unwrap_or_default();
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "resume_bookmark", &bare, json!({ "id": id })).await;
+        return proxy(
+            &s,
+            &node,
+            "resume_bookmark",
+            &bare,
+            json!({ "id": id, "as": b.r#as }),
+        )
+        .await;
     }
-    match s.node.resume_bookmark(&name, id).await {
-        Ok(_) => agent_response(&s, &name),
+    match s.node.resume_bookmark(&name, id, b.r#as.as_deref()).await {
+        Ok(sess) => agent_response(&s, &sess.name),
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
 }
@@ -1479,6 +1507,19 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
             v
         })
         .collect();
+    let mut adoptions: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .adoptions(true)
+        .unwrap_or_default()
+        .iter()
+        .map(|a| {
+            let mut v = aspen_node::adoption::adoption_json(a);
+            v["node"] = Value::Null;
+            v
+        })
+        .collect();
 
     if let Some(mesh) = s.node.inner.mesh() {
         let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
@@ -1512,6 +1553,16 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
                             inbox.push(m);
                         }
                     }
+                    if let Some(ads) = v.get("adoptions").and_then(|m| m.as_array()) {
+                        for a in ads {
+                            let mut a = a.clone();
+                            a["node"] = json!(peer);
+                            if let Some(ag) = a.get("of_agent").and_then(|x| x.as_str()) {
+                                a["of_agent"] = json!(format!("{ag}@{peer}"));
+                            }
+                            adoptions.push(a);
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::debug!(peer, error = %e, "needs aggregation: peer unreachable");
@@ -1519,7 +1570,85 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
             }
         }
     }
-    Json(json!({ "prompts": prompts, "inbox": inbox })).into_response()
+    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions })).into_response()
+}
+
+// ----------------------------------------------------------------- adoption
+
+#[derive(Deserialize)]
+struct AdoptionBody {
+    /// carry | split | ignore | revive
+    action: String,
+    /// For split: the new agent's bare name.
+    name: Option<String>,
+    /// The node the adoption belongs to (absent/self = local).
+    node: Option<String>,
+}
+
+/// All adoptions this node has recorded (answered ones included, newest
+/// first) — the mesh-wide open ones ride /api/needs.
+async fn get_adoptions(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.adoptions(false) {
+        Ok(v) => Json(
+            v.iter()
+                .map(aspen_node::adoption::adoption_json)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// Answer an adoption: which identity follows the session.
+async fn post_adoption(
+    State(s): S,
+    Path(id): Path<i64>,
+    Json(b): Json<AdoptionBody>,
+) -> impl IntoResponse {
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(
+            &s,
+            node,
+            "adoption",
+            "",
+            json!({ "id": id, "action": b.action, "name": b.name }),
+        )
+        .await;
+    }
+    match aspen_node::adoption::resolve(&s.node, id, &b.action, b.name.as_deref()).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+/// Run the adoption scan now (the console's "check" and tests).
+async fn post_adoptions_scan(State(s): S) -> impl IntoResponse {
+    let inner = s.node.inner.clone();
+    match tokio::task::spawn_blocking(move || aspen_node::adoption::scan(&inner)).await {
+        Ok(Ok(raised)) => Json(json!({ "ok": true, "raised": raised })).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    }
+}
+
+/// Claude Code's SessionStart/SessionEnd hook, relayed by `aspen hook`.
+/// Body is the hook's own JSON (session_id, transcript_path, cwd, source /
+/// reason, hook_event_name). We only use it as a nudge.
+async fn post_hook_session(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
+    let cwd = b
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(std::path::PathBuf::from);
+    let _ = s.node.inner.store.record_event(
+        "node",
+        "hook_session",
+        json!({
+            "event": b.get("hook_event_name"), "session": b.get("session_id"),
+            "cwd": b.get("cwd"), "source": b.get("source"), "reason": b.get("reason"),
+        }),
+    );
+    aspen_node::adoption::on_hook(&s.node.inner, cwd.as_deref());
+    Json(json!({ "ok": true }))
 }
 
 /// Mark the operator inbox read — locally and on every connected peer.

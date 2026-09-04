@@ -761,13 +761,15 @@ async fn serve_api_req(
             Ok(json!({}))
         }
         "branch" => {
-            node.branch_agent(
-                agent,
-                body.get("label").and_then(|l| l.as_str()),
-                body.get("at").and_then(|a| a.as_str()),
-            )
-            .await?;
-            Ok(json!({}))
+            let sess = node
+                .branch_agent(
+                    agent,
+                    body.get("label").and_then(|l| l.as_str()),
+                    body.get("at").and_then(|a| a.as_str()),
+                    body.get("as").and_then(|a| a.as_str()),
+                )
+                .await?;
+            Ok(json!({ "name": sess.name }))
         }
         "bookmarks" => {
             let head = node
@@ -792,8 +794,10 @@ async fn serve_api_req(
                 .get("id")
                 .and_then(|i| i.as_i64())
                 .ok_or_else(|| anyhow!("missing id"))?;
-            node.resume_bookmark(agent, id).await?;
-            Ok(json!({}))
+            let sess = node
+                .resume_bookmark(agent, id, body.get("as").and_then(|a| a.as_str()))
+                .await?;
+            Ok(json!({ "name": sess.name }))
         }
         "delete_bookmark" => {
             let id = body
@@ -857,7 +861,14 @@ async fn serve_api_req(
                     })
                 })
                 .collect();
-            Ok(json!({ "prompts": prompts, "inbox": inbox }))
+            let adoptions: Vec<Value> = inner
+                .store
+                .adoptions(true)
+                .unwrap_or_default()
+                .iter()
+                .map(crate::adoption::adoption_json)
+                .collect();
+            Ok(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions }))
         }
         "inbox_read" => {
             let rows = inner.store.pending_for("operator")?;
@@ -1137,6 +1148,24 @@ async fn serve_api_req(
             )
         }
         "node_update_status" => Ok(crate::servicing::status_json(inner)),
+        "adoptions" => Ok(json!(inner
+            .store
+            .adoptions(true)?
+            .iter()
+            .map(crate::adoption::adoption_json)
+            .collect::<Vec<_>>())),
+        "adoption" => {
+            let id = body
+                .get("id")
+                .and_then(|i| i.as_i64())
+                .ok_or_else(|| anyhow!("missing id"))?;
+            let how = body
+                .get("action")
+                .and_then(|a| a.as_str())
+                .ok_or_else(|| anyhow!("missing action"))?;
+            crate::adoption::resolve(&node, id, how, body.get("name").and_then(|n| n.as_str()))
+                .await
+        }
         "node_update_policy" => {
             let policy: crate::settings::UpdateSettings =
                 serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null))

@@ -191,6 +191,32 @@ it. **history** lists the lineage and bookmarks; *resume here* on a bookmark
 forks from that point and makes it the head, bookmarking the line you were
 on. Nothing is ever lost or overwritten.
 
+### Branches made outside Aspen
+
+Branching is not a wire operation in the runtime — a fork is a relaunch
+(`claude -r <id> --fork-session`) — so there is nothing to intercept; but
+the transcript on disk says what happened, and Aspen asks you what it
+means. A fork of an agent's session made from a terminal, or an agent's
+session driven from a terminal while the agent is down, shows up under
+*Needs you* with the identity question: **carry** (the name moves to the
+branch, its old tip bookmarked), **new agent** (the branch gets its own
+name; the original keeps its session), or **ignore** — nothing moves until
+you answer. The same choice sits in the session's **branch** control
+("continue as @…") and on every bookmark ("as new agent"), and as
+`/branch [label] [as name]`.
+
+Detection runs from the transcripts every 15 seconds. For a second's
+latency instead, install Claude Code's SessionStart/SessionEnd hooks:
+
+```bash
+aspen hooks install      # adds two entries to ~/.claude/settings.json
+aspen hooks status
+aspen hooks uninstall
+```
+
+The hook (`aspen hook`) only nudges the local daemon; Aspen's own sessions
+are filtered out by their entrypoint.
+
 ## Joining a second machine (the mesh)
 
 Three commands, two pastes, no restarts — the daemons can be running the

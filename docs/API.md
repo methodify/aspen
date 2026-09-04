@@ -63,9 +63,9 @@ whoever messaged you are always allowed.
 | `POST /api/agents/{name}/message` | `{ text }` | `{ uuid }` | operator input into the session |
 | `POST /api/agents/{name}/interrupt` | — | `{}` | abort the in-flight turn |
 | `POST /api/agents/{name}/permission/{request_id}` | `{ allow, message?, updated_input?, updated_permissions? }` | `{}` | answer a prompt. Deny: `message` shown to the model. Allow: `updated_input` replaces tool input — for AskUserQuestion send `{questions: <echo>, answers: {"<question text>": "<option label>"}, response?}` (§7.6). `updated_permissions`: echo the prompt's `suggestions` verbatim for "always allow" |
-| `POST /api/agents/{name}/branch` | `{ label?, at? }` | `Agent` | branch here: bookmark the current tip (labeled), fork the session (optionally from message `at`), and move this name's head to the fork. The head moves when the runtime announces the new id — at the first turn on the branch |
+| `POST /api/agents/{name}/branch` | `{ label?, at?, as? }` | `Agent` | branch here. Without `as` (**carry**): bookmark the current tip (labeled), fork the session (optionally from message `at`), and move this name's head to the fork — the head moves when the runtime announces the new id, at the first turn on the branch. With `as` (**split**): the fork starts as a NEW agent named `as` in the same repo and this agent keeps its session; returns the new agent. Lineage links the fork to its parent either way |
 | `GET /api/agents/{name}/bookmarks` | — | `{ head, lineage: [{session_id, fork_message}], bookmarks: Bookmark[] }` | the name's current head, its parent chain, and its bookmarks (`reason`: branch / swap / manual) |
-| `POST /api/agents/{name}/bookmarks/{id}/resume` | — | `Agent` | resume a bookmark: the current tip is bookmarked (`swap`), then the head moves to a fork of the bookmark's session/point |
+| `POST /api/agents/{name}/bookmarks/{id}/resume` | `{ as? }` | `Agent` | resume a bookmark: the current tip is bookmarked (`swap`), then the head moves to a fork of the bookmark's session/point. With `as`, a NEW agent starts from the bookmark instead and this one stays put (returns the new agent) |
 | `DELETE /api/agents/{name}/bookmarks/{id}` | — | `{ ok }` | forget a bookmark (transcripts on disk are untouched) |
 | `POST /api/agents/{name}/revive` | — | `Agent` | bring a registered-but-down agent back by resuming its stored session (history intact) |
 | `DELETE /api/agents/{name}` | — | `{}` | shutdown ladder |
@@ -86,7 +86,11 @@ whoever messaged you are always allowed.
 | `POST /api/agents/{name}/mode` | `{ mode }` | `{}` | permission mode: default/acceptEdits/bypassPermissions/plan/dontAsk |
 | `POST /api/agents/{name}/title` | `{ title }` | `{}` | operator display title (null clears; the @name stays the bus identity) |
 | `POST /api/agents/{name}/charter` | `{ charter }` | `{}` | update the stored charter — applies at next spawn/revive (rides the system prompt) |
-| `GET /api/needs` | — | `{ prompts[], inbox[] }` | THE MESH-WIDE OPERATOR INBOX: every open permission prompt/question (local + every connected node; remote agents named `name@node`) + @operator mail from every node (`node` field, null=local) |
+| `GET /api/needs` | — | `{ prompts[], inbox[], adoptions[] }` | THE MESH-WIDE OPERATOR INBOX: every open permission prompt/question (local + every connected node; remote agents named `name@node`) + @operator mail from every node (`node` field, null=local) + open **adoptions** (below) |
+| `GET /api/adoptions` | — | `Adoption[]` | sessions that happened to an agent outside Aspen, answered ones included: `kind: fork` (a new session forked from the agent's session — `parent_session`, `fork_message`) or `kind: resumed` (the agent's head grew while it was down — someone opened it in a terminal). Detected from transcripts on disk every 15s, or within a second via the hooks (`aspen hooks install`). Nothing moves until answered |
+| `POST /api/adoptions/{id}` | `{ action: carry\|split\|ignore\|revive, name?, node? }` | `{ ok, agent? }` | answer one. `carry`: the agent's name moves to the fork (old tip bookmarked; a live process is restarted onto it). `split`: a new agent `name` resumes the fork in place; the original keeps its session. `revive` (resumed): bring the agent back on its head. `ignore`: leave it. `node` answers on a peer |
+| `POST /api/adoptions/scan` | — | `{ ok, raised[] }` | run the detector now |
+| `POST /api/hooks/session` | Claude Code hook JSON | `{ ok }` | what `aspen hook` relays from the SessionStart/SessionEnd hooks: a nudge to scan (recorded as a `hook_session` event) |
 | `POST /api/needs/read` | — | `{}` | mark operator mail read, locally and on every connected peer |
 | `GET /api/dms` | — | `[{a,b,last_at,messages}]` | direct-message pairs (non-channel traffic), newest first |
 | `GET /api/dm?a=&b=&n=` | — | `BusMessage[]` | one direct conversation, chronological |

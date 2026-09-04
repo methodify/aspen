@@ -3,7 +3,8 @@
 // prompt needs answering.
 
 import { useMemo, useState } from "react";
-import { api, type OpenPrompt } from "./api";
+import { useNavigate } from "react-router-dom";
+import { api, type Adoption, type OpenPrompt } from "./api";
 import { relTime } from "./components";
 import "./pages/command.css";
 
@@ -293,3 +294,88 @@ export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAns
 
 /* ── The page ───────────────────────────────────────────────────────── */
 
+
+/* ── adoption: a session happened to an agent outside Aspen ─────────── */
+
+/** Which identity follows a session that was forked or driven from outside
+ *  Aspen. Nothing moves until a human answers; ignore is the default. */
+export function AdoptionCard({ a, onDone }: { a: Adoption; onDone: () => void }) {
+  const nav = useNavigate();
+  const [splitName, setSplitName] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const agent = a.of_agent ?? "?";
+  const bare = agent.split("@")[0];
+  const who = a.entrypoint === "sdk-cli" || a.entrypoint === "cli" ? "a terminal" : a.entrypoint ? `“${a.entrypoint}”` : "elsewhere";
+  async function act(action: "carry" | "split" | "ignore" | "revive", name?: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.resolveAdoption(a.id, action, name, a.node);
+      onDone();
+      if ((action === "carry" || action === "split") && r.agent) {
+        nav(`/session/${encodeURIComponent(a.node ? `${r.agent}@${a.node}` : r.agent)}`);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="need-card need-cue" style={{ flexWrap: "wrap" }}>
+      <span className="chip mono" style={{ color: "var(--sig-normal)" }}>{a.kind === "fork" ? "forked" : "driven elsewhere"}</span>
+      {a.kind === "fork" ? (
+        <span>
+          a branch of <span className="mono">@{bare}</span>’s session appeared from {who}
+          {a.title ? <span className="dim"> — “{a.title}”</span> : null}
+        </span>
+      ) : (
+        <span>
+          <span className="mono">@{bare}</span>’s session is being driven from {who} while the agent is down
+          {a.title ? <span className="dim"> — “{a.title}”</span> : null}
+        </span>
+      )}
+      <span className="mono-meta">{a.session_id.slice(0, 8)} · {relTime(a.first_seen)} ago</span>
+      {a.node && <NodeChip node={a.node} />}
+      <span style={{ flex: 1 }} />
+      {a.kind === "fork" && splitName === null && (
+        <>
+          <button className="btn sm" disabled={busy} onClick={() => void act("carry")} title={`@${bare} moves to the branch; its current tip is bookmarked`}>
+            carry @{bare} here
+          </button>
+          <button className="btn sm" disabled={busy} onClick={() => setSplitName(`${bare}-2`)} title="the branch becomes a new agent; the original keeps its session">
+            new agent…
+          </button>
+        </>
+      )}
+      {a.kind === "fork" && splitName !== null && (
+        <>
+          <input
+            className="mono"
+            value={splitName}
+            onChange={(e) => setSplitName(e.target.value)}
+            autoFocus
+            style={{ width: 140 }}
+            aria-label="new agent name"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void act("split", splitName);
+              if (e.key === "Escape") setSplitName(null);
+            }}
+          />
+          <button className="btn primary sm" disabled={busy || !splitName.trim()} onClick={() => void act("split", splitName)}>
+            start @{splitName.trim() || "…"}
+          </button>
+          <button className="btn ghost sm" onClick={() => setSplitName(null)}>cancel</button>
+        </>
+      )}
+      {a.kind === "resumed" && (
+        <button className="btn sm" disabled={busy} onClick={() => void act("revive")} title="bring the agent back on this session (once the other side is done with it)">
+          revive @{bare}
+        </button>
+      )}
+      <button className="btn ghost sm" disabled={busy} onClick={() => void act("ignore")}>ignore</button>
+      {err && <span className="mono-meta" style={{ color: "var(--sig-gate)", flexBasis: "100%" }}>{err}</span>}
+    </div>
+  );
+}

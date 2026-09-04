@@ -412,3 +412,135 @@ mod tests {
         assert_eq!(items[2]["text"], "part two");
     }
 }
+
+/// Where a session came from, read from the head and tail of its transcript
+/// (cheap: a few lines each end). Some runtime versions stamp copied lines
+/// with `forkedFrom { sessionId, messageUuid }`; 2.1.x does not (observed:
+/// the copied prefix keeps the parent's uuids but is rewritten with the new
+/// sessionId AND the forking process's entrypoint), so callers fall back to
+/// `first_uuid` matching against candidate parents.
+#[derive(Debug, Clone, Default)]
+pub struct Origin {
+    /// (parent session id, last copied message uuid) when stamped.
+    pub forked_from: Option<(String, Option<String>)>,
+    /// The first conversation line's uuid (shared with the parent if a fork).
+    pub first_uuid: Option<String>,
+    /// The entrypoint on the newest line — which app is writing the file now.
+    pub last_entrypoint: Option<String>,
+    /// The newest line's timestamp (epoch seconds), if parseable.
+    pub last_ts: Option<f64>,
+}
+
+pub fn session_origin(project_path: &Path, session_id: &str) -> Origin {
+    use std::io::{BufRead as _, Read as _, Seek as _};
+    let path = transcript_path(project_path, session_id);
+    let mut out = Origin::default();
+    let Ok(mut f) = std::fs::File::open(&path) else {
+        return out;
+    };
+    // Head: first ~64 lines for forkedFrom (the last stamped one wins: it is
+    // the fork point) and the first uuid.
+    let mut parent: Option<String> = None;
+    let mut last_stamped: Option<String> = None;
+    {
+        let reader = std::io::BufReader::new(&f);
+        for line in reader.lines().take(64).map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if out.first_uuid.is_none() {
+                out.first_uuid = str_field(&v, "uuid");
+            }
+            if let Some(ff) = v.get("forkedFrom") {
+                if parent.is_none() {
+                    parent = ff
+                        .get("sessionId")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_owned);
+                }
+                last_stamped = ff
+                    .get("messageUuid")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_owned)
+                    .or(last_stamped);
+            }
+        }
+    }
+    if let Some(p) = parent {
+        out.forked_from = Some((p, last_stamped));
+    }
+    // Tail: the last 64KB, newest parseable line.
+    if let Ok(meta) = f.metadata() {
+        let len = meta.len();
+        let start = len.saturating_sub(64 * 1024);
+        if f.seek(std::io::SeekFrom::Start(start)).is_ok() {
+            let mut buf = String::new();
+            if f.read_to_string(&mut buf).is_ok() {
+                // Newest conversation line: metadata lines (titles, mode,
+                // queue ops) carry neither entrypoint nor timestamp.
+                for line in buf.lines().rev() {
+                    let Ok(v) = serde_json::from_str::<Value>(line) else {
+                        continue;
+                    };
+                    let Some(ep) = str_field(&v, "entrypoint") else {
+                        continue;
+                    };
+                    out.last_entrypoint = Some(ep);
+                    out.last_ts = str_field(&v, "timestamp").and_then(|t| chrono_free_parse(&t));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Conversation-line uuids in file order (user/assistant/attachment lines;
+/// metadata lines have none). A fork's list starts with its parent's.
+pub fn conversation_uuids(project_path: &Path, session_id: &str) -> Vec<String> {
+    let path = transcript_path(project_path, session_id);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("type").and_then(|t| t.as_str()).is_some())
+        .filter_map(|v| str_field(&v, "uuid"))
+        .collect()
+}
+
+/// How many leading uuids `child` shares with `parent` — the fork point.
+pub fn shared_prefix(child: &[String], parent: &[String]) -> usize {
+    child.iter().zip(parent).take_while(|(a, b)| a == b).count()
+}
+
+/// RFC3339 → epoch seconds without a date crate: "2026-09-04T01:02:03.456Z".
+fn chrono_free_parse(ts: &str) -> Option<f64> {
+    let (date, rest) = ts.split_once('T')?;
+    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let time = rest.trim_end_matches('Z');
+    let mut t = time.split(':');
+    let h: i64 = t.next()?.parse().ok()?;
+    let mi: i64 = t.next()?.parse().ok()?;
+    let s: f64 = t.next()?.parse().ok()?;
+    // days from civil (Howard Hinnant)
+    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m - 3) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days as f64 * 86400.0 + h as f64 * 3600.0 + mi as f64 * 60.0 + s)
+}
+
+#[cfg(test)]
+mod origin_tests {
+    #[test]
+    fn rfc3339_epoch() {
+        let t = super::chrono_free_parse("2026-09-04T00:00:00.000Z").unwrap();
+        assert_eq!(t as i64, 1788480000);
+        let t = super::chrono_free_parse("1970-01-01T00:00:10Z").unwrap();
+        assert_eq!(t as i64, 10);
+    }
+}

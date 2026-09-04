@@ -412,9 +412,30 @@ export interface OpenPrompt {
   is_question: boolean;
 }
 
+/** A session that happened to an agent outside Aspen (adoption.rs): a
+ *  fork of its session, or its session driven from a terminal. */
+export interface Adoption {
+  id: number;
+  repo: string;
+  session_id: string;
+  kind: "fork" | "resumed";
+  /** The agent it relates to (`name@repo`, `@node` appended for peers). */
+  of_agent: string | null;
+  parent_session: string | null;
+  fork_message: string | null;
+  title: string | null;
+  entrypoint: string | null;
+  first_seen: number;
+  resolved: "carry" | "split" | "ignore" | "revive" | null;
+  resolved_at: number | null;
+  resolved_as: string | null;
+  node: string | null;
+}
+
 export interface Needs {
   prompts: OpenPrompt[];
   inbox: (BusMessage & { node: string | null })[];
+  adoptions?: Adoption[];
 }
 
 export interface DmPair {
@@ -589,15 +610,25 @@ export const api = {
   deleteAgent: (name: string) =>
     request<Record<string, never>>(`/api/agents/${enc(name)}`, { method: "DELETE" }),
   revive: (name: string) => post<Agent>(`/api/agents/${enc(name)}/revive`),
-  /** Branch here: bookmark the current tip, fork, move the head. */
-  branch: (name: string, label?: string, at?: string) =>
+  /** Branch here: bookmark the current tip, fork, move the head (carry) —
+   *  or, with `as`, start the fork as a NEW agent and keep this one (split).
+   *  Returns the agent that continues on the fork. */
+  branch: (name: string, label?: string, at?: string, as?: string) =>
     post<Agent>(`/api/agents/${enc(name)}/branch`, {
       ...(label ? { label } : {}),
       ...(at ? { at } : {}),
+      ...(as ? { as } : {}),
     }),
   bookmarks: (name: string) => request<BookmarksInfo>(`/api/agents/${enc(name)}/bookmarks`),
-  resumeBookmark: (name: string, id: number) =>
-    post<Agent>(`/api/agents/${enc(name)}/bookmarks/${id}/resume`, {}),
+  resumeBookmark: (name: string, id: number, as?: string) =>
+    post<Agent>(`/api/agents/${enc(name)}/bookmarks/${id}/resume`, as ? { as } : {}),
+  adoptions: () => request<Adoption[]>("/api/adoptions"),
+  resolveAdoption: (id: number, action: Adoption["resolved"] & string, name?: string, node?: string | null) =>
+    post<{ ok: boolean; agent?: string }>(`/api/adoptions/${id}`, {
+      action,
+      ...(name ? { name } : {}),
+      ...(node ? { node } : {}),
+    }),
   deleteBookmark: (name: string, id: number) =>
     request<{ ok: boolean }>(`/api/agents/${enc(name)}/bookmarks/${id}`, { method: "DELETE" }),
 
