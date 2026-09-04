@@ -98,6 +98,52 @@ export function useFleetServicing(ms = 10000): FleetServicing {
   };
 }
 
+/** Per-node version readout for the mesh views: what each node runs, and
+ *  whether a newer release is known to it. `self` is keyed by the mesh
+ *  node name (or "local" outside a mesh). */
+export interface NodeVersion {
+  version: string | null;
+  available: string | null;
+  state: string | null;
+  skew: boolean;
+}
+export function useMeshVersions(ms = 10000): Record<string, NodeVersion> {
+  const { node } = useAppData();
+  const meshPoll = usePoll<MeshInfo>(api.mesh, ms);
+  const mesh = meshPoll.data;
+  return useMemo(() => {
+    const out: Record<string, NodeVersion> = {};
+    const selfVersion = node?.version ?? mesh?.identity?.version ?? null;
+    const selfName = mesh?.node ?? "local";
+    out[selfName] = {
+      version: selfVersion,
+      available: node?.update_available && !node.update_skipped ? node.update_available : null,
+      state: node?.service_state ?? null,
+      skew: false,
+    };
+    for (const p of mesh?.peers ?? []) {
+      const v = p.health?.version ?? null;
+      out[p.node] = {
+        version: v,
+        available: p.health?.update_available ?? null,
+        state: p.health?.service_state ?? null,
+        skew: !!(v && selfVersion && v !== selfVersion),
+      };
+    }
+    return out;
+  }, [node, mesh]);
+}
+
+/** "v0.5.0", "v0.4.0 (skew)", "v0.4.0 → v0.5.0"… for a node label. */
+export function versionLabel(v: NodeVersion | undefined): string {
+  if (!v?.version) return "";
+  let s = `v${v.version}`;
+  if (v.available) s += ` → v${v.available}`;
+  else if (v.skew) s += " (skew)";
+  if (v.state && v.state !== "ready") s += ` · ${v.state}`;
+  return s;
+}
+
 function draining(s: Extract<UpdateStatus["state"], { state: "draining" }>): string {
   const w = s.waiting_on.length ? `waiting on: ${s.waiting_on.join(", ")}` : "about to start";
   return `${s.overdue ? "overdue · " : ""}${s.when === "now" ? "now · " : ""}${w}`;
@@ -439,6 +485,8 @@ export function ServicingPanel() {
   const [err, setErr] = useState<string | null>(null);
   const [showPolicy, setShowPolicy] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
   async function act(label: string, f: () => Promise<unknown>) {
     setErr(null);
     try {
@@ -446,6 +494,23 @@ export function ServicingPanel() {
       await fs.refresh();
     } catch (e) {
       setErr(`${label}: ${e instanceof Error ? e.message : "failed"}`);
+    }
+  }
+  async function checkAll() {
+    setChecking(true);
+    setCheckNote(null);
+    try {
+      const r = await api.checkUpdatesAll();
+      await fs.refresh();
+      const bad = Object.entries(r.results).filter(([, v]) => !v.ok);
+      const n = Object.keys(r.results).length;
+      setCheckNote(
+        `${r.behind > 0 ? `${r.behind} of ${n} behind` : `all ${n} up to date`}${bad.length ? ` · could not check ${bad.map(([k, v]) => `${k} (${v.error})`).join(", ")}` : ""}`,
+      );
+    } catch (e) {
+      setErr(`check: ${e instanceof Error ? e.message : "failed"}`);
+    } finally {
+      setChecking(false);
     }
   }
   const self = fs.self;
@@ -466,7 +531,11 @@ export function ServicingPanel() {
       <div className="mesh-head">
         <span className="label">Nodes</span>
         <span className="mono">{summary}</span>
+        {checkNote && <span className="mono-meta" style={{ color: "var(--live)" }}>{checkNote}</span>}
         <span style={{ flex: 1 }} />
+        <button className="btn ghost sm" disabled={checking} onClick={() => void checkAll()} title="ask every node to check the release channel now">
+          {checking ? "checking…" : "check for updates"}
+        </button>
         {self?.available && !self.skipped && (
           <>
             <button className="btn ghost sm" onClick={() => setShowNotes((v) => !v)} aria-expanded={showNotes}>

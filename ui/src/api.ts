@@ -771,6 +771,12 @@ export const api = {
     }),
   checkUpdate: (node?: string) =>
     post<{ ok: boolean; latest: string; behind: boolean }>("/api/update/check", node ? { node } : {}),
+  /** Check the release channel on this node and every linked peer. */
+  checkUpdatesAll: () =>
+    post<{ ok: boolean; behind: number; results: Record<string, { ok: boolean; latest?: string; behind?: boolean; error?: string }> }>(
+      "/api/update/check",
+      { node: "*" },
+    ),
   /** `node: "*"` sets the policy on this node and every linked peer. */
   setUpdatePolicy: (policy: UpdatePolicy, node?: string) =>
     request<{ ok: boolean; results?: Record<string, { ok: boolean; error?: string }> }>("/api/update/policy", {

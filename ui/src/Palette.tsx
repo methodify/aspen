@@ -390,6 +390,30 @@ export default function Palette() {
       });
     }
 
+    {
+      const s = Math.max(score(t, "check for updates"), score(t, "update aspen"));
+      if (s >= 0) {
+        ranked.push({
+          s,
+          order: order++,
+          item: {
+            key: "act:check-updates",
+            section: "Actions",
+            node: (
+              <>
+                <span>Check for updates</span>
+                <span className="pal-sub">every node asks the release channel now</span>
+              </>
+            ),
+            run: async () => {
+              await api.checkUpdatesAll();
+              goto("/mesh?view=list#nodes");
+            },
+          },
+        });
+      }
+    }
+
     for (const a of agents) {
       const s = Math.max(score(t, `open @${a.name}`), score(t, a.title ?? ""));
       if (s < 0) continue;

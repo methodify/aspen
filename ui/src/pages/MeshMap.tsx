@@ -13,6 +13,7 @@ import { usePoll } from "../hooks";
 import { Empty, presenceOf, relTime } from "../components";
 import { Modal, NewChannelDialog } from "../channels";
 import { MeshPanel } from "../meshPanel";
+import { useMeshVersions, versionLabel } from "../servicing";
 import type { Presence } from "../components";
 
 // ── Layout constants (SVG user units) ─────────────────────────────────────
@@ -147,8 +148,14 @@ function computeLayout(
   channels: Channel[],
   recent: Set<string>,
   waiting: WaitingEdge[],
+  extraNodes: string[] = [],
 ): Layout {
   const byNode = groupByNode(sessions);
+  // Nodes with no sessions still exist (linked peers): draw them empty, so
+  // the map shows the whole mesh and each node's version.
+  for (const n of extraNodes) {
+    if (!byNode.some(([name]) => name === n)) byNode.push([n, []]);
+  }
   const nNodes = Math.max(1, byNode.length);
 
   // First pass: per-node channel groupings + content height.
@@ -317,6 +324,7 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
   const activityPoll = usePoll<Activity>(api.activity, 2000);
   const channelsPoll = usePoll<Channel[]>(api.channels, 2000);
   const meshPoll = usePoll<MeshInfo>(api.mesh, 5000);
+  const versions = useMeshVersions();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   // Connect: pick agents on the map, then create a channel joining them.
@@ -350,12 +358,16 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
     return set;
   }, [trail]);
 
+  const linkedPeers = useMemo(
+    () => (mesh?.peers ?? []).filter((p) => p.link_up).map((p) => p.node),
+    [mesh],
+  );
   const layout = useMemo(
-    () => computeLayout(sessions, channels, recent, waiting),
-    [sessions, channels, recent, waiting],
+    () => computeLayout(sessions, channels, recent, waiting, linkedPeers),
+    [sessions, channels, recent, waiting, linkedPeers],
   );
 
-  const nodeCount = new Set(sessions.map((s) => s.node)).size;
+  const nodeCount = new Set([...sessions.map((s) => s.node), ...linkedPeers]).size;
   const customCount = channels.filter((c) => c.kind === "custom").length;
   const lastTraffic = trail.length > 0 ? trail[trail.length - 1] : null;
 
@@ -633,10 +645,11 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                     x={rg.x + rg.w - INNER_PAD_X}
                     y={rg.y + NODE_HEADER / 2 + 5}
                     textAnchor="end"
-                    fill="var(--text-dim)"
+                    fill={versions[rg.node]?.available || versions[rg.node]?.skew ? "var(--sig-normal)" : "var(--text-dim)"}
                     style={{ font: "500 11px/1 var(--font-mono)", letterSpacing: "0.04em" }}
                   >
-                    NODE
+                    <title>{versions[rg.node]?.available ? `${rg.node} runs v${versions[rg.node]?.version}; v${versions[rg.node]?.available} is available — Mesh › list › Nodes` : `aspen version on ${rg.node}`}</title>
+                    {versionLabel(versions[rg.node]) || "NODE"}
                   </text>
                 </g>
               ))}

@@ -11,7 +11,7 @@ import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
 import { MeshPanel } from "../meshPanel";
-import { ServicingPanel } from "../servicing";
+import { ServicingPanel, useMeshVersions, versionLabel } from "../servicing";
 
 function errText(e: unknown): string {
   return e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -572,6 +572,7 @@ function RepositoriesSection({
   const navigate = useNavigate();
   const trust = useTrustedStart();
   const nodes = meshPoll.data?.nodes ?? [];
+  const versions = useMeshVersions();
 
   // Selection is node-qualified: two nodes can hold the same path.
   const [selKey, setSelKey] = useState<string | null>(null);
@@ -795,6 +796,15 @@ function RepositoriesSection({
                   {n.node}
                 </span>
                 <span className="chip mono">{n.self ? "this node" : "peer"}</span>
+                {versionLabel(versions[n.node]) && (
+                  <span
+                    className="mono-meta"
+                    style={{ color: versions[n.node]?.available || versions[n.node]?.skew ? "var(--sig-normal)" : undefined }}
+                    title="aspen version this node runs"
+                  >
+                    {versionLabel(versions[n.node])}
+                  </span>
+                )}
                 {!n.reachable && (
                   <span className="chip mono" style={{ color: "var(--sig-gate)" }}>
                     unreachable

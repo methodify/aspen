@@ -19,6 +19,7 @@ export interface AppData {
   inbox: BusMessage[];
   refreshInbox: () => Promise<void>;
   node: NodeInfo | null;
+  refreshNode: () => Promise<void>;
 }
 
 const AppDataContext = createContext<AppData>({
@@ -29,6 +30,7 @@ const AppDataContext = createContext<AppData>({
   inbox: [],
   refreshInbox: async () => {},
   node: null,
+  refreshNode: async () => {},
 });
 
 export function useAppData(): AppData {
@@ -180,7 +182,22 @@ function VersionBadge({ node }: { node: NodeInfo | null }) {
   const ui = __ASPEN_UI_VERSION__;
   const uiSha = __ASPEN_UI_SHA__;
   const nav = useNavigate();
+  const { refreshNode } = useAppData();
+  const [checking, setChecking] = useState<null | "…" | string>(null);
   if (!node) return null;
+  async function checkNow() {
+    setChecking("…");
+    try {
+      const r = await api.checkUpdatesAll();
+      await refreshNode();
+      const n = Object.keys(r.results).length;
+      setChecking(r.behind > 0 ? `v available on ${r.behind} of ${n}` : `up to date (${n} node${n === 1 ? "" : "s"})`);
+      if (r.behind > 0) nav("/mesh?view=list#nodes");
+    } catch (e) {
+      setChecking(e instanceof Error ? e.message : "check failed");
+    }
+    window.setTimeout(() => setChecking(null), 4000);
+  }
   const stale = node.version !== ui || (node.sha && uiSha !== "unknown" && node.sha !== uiSha);
   const title = `api ${node.version}${node.sha ? ` (${node.sha})` : ""} · ui ${ui} (${uiSha})${
     stale ? " — reload to pick up the new console" : ""
@@ -216,10 +233,20 @@ function VersionBadge({ node }: { node: NodeInfo | null }) {
       api {node.version} · ui {ui} — reload
     </button>
   ) : (
-    <span className="micro" title={title} style={{ color: "var(--text-dim)" }}>
-      v{node.version}
-      {node.sha ? ` ${node.sha}` : ""}
-    </span>
+    <button
+      type="button"
+      className="btn ghost sm"
+      onClick={() => void checkNow()}
+      disabled={checking === "…"}
+      title={`${title} — click to check for updates on every node`}
+      style={{ color: "var(--text-dim)" }}
+    >
+      {checking === "…"
+        ? "checking…"
+        : checking
+          ? checking
+          : `v${node.version}${node.sha ? ` ${node.sha}` : ""}`}
+    </button>
   );
 }
 
@@ -263,6 +290,7 @@ export default function App() {
     inbox: inboxPoll.data ?? [],
     refreshInbox: inboxPoll.refresh,
     node: nodePoll.data,
+    refreshNode: nodePoll.refresh,
   };
 
   return (

@@ -608,6 +608,53 @@ async fn delete_update(State(s): S, body: Option<Json<UpdateBody>>) -> impl Into
 
 async fn post_update_check(State(s): S, body: Option<Json<UpdateBody>>) -> impl IntoResponse {
     let b = body.map(|b| b.0).unwrap_or_default();
+    if b.node.as_deref() == Some("*") {
+        // The whole mesh: this node plus every linked peer, concurrently.
+        let mut results = serde_json::Map::new();
+        let peers: Vec<String> = s
+            .node
+            .inner
+            .mesh()
+            .map(|m| m.links.lock().unwrap().keys().cloned().collect())
+            .unwrap_or_default();
+        let local = aspen_node::servicing::check_async(s.node.inner.clone());
+        let remote = futures_util::future::join_all(peers.iter().map(|p| {
+            let s = s.clone();
+            let p = p.clone();
+            async move {
+                let r = match s.node.inner.mesh() {
+                    Some(m) => {
+                        m.api_call(&p, "node_update_check", "", json!({}), LIST_TIMEOUT)
+                            .await
+                    }
+                    None => Err(anyhow::anyhow!("not in a mesh")),
+                };
+                (p, r)
+            }
+        }));
+        let (local, remote) = tokio::join!(local, remote);
+        results.insert(
+            self_node_name(&s),
+            match local {
+                Ok(r) => json!({ "ok": true, "latest": r.version, "behind": s.node.inner.servicing.newer().is_some() }),
+                Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+            },
+        );
+        for (p, r) in remote {
+            results.insert(
+                p,
+                match r {
+                    Ok(v) => v,
+                    Err(e) => json!({ "ok": false, "error": e.to_string() }),
+                },
+            );
+        }
+        let behind = results
+            .values()
+            .filter(|v| v["behind"].as_bool() == Some(true))
+            .count();
+        return Json(json!({ "ok": true, "results": results, "behind": behind })).into_response();
+    }
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
         return proxy(&s, node, "node_update_check", "", json!({})).await;
     }
@@ -648,7 +695,7 @@ async fn put_update_policy(State(s): S, Json(b): Json<PolicyBody>) -> impl IntoR
         Some("*") => {
             let mut results = serde_json::Map::new();
             results.insert(
-                s.node_name.clone(),
+                self_node_name(&s),
                 match set_local(&s) {
                     Ok(()) => json!({ "ok": true }),
                     Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
