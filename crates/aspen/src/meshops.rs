@@ -42,7 +42,12 @@ pub fn init(files: &MeshFiles, mesh: &str, node_name: &str) -> Result<Done> {
             "this node already has a certified identity ('{}')",
             existing.node
         ),
-        Some(existing) => existing,
+        Some(mut existing) => {
+            if !node_name.is_empty() && existing.node != node_name {
+                existing.node = node_name.to_owned();
+            }
+            existing
+        }
         None => NodeIdentity::create(node_name),
     };
     let cert = root.certify(&id.join_request())?;
@@ -89,11 +94,20 @@ pub fn enroll(files: &MeshFiles, node_name: &str) -> Result<Done> {
     let id = match files.load_identity()? {
         Some(existing) if existing.cert.is_some() => {
             bail!(
-                "this node already has a certified identity ('{}')",
+                "this node already has a certified identity ('{}') — `aspen mesh leave` first to re-enroll",
                 existing.node
             )
         }
-        Some(existing) => existing,
+        // An uncertified identity keeps its keypair but takes the name
+        // asked for: the name is not part of the keys, and a mistyped one
+        // is the common reason to enroll again.
+        Some(mut existing) => {
+            if existing.node != node_name {
+                existing.node = node_name.to_owned();
+                files.save_identity(&existing)?;
+            }
+            existing
+        }
         None => {
             let id = NodeIdentity::create(node_name);
             files.save_identity(&id)?;
