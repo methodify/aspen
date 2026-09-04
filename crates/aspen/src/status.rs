@@ -46,7 +46,17 @@ pub fn run(data_dir: &Path) -> Result<()> {
                     } else {
                         ""
                     };
-                    println!("daemon: running (pid {pid}) — {base} — v{ver} ({sha}){up}{headless}");
+                    println!(
+                        "daemon: running (pid {pid}) — {} — v{ver} ({sha}){up}{headless}",
+                        crate::console_url(data_dir, &listen)
+                    );
+                    if !listen
+                        .parse::<std::net::SocketAddr>()
+                        .map(|a| a.ip().is_loopback())
+                        .unwrap_or(true)
+                    {
+                        println!("        listening beyond loopback: other machines can dial this node; the console needs the token above");
+                    }
                     if ver != env!("CARGO_PKG_VERSION") {
                         println!(
                             "        note: daemon runs v{ver}, this binary is v{} — `aspen update --restart` or `aspen down && aspen up -d` to switch",

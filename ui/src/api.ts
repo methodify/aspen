@@ -8,6 +8,12 @@ export interface NodeInfo {
   /** Build stamp of the daemon serving the API. */
   sha?: string;
   built?: string;
+  /** Where the daemon listens, and whether that is loopback only (then no
+   *  other machine can dial this node). `hostname` is the OS hostname —
+   *  the first guess for a dial URL other machines can use. */
+  listen?: string;
+  loopback_only?: boolean;
+  hostname?: string;
   /** Servicing summary (GET /api/update has the rest). */
   update_available?: string | null;
   update_skipped?: boolean;
@@ -570,10 +576,32 @@ export class ApiError extends Error {
   }
 }
 
+/** The node token. A daemon listening beyond loopback requires it on every
+ *  API call; the console URL carries it once (`?token=…`), we keep it for
+ *  the session (per origin) and send it as a header from then on. Loopback
+ *  daemons need none, and a stale token is simply ignored by them. */
+const TOKEN_KEY = "aspen.token";
+export function nodeToken(): string | null {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("token");
+    if (fromUrl) {
+      sessionStorage.setItem(TOKEN_KEY, fromUrl);
+      localStorage.setItem(TOKEN_KEY, fromUrl);
+      return fromUrl;
+    }
+    return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, init);
+    const token = nodeToken();
+    const headers = new Headers(init?.headers ?? {});
+    if (token) headers.set("X-Aspen-Token", token);
+    res = await fetch(path, { ...init, headers });
   } catch (e) {
     throw new ApiError(0, e instanceof Error ? e.message : "network error");
   }
@@ -811,5 +839,6 @@ export const api = {
 /** WebSocket URL for a session's event stream, honoring the page origin. */
 export function sessionEventsUrl(name: string): string {
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}/api/agents/${enc(name)}/events`;
+  const token = nodeToken();
+  return `${proto}://${window.location.host}/api/agents/${enc(name)}/events${token ? `?token=${enc(token)}` : ""}`;
 }

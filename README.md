@@ -259,6 +259,23 @@ aspen mesh relay wss://relay.example.com/relay   # on each node; rides the
                                                  # bundle for later joiners
 ```
 
+**Reaching across machines.** The daemon listens on `127.0.0.1:7420` by
+default — loopback only, so nothing on another machine can dial it. Whichever
+node gets *dialed* (the root is the natural choice; a WSL2 box is awkward to
+dial into) must listen on a real interface:
+
+```bash
+aspen config listen 0.0.0.0:7420
+aspen restart                       # allow it through the firewall when asked
+```
+
+Beyond loopback the API requires the node token; `aspen up` and `aspen
+status` print the console URL with it (`http://localhost:7420/?token=…`), and
+the console keeps it once opened that way. The dial URL you give at certify
+must be an address the new machine can reach — hostname, LAN IP, or tailnet
+name — never `localhost`; the panel prefills the hostname and warns while the
+node is loopback-only.
+
 Taking a node out: `aspen mesh peers-remove <node>` on each node that lists
 it (certs aren't revoked; the other nodes just stop dialing/accepting it),
 and `aspen mesh leave` on the node itself (keeps its keypair for a future

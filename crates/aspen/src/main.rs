@@ -970,12 +970,35 @@ fn spawn_detached(
         .and_then(|s| s.get("listen").and_then(|l| l.as_str().map(str::to_owned)))
         .unwrap_or_else(|| listen.to_string());
     println!(
-        "aspen started detached (pid {}) on http://{actual}\n  logs: {}\n  stop: aspen --data-dir {} down",
+        "aspen started detached (pid {}) on {}\n  logs: {}\n  stop: aspen --data-dir {} down",
         child.id(),
+        console_url(data_dir, &actual),
         log_path.display(),
         data_dir.display(),
     );
     Ok(())
+}
+
+/// The console URL for a listen address — with the node token when the
+/// listener is beyond loopback (the API requires it there; the console
+/// keeps it once opened this way).
+pub(crate) fn console_url(data_dir: &std::path::Path, listen: &str) -> String {
+    let loopback = listen
+        .parse::<std::net::SocketAddr>()
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or(true);
+    // 0.0.0.0 isn't an address a browser can open; say localhost for the
+    // local user (other machines use this host's name/IP with the token).
+    let host = listen
+        .replacen("0.0.0.0", "localhost", 1)
+        .replacen("[::]", "localhost", 1);
+    if loopback {
+        return format!("http://{host}");
+    }
+    match std::fs::read_to_string(data_dir.join("api-token")) {
+        Ok(t) => format!("http://{host}/?token={}", t.trim()),
+        Err(_) => format!("http://{host}"),
+    }
 }
 
 fn print_log_tail(log_path: &std::path::Path, n: usize) {

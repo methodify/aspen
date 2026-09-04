@@ -455,7 +455,11 @@ async fn auth_middleware(
     if presented.as_deref() == Some(expected.as_str()) {
         next.run(req).await
     } else {
-        err(StatusCode::UNAUTHORIZED, "missing or invalid node token").into_response()
+        err(
+            StatusCode::UNAUTHORIZED,
+            "missing or invalid node token — this node listens beyond loopback; open the console from the URL `aspen status` prints (it carries the token)",
+        )
+        .into_response()
     }
 }
 
@@ -526,11 +530,25 @@ async fn get_node(State(s): S) -> Json<Value> {
         .unwrap_or_default()
         .update;
     let newer = svc.newer();
+    let listen = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .and_then(crate::read_daemon_state)
+        .and_then(|st| st["listen"].as_str().map(str::to_owned));
+    let loopback_only = listen
+        .as_deref()
+        .and_then(|l| l.parse::<std::net::SocketAddr>().ok())
+        .is_none_or(|a| a.ip().is_loopback());
     Json(json!({
         "node": s.node_name,
         "version": env!("CARGO_PKG_VERSION"),
         "sha": env!("ASPEN_GIT_SHA"),
         "built": env!("ASPEN_BUILD_DATE"),
+        "listen": listen,
+        "loopback_only": loopback_only,
+        "hostname": hostname(),
         // Servicing summary for the badge; GET /api/update has the rest.
         "update_available": newer.as_ref().map(|r| r.version.clone()),
         "update_skipped": newer.as_ref().is_some_and(|r| policy.skip.as_deref() == Some(r.version.as_str())),

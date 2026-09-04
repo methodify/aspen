@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, type BlobInfo, type MeshInfo, type MeshPeer } from "./api";
 import { usePoll } from "./hooks";
+import { useAppData } from "./App";
 import { ErrorBar, relTime } from "./components";
 
 type Stage = "solo" | "enrolled" | "root" | "member";
@@ -153,7 +154,34 @@ export function MeshPanel() {
   const [blob, setBlob] = useState("");
   const [info, setInfo] = useState<BlobInfo | null>(null);
   const [inspectErr, setInspectErr] = useState<string | null>(null);
-  const [url, setUrl] = useState(() => `ws://${window.location.hostname}:${window.location.port || "7420"}/api/federation/ws`);
+  const { node: nodeInfo } = useAppData();
+  // The dial URL other machines use for THIS node: its hostname (never
+  // "localhost" — that is only where the browser is), on the port it
+  // listens on. The operator swaps in a LAN IP or tailnet name if needed.
+  const [url, setUrl] = useState("");
+  const [urlTouched, setUrlTouched] = useState(false);
+  useEffect(() => {
+    if (urlTouched || !nodeInfo) return;
+    const port = nodeInfo.listen?.split(":").pop() || window.location.port || "7420";
+    const browserHost = window.location.hostname;
+    const host =
+      browserHost && browserHost !== "localhost" && browserHost !== "127.0.0.1" && browserHost !== "[::1]"
+        ? browserHost
+        : nodeInfo.hostname || browserHost || "this-host";
+    setUrl(`ws://${host}:${port}/api/federation/ws`);
+  }, [nodeInfo, urlTouched]);
+  const setUrlByHand = (u: string) => {
+    setUrlTouched(true);
+    setUrl(u);
+  };
+  const reachability = nodeInfo?.loopback_only ? (
+    <span className="mono-meta" style={{ color: "var(--sig-gate)" }}>
+      ⚠ this node listens on {nodeInfo.listen ?? "127.0.0.1"} — loopback only, so no other machine can dial it. Before certifying, on this
+      machine: <code>aspen config listen 0.0.0.0:{nodeInfo.listen?.split(":").pop() || "7420"}</code> then <code>aspen restart</code> (allow it
+      through the firewall; the console URL then carries a token — <code>aspen status</code> prints it). Or leave the dial URL empty and have
+      this node dial the new one instead.
+    </span>
+  ) : null;
   const [nodeName, setNodeName] = useState("");
   const [meshName, setMeshName] = useState("");
   const [relayUrl, setRelayUrl] = useState("");
@@ -222,6 +250,7 @@ export function MeshPanel() {
     : "…";
   const applyHint = <span className="mono-meta">then, in a shell on this machine: <code>aspen mesh apply</code></span>;
   const lastCertify = outcomes.find((o) => o.kind === "certify" && o.ok && o.artifact);
+  const lastCertified = lastCertify && /certified '([^']+)'/.exec(lastCertify.message)?.[1];
 
   return (
     <div className="strip mesh-panel">
@@ -295,12 +324,13 @@ export function MeshPanel() {
                     <>
                       <Copy text={me.enroll_blob} label="copy enroll blob" primary />
                       <Copy text={deepLink("enroll", me.enroll_blob)} label="copy link for its console" />
-                      <Copy text={`aspen mesh certify ${me.enroll_blob} --url ws://<this-host>:${window.location.port || "7420"}/api/federation/ws`} label="copy certify command" />
+                      <Copy text={`aspen mesh certify ${me.enroll_blob}${url ? ` --url ${url}` : ""}`} label="copy certify command" />
                     </>
                   )}
                 </div>
                 <span className="micro" style={{ color: "var(--text-dim)" }}>
                   On that machine: open the link (or paste the blob into its Mesh panel), queue <b>certify</b>, run <code>aspen mesh apply</code> there. It answers with a <b>join bundle</b>.
+                  The certify step asks how this node will dial that one — make sure that node listens beyond loopback (<code>aspen config listen 0.0.0.0:7420</code> there).
                 </span>
               </Step>
               <Step n={3} title="paste the join bundle here">
@@ -376,12 +406,13 @@ export function MeshPanel() {
               <Step n={2} title="paste its enroll blob here and certify">
                 <textarea className="mono" value={blob} onChange={(e) => setBlob(e.target.value)} placeholder="aspen:enroll:…  (a cert blob also works here: it registers a peer without certifying)" rows={2} style={{ width: "100%" }} spellCheck={false} />
                 {inspectErr && blob.trim() && <span className="mono-meta" style={{ color: "var(--sig-gate)" }}>{inspectErr}</span>}
-                {info && <InspectResult info={info} blob={blob} url={url} setUrl={setUrl} stage={stage} queued={queued} propose={propose} applyHint={applyHint} />}
+                {reachability}
+                {info && <InspectResult info={info} blob={blob} url={url} setUrl={setUrlByHand} stage={stage} queued={queued} propose={propose} applyHint={applyHint} />}
               </Step>
               <Step n={3} title="send the join bundle back to the new machine" done={!!lastCertify}>
                 {lastCertify ? (
                   <div className="mesh-row">
-                    <span className="mono-meta">bundle from certify · {relTime(lastCertify.applied_at)} ago</span>
+                    <span className="mono-meta">bundle for <span className="mono">{lastCertified ?? "the new node"}</span> · {relTime(lastCertify.applied_at)} ago</span>
                     <Copy text={deepLink("join", lastCertify.artifact!)} label="copy link for its console" primary />
                     <Copy text={lastCertify.artifact!} label="copy bundle" />
                     <Copy text={`aspen mesh join ${lastCertify.artifact}`} label="copy join command" />
@@ -424,7 +455,7 @@ export function MeshPanel() {
                   )}
                 </div>
               )}
-              {info && info.kind !== "enroll" && <InspectResult info={info} blob={blob} url={url} setUrl={setUrl} stage={stage} queued={queued} propose={propose} applyHint={applyHint} />}
+              {info && info.kind !== "enroll" && <InspectResult info={info} blob={blob} url={url} setUrl={setUrlByHand} stage={stage} queued={queued} propose={propose} applyHint={applyHint} />}
             </div>
           )}
 
@@ -587,7 +618,8 @@ function InspectResult({
         <span style={{ flex: 1 }} />
         {info.kind === "enroll" && stage === "root" && (
           <>
-            <input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} style={{ width: 300 }} title="how the new node will dial THIS node; empty if this node will dial it instead" spellCheck={false} />
+            <span className="mono-meta" title="an address the new machine can reach this one at: hostname, LAN IP, or tailnet name">{info.node} dials this node at</span>
+            <input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} style={{ width: 320 }} placeholder="empty: this node will dial it instead" title="how the new node will dial THIS node — never localhost; empty if this node will dial it instead" spellCheck={false} />
             <button className="btn primary sm" disabled={info.warnings.length > 0 || queued("certify")} onClick={() => void propose("certify", { blob: blob.trim(), url: url.trim() || null })}>
               {queued("certify") ? "queued" : "queue: certify"}
             </button>
