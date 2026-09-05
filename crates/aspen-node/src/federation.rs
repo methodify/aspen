@@ -49,10 +49,20 @@ pub struct MeshState {
     pub config: std::sync::RwLock<MeshConfig>,
     /// Peers with a dialer task already running (idempotent ensure_dialers).
     pub dialing: Mutex<std::collections::HashSet<String>>,
-    /// Relay URL a client task is already maintaining, if any.
-    pub relay_running: Mutex<Option<String>>,
+    /// Relay URLs with a client task running (idempotent ensure_dialers).
+    pub relay_running: Mutex<std::collections::HashSet<String>>,
+    /// Connected relays: url → since (epoch), and the socket writer — for
+    /// the mailbox (Store frames go to whichever relay is up).
+    pub relay_up: Mutex<HashMap<String, (f64, mpsc::UnboundedSender<String>)>>,
+    /// Bus rows handed to a relay mailbox: uuid → when. Re-handed after a
+    /// while if still pending (the mailbox may have been full or lost).
+    pub mailed: Mutex<HashMap<String, f64>>,
     /// The roster ticker has been started.
     pub ticker_started: std::sync::atomic::AtomicBool,
+    /// The mailbox re-hand ticker has been started.
+    pub mail_ticker_started: std::sync::atomic::AtomicBool,
+    /// Per-relay last error, for the console.
+    pub relay_errors: Mutex<HashMap<String, (String, f64)>>,
     /// node name → sender of already-serialized wire frames.
     pub links: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
     /// node name → last roster it sent us.
@@ -63,7 +73,8 @@ pub struct MeshState {
     pub served_subs: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// Event subscriptions we REQUESTED: sub id → (serving peer, consumer).
     pub remote_subs: Mutex<HashMap<String, (String, mpsc::UnboundedSender<Value>)>>,
-    /// Epoch seconds when the relay session came up; None when down/unused.
+    /// Epoch seconds when the (first) relay session came up; None when
+    /// none is up. Kept for the status readout; relay_up has the detail.
     pub relay_connected_at: Mutex<Option<f64>>,
     /// Per-peer diagnostics for the console: why isn't X linked?
     pub health: Mutex<HashMap<String, PeerHealth>>,
@@ -116,6 +127,18 @@ pub fn fingerprint(key: &[u8]) -> String {
 }
 
 impl MeshState {
+    pub fn note_relay(&self, url: &str, err: Option<String>) {
+        let mut e = self.relay_errors.lock().unwrap();
+        match err {
+            Some(msg) => {
+                e.insert(url.to_owned(), (msg, crate::store::now_epoch()));
+            }
+            None => {
+                e.remove(url);
+            }
+        }
+    }
+
     pub fn note(&self, peer: &str, f: impl FnOnce(&mut PeerHealth)) {
         let mut h = self.health.lock().unwrap();
         f(h.entry(peer.to_owned()).or_default());
@@ -128,8 +151,12 @@ impl MeshState {
             identity,
             config: std::sync::RwLock::new(config),
             dialing: Mutex::new(std::collections::HashSet::new()),
-            relay_running: Mutex::new(None),
+            relay_running: Mutex::new(std::collections::HashSet::new()),
+            relay_up: Mutex::new(HashMap::new()),
+            mailed: Mutex::new(HashMap::new()),
             ticker_started: std::sync::atomic::AtomicBool::new(false),
+            mail_ticker_started: std::sync::atomic::AtomicBool::new(false),
+            relay_errors: Mutex::new(HashMap::new()),
             links: Mutex::new(HashMap::new()),
             remote: Mutex::new(HashMap::new()),
             pending_api: Mutex::new(HashMap::new()),
@@ -186,8 +213,12 @@ impl MeshState {
     pub fn peers(&self) -> Vec<crate::mesh::PeerConfig> {
         self.config.read().unwrap().peers.clone()
     }
+    /// First configured relay (status readouts); `relay_urls` has them all.
     pub fn relay_url(&self) -> Option<String> {
-        self.config.read().unwrap().relay.clone()
+        self.relay_urls().into_iter().next()
+    }
+    pub fn relay_urls(&self) -> Vec<String> {
+        self.config.read().unwrap().relay_urls()
     }
     pub fn mesh_name(&self) -> String {
         self.config.read().unwrap().mesh.clone()
@@ -502,6 +533,13 @@ pub async fn run_link(
         .retain(|_, (served_by, _)| served_by != &peer);
     tracing::info!(peer = %peer, "federation link down");
     mesh.note(&peer, |h| h.last_down = Some(crate::store::now_epoch()));
+    // Pending mail for agents homed there takes the mailbox from now on —
+    // don't wait for the periodic tick.
+    for r in inner.store.pending_recipients().unwrap_or_default() {
+        if crate::addr::node_of(&r) == Some(peer.as_str()) {
+            inner.tick_delivery(&r);
+        }
+    }
     result
 }
 
@@ -1308,14 +1346,30 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
         });
     }
 
-    // If a rendezvous relay is configured, keep a connection to it — the
-    // universal fallback for peers with no direct path.
-    if let Some(relay_url) = mesh.relay_url() {
-        let mut running = mesh.relay_running.lock().unwrap();
-        if running.as_deref() != Some(relay_url.as_str()) {
-            *running = Some(relay_url.clone());
+    // Keep a client on every configured rendezvous relay — the fallback
+    // for peers with no direct path, and the mailbox for peers that are
+    // offline. A client whose URL is removed from the config exits.
+    for relay_url in mesh.relay_urls() {
+        if mesh.relay_running.lock().unwrap().insert(relay_url.clone()) {
             spawn_relay_client(inner.clone(), relay_url);
         }
+    }
+    // Pending mail for peers with no live link: hand it to a relay mailbox,
+    // and re-hand it if it stays pending (mailbox full/lost, peer never
+    // present). The delivery engine does the same on every tick.
+    if !mesh
+        .mail_ticker_started
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        let inner3 = inner.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                for r in inner3.store.pending_recipients().unwrap_or_default() {
+                    inner3.tick_delivery(&r);
+                }
+            }
+        });
     }
 }
 
@@ -1323,8 +1377,14 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
 fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
     tokio::spawn(async move {
         loop {
+            let Some(mesh) = inner.mesh() else { break };
+            if !mesh.relay_urls().contains(&relay_url) {
+                mesh.relay_running.lock().unwrap().remove(&relay_url);
+                break;
+            }
             if let Err(e) = relay_session(&inner, &relay_url).await {
-                tracing::debug!(error = %e, "relay session ended");
+                tracing::debug!(relay = %relay_url, error = %e, "relay session ended");
+                mesh.note_relay(&relay_url, Some(format!("{e}")));
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
@@ -1362,10 +1422,20 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
     ))
     .await?;
 
-    *mesh.relay_connected_at.lock().unwrap() = Some(crate::store::now_epoch());
+    let now = crate::store::now_epoch();
+    *mesh.relay_connected_at.lock().unwrap() = Some(now);
+    mesh.note_relay(relay_url, None);
 
     // Mux: outbound relay frames + per-peer inbound channels.
     let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<String>();
+    mesh.relay_up
+        .lock()
+        .unwrap()
+        .insert(relay_url.to_owned(), (now, relay_tx.clone()));
+    // Anything pending for peers we have no link to can go to the mailbox.
+    for r in inner.store.pending_recipients().unwrap_or_default() {
+        inner.tick_delivery(&r);
+    }
     let peer_ins: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -1387,7 +1457,13 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
     let me = mesh.identity.node.clone();
 
     let result = relay_read_loop(inner, &mesh, &me, &relay_tx, &peer_ins, &mut stream).await;
-    *mesh.relay_connected_at.lock().unwrap() = None;
+    {
+        let mut up = mesh.relay_up.lock().unwrap();
+        up.remove(relay_url);
+        if up.is_empty() {
+            *mesh.relay_connected_at.lock().unwrap() = None;
+        }
+    }
     writer.abort();
     // Drop all per-peer links routed over this relay.
     peer_ins.lock().unwrap().clear();
@@ -1429,8 +1505,16 @@ async fn relay_read_loop(
                 }
             }
             RelayFrame::Presence { node, online } => {
-                if online && me < node.as_str() && !mesh.link_up(&node) {
-                    start_relay_link(inner, me, &node, relay_tx, peer_ins);
+                if online {
+                    if me < node.as_str() && !mesh.link_up(&node) {
+                        start_relay_link(inner, me, &node, relay_tx, peer_ins);
+                    }
+                } else {
+                    // Gone: drop the link riding this relay now, so pending
+                    // mail takes the mailbox instead of a dead session.
+                    if peer_ins.lock().unwrap().remove(&node).is_some() {
+                        tracing::info!(peer = %node, "peer left the relay; link closed");
+                    }
                 }
             }
             RelayFrame::Route {
@@ -1456,10 +1540,155 @@ async fn relay_read_loop(
             RelayFrame::Rejected { reason } => {
                 return Err(anyhow!("relay rejected this node: {reason}"));
             }
+            RelayFrame::Mail { from, id, data } => {
+                receive_mail(inner, mesh, &from, &id, &data);
+            }
+            RelayFrame::MailboxFull { to } => {
+                tracing::warn!(peer = %to, "relay mailbox full; rows stay pending");
+                // Forget our hand-off so the next tick tries again later.
+                mesh.mailed
+                    .lock()
+                    .unwrap()
+                    .retain(|_, at| crate::store::now_epoch() - *at > MAIL_RETRY_SECS);
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// How long a handed-off row waits before being handed off again if it is
+/// still pending (the mailbox was full, the relay lost it, the ack got lost).
+const MAIL_RETRY_SECS: f64 = 10.0 * 60.0;
+
+/// Seal `payload` to `peer` and hand it to a connected relay's mailbox.
+/// Err when no relay is up or the peer's cert isn't on file.
+pub fn mailbox_send(mesh: &MeshState, peer: &str, id: &str, payload: &Value) -> Result<()> {
+    use aspen_wire::relay::RelayFrame;
+    let cert = mesh
+        .peer_cert(peer)
+        .ok_or_else(|| anyhow!("no cert on file for node {peer:?}"))?;
+    let env = SealedEnvelope::seal(&mesh.identity, &cert, payload.to_string().as_bytes())?;
+    let frame = serde_json::to_string(&RelayFrame::Store {
+        to: peer.to_owned(),
+        id: id.to_owned(),
+        data: serde_json::to_string(&env)?,
+    })?;
+    let up = mesh.relay_up.lock().unwrap();
+    let (_, tx) = up
+        .values()
+        .next()
+        .ok_or_else(|| anyhow!("no relay connected"))?;
+    tx.send(frame).map_err(|_| anyhow!("relay writer closed"))
+}
+
+/// Pending rows for `recipient` (homed on `node`, no live link): hand each
+/// to a relay mailbox, at most once per MAIL_RETRY_SECS per row. Rows stay
+/// pending until the home node's bus_ack arrives — by link or by mail.
+pub fn mail_pending(inner: &Arc<NodeInner>, recipient: &str, node: &str) {
+    let Some(mesh) = inner.mesh() else { return };
+    if mesh.relay_up.lock().unwrap().is_empty() {
+        return;
+    }
+    let Ok(pending) = inner.store.pending_for(recipient) else {
+        return;
+    };
+    let now = crate::store::now_epoch();
+    for m in &pending {
+        {
+            let mut mailed = mesh.mailed.lock().unwrap();
+            if mailed
+                .get(&m.uuid)
+                .is_some_and(|at| now - at < MAIL_RETRY_SECS)
+            {
+                continue;
+            }
+            mailed.insert(m.uuid.clone(), now);
+        }
+        if let Err(e) = mailbox_send(&mesh, node, &m.uuid, &bus_payload(m, node)) {
+            tracing::debug!(peer = %node, error = %e, "mailbox hand-off failed; stays pending");
+            mesh.mailed.lock().unwrap().remove(&m.uuid);
+            return;
+        }
+        tracing::info!(peer = %node, uuid = %m.uuid, "bus row handed to relay mailbox");
+    }
+}
+
+/// A mailbox delivery: open it with the sender's cert (on file — a peer we
+/// have met) and treat it as the bus / bus_ack frame it is.
+fn receive_mail(inner: &Arc<NodeInner>, mesh: &Arc<MeshState>, from: &str, id: &str, data: &str) {
+    let Some(cert) = mesh.peer_cert(from) else {
+        tracing::warn!(peer = %from, "mail from a node with no cert on file; dropped");
+        return;
+    };
+    let env: SealedEnvelope = match serde_json::from_str(data) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(peer = %from, error = %e, "unparseable mail dropped");
+            return;
+        }
+    };
+    let payload: Value = match env
+        .open(&mesh.identity, &cert)
+        .and_then(|b| Ok(serde_json::from_slice(&b)?))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(peer = %from, error = %e, "mail envelope rejected");
+            return;
+        }
+    };
+    match payload.get("t").and_then(|t| t.as_str()).unwrap_or("") {
+        "bus" => {
+            let uuid = payload.get("uuid").and_then(|u| u.as_str()).unwrap_or("");
+            let sender = payload
+                .get("sender")
+                .and_then(|s| s.as_str())
+                .unwrap_or("?");
+            let sender = if sender == "operator" || crate::addr::node_of(sender).is_some() {
+                sender.to_owned()
+            } else {
+                format!("{sender}@{from}")
+            };
+            let recipient = payload
+                .get("recipient")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            let g = |k: &str| payload.get(k).and_then(|s| s.as_str());
+            let inserted = inner.store.insert_federated(
+                uuid,
+                &sender,
+                recipient,
+                g("to_display").unwrap_or(""),
+                g("urgency").unwrap_or("normal"),
+                g("body").unwrap_or(""),
+                g("thread"),
+                g("record_ref"),
+                payload.get("created_at").and_then(|c| c.as_f64()),
+            );
+            match inserted {
+                Ok(_) => {
+                    inner.tick_delivery(recipient);
+                    tracing::info!(peer = %from, uuid, "bus row received by mail");
+                }
+                Err(e) => tracing::warn!(peer = %from, error = %e, "mail insert failed"),
+            }
+            // Ack by link if one is up, else back through the mailbox.
+            let ack = json!({ "t": "bus_ack", "uuid": uuid });
+            if mesh.send_to(from, &ack).is_err() {
+                let _ = mailbox_send(mesh, from, &format!("ack:{id}"), &ack);
+            }
+        }
+        "bus_ack" => {
+            if let Some(uuid) = payload.get("uuid").and_then(|u| u.as_str()) {
+                let _ = inner
+                    .store
+                    .mark_delivered_by_uuid(uuid, &format!("federated:{from} (mail)"));
+                mesh.mailed.lock().unwrap().remove(uuid);
+            }
+        }
+        other => tracing::debug!(peer = %from, other, "unknown mail payload ignored"),
+    }
 }
 
 /// Start one federation link that rides the relay to `peer`: wrap outbound

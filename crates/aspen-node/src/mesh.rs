@@ -27,10 +27,46 @@ pub struct MeshConfig {
     pub root_public: Vec<u8>,
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
-    /// Rendezvous relay URL (wss://…/relay), the universal fallback for
-    /// peers with no direct path. None = direct/tailnet only.
+    /// Legacy single relay URL (pre-0.7.1). Read into `relays`; kept so
+    /// older daemons can still parse the file.
     #[serde(default)]
     pub relay: Option<String>,
+    /// Rendezvous relays (wss://…/relay), in preference order. A node keeps
+    /// a client on each; a peer is reached through whichever presents it
+    /// first. Empty = direct/tailnet only.
+    #[serde(default)]
+    pub relays: Vec<String>,
+}
+
+impl MeshConfig {
+    /// Every relay this node should sit on, legacy field folded in.
+    pub fn relay_urls(&self) -> Vec<String> {
+        let mut v = self.relays.clone();
+        if let Some(r) = &self.relay {
+            if !v.contains(r) {
+                v.push(r.clone());
+            }
+        }
+        v
+    }
+    /// Add a relay (idempotent). Returns whether it was new.
+    pub fn add_relay(&mut self, url: &str) -> bool {
+        let url = url.trim();
+        if url.is_empty() || self.relay_urls().iter().any(|u| u == url) {
+            return false;
+        }
+        self.relays.push(url.to_owned());
+        true
+    }
+    /// Remove a relay (from either field). Returns whether it was present.
+    pub fn remove_relay(&mut self, url: &str) -> bool {
+        let before = self.relay_urls().len();
+        self.relays.retain(|u| u != url);
+        if self.relay.as_deref() == Some(url) {
+            self.relay = None;
+        }
+        self.relay_urls().len() != before
+    }
 }
 
 pub struct MeshFiles {

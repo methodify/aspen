@@ -521,7 +521,18 @@ export interface MeshInfo {
   } | null;
   root_public?: string;
   peers?: MeshPeer[];
-  relay?: { url: string | null; connected_at: number | null; hosted_path?: string; hosted_present?: string[] };
+  relay?: {
+    url: string | null;
+    connected_at: number | null;
+    /** Every configured relay with its client state. */
+    relays?: { url: string; connected_at: number | null; last_error: string | null; last_error_at: number | null }[];
+    /** Bus rows handed to a relay mailbox, awaiting the peer's ack. */
+    mailed?: number;
+    hosted_path?: string;
+    hosted_present?: string[];
+    /** Mail waiting in this node's own relay: recipient → items. */
+    hosted_waiting?: Record<string, number>;
+  };
   pending?: MeshPending;
 }
 

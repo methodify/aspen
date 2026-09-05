@@ -1374,6 +1374,17 @@ impl BusStore {
 
     /// Undelivered messages for a recipient, in send order. Class never
     /// reorders.
+    /// Distinct recipients with undelivered rows (for periodic re-ticks).
+    pub fn pending_recipients(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT recipient FROM messages WHERE delivered_at IS NULL")?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn pending_for(&self, recipient: &str) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

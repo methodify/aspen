@@ -41,6 +41,11 @@ pub async fn run(inner: Arc<NodeInner>, mut rx: mpsc::UnboundedReceiver<String>)
                 if let Some(node) = home {
                     if mesh.link_up(&node) {
                         crate::federation::forward_pending(&inner, &recipient, &node);
+                    } else {
+                        // No link: a relay mailbox carries it until the
+                        // peer shows up (bounded; rows stay pending here
+                        // until the peer's ack comes back).
+                        crate::federation::mail_pending(&inner, &recipient, &node);
                     }
                 }
             }

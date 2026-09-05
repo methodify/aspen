@@ -59,6 +59,7 @@ pub fn init(files: &MeshFiles, mesh: &str, node_name: &str) -> Result<Done> {
         root_public: root.root_public.clone(),
         peers: vec![],
         relay: None,
+        relays: vec![],
     })?;
     let blob = identity::to_blob("cert", id.cert.as_ref().unwrap())?;
     Ok(done(
@@ -201,6 +202,7 @@ pub fn join(files: &MeshFiles, blob: &str) -> Result<Done> {
             root_public: cert.root_public.clone(),
             peers: vec![],
             relay: None,
+            relays: vec![],
         })?;
     }
     let mut summary = format!("joined mesh '{}' as node '{}'", cert.mesh, cert.node);
@@ -216,10 +218,9 @@ pub fn join(files: &MeshFiles, blob: &str) -> Result<Done> {
         ));
         if let Some(relay) = b.relay {
             let mut m = files.load_mesh()?.expect("saved above");
-            if m.relay.is_none() {
-                m.relay = Some(relay.clone());
+            if m.add_relay(&relay) {
                 files.save_mesh(&m)?;
-                summary.push_str(&format!("; relay set from bundle: {relay}"));
+                summary.push_str(&format!("; relay added from bundle: {relay}"));
             }
         }
     } else {
@@ -250,17 +251,36 @@ pub fn peers_add(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Don
     ))
 }
 
-pub fn relay(files: &MeshFiles, url: Option<&str>) -> Result<Done> {
+/// Relays: add one (`url`, `remove` = false), remove one (`remove` =
+/// true), or clear all (`url` = None).
+pub fn relay(files: &MeshFiles, url: Option<&str>, remove: bool) -> Result<Done> {
     let mut mesh = files
         .load_mesh()?
         .ok_or_else(|| anyhow!("this node has not joined a mesh"))?;
-    mesh.relay = url.map(str::to_owned);
+    let summary = match url {
+        Some(u) if remove => {
+            if mesh.remove_relay(u) {
+                format!("relay removed: {u}")
+            } else {
+                bail!("no relay {u} configured")
+            }
+        }
+        Some(u) => {
+            if !u.starts_with("ws://") && !u.starts_with("wss://") {
+                bail!("relay URL must start with ws:// or wss:// (got {u:?})");
+            }
+            if mesh.add_relay(u) {
+                format!("relay added: {u} ({} total)", mesh.relay_urls().len())
+            } else {
+                format!("relay already configured: {u}")
+            }
+        }
+        None => {
+            mesh.relay = None;
+            mesh.relays.clear();
+            "relays cleared".into()
+        }
+    };
     files.save_mesh(&mesh)?;
-    Ok(done(
-        match url {
-            Some(u) => format!("relay set: {u}"),
-            None => "relay cleared (takes effect at next daemon start)".into(),
-        },
-        None,
-    ))
+    Ok(done(summary, None))
 }

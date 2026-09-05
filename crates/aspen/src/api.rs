@@ -1831,6 +1831,23 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
     // Before the std guards below: an await while holding them would make
     // this future !Send.
     let hosted_present = s.relay.present().await;
+    let hosted_waiting = s.relay.waiting().await;
+    let relays: Vec<Value> = {
+        let up = mesh.relay_up.lock().unwrap();
+        let errs = mesh.relay_errors.lock().unwrap();
+        mesh.relay_urls()
+            .iter()
+            .map(|u| {
+                json!({
+                    "url": u,
+                    "connected_at": up.get(u).map(|(t, _)| *t),
+                    "last_error": errs.get(u).map(|(e, _)| e.clone()),
+                    "last_error_at": errs.get(u).map(|(_, t)| *t),
+                })
+            })
+            .collect()
+    };
+    let mailed = mesh.mailed.lock().unwrap().len();
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
     let health = mesh.health.lock().unwrap();
@@ -1885,11 +1902,18 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
         "root_public": aspen_wire::b64::encode(&mesh.root_public()),
         "peers": peers,
         "relay": {
+            // First relay, for older readers; `relays` has them all.
             "url": mesh.relay_url(),
             "connected_at": *mesh.relay_connected_at.lock().unwrap(),
-            // This node's own relay endpoint and who is rendezvousing here.
+            "relays": relays,
+            // Bus rows this node has handed to a relay mailbox, awaiting the
+            // peer's ack.
+            "mailed": mailed,
+            // This node's own relay endpoint: who is rendezvousing here and
+            // whose mail is waiting here.
             "hosted_path": "/api/federation/relay",
             "hosted_present": hosted_present,
+            "hosted_waiting": hosted_waiting,
         },
         "pending": pending,
     }))

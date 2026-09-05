@@ -6,8 +6,12 @@ key** — enough to verify membership, never to forge it — and every routed
 frame is a `SealedEnvelope` it cannot read. A fully compromised rendezvous
 yields metadata and denial of service, not command and control.
 
-Two interchangeable implementations speak the identical protocol
-(`aspen-wire::relay`):
+Three interchangeable implementations speak the identical protocol
+(`aspen-wire::relay`). Every **node** hosts one at
+`ws://<host>:<port>/api/federation/relay` (v0.7.0+) — a reachable node such
+as the root is usually all a mesh needs. The two below are for when no node
+is reachable from everywhere (nodes behind different NATs, laptops on the
+road):
 
 ## 1. Standalone binary (`aspen-relay`)
 
@@ -48,6 +52,33 @@ Nodes point at the Worker with the mesh in the query string:
 aspen mesh relay wss://aspen-rendezvous.<subdomain>.workers.dev/relay?mesh=mymesh
 ```
 
+Sockets use the Workers **hibernation API**: the object sleeps while idle
+(no duration billed) and per-socket state rides in the socket attachment;
+mail waits in Durable Object storage and is swept by alarm. Local test:
+`echo 'MESH_ROOTS={"mymesh":"<root pubkey>"}' > .dev.vars && npx wrangler dev`,
+then `aspen mesh relay ws://127.0.0.1:8787/relay?mesh=mymesh` on a node.
+
+## Several relays per node
+
+`aspen mesh relay <url>` **adds** a relay (idempotent); `--remove` drops one;
+no argument clears all. A node keeps a client on every relay it lists and
+reaches a peer through whichever presents it first — the root's embedded
+relay on the LAN and a Cloudflare one for the road can both be set. A join
+bundle carries the certifier's relay, so new nodes inherit one.
+
+## The mailbox
+
+Live links are sessions; a frame from one cannot be replayed into a later
+one. So the relay also keeps a **mailbox at the bus layer**: a node with
+pending mail for a peer it has no live link to hands the relay a sealed
+envelope (`store`); the relay delivers it (`mail`) the moment the peer
+registers — or immediately if the peer is present. Envelopes are sealed
+to the recipient's static keys, so they open without a session. The
+recipient acks through the same path; the origin keeps its row pending
+until that ack — at-least-once, end to end. Bounded per recipient (200
+items / 2 MB), 7-day TTL; a full box answers `mailbox_full` and the origin
+retries later.
+
 Both implementations are modular by design — a node cares only about the
 `wss://…/relay` URL, never which one answers. An Azure Functions port can be
 added later against the same `aspen-wire::relay` contract.
@@ -65,6 +96,9 @@ added later against the same `aspen-wire::relay` contract.
    delivers `Route { from, data }` to the target, or `Undeliverable { to }`
    back. `data` is an opaque federation frame (a sealed envelope after the
    node-to-node handshake completes).
+5. Mailbox: `Store { to, id, data }` keeps a sealed bus envelope for an
+   absent node (same `from`+`id` replaces); `Mail { from, id, data }` delivers
+   it on registration or at once; `MailboxFull { to }` refuses.
 
 The relay never inspects `data`. Node pairs run the full mutually-
 authenticating federation handshake end-to-end over this routing, so the

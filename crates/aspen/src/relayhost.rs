@@ -17,12 +17,14 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
 use tokio::sync::{mpsc, Mutex};
 
-use aspen_wire::relay::{Challenge, Register, RelayFrame};
+use aspen_wire::relay::{Challenge, Mailbox, Register, RelayFrame};
 
 #[derive(Default)]
 pub struct RelayHost {
     /// node name → its socket writer.
     nodes: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
+    /// Bus envelopes waiting for nodes that aren't here (bounded, TTL'd).
+    mailbox: Mutex<Mailbox>,
 }
 
 impl RelayHost {
@@ -30,6 +32,10 @@ impl RelayHost {
         let mut v: Vec<String> = self.nodes.lock().await.keys().cloned().collect();
         v.sort();
         v
+    }
+    /// recipient → items waiting.
+    pub async fn waiting(&self) -> HashMap<String, usize> {
+        self.mailbox.lock().await.waiting()
     }
 }
 
@@ -91,6 +97,18 @@ pub async fn serve(
         return;
     }
     broadcast_presence(&host, &name, true).await;
+    // Mail that waited for this node, oldest first.
+    for item in host.mailbox.lock().await.drain(&name) {
+        let frame = serde_json::to_string(&RelayFrame::Mail {
+            from: item.from,
+            id: item.id,
+            data: item.data,
+        })
+        .unwrap_or_default();
+        if socket.send(Message::Text(frame.into())).await.is_err() {
+            break;
+        }
+    }
 
     // 4. Pump both directions.
     loop {
@@ -120,23 +138,51 @@ async fn route(host: &RelayHost, from: &str, text: &str) {
     let Ok(frame) = serde_json::from_str::<RelayFrame>(text) else {
         return;
     };
-    if let RelayFrame::Route {
-        to: Some(to), data, ..
-    } = frame
-    {
-        let nodes = host.nodes.lock().await;
-        if let Some(dest) = nodes.get(&to) {
-            let fwd = serde_json::to_string(&RelayFrame::Route {
-                to: None,
-                from: Some(from.to_owned()),
-                data,
-            })
-            .unwrap_or_default();
-            let _ = dest.send(fwd);
-        } else if let Some(src) = nodes.get(from) {
-            let note = serde_json::to_string(&RelayFrame::Undeliverable { to }).unwrap_or_default();
-            let _ = src.send(note);
+    match frame {
+        RelayFrame::Route {
+            to: Some(to), data, ..
+        } => {
+            let nodes = host.nodes.lock().await;
+            if let Some(dest) = nodes.get(&to) {
+                let fwd = serde_json::to_string(&RelayFrame::Route {
+                    to: None,
+                    from: Some(from.to_owned()),
+                    data,
+                })
+                .unwrap_or_default();
+                let _ = dest.send(fwd);
+            } else if let Some(src) = nodes.get(from) {
+                let note =
+                    serde_json::to_string(&RelayFrame::Undeliverable { to }).unwrap_or_default();
+                let _ = src.send(note);
+            }
         }
+        RelayFrame::Store { to, id, data } => {
+            let nodes = host.nodes.lock().await;
+            if let Some(dest) = nodes.get(&to) {
+                // Present: hand it straight over.
+                let m = serde_json::to_string(&RelayFrame::Mail {
+                    from: from.to_owned(),
+                    id,
+                    data,
+                })
+                .unwrap_or_default();
+                let _ = dest.send(m);
+            } else if host
+                .mailbox
+                .lock()
+                .await
+                .store(&to, from, &id, data)
+                .is_err()
+            {
+                if let Some(src) = nodes.get(from) {
+                    let note =
+                        serde_json::to_string(&RelayFrame::MailboxFull { to }).unwrap_or_default();
+                    let _ = src.send(note);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

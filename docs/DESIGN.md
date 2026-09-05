@@ -677,3 +677,16 @@ cleaner lane for roster updates than user-message headers.
   a separate process. Root-signed certs presented over a verified link are
   recorded (memory + mesh.json, no dial URL) — the join bundle only ever
   carried the certifier's, and sealed envelopes need the recipient's.
+- **2026-09-05 — Several relays; the mailbox.** A node keeps a client on
+  every relay it lists (the root's embedded one on the LAN, a Cloudflare
+  one for the road); one link per peer, through whichever path presents
+  it first. The relay also spools — at the **bus layer**, never the link
+  layer: link frames belong to a session, bus envelopes are sealed to
+  static keys and can wait. `Store`/`Mail`/`MailboxFull`; bounded (200
+  items, 2 MB, 7 days) per recipient; the origin's row stays pending until
+  the recipient's ack comes back by link or by mail. The Cloudflare worker
+  was rewritten on the hibernation API (idle meshes cost nothing; socket
+  state in attachments; mail in DO storage swept by alarm) and exercised
+  locally with wrangler. Next on this thread: nodes advertise their
+  reachable addresses and hosted relays in rosters so peers try direct
+  first and fall back — mesh where it can be, spokes where it must be.

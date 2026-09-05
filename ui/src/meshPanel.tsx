@@ -459,27 +459,60 @@ export function MeshPanel() {
             </div>
           )}
 
-          {/* ── relay + advanced ─────────────────────────────────────── */}
+          {/* ── relays + advanced ────────────────────────────────────── */}
           {(stage === "root" || stage === "member") && (
             <div className="mesh-section">
               <div className="mesh-row">
-                <span className="mono-meta" title="a rendezvous relay lets nodes with no direct path reach each other; every node hosts one at /api/federation/relay, so a reachable node (the root) is usually it">relay</span>
-                <input className="mono" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} placeholder={mesh.relay?.url ?? (rootPeer?.url ? rootPeer.url.replace("/api/federation/ws", "/api/federation/relay") : "ws://<a reachable node>:7420/api/federation/relay")} style={{ width: 340 }} spellCheck={false} />
-                <button className="btn ghost sm" onClick={() => void propose("relay", { url: relayUrl.trim() || null })}>
-                  queue {relayUrl.trim() ? "set" : "clear"}
-                </button>
-                {mesh.relay?.url ? (
-                  <span className="mono-meta">{mesh.relay.connected_at ? "connected" : "not connected"}</span>
-                ) : stage === "member" && rootPeer?.url ? (
-                  <span className="mono-meta" style={{ color: "var(--sig-normal)" }}>
-                    no relay set — nodes that only dial out can't see each other; set the root's: {rootPeer.url.replace("/api/federation/ws", "/api/federation/relay")}
-                  </span>
-                ) : null}
-                {(mesh.relay as { hosted_present?: string[] } | undefined)?.hosted_present?.length ? (
-                  <span className="mono-meta" title="nodes rendezvousing through this node's own relay">hosting relay for {(mesh.relay as { hosted_present?: string[] }).hosted_present!.join(", ")}</span>
-                ) : null}
+                <span className="label" title="rendezvous relays: nodes with no direct path meet through one; mail for offline nodes waits in one. Every node hosts one at /api/federation/relay">Relays</span>
+                <span className="mono-meta">
+                  {mesh.relay?.hosted_present?.length
+                    ? `this node relays for ${mesh.relay.hosted_present.join(", ")}`
+                    : "this node hosts a relay at /api/federation/relay"}
+                  {mesh.relay?.hosted_waiting && Object.keys(mesh.relay.hosted_waiting).length > 0
+                    ? ` · mail waiting for ${Object.entries(mesh.relay.hosted_waiting).map(([n, c]) => `${n} (${c})`).join(", ")}`
+                    : ""}
+                  {mesh.relay?.mailed ? ` · ${mesh.relay.mailed} row${mesh.relay.mailed === 1 ? "" : "s"} handed to a mailbox, awaiting ack` : ""}
+                </span>
                 <span style={{ flex: 1 }} />
                 <button className="btn ghost sm" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>advanced {advanced ? "▴" : "▾"}</button>
+              </div>
+              {(mesh.relay?.relays ?? []).map((r) => (
+                <div key={r.url} className="mesh-peer">
+                  <span className={`dot ${r.connected_at ? "dot-idle" : "dot-down"}`} aria-hidden />
+                  <span className="mono" style={{ color: "var(--text-hi)" }}>{r.url}</span>
+                  <span className="mono-meta">{r.connected_at ? `connected ${relTime(r.connected_at)}` : "not connected"}</span>
+                  {r.last_error && !r.connected_at && (
+                    <span className="mono-meta" style={{ color: "var(--sig-gate)" }} title={r.last_error}>
+                      {r.last_error.length > 80 ? `${r.last_error.slice(0, 80)}…` : r.last_error}
+                    </span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <button className="btn ghost sm" onClick={() => void propose("relay", { url: r.url, remove: true })}>queue remove</button>
+                </div>
+              ))}
+              {(mesh.relay?.relays ?? []).length === 0 && stage === "member" && rootPeer?.url && (
+                <span className="mono-meta" style={{ color: "var(--sig-normal)" }}>
+                  no relay set — nodes that only dial out can't see each other, and nothing waits for this node while it is off. Add the root's: {rootPeer.url.replace("/api/federation/ws", "/api/federation/relay")}
+                </span>
+              )}
+              <div className="mesh-row">
+                <input
+                  className="mono"
+                  value={relayUrl}
+                  onChange={(e) => setRelayUrl(e.target.value)}
+                  placeholder={rootPeer?.url ? rootPeer.url.replace("/api/federation/ws", "/api/federation/relay") : "ws://<a reachable node>:7420/api/federation/relay, or wss://…/relay?mesh=NAME"}
+                  style={{ width: 420 }}
+                  spellCheck={false}
+                  aria-label="relay URL to add"
+                />
+                <button className="btn ghost sm" disabled={!relayUrl.trim()} onClick={() => { void propose("relay", { url: relayUrl.trim() }); setRelayUrl(""); }}>
+                  queue add
+                </button>
+                {rootPeer?.url && !(mesh.relay?.relays ?? []).some((r) => r.url === rootPeer.url!.replace("/api/federation/ws", "/api/federation/relay")) && (
+                  <button className="btn ghost sm" onClick={() => void propose("relay", { url: rootPeer.url!.replace("/api/federation/ws", "/api/federation/relay") })}>
+                    queue add {rootPeer.node}'s relay
+                  </button>
+                )}
               </div>
               {advanced && (
                 <div className="mesh-inspect">
@@ -578,7 +611,7 @@ function describeProposal(kind: string, args: Record<string, unknown>): string {
     case "peers_remove":
       return `forget peer '${s("node")}'`;
     case "relay":
-      return `relay → ${args["url"] ?? "(clear)"}`;
+      return args["url"] ? `${args["remove"] ? "remove" : "add"} relay ${s("url")}` : "clear all relays";
     case "leave":
       return args["discard_root"] ? "LEAVE the mesh and discard the root key (ends the mesh)" : "leave the mesh";
     default:

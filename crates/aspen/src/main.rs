@@ -235,10 +235,14 @@ enum MeshCommand {
     },
     /// Print this mesh's ROOT PUBLIC key (safe to give a relay).
     RootPubkey,
-    /// Set (or clear) the rendezvous relay URL this node dials.
+    /// Rendezvous relays this node sits on: add one, remove one, or clear
+    /// all. Every node hosts one at ws://<host>:<port>/api/federation/relay.
     Relay {
-        /// wss://host/relay — omit to clear.
+        /// wss://host/relay — omit to clear all.
         url: Option<String>,
+        /// Remove this URL instead of adding it.
+        #[arg(long)]
+        remove: bool,
     },
     /// Show mesh membership as configured on disk.
     Status,
@@ -1305,8 +1309,8 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             println!("{}", aspen_wire::b64::encode(&mesh.root_public));
             Ok(())
         }
-        MeshCommand::Relay { url } => {
-            let d = meshops::relay(&files, url.as_deref())?;
+        MeshCommand::Relay { url, remove } => {
+            let d = meshops::relay(&files, url.as_deref(), remove)?;
             println!("{}", d.summary);
             notify_daemon_reload(data_dir);
             Ok(())
@@ -1353,10 +1357,13 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                             .map(|u| format!(" dialing {u}"))
                             .unwrap_or_default()
                     ),
-                    "relay" => format!(
-                        "set relay to {}",
-                        g("url").unwrap_or_else(|| "(cleared)".into())
-                    ),
+                    "relay" => match g("url") {
+                        Some(u) if p.args.get("remove").and_then(|b| b.as_bool()) == Some(true) => {
+                            format!("remove relay {u}")
+                        }
+                        Some(u) => format!("add relay {u}"),
+                        None => "clear all relays".into(),
+                    },
                     "init" => format!(
                         "CREATE mesh '{}' here as node '{}' (mints the root key on this machine)",
                         g("mesh").unwrap_or_default(),
@@ -1404,7 +1411,11 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                         &g("blob").unwrap_or_default(),
                         g("url").as_deref(),
                     ),
-                    "relay" => meshops::relay(&files, g("url").as_deref()),
+                    "relay" => meshops::relay(
+                        &files,
+                        g("url").as_deref(),
+                        p.args.get("remove").and_then(|b| b.as_bool()) == Some(true),
+                    ),
                     "init" => meshops::init(
                         &files,
                         &g("mesh").unwrap_or_default(),
