@@ -166,14 +166,14 @@ fn now_secs() -> u64 {
 
 impl Mailbox {
     /// Keep an item for `to`; an item with the same id from the same
-    /// sender replaces the earlier one. Err(()) when the box is full.
-    pub fn store(&mut self, to: &str, from: &str, id: &str, data: String) -> Result<(), ()> {
+    /// sender replaces the earlier one. False when the box is full.
+    pub fn store(&mut self, to: &str, from: &str, id: &str, data: String) -> bool {
         self.sweep();
         let b = self.boxes.entry(to.to_owned()).or_default();
         b.retain(|m| !(m.from == from && m.id == id));
         let bytes: usize = b.iter().map(|m| m.data.len()).sum();
         if b.len() >= MAILBOX_MAX_ITEMS || bytes + data.len() > MAILBOX_MAX_BYTES {
-            return Err(());
+            return false;
         }
         b.push_back(MailItem {
             from: from.to_owned(),
@@ -181,7 +181,7 @@ impl Mailbox {
             data,
             stored_at: now_secs(),
         });
-        Ok(())
+        true
     }
 
     /// Everything waiting for `to`, oldest first; the box is emptied.
@@ -217,9 +217,9 @@ mod mailbox_tests {
     #[test]
     fn store_replace_drain() {
         let mut m = Mailbox::default();
-        m.store("b", "a", "1", "x".into()).unwrap();
-        m.store("b", "a", "1", "y".into()).unwrap(); // replaces
-        m.store("b", "c", "1", "z".into()).unwrap(); // different sender, same id: kept
+        assert!(m.store("b", "a", "1", "x".into()));
+        assert!(m.store("b", "a", "1", "y".into())); // replaces
+        assert!(m.store("b", "c", "1", "z".into())); // different sender, same id: kept
         let got = m.drain("b");
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].data, "y");
@@ -231,12 +231,10 @@ mod mailbox_tests {
     fn bounded() {
         let mut m = Mailbox::default();
         for i in 0..MAILBOX_MAX_ITEMS {
-            m.store("b", "a", &i.to_string(), "d".into()).unwrap();
+            assert!(m.store("b", "a", &i.to_string(), "d".into()));
         }
-        assert!(m.store("b", "a", "overflow", "d".into()).is_err());
+        assert!(!m.store("b", "a", "overflow", "d".into()));
         let mut m2 = Mailbox::default();
-        assert!(m2
-            .store("b", "a", "big", "x".repeat(MAILBOX_MAX_BYTES + 1))
-            .is_err());
+        assert!(!m2.store("b", "a", "big", "x".repeat(MAILBOX_MAX_BYTES + 1)));
     }
 }

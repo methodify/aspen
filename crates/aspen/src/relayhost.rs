@@ -168,13 +168,7 @@ async fn route(host: &RelayHost, from: &str, text: &str) {
                 })
                 .unwrap_or_default();
                 let _ = dest.send(m);
-            } else if host
-                .mailbox
-                .lock()
-                .await
-                .store(&to, from, &id, data)
-                .is_err()
-            {
+            } else if !host.mailbox.lock().await.store(&to, from, &id, data) {
                 if let Some(src) = nodes.get(from) {
                     let note =
                         serde_json::to_string(&RelayFrame::MailboxFull { to }).unwrap_or_default();

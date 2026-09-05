@@ -276,6 +276,9 @@ letting a UI see the whole mesh.
 
 ### The rendezvous, minimal by construction
 
+*(As built: [`RELAY.md`](RELAY.md) — three hosts of one protocol, several
+relays per node, the bus-layer mailbox, and what is next.)*
+
 - Nodes connect **outbound WSS only**; no inbound ports anywhere, ever.
 - It does four things: authenticate nodes to a mesh, route envelopes by node
   id, report presence, and (bounded, TTL'd) spool envelopes for offline

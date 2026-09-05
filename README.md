@@ -269,8 +269,8 @@ whichever presents it first. Relays also hold a **mailbox**: mail for a node
 that is off waits (bounded, a week) and lands when it comes back, so a
 message sent at night reaches a machine that boots in the morning. Certs
 learned over a verified link are recorded, so a peer met through a relay
-shows up in the members list (without a dial URL). Hosting options and the
-protocol: [`rendezvous/README.md`](rendezvous/README.md).
+shows up in the members list (without a dial URL). Design: [`docs/RELAY.md`](docs/RELAY.md); hosting and the protocol:
+[`rendezvous/README.md`](rendezvous/README.md).
 
 **Reaching across machines.** The daemon listens on `127.0.0.1:7420` by
 default — loopback only, so nothing on another machine can dial it. Whichever
