@@ -412,9 +412,26 @@ pub async fn run_link(
         bail!("peer presented this node's own name");
     }
     if mesh.peer_cert(&peer_cert.node).map(|c| c.ed_public) != Some(peer_cert.ed_public.clone()) {
-        // Not fatal by design: a valid root-signed cert we don't have on
-        // file yet gets recorded for the session (certs are public facts).
-        tracing::info!(peer = %peer_cert.node, "peer cert not in mesh.json; trusting root signature for this session");
+        // A valid root-signed cert we don't have on file yet — typical for a
+        // peer met through the relay (the join bundle only carried the
+        // certifier's). Certs are public facts: record it, in memory for
+        // send_to (envelopes are sealed to the peer's cert) and on disk so
+        // it is a known peer from now on (no dial URL: reached via relay or
+        // inbound).
+        tracing::info!(peer = %peer_cert.node, "peer cert not on file; recording it (root signature verified)");
+        {
+            let mut cfg = mesh.config.write().unwrap();
+            cfg.peers.retain(|p| p.cert.node != peer_cert.node);
+            cfg.peers.push(crate::mesh::PeerConfig {
+                cert: peer_cert.clone(),
+                url: None,
+            });
+        }
+        if let Some(dir) = inner.data_dir.as_deref() {
+            if let Err(e) = crate::mesh::MeshFiles::new(dir).add_peer(peer_cert.clone(), None) {
+                tracing::warn!(peer = %peer_cert.node, error = %e, "could not persist peer cert");
+            }
+        }
     }
 
     // 3. Prove key possession both ways: return their nonce sealed.

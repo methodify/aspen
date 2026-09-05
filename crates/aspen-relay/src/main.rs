@@ -18,7 +18,7 @@ use axum::routing::get;
 use axum::Router;
 use tokio::sync::{mpsc, Mutex};
 
-use aspen_wire::relay::{challenge_context, Challenge, Register, RelayFrame};
+use aspen_wire::relay::{Challenge, Register, RelayFrame};
 
 use clap::Parser;
 
@@ -168,34 +168,7 @@ async fn handle(relay: Relay, mut socket: WebSocket) {
 }
 
 fn verify_register(relay: &Relay, reg: &Register, nonce: &[u8]) -> Result<(), String> {
-    if reg.mesh != relay.mesh {
-        return Err(format!(
-            "wrong mesh: relay serves '{}', node claims '{}'",
-            relay.mesh, reg.mesh
-        ));
-    }
-    if reg.cert.node != reg.node {
-        return Err("cert node name does not match register".into());
-    }
-    // Membership: the cert must be signed by THIS relay's mesh root.
-    reg.cert
-        .verify_against(&relay.root_pubkey)
-        .map_err(|e| format!("cert not valid for this mesh: {e}"))?;
-    // Identity: the challenge signature must be by the cert's ed key.
-    let ed = reg
-        .cert
-        .ed_key()
-        .map_err(|e| format!("bad node key: {e}"))?;
-    let sig_bytes: [u8; 64] = reg
-        .challenge_sig
-        .as_slice()
-        .try_into()
-        .map_err(|_| "malformed challenge signature".to_string())?;
-    let ctx = challenge_context(&reg.mesh, &reg.node, nonce);
-    use ed25519_dalek::Verifier;
-    ed.verify(&ctx, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
-        .map_err(|_| "challenge signature invalid".to_string())?;
-    Ok(())
+    aspen_wire::relay::verify_register(&relay.mesh, &relay.root_pubkey, reg, nonce)
 }
 
 async fn route(relay: &Relay, from: &str, text: &str) {

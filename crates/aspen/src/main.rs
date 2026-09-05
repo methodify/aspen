@@ -14,6 +14,7 @@ use aspen_node::{Node, SpawnOpts};
 
 mod api;
 mod meshops;
+mod relayhost;
 mod status;
 mod update;
 

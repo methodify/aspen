@@ -521,7 +521,7 @@ export interface MeshInfo {
   } | null;
   root_public?: string;
   peers?: MeshPeer[];
-  relay?: { url: string | null; connected_at: number | null };
+  relay?: { url: string | null; connected_at: number | null; hosted_path?: string; hosted_present?: string[] };
   pending?: MeshPending;
 }
 

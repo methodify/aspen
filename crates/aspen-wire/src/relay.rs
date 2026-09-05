@@ -70,3 +70,40 @@ pub enum RelayFrame {
     /// Registration rejected.
     Rejected { reason: String },
 }
+
+/// The relay-side registration check, shared by every relay host (the
+/// standalone `aspen-relay` and the one embedded in each node): the node
+/// claims this mesh, its cert is signed by the mesh root, and the challenge
+/// signature is by the cert's key.
+pub fn verify_register(
+    mesh: &str,
+    root_pubkey: &[u8],
+    reg: &Register,
+    nonce: &[u8],
+) -> std::result::Result<(), String> {
+    if reg.mesh != mesh {
+        return Err(format!(
+            "wrong mesh: relay serves '{mesh}', node claims '{}'",
+            reg.mesh
+        ));
+    }
+    if reg.cert.node != reg.node {
+        return Err("cert node name does not match register".into());
+    }
+    reg.cert
+        .verify_against(root_pubkey)
+        .map_err(|e| format!("cert not valid for this mesh: {e}"))?;
+    let ed = reg
+        .cert
+        .ed_key()
+        .map_err(|e| format!("bad node key: {e}"))?;
+    let sig_bytes: [u8; 64] = reg
+        .challenge_sig
+        .as_slice()
+        .try_into()
+        .map_err(|_| "malformed challenge signature".to_string())?;
+    let ctx = challenge_context(&reg.mesh, &reg.node, nonce);
+    use ed25519_dalek::Verifier;
+    ed.verify(&ctx, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
+        .map_err(|_| "challenge signature invalid".to_string())
+}

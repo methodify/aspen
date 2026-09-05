@@ -154,7 +154,14 @@ pub fn certify(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Done>
         .load_identity()?
         .and_then(|id| id.cert)
         .ok_or_else(|| anyhow!("this node has no cert of its own"))?;
-    let relay = files.load_mesh()?.and_then(|m| m.relay);
+    // The mesh's relay if one is configured; otherwise, since every node
+    // hosts a relay at /api/federation/relay, offer THIS node's — it is the
+    // one reachable at `url`, and joiners that only dial out (loopback
+    // listeners) can then reach each other through it.
+    let relay = files
+        .load_mesh()?
+        .and_then(|m| m.relay)
+        .or_else(|| url.map(|u| u.replacen("/api/federation/ws", "/api/federation/relay", 1)));
     let bundle = JoinBundle {
         cert: cert.clone(),
         certifier: me,
@@ -167,7 +174,7 @@ pub fn certify(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Done>
             "certified '{}'; peer registered here as inbound-only. The bundle carries this node's cert{}{} — run `aspen mesh join <bundle>` on '{}'",
             cert.node,
             if url.is_some() { " + dial URL" } else { " (no dial URL — the joiner will be inbound-only unless you pass --url)" },
-            if relay.is_some() { " + relay" } else { "" },
+            if relay.is_some() { " + relay (this node's, so joiners reach each other through it)" } else { "" },
             cert.node,
         ),
         Some(blob),

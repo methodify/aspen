@@ -668,3 +668,12 @@ cleaner lane for roster updates than user-message headers.
   Aspen (`as`). `aspen hooks install` adds SessionStart/SessionEnd hooks
   that nudge the daemon for second-level latency; Aspen's own processes
   are filtered by `CLAUDE_CODE_ENTRYPOINT`.
+- **2026-09-05 — The relay lives in every node.** `/api/federation/relay`
+  serves the rendezvous protocol (aspen-wire::relay, identical to the
+  standalone `aspen-relay`) from the daemon itself; it needs only the
+  mesh's root public key and reads nothing it routes. A certify with
+  `--url` puts the certifier's relay in the bundle, so nodes that only
+  dial out (loopback listeners) reach each other through the root without
+  a separate process. Root-signed certs presented over a verified link are
+  recorded (memory + mesh.json, no dial URL) — the join bundle only ever
+  carried the certifier's, and sealed envelopes need the recipient's.

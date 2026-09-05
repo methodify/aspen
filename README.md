@@ -251,13 +251,20 @@ duplicate-name warning before anything runs), and **queues** each step;
 resulting blob shows up in the console with a **deep link** you open on
 the other node's console to prefill the next step. Omit `--url` if A will dial B instead (then `aspen mesh peers-add … --url`
 on A). Names must be distinct per node — the hostname default collides on a
-Windows+WSL box, so name them (`anindor`, `anindor-win`). For peers with no
-direct path, a rendezvous relay:
+Windows+WSL box, so name them (`anindor`, `anindor-win`). Nodes that only dial out (loopback listeners — a laptop's Windows and WSL
+sides, say) can each reach the root but not each other. Every node hosts a
+rendezvous relay at `/api/federation/relay`; a join bundle made with
+`--url` carries the certifier's relay automatically, so new joiners find
+each other through the root. Nodes joined before that, or a mesh with a
+separate relay:
 
 ```bash
-aspen mesh relay wss://relay.example.com/relay   # on each node; rides the
-                                                 # bundle for later joiners
+aspen mesh relay ws://BRYON-MINI:7420/api/federation/relay   # the root's, on each dial-out node
+aspen mesh relay wss://relay.example.com/relay               # or a standalone aspen-relay
 ```
+
+Certs learned over a verified link are recorded, so a peer met through the
+relay shows up in the members list (without a dial URL).
 
 **Reaching across machines.** The daemon listens on `127.0.0.1:7420` by
 default — loopback only, so nothing on another machine can dial it. Whichever

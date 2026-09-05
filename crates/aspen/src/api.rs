@@ -27,6 +27,8 @@ pub struct AppState {
     /// for the graceful ladder (Windows has no SIGTERM, and a detached
     /// process has no window for taskkill to close).
     pub shutdown: Arc<tokio::sync::Notify>,
+    /// The embedded rendezvous relay (relayhost.rs).
+    pub relay: Arc<crate::relayhost::RelayHost>,
 }
 
 type S = State<Arc<AppState>>;
@@ -53,6 +55,7 @@ pub async fn serve(
         node_name: hostname(),
         token: token.clone(),
         shutdown: shutdown_notify.clone(),
+        relay: Arc::new(crate::relayhost::RelayHost::default()),
     });
 
     let api = Router::new()
@@ -144,6 +147,7 @@ pub async fn serve(
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
+        .route("/federation/relay", get(ws_relay))
         .with_state(state.clone());
 
     let api = api.layer(axum::middleware::from_fn_with_state(
@@ -437,8 +441,11 @@ async fn auth_middleware(
     let Some(expected) = &s.token else {
         return next.run(req).await;
     };
-    // Federation carries sealed frames and authenticates cryptographically.
-    if req.uri().path().ends_with("/federation/ws") {
+    // Federation carries sealed frames and authenticates cryptographically;
+    // the relay admits by cert + challenge and reads nothing it routes.
+    if req.uri().path().ends_with("/federation/ws")
+        || req.uri().path().ends_with("/federation/relay")
+    {
         return next.run(req).await;
     }
     let presented = req
@@ -1389,6 +1396,22 @@ async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoRespo
 /// and hand it to the transport-blind link runner. Every frame after hello
 /// is a sealed envelope, so an unauthenticated caller can hold a socket
 /// open but can neither read nor forge mesh traffic.
+/// The embedded relay: any member may rendezvous here (docs: relayhost.rs).
+async fn ws_relay(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
+    let Some(mesh) = s.node.inner.mesh() else {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this node has not joined a mesh",
+        )
+        .into_response();
+    };
+    let host = s.relay.clone();
+    let name = mesh.mesh_name();
+    let root = mesh.root_public();
+    ws.on_upgrade(move |socket| crate::relayhost::serve(host, name, root, socket))
+        .into_response()
+}
+
 async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
     if s.node.inner.mesh().is_none() {
         return err(
@@ -1805,6 +1828,9 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
         }))
         .into_response();
     };
+    // Before the std guards below: an await while holding them would make
+    // this future !Send.
+    let hosted_present = s.relay.present().await;
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
     let health = mesh.health.lock().unwrap();
@@ -1861,6 +1887,9 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
         "relay": {
             "url": mesh.relay_url(),
             "connected_at": *mesh.relay_connected_at.lock().unwrap(),
+            // This node's own relay endpoint and who is rendezvousing here.
+            "hosted_path": "/api/federation/relay",
+            "hosted_present": hosted_present,
         },
         "pending": pending,
     }))

@@ -108,7 +108,7 @@ function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: stri
             ? `down since ${relTime(h.last_down)} ago`
             : "not linked"}
       </span>
-      <span className="mono-meta">{p.url ? `dials ${p.url}` : "inbound only (dials us)"}</span>
+      <span className="mono-meta">{p.url ? `dials ${p.url}` : p.link_up ? "no dial URL — reached via relay or inbound" : "no dial URL (relay or inbound only)"}</span>
       <span className="mono-meta">{p.agents} agent{p.agents === 1 ? "" : "s"}</span>
       {p.fingerprint && <span className="mono-meta" title="cert key fingerprint">⌘ {p.fingerprint}</span>}
       {h?.version && (
@@ -463,11 +463,21 @@ export function MeshPanel() {
           {(stage === "root" || stage === "member") && (
             <div className="mesh-section">
               <div className="mesh-row">
-                <span className="mono-meta" title="a rendezvous relay lets nodes with no direct path reach each other">relay</span>
-                <input className="mono" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} placeholder={mesh.relay?.url ?? "wss://relay.example/relay (optional)"} style={{ width: 300 }} spellCheck={false} />
+                <span className="mono-meta" title="a rendezvous relay lets nodes with no direct path reach each other; every node hosts one at /api/federation/relay, so a reachable node (the root) is usually it">relay</span>
+                <input className="mono" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} placeholder={mesh.relay?.url ?? (rootPeer?.url ? rootPeer.url.replace("/api/federation/ws", "/api/federation/relay") : "ws://<a reachable node>:7420/api/federation/relay")} style={{ width: 340 }} spellCheck={false} />
                 <button className="btn ghost sm" onClick={() => void propose("relay", { url: relayUrl.trim() || null })}>
                   queue {relayUrl.trim() ? "set" : "clear"}
                 </button>
+                {mesh.relay?.url ? (
+                  <span className="mono-meta">{mesh.relay.connected_at ? "connected" : "not connected"}</span>
+                ) : stage === "member" && rootPeer?.url ? (
+                  <span className="mono-meta" style={{ color: "var(--sig-normal)" }}>
+                    no relay set — nodes that only dial out can't see each other; set the root's: {rootPeer.url.replace("/api/federation/ws", "/api/federation/relay")}
+                  </span>
+                ) : null}
+                {(mesh.relay as { hosted_present?: string[] } | undefined)?.hosted_present?.length ? (
+                  <span className="mono-meta" title="nodes rendezvousing through this node's own relay">hosting relay for {(mesh.relay as { hosted_present?: string[] }).hosted_present!.join(", ")}</span>
+                ) : null}
                 <span style={{ flex: 1 }} />
                 <button className="btn ghost sm" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>advanced {advanced ? "▴" : "▾"}</button>
               </div>
