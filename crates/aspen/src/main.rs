@@ -742,7 +742,7 @@ fn hook_relay(data_dir: &std::path::Path) -> Result<()> {
     let Some(listen) = state["listen"].as_str() else {
         return Ok(());
     };
-    let mut req = ureq::post(&format!("http://{listen}/api/hooks/session"))
+    let mut req = ureq::post(&format!("http://{}/api/hooks/session", dial_addr(listen)))
         .timeout(std::time::Duration::from_secs(2));
     let loopback = listen
         .parse::<std::net::SocketAddr>()
@@ -979,6 +979,15 @@ fn spawn_detached(
     Ok(())
 }
 
+/// Where the CLI dials a daemon that bound `listen`: a wildcard bind
+/// (0.0.0.0 / [::]) is not a connectable address — Windows refuses it
+/// outright (os error 10049) — so dial loopback instead.
+pub(crate) fn dial_addr(listen: &str) -> String {
+    listen
+        .replacen("0.0.0.0:", "127.0.0.1:", 1)
+        .replacen("[::]:", "[::1]:", 1)
+}
+
 /// The console URL for a listen address — with the node token when the
 /// listener is beyond loopback (the API requires it there; the console
 /// keeps it once opened this way).
@@ -1056,7 +1065,7 @@ pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
         .and_then(|s| s["listen"].as_str().map(str::to_owned));
     let mut graceful = false;
     if let Some(listen) = &listen {
-        let mut req = ureq::post(&format!("http://{listen}/api/shutdown"))
+        let mut req = ureq::post(&format!("http://{}/api/shutdown", dial_addr(listen)))
             .timeout(std::time::Duration::from_secs(3));
         let loopback = listen
             .parse::<std::net::SocketAddr>()
@@ -1124,7 +1133,7 @@ fn notify_daemon_reload(data_dir: &std::path::Path) -> bool {
     let Some(listen) = state["listen"].as_str() else {
         return false;
     };
-    let mut req = ureq::post(&format!("http://{listen}/api/mesh/reload"))
+    let mut req = ureq::post(&format!("http://{}/api/mesh/reload", dial_addr(listen)))
         .timeout(std::time::Duration::from_secs(5));
     let loopback = listen
         .parse::<std::net::SocketAddr>()

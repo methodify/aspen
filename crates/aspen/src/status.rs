@@ -25,7 +25,7 @@ pub fn run(data_dir: &Path) -> Result<()> {
                 .unwrap_or("127.0.0.1:7420")
                 .to_owned();
             let alive = pid_alive(pid);
-            let base = format!("http://{listen}");
+            let base = format!("http://{}", crate::dial_addr(&listen));
             match query(&base, "/api/node", data_dir, &listen) {
                 Ok(node) => {
                     let up = s

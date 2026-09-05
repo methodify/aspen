@@ -336,7 +336,7 @@ fn health_check(data_dir: &Path, expect_version: &str) -> Result<()> {
     loop {
         if let Some(state) = crate::read_daemon_state(data_dir) {
             if let Some(listen) = state["listen"].as_str() {
-                let mut req = ureq::get(&format!("http://{listen}/api/node"))
+                let mut req = ureq::get(&format!("http://{}/api/node", crate::dial_addr(listen)))
                     .timeout(std::time::Duration::from_secs(3));
                 let loopback = listen
                     .parse::<std::net::SocketAddr>()
