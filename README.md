@@ -265,7 +265,12 @@ aspen mesh relay --remove <url>                              # drop one; no argu
 ```
 
 A node keeps a client on every relay it lists and reaches a peer through
-whichever presents it first. Relays also hold a **mailbox**: mail for a node
+whichever presents it first — and prefers a **direct** link when it can
+get one: nodes that listen beyond loopback advertise their addresses (and
+`aspen config advertise ws://<tailnet-name>:7420/api/federation/ws` adds
+more), peers dial those first, a direct link supersedes a relay one, and a
+lost direct link falls back to a relay at once. Loopback-only nodes stay
+spokes by choice; the console says so. Relays also hold a **mailbox**: mail for a node
 that is off waits (bounded, a week) and lands when it comes back, so a
 message sent at night reaches a machine that boots in the morning. Certs
 learned over a verified link are recorded, so a peer met through a relay

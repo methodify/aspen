@@ -25,6 +25,23 @@ pub struct Settings {
     /// Self-update policy (docs/SERVICING.md §2).
     #[serde(default)]
     pub update: UpdateSettings,
+    /// Extra federation dial URLs this node advertises to peers (a tailnet
+    /// name, a port-forward…), comma-separated. Rides the roster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertise: Option<String>,
+}
+
+impl Settings {
+    pub fn advertise_urls(&self) -> Vec<String> {
+        self.advertise
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
 }
 
 /// The update policy: three knobs plus a snooze. Every field optional so an

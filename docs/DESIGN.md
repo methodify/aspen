@@ -693,3 +693,13 @@ cleaner lane for roster updates than user-message headers.
   locally with wrangler. Next on this thread: nodes advertise their
   reachable addresses and hosted relays in rosters so peers try direct
   first and fall back — mesh where it can be, spokes where it must be.
+- **2026-09-05 — Mesh where it can be.** Rosters advertise reachable
+  addresses (non-loopback listen as hostname + IPv4s, plus `aspen config
+  advertise`) and hosted relays; dialers try the configured URL then the
+  advertised ones; a direct link supersedes a relay link; a lost direct
+  link falls back to any relay where the peer is present; peer-hosted
+  relays are discovered and joined as fallback paths (only from undialed
+  peers, one per peer, pruned when no longer advertised). The embedded
+  relay names its host in `Welcome` so the same relay under two addresses
+  keeps one session. Loopback-only nodes advertise nothing: spokes by
+  choice, shown as such. [`RELAY.md`](RELAY.md) §7.

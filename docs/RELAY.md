@@ -131,22 +131,60 @@ member from then on (the console shows it as reached via relay/inbound).
 Certs are public facts; recording one grants nothing the root signature
 hadn't already.
 
-## 7. What is next on this thread (not built)
+## 7. Mesh where it can be, spokes where it must be (built 2026-09-05)
 
-**Mesh where it can be, spokes where it must be.** Today reachability
-decides the shape: with one node listening beyond loopback you get
-hub-and-spoke through it. Two additions turn that into a mesh:
+Reachability decides the shape of a mesh: with one node listening beyond
+loopback you get hub-and-spoke through it. Three mechanisms turn that into
+a mesh wherever the network allows, without touching config:
 
-1. **Advertise addresses.** Each node's roster carries where it believes
-   it can be dialed (its non-loopback listen address + hostname) and the
-   relay it hosts. Peers try direct first, then any advertised relay, then
-   the configured ones. A loopback-only node advertises nothing and is a
-   spoke by its own choice; the console says so.
-2. **Prefer the best path, keep the rest.** Direct > a peer-hosted relay
-   on the LAN > a hosted relay. One live link per peer; when a better path
-   comes up, switch; when the hub goes down, fall back without touching
-   config.
+**Advertise.** Every roster carries `advertised { dial_urls, relay_urls }`:
+when the node listens beyond loopback, its federation endpoint as its
+hostname and as every non-loopback IPv4, and the relay it hosts at the
+same addresses; plus anything the operator set with `aspen config
+advertise <url>[,<url>]` (a tailnet name, a port-forward). A loopback-only
+node advertises nothing — it is a **spoke by its own choice**, and the
+console says so on its row.
 
-Also not built: console-through-relay (DESIGN §7 mentions it; the relay
-routes node↔node only), a public multi-tenant relay (§2), rate limiting
-beyond the platform's, and a persistent mailbox for the Rust hosts.
+**Direct first.** A dialer tries every candidate for a peer — the
+configured URL, then what the peer advertises — round-robin every 5s while
+there is no link, every 30s while a relay link carries the peer. A relay
+link no longer stops the dialer: when the direct hello completes it
+**supersedes** the relay link (the relay-side channel is dropped; that
+session ends without disturbing the live one). `link_kind` records how
+each peer is reached (`direct` / `relay:<url>`); the console and `aspen
+status` show it.
+
+**Fall back.** When a direct link drops, the lower-named side starts a
+relay link at once on any relay where the peer is present (rosters and
+`Welcome`/`Presence` keep a present-set per relay session); the peer's
+side does the same. Relays a peer *hosts* are **discovered** from its
+advertisement and joined automatically — as fallback paths, listed in the
+console as *discovered from X*, never persisted — but only from peers we
+have no configured dial URL to (a dialed peer's relay is at the same
+address; set it with `aspen mesh relay` if wanted), one per peer, and
+pruned when the peer stops advertising it.
+
+**One relay, many names.** The root advertises its relay as
+`ws://anindor:7693/…` and `ws://172.28.…:7693/…`; a client that already
+sits on `ws://127.0.0.1:7693/…` must not open a second session to the same
+relay — two sessions interleave one handshake and neither link forms
+(observed). The embedded relay therefore says which node it is in
+`Welcome { host }`; a client that already has a session to that host drops
+the duplicate and forgets the discovered URL. The Rust hosts also fixed a
+teardown bug on the way: an older socket closing for a node name that a
+newer socket had replaced used to unregister the newer one.
+
+Verified on three nodes: j1 (loopback) and j2 (beyond loopback) meet
+through the root's relay; j1 learns j2's address from the roster, dials
+it, and the direct link supersedes the relay one; j2 restarted
+loopback-only → j1's direct link drops and falls back to the relay path
+within seconds, and drives j2's agent over it.
+
+## 8. Not built
+
+Console-through-relay (DESIGN §7 mentions it; the relay routes node↔node
+only), a public multi-tenant relay (§2), rate limiting beyond the
+platform's, a persistent mailbox for the Rust hosts, relay preference
+order (the list is nominally ordered; nothing consumes the order yet —
+the console offers no reordering for that reason), and IPv6 in
+advertisements.

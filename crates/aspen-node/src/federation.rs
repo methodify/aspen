@@ -63,6 +63,15 @@ pub struct MeshState {
     pub mail_ticker_started: std::sync::atomic::AtomicBool,
     /// Per-relay last error, for the console.
     pub relay_errors: Mutex<HashMap<String, (String, f64)>>,
+    /// Live relay sessions: url → how to start/stop per-peer links over it
+    /// and who the relay says is present. Lets a direct link supersede a
+    /// relay link, and a lost direct link fall back to a relay.
+    pub relay_sessions: Mutex<HashMap<String, RelaySession>>,
+    /// Relay URLs learned from peers' advertisements (not configured; not
+    /// persisted; the console shows them as discovered).
+    pub discovered_relays: Mutex<HashMap<String, String>>,
+    /// node → how its live link was made: "direct" or "relay:<url>".
+    pub link_kind: Mutex<HashMap<String, String>>,
     /// node name → sender of already-serialized wire frames.
     pub links: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
     /// node name → last roster it sent us.
@@ -78,6 +87,26 @@ pub struct MeshState {
     pub relay_connected_at: Mutex<Option<f64>>,
     /// Per-peer diagnostics for the console: why isn't X linked?
     pub health: Mutex<HashMap<String, PeerHealth>>,
+}
+
+/// One live relay session, as other parts of the node see it.
+pub struct RelaySession {
+    pub tx: mpsc::UnboundedSender<String>,
+    pub peer_ins: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    pub present: std::collections::HashSet<String>,
+    /// The node hosting this relay, when it said (embedded relays do).
+    pub host: Option<String>,
+}
+
+/// What a node tells peers about how to reach it (rides the roster).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Advertised {
+    /// Federation dial URLs peers may try directly.
+    #[serde(default)]
+    pub dial_urls: Vec<String>,
+    /// Relay endpoints this node hosts that peers may rendezvous at.
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
 }
 
 /// What we know about a peer's link, for humans.
@@ -104,6 +133,8 @@ pub struct PeerHealth {
     pub last_outcome: Option<Value>,
     /// The peer holds the mesh's root key (certify happens there).
     pub has_root: Option<bool>,
+    /// Where the peer says it can be reached (from its roster).
+    pub advertised: Option<Advertised>,
 }
 
 /// Federation frame protocol. Bump only when a frame format changes
@@ -157,6 +188,9 @@ impl MeshState {
             ticker_started: std::sync::atomic::AtomicBool::new(false),
             mail_ticker_started: std::sync::atomic::AtomicBool::new(false),
             relay_errors: Mutex::new(HashMap::new()),
+            relay_sessions: Mutex::new(HashMap::new()),
+            discovered_relays: Mutex::new(HashMap::new()),
+            link_kind: Mutex::new(HashMap::new()),
             links: Mutex::new(HashMap::new()),
             remote: Mutex::new(HashMap::new()),
             pending_api: Mutex::new(HashMap::new()),
@@ -294,6 +328,75 @@ fn bus_payload(m: &StoredMessage, dest_node: &str) -> Value {
     })
 }
 
+/// This node's reachable addresses, for the roster: the listen address
+/// when it is beyond loopback (as hostname and as every non-loopback IPv4),
+/// plus anything the operator set with `aspen config advertise`. A
+/// loopback-only node advertises nothing — it is a spoke by its own choice.
+pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
+    let mut out = Advertised::default();
+    let Some(dir) = inner.data_dir.as_deref() else {
+        return out;
+    };
+    let listen = std::fs::read_to_string(dir.join("daemon.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["listen"].as_str().map(str::to_owned));
+    let port = listen
+        .as_deref()
+        .and_then(|l| l.parse::<std::net::SocketAddr>().ok())
+        .filter(|a| !a.ip().is_loopback())
+        .map(|a| a.port());
+    if let Some(port) = port {
+        let mut hosts: Vec<String> = Vec::new();
+        if let Some(h) = hostname() {
+            hosts.push(h);
+        }
+        if let Ok(ifs) = if_addrs::get_if_addrs() {
+            for i in ifs {
+                if i.is_loopback() {
+                    continue;
+                }
+                if let std::net::IpAddr::V4(v4) = i.ip() {
+                    if !v4.is_link_local() {
+                        hosts.push(v4.to_string());
+                    }
+                }
+            }
+        }
+        for h in hosts {
+            let dial = format!("ws://{h}:{port}/api/federation/ws");
+            if !out.dial_urls.contains(&dial) {
+                out.dial_urls.push(dial);
+            }
+            out.relay_urls
+                .push(format!("ws://{h}:{port}/api/federation/relay"));
+        }
+    }
+    for u in crate::settings::load(dir).advertise_urls() {
+        if !out.dial_urls.contains(&u) {
+            out.dial_urls.push(u.clone());
+        }
+        let relay = u.replacen("/api/federation/ws", "/api/federation/relay", 1);
+        if relay != u && !out.relay_urls.contains(&relay) {
+            out.relay_urls.push(relay);
+        }
+    }
+    out
+}
+
+fn hostname() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| {
+            crate::gitstate::quiet_command("hostname")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_owned())
+        })
+        .filter(|s| !s.is_empty())
+}
+
 pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
     let agents = inner.store.agents().unwrap_or_default();
     let list: Vec<Value> = agents
@@ -331,6 +434,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         "t": "roster", "agents": list, "version": version, "sha": sha,
         "servicing": inner.servicing.roster_json(mode),
         "has_root": has_root,
+        "advertised": advertised(inner),
     })
 }
 
@@ -490,13 +594,43 @@ pub async fn run_link(
         bail!("peer failed nonce proof");
     }
 
-    // 4. Link up.
+    // 4. Link up. Kind: a relay link announced itself as pending; anything
+    // else is direct (dialed or inbound). A direct link supersedes a relay
+    // one — drop the relay-side channel so that session ends.
     let peer = peer_cert.node.clone();
+    let kind = mesh
+        .link_kind
+        .lock()
+        .unwrap()
+        .remove(&format!("pending:{peer}"))
+        .unwrap_or_else(|| "direct".into());
+    if kind == "direct" {
+        let sessions = mesh.relay_sessions.lock().unwrap();
+        for s in sessions.values() {
+            if s.peer_ins.lock().unwrap().remove(&peer).is_some() {
+                tracing::info!(peer = %peer, "direct link supersedes the relay link");
+            }
+        }
+    } else if mesh
+        .link_kind
+        .lock()
+        .unwrap()
+        .get(&peer)
+        .is_some_and(|k| k == "direct")
+        && mesh.link_up(&peer)
+    {
+        // A direct link already carries this peer: don't replace it.
+        bail!("direct link already up; relay link not needed");
+    }
+    mesh.link_kind
+        .lock()
+        .unwrap()
+        .insert(peer.clone(), kind.clone());
     mesh.links
         .lock()
         .unwrap()
         .insert(peer.clone(), out_tx.clone());
-    tracing::info!(peer = %peer, "federation link up");
+    tracing::info!(peer = %peer, kind = %kind, "federation link up");
     mesh.note(&peer, |h| {
         h.last_up = Some(crate::store::now_epoch());
         h.last_error = None;
@@ -520,10 +654,29 @@ pub async fn run_link(
 
     // 6. Teardown (only if the registered link is still ours).
     let mut links = mesh.links.lock().unwrap();
-    if links.get(&peer).is_some_and(|tx| tx.same_channel(&out_tx)) {
+    let ours = links.get(&peer).is_some_and(|tx| tx.same_channel(&out_tx));
+    if ours {
         links.remove(&peer);
+        mesh.link_kind.lock().unwrap().remove(&peer);
     }
     drop(links);
+    if !ours {
+        // Superseded (a direct link replaced this relay link): nothing else
+        // to tear down — the live link's state stays.
+        return result;
+    }
+    // A direct link that dropped: fall back to any relay where the peer is
+    // present (lower name starts it; the peer's side does the same).
+    if kind == "direct" && mesh.identity.node.as_str() < peer.as_str() {
+        let sessions = mesh.relay_sessions.lock().unwrap();
+        for (url, s) in sessions.iter() {
+            if s.present.contains(&peer) {
+                start_relay_link(&inner, &mesh.identity.node, &peer, url, &s.tx, &s.peer_ins);
+                tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
+                break;
+            }
+        }
+    }
     mesh.remote.lock().unwrap().remove(&peer);
     // Consumers of subscriptions served over this link learn immediately
     // (their channel closes) rather than waiting on silence.
@@ -636,10 +789,43 @@ async fn link_loop(
                         .map(str::to_owned);
                     let svc = payload.get("servicing").cloned();
                     let has_root = payload.get("has_root").and_then(|b| b.as_bool());
+                    let adv: Option<Advertised> = payload
+                        .get("advertised")
+                        .and_then(|a| serde_json::from_value(a.clone()).ok());
+                    if let Some(a) = &adv {
+                        // A peer's advertised relays are one relay under
+                        // several names. Take the first only, and none at
+                        // all when we already reach that peer by a
+                        // configured URL (its relay is at the same place —
+                        // set it with `aspen mesh relay` if wanted).
+                        let dialed = mesh
+                            .peers()
+                            .iter()
+                            .any(|p| p.cert.node == peer && p.url.is_some());
+                        let mine = advertised(inner);
+                        // What the peer no longer advertises is stale.
+                        mesh.discovered_relays
+                            .lock()
+                            .unwrap()
+                            .retain(|u, from| from != peer || a.relay_urls.contains(u));
+                        if !dialed {
+                            let mut disc = mesh.discovered_relays.lock().unwrap();
+                            if !disc.values().any(|from| from == peer) {
+                                if let Some(u) =
+                                    a.relay_urls.iter().find(|u| !mine.relay_urls.contains(u))
+                                {
+                                    disc.insert(u.clone(), peer.to_owned());
+                                }
+                            }
+                        }
+                    }
                     mesh.note(peer, |h| {
                         h.last_roster = Some(crate::store::now_epoch());
                         if has_root.is_some() {
                             h.has_root = has_root;
+                        }
+                        if adv.is_some() {
+                            h.advertised = adv;
                         }
                         if v.is_some() {
                             h.version = v;
@@ -663,6 +849,9 @@ async fn link_loop(
                 // Channel members from before scoped names (`main@node`)
                 // can only be resolved once we see that node's roster.
                 let _ = inner.store.heal_legacy_remote_members(peer, &names);
+                // New addresses may have arrived: dialers for peers we can
+                // now reach directly, clients for relays peers host.
+                ensure_dialers(inner.clone());
                 for name in names {
                     // Remote keys are addressed here as key@node; a bare
                     // key can also be homed there (delivery finds it).
@@ -1269,15 +1458,17 @@ async fn serve_api_req(
 pub fn ensure_dialers(inner: Arc<NodeInner>) {
     let Some(mesh) = inner.mesh() else { return };
     for peer in mesh.peers() {
-        let Some(url) = peer.url.clone() else {
-            continue;
-        };
         let name = peer.cert.node.clone();
+        // Candidates: the configured URL, then whatever the peer advertises.
+        if dial_candidates(&mesh, &name).is_empty() {
+            continue;
+        }
         if !mesh.dialing.lock().unwrap().insert(name.clone()) {
             continue; // already dialing this peer
         }
         let inner = inner.clone();
         tokio::spawn(async move {
+            let mut attempt = 0usize;
             loop {
                 // Stop when the mesh is gone or this peer was removed.
                 let Some(m) = inner.mesh() else { break };
@@ -1285,9 +1476,22 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
                     m.dialing.lock().unwrap().remove(&name);
                     break;
                 }
-                // Only one live link per peer; if an inbound one exists, wait.
-                let already = m.link_up(&name);
+                let candidates = dial_candidates(&m, &name);
+                if candidates.is_empty() {
+                    m.dialing.lock().unwrap().remove(&name);
+                    break;
+                }
+                // Only one DIRECT link per peer; a relay link doesn't stop
+                // us — a direct one supersedes it (run_link handles that).
+                let already = m
+                    .link_kind
+                    .lock()
+                    .unwrap()
+                    .get(&name)
+                    .is_some_and(|k| k == "direct");
                 if !already {
+                    let url = candidates[attempt % candidates.len()].clone();
+                    attempt += 1;
                     match tokio_tungstenite::connect_async(&url).await {
                         Ok((ws, _)) => {
                             let (mut sink, mut stream) = ws.split();
@@ -1320,15 +1524,22 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
                         Err(e) => {
                             tracing::debug!(peer = %name, error = %e, "dial failed");
                             if let Some(m) = inner.mesh() {
-                                m.note(&name, |h| {
-                                    h.last_error = Some(format!("dial {url} failed: {e}"));
-                                    h.last_error_at = Some(crate::store::now_epoch());
-                                });
+                                // A relay link is fine; only complain when
+                                // there is no link at all.
+                                if !m.link_up(&name) {
+                                    m.note(&name, |h| {
+                                        h.last_error = Some(format!("dial {url} failed: {e}"));
+                                        h.last_error_at = Some(crate::store::now_epoch());
+                                    });
+                                }
                             }
                         }
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                // Back off while a relay link carries the peer.
+                let carried = inner.mesh().is_some_and(|m| m.link_up(&name));
+                tokio::time::sleep(std::time::Duration::from_secs(if carried { 30 } else { 5 }))
+                    .await;
             }
         });
     }
@@ -1349,7 +1560,13 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
     // Keep a client on every configured rendezvous relay — the fallback
     // for peers with no direct path, and the mailbox for peers that are
     // offline. A client whose URL is removed from the config exits.
-    for relay_url in mesh.relay_urls() {
+    let mut relay_urls = mesh.relay_urls();
+    for u in mesh.discovered_relays.lock().unwrap().keys() {
+        if !relay_urls.contains(u) {
+            relay_urls.push(u.clone());
+        }
+    }
+    for relay_url in relay_urls {
         if mesh.relay_running.lock().unwrap().insert(relay_url.clone()) {
             spawn_relay_client(inner.clone(), relay_url);
         }
@@ -1373,12 +1590,46 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
     }
 }
 
+/// Direct dial URLs for a peer: the configured one first, then what the
+/// peer advertises (deduped, never our own address).
+fn dial_candidates(mesh: &MeshState, peer: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(u) = mesh
+        .peers()
+        .iter()
+        .find(|p| p.cert.node == peer)
+        .and_then(|p| p.url.clone())
+    {
+        out.push(u);
+    }
+    if let Some(a) = mesh
+        .health
+        .lock()
+        .unwrap()
+        .get(peer)
+        .and_then(|h| h.advertised.clone())
+    {
+        for u in a.dial_urls {
+            if !out.contains(&u) {
+                out.push(u);
+            }
+        }
+    }
+    out
+}
+
 /// Maintain one relay connection, muxing per-peer federation links over it.
 fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
     tokio::spawn(async move {
         loop {
             let Some(mesh) = inner.mesh() else { break };
-            if !mesh.relay_urls().contains(&relay_url) {
+            let wanted = mesh.relay_urls().contains(&relay_url)
+                || mesh
+                    .discovered_relays
+                    .lock()
+                    .unwrap()
+                    .contains_key(&relay_url);
+            if !wanted {
                 mesh.relay_running.lock().unwrap().remove(&relay_url);
                 break;
             }
@@ -1428,16 +1679,25 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
 
     // Mux: outbound relay frames + per-peer inbound channels.
     let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<String>();
+    let peer_ins: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     mesh.relay_up
         .lock()
         .unwrap()
         .insert(relay_url.to_owned(), (now, relay_tx.clone()));
+    mesh.relay_sessions.lock().unwrap().insert(
+        relay_url.to_owned(),
+        RelaySession {
+            tx: relay_tx.clone(),
+            peer_ins: peer_ins.clone(),
+            present: std::collections::HashSet::new(),
+            host: None,
+        },
+    );
     // Anything pending for peers we have no link to can go to the mailbox.
     for r in inner.store.pending_recipients().unwrap_or_default() {
         inner.tick_delivery(&r);
     }
-    let peer_ins: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
 
     // Writer task: everything queued for the relay socket.
     let writer = tokio::spawn(async move {
@@ -1456,7 +1716,17 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
     // links (both sides otherwise start one).
     let me = mesh.identity.node.clone();
 
-    let result = relay_read_loop(inner, &mesh, &me, &relay_tx, &peer_ins, &mut stream).await;
+    let result = relay_read_loop(
+        inner,
+        &mesh,
+        &me,
+        relay_url,
+        &relay_tx,
+        &peer_ins,
+        &mut stream,
+    )
+    .await;
+    mesh.relay_sessions.lock().unwrap().remove(relay_url);
     {
         let mut up = mesh.relay_up.lock().unwrap();
         up.remove(relay_url);
@@ -1475,6 +1745,7 @@ async fn relay_read_loop(
     inner: &Arc<NodeInner>,
     mesh: &Arc<MeshState>,
     me: &str,
+    relay_url: &str,
     relay_tx: &mpsc::UnboundedSender<String>,
     peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
     stream: &mut (impl futures_util::Stream<
@@ -1497,17 +1768,45 @@ async fn relay_read_loop(
             Err(_) => continue,
         };
         match frame {
-            RelayFrame::Welcome { peers } => {
+            RelayFrame::Welcome { peers, host } => {
+                // The same relay under another address? Keep the session
+                // that got there first; this one is a duplicate — and if
+                // it came from discovery, forget the URL.
+                if let Some(h) = &host {
+                    let dup = mesh
+                        .relay_sessions
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|(u, s)| u != relay_url && s.host.as_deref() == Some(h.as_str()));
+                    if dup {
+                        mesh.discovered_relays.lock().unwrap().remove(relay_url);
+                        return Err(anyhow!(
+                            "relay at {relay_url} is node '{h}', already reached by another session"
+                        ));
+                    }
+                }
+                if let Some(s) = mesh.relay_sessions.lock().unwrap().get_mut(relay_url) {
+                    s.present = peers.iter().cloned().collect();
+                    s.host = host;
+                }
                 for p in peers {
                     if me < p.as_str() && !mesh.link_up(&p) {
-                        start_relay_link(inner, me, &p, relay_tx, peer_ins);
+                        start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
                     }
                 }
             }
             RelayFrame::Presence { node, online } => {
+                if let Some(s) = mesh.relay_sessions.lock().unwrap().get_mut(relay_url) {
+                    if online {
+                        s.present.insert(node.clone());
+                    } else {
+                        s.present.remove(&node);
+                    }
+                }
                 if online {
                     if me < node.as_str() && !mesh.link_up(&node) {
-                        start_relay_link(inner, me, &node, relay_tx, peer_ins);
+                        start_relay_link(inner, me, &node, relay_url, relay_tx, peer_ins);
                     }
                 } else {
                     // Gone: drop the link riding this relay now, so pending
@@ -1529,7 +1828,7 @@ async fn relay_read_loop(
                     }
                     None => {
                         // First contact from a peer that dials us: accept.
-                        let tx = start_relay_link(inner, me, &from, relay_tx, peer_ins);
+                        let tx = start_relay_link(inner, me, &from, relay_url, relay_tx, peer_ins);
                         let _ = tx.send(data);
                     }
                 }
@@ -1698,11 +1997,20 @@ fn start_relay_link(
     inner: &Arc<NodeInner>,
     _me: &str,
     peer: &str,
+    relay_url: &str,
     relay_tx: &mpsc::UnboundedSender<String>,
     peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
 ) -> mpsc::UnboundedSender<String> {
     use aspen_wire::relay::RelayFrame;
 
+    // The link about to come up is a relay one; run_link records the kind
+    // it finds pending here when the hello completes.
+    inner.mesh().map(|m| {
+        m.link_kind
+            .lock()
+            .unwrap()
+            .insert(format!("pending:{peer}"), format!("relay:{relay_url}"))
+    });
     let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     peer_ins
@@ -1730,8 +2038,11 @@ fn start_relay_link(
     let inner2 = inner.clone();
     let peer3 = peer.to_owned();
     let peer_ins2 = peer_ins.clone();
+    tracing::info!(peer = %peer, relay = %relay_url, "relay link starting");
     tokio::spawn(async move {
-        let _ = run_link(inner2, out_tx, in_rx).await;
+        if let Err(e) = run_link(inner2, out_tx, in_rx).await {
+            tracing::info!(peer = %peer3, error = %e, "relay link ended");
+        }
         peer_ins2.lock().unwrap().remove(&peer3);
     });
     in_tx

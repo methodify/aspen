@@ -52,7 +52,14 @@ pub fn challenge_context(mesh: &str, node: &str, nonce: &[u8]) -> Vec<u8> {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum RelayFrame {
     /// Registration accepted; here is who else is present right now.
-    Welcome { peers: Vec<String> },
+    /// `host` names the node hosting this relay when it is a node (the
+    /// embedded relay), so a client reaching the same relay under two
+    /// addresses can tell and keep one session.
+    Welcome {
+        peers: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+    },
     /// A peer came online / went offline (presence push).
     Presence { node: String, online: bool },
     /// Route `data` to node `to` (node→relay) / from node `from`

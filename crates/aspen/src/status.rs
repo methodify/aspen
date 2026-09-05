@@ -231,7 +231,15 @@ pub fn run(data_dir: &Path) -> Result<()> {
             }
             for p in peers {
                 let updown = if p["link_up"].as_bool() == Some(true) {
-                    format!("link UP · {} agent(s)", p["agents"].as_u64().unwrap_or(0))
+                    let kind = match p["link_kind"].as_str() {
+                        Some("direct") => " (direct)".to_owned(),
+                        Some(k) => format!(" (via {})", k.trim_start_matches("relay:")),
+                        None => String::new(),
+                    };
+                    format!(
+                        "link UP{kind} · {} agent(s)",
+                        p["agents"].as_u64().unwrap_or(0)
+                    )
                 } else {
                     "link down".into()
                 };

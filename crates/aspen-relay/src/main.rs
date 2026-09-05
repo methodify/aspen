@@ -131,13 +131,18 @@ async fn handle(relay: Relay, mut socket: WebSocket) {
 
     // 3. Register the connection; announce presence.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let tx_probe = tx.clone();
     let existing: Vec<String> = {
         let mut nodes = relay.nodes.lock().await;
-        let peers = nodes.keys().cloned().collect();
+        let peers = nodes.keys().filter(|n| *n != &node_name).cloned().collect();
         nodes.insert(node_name.clone(), Node { tx });
         peers
     };
-    let welcome = serde_json::to_string(&RelayFrame::Welcome { peers: existing }).unwrap();
+    let welcome = serde_json::to_string(&RelayFrame::Welcome {
+        peers: existing,
+        host: None,
+    })
+    .unwrap();
     if socket.send(Message::Text(welcome.into())).await.is_err() {
         relay.nodes.lock().await.remove(&node_name);
         return;
@@ -176,9 +181,21 @@ async fn handle(relay: Relay, mut socket: WebSocket) {
         }
     }
 
-    // 5. Teardown.
-    relay.nodes.lock().await.remove(&node_name);
-    broadcast_presence(&relay, &node_name, false).await;
+    // 5. Teardown — only if the registration is still ours (a newer socket
+    // for the same node name replaces us and must not be unregistered).
+    let still_ours = {
+        let mut nodes = relay.nodes.lock().await;
+        match nodes.get(&node_name) {
+            Some(cur) if cur.tx.same_channel(&tx_probe) => {
+                nodes.remove(&node_name);
+                true
+            }
+            _ => false,
+        }
+    };
+    if still_ours {
+        broadcast_presence(&relay, &node_name, false).await;
+    }
     tracing::info!(node = %node_name, "node disconnected");
 }
 

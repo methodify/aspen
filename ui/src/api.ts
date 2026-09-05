@@ -480,6 +480,10 @@ export interface MeshPeer {
   fingerprint?: string;
   /** The peer holds the mesh's root key — certify happens there. */
   has_root?: boolean | null;
+  /** "direct" or "relay:<url>" while linked. */
+  link_kind?: string | null;
+  /** Where the peer says it can be reached (empty = a spoke by choice). */
+  advertised?: { dial_urls: string[]; relay_urls: string[] } | null;
   health?: PeerHealth;
 }
 
@@ -518,6 +522,8 @@ export interface MeshInfo {
     sha?: string;
     has_root?: boolean;
     root_key_path?: string | null;
+    /** What this node tells peers about reaching it; empty = spoke. */
+    advertised?: { dial_urls: string[]; relay_urls: string[] };
   } | null;
   root_public?: string;
   peers?: MeshPeer[];
@@ -526,6 +532,8 @@ export interface MeshInfo {
     connected_at: number | null;
     /** Every configured relay with its client state. */
     relays?: { url: string; connected_at: number | null; last_error: string | null; last_error_at: number | null }[];
+    /** Relays peers host, learned from their rosters (not configured). */
+    discovered?: { url: string; from: string; connected_at: number | null }[];
     /** Bus rows handed to a relay mailbox, awaiting the peer's ack. */
     mailed?: number;
     hosted_path?: string;

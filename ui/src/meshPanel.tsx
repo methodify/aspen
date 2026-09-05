@@ -108,7 +108,17 @@ function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: stri
             ? `down since ${relTime(h.last_down)} ago`
             : "not linked"}
       </span>
-      <span className="mono-meta">{p.url ? `dials ${p.url}` : p.link_up ? "no dial URL — reached via relay or inbound" : "no dial URL (relay or inbound only)"}</span>
+      <span className="mono-meta" title={p.url ? `configured dial URL: ${p.url}` : (p.advertised?.dial_urls?.length ? `advertises: ${p.advertised.dial_urls.join(", ")}` : "no dial URL")}>
+        {p.link_up
+          ? p.link_kind === "direct"
+            ? "direct"
+            : p.link_kind?.startsWith("relay:")
+              ? `via relay ${p.link_kind.slice(6).split("://")[1]?.split("/")[0] ?? ""}`
+              : "linked"
+          : p.url || p.advertised?.dial_urls?.length
+            ? "not linked"
+            : "no dial URL (relay or inbound only)"}
+      </span>
       <span className="mono-meta">{p.agents} agent{p.agents === 1 ? "" : "s"}</span>
       {p.fingerprint && <span className="mono-meta" title="cert key fingerprint">⌘ {p.fingerprint}</span>}
       {h?.version && (
@@ -373,6 +383,15 @@ export function MeshPanel() {
                 <span className="mono-meta" title="identity key fingerprint">⌘ {me.fingerprint}</span>
                 {me.version && <span className="mono-meta">v{me.version} {me.sha}</span>}
                 {me.has_root && <span className="chip mono" title="the mesh root key lives here">root key</span>}
+                {me.advertised && me.advertised.dial_urls.length > 0 ? (
+                  <span className="mono-meta" title={`peers may dial this node at: ${me.advertised.dial_urls.join(", ")}`}>
+                    reachable at {me.advertised.dial_urls[0].split("://")[1]?.split("/")[0]}{me.advertised.dial_urls.length > 1 ? ` +${me.advertised.dial_urls.length - 1}` : ""}
+                  </span>
+                ) : (
+                  <span className="mono-meta" title="this node listens on loopback only: peers reach it through a relay or when it dials them. aspen config listen 0.0.0.0:<port> to be dialable; aspen config advertise <url> for a tailnet name">
+                    spoke (loopback only)
+                  </span>
+                )}
                 <span style={{ flex: 1 }} />
                 {me.cert_blob && <Copy text={me.cert_blob} label="copy my cert blob" />}
                 {mesh.root_public && <Copy text={mesh.root_public} label="copy root public key" />}
@@ -488,6 +507,14 @@ export function MeshPanel() {
                   )}
                   <span style={{ flex: 1 }} />
                   <button className="btn ghost sm" onClick={() => void propose("relay", { url: r.url, remove: true })}>queue remove</button>
+                </div>
+              ))}
+              {(mesh.relay?.discovered ?? []).map((r) => (
+                <div key={`d:${r.url}`} className="mesh-peer">
+                  <span className={`dot ${r.connected_at ? "dot-idle" : "dot-down"}`} aria-hidden />
+                  <span className="mono" style={{ color: "var(--text-mid)" }}>{r.url}</span>
+                  <span className="chip mono" title={`advertised by ${r.from}; used as a fallback path, not configured here`}>discovered from {r.from}</span>
+                  <span className="mono-meta">{r.connected_at ? `connected ${relTime(r.connected_at)}` : "not connected"}</span>
                 </div>
               ))}
               {(mesh.relay?.relays ?? []).length === 0 && stage === "member" && rootPeer?.url && (

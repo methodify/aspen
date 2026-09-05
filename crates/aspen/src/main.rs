@@ -85,7 +85,8 @@ enum Command {
     /// and the update policy.
     Config {
         /// Setting name: headless | listen | topology | claude-args |
-        /// update | update-window | update-soak | update-skip | update-check.
+        /// advertise | update | update-window | update-soak | update-skip |
+        /// update-check.
         /// Omit to list all.
         key: Option<String>,
         /// New value. Omit to show the current value; "-" clears it.
@@ -636,6 +637,10 @@ fn config_command(
             u.skip.clone().unwrap_or_else(|| "(none)".into())
         );
         println!(
+            "advertise   {}   (extra dial URLs peers may use for this node, comma-separated)",
+            s.advertise.clone().unwrap_or_else(|| "(none)".into())
+        );
+        println!(
             "update-check {}   (false = never contact the release channel)",
             u.check
                 .map(|b| b.to_string())
@@ -708,6 +713,16 @@ fn config_command(
                 Some(value.trim_start_matches('v').to_owned())
             };
         }
+        "advertise" => {
+            if !clear {
+                for u in value.split(',').map(str::trim).filter(|u| !u.is_empty()) {
+                    if !u.starts_with("ws://") && !u.starts_with("wss://") {
+                        anyhow::bail!("advertise takes federation dial URLs (ws://host:port/api/federation/ws), got {u:?}");
+                    }
+                }
+            }
+            s.advertise = if clear { None } else { Some(value.clone()) };
+        }
         "update-check" => {
             s.update.check = if clear {
                 None
@@ -721,7 +736,7 @@ fn config_command(
         }
         other => {
             anyhow::bail!(
-                "unknown setting '{other}' (headless | listen | topology | claude-args | update | update-window | update-soak | update-skip | update-check)"
+                "unknown setting '{other}' (headless | listen | topology | claude-args | advertise | update | update-window | update-soak | update-skip | update-check)"
             )
         }
     }

@@ -1408,7 +1408,8 @@ async fn ws_relay(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
     let host = s.relay.clone();
     let name = mesh.mesh_name();
     let root = mesh.root_public();
-    ws.on_upgrade(move |socket| crate::relayhost::serve(host, name, root, socket))
+    let me = mesh.identity.node.clone();
+    ws.on_upgrade(move |socket| crate::relayhost::serve(host, name, root, me, socket))
         .into_response()
 }
 
@@ -1848,6 +1849,17 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
             .collect()
     };
     let mailed = mesh.mailed.lock().unwrap().len();
+    let discovered: Vec<Value> = {
+        let up = mesh.relay_up.lock().unwrap();
+        mesh.discovered_relays
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(u, from)| json!({ "url": u, "from": from, "connected_at": up.get(u).map(|(t, _)| *t) }))
+            .collect()
+    };
+    let my_adv = aspen_node::federation::advertised(&s.node.inner);
+    let kinds = mesh.link_kind.lock().unwrap().clone();
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
     let health = mesh.health.lock().unwrap();
@@ -1864,6 +1876,9 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
                 // the federation path (a guess when it listens headless).
                 "console_url": p.url.as_deref().and_then(console_url_of),
                 "link_up": links.contains_key(name),
+                // "direct" or "relay:<url>" while linked.
+                "link_kind": kinds.get(name),
+                "advertised": h.advertised,
                 "agents": remote.get(name).map(|v| v.len()).unwrap_or(0),
                 "fingerprint": aspen_node::federation::fingerprint(&p.cert.ed_public),
                 "has_root": h.has_root,
@@ -1898,6 +1913,8 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
             "sha": sha,
             "has_root": has_root,
             "root_key_path": if has_root { data_dir.as_deref().map(|d| d.join("root.key").to_string_lossy().into_owned()) } else { None },
+            // What this node tells peers about reaching it; empty = spoke.
+            "advertised": my_adv,
         },
         "root_public": aspen_wire::b64::encode(&mesh.root_public()),
         "peers": peers,
@@ -1906,6 +1923,8 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
             "url": mesh.relay_url(),
             "connected_at": *mesh.relay_connected_at.lock().unwrap(),
             "relays": relays,
+            // Relays peers host, learned from their rosters (not configured).
+            "discovered": discovered,
             // Bus rows this node has handed to a relay mailbox, awaiting the
             // peer's ack.
             "mailed": mailed,
