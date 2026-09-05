@@ -1019,6 +1019,28 @@ fn print_log_tail(log_path: &std::path::Path, n: usize) {
     }
 }
 
+/// Direct children of a process (Windows), by ParentProcessId.
+#[cfg(windows)]
+fn windows_children(pid: u32) -> Vec<u32> {
+    aspen_node::gitstate::quiet_command("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | Select-Object -ExpandProperty ProcessId"
+            ),
+        ])
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Is a process with this pid alive? Unix: kill(0). Windows: tasklist.
 pub(crate) fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
@@ -1089,16 +1111,28 @@ pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
         }
         #[cfg(windows)]
         {
-            // /T takes the session processes down too (they revive via
-            // their live marks on the next `up`).
-            let ok = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
+            // The session processes go down too (they revive via their live
+            // marks on the next `up`) — but NOT with `/T` on the daemon: when
+            // the daemon launched us (the unattended updater is its child),
+            // a tree kill takes the updater with it, mid-update. So: each
+            // child subtree except our own, then the daemon alone.
+            let me = std::process::id();
+            for child in windows_children(pid) {
+                if child == me {
+                    continue;
+                }
+                let _ = aspen_node::gitstate::quiet_command("taskkill")
+                    .args(["/F", "/T", "/PID", &child.to_string()])
+                    .status();
+            }
+            let ok = aspen_node::gitstate::quiet_command("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
                 anyhow::bail!(
-                    "could not stop process {pid} (try Task Manager / `taskkill /F /T /PID {pid}`)"
+                    "could not stop process {pid} (try Task Manager / `taskkill /F /PID {pid}`)"
                 );
             }
         }
