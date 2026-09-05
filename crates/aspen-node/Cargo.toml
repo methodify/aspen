@@ -19,7 +19,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { workspace = true }
-tokio-tungstenite = "0.27"
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand_core = { version = "0.6", features = ["getrandom"] }
 ureq = { version = "2", features = ["tls", "json"] }

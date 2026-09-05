@@ -42,9 +42,14 @@ the meter. One Durable Object instance per mesh owns its live node sockets.
 ```bash
 cd cloudflare
 npm install
-wrangler secret put MESH_ROOTS   # JSON: { "mymesh": "<base64 root pubkey>" }
-wrangler deploy
+npx wrangler login               # OAuth in the browser
+npx wrangler deploy              # prints https://aspen-rendezvous.<subdomain>.workers.dev
+echo '{"mymesh":"<base64 root pubkey>"}' | npx wrangler secret put MESH_ROOTS
 ```
+
+The Durable Object class is declared with `new_sqlite_classes`, which the
+free plan requires (and which is what alarms and storage need anyway).
+Re-run `secret put` with the whole JSON to add or remove a mesh.
 
 Nodes point at the Worker with the mesh in the query string:
 

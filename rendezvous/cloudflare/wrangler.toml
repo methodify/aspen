@@ -9,7 +9,7 @@ class_name = "MeshRelay"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["MeshRelay"]
+new_sqlite_classes = ["MeshRelay"]   # SQLite-backed: works on the free plan
 
 # Set the mesh root public keys as a secret (never in this file):
 #   wrangler secret put MESH_ROOTS
