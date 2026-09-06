@@ -22,6 +22,15 @@ interface PendingReview {
   autorun: RepoAutorun | null;
 }
 
+/** The session to resume is being written by a process the node doesn't
+ *  manage (a terminal, another node). Nothing happens until the operator
+ *  chooses: fork (history kept, new id) or resume in place anyway. */
+interface PendingLive {
+  req: StartAgentRequest;
+  session: string;
+  writtenAgo: number;
+}
+
 /** Start a session, routing untrusted repos through the review dialog.
  * Resolves the started Agent, or null when the operator declines. */
 export type TrustedStart = (req: StartAgentRequest) => Promise<Agent | null>;
@@ -31,6 +40,7 @@ export function useTrustedStart(): {
   dialog: ReactNode;
 } {
   const [pending, setPending] = useState<PendingReview | null>(null);
+  const [live, setLive] = useState<PendingLive | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const resolver = useRef<((a: Agent | null) => void) | null>(null);
@@ -39,6 +49,14 @@ export function useTrustedStart(): {
     try {
       return await api.startAgent(req);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.body && e.body["live_elsewhere"]) {
+        const le = e.body["live_elsewhere"] as { session?: string; written_ago_secs?: number };
+        setErr(null);
+        setLive({ req, session: le.session ?? req.resume ?? "", writtenAgo: le.written_ago_secs ?? 0 });
+        return new Promise<Agent | null>((resolve) => {
+          resolver.current = resolve;
+        });
+      }
       if (!(e instanceof ApiError) || e.status !== 428) throw e;
       // Untrusted repo: fetch what it would auto-run and put it to the
       // operator. The promise settles when they decide.
@@ -60,9 +78,38 @@ export function useTrustedStart(): {
     const r = resolver.current;
     resolver.current = null;
     setPending(null);
+    setLive(null);
     setConfirming(false);
     setErr(null);
     r?.(agent);
+  }
+
+  async function chooseLive(choice: "fork" | "in_place") {
+    if (!live) return;
+    setConfirming(true);
+    setErr(null);
+    try {
+      // The retry can still hit the trust gate; route it through start()
+      // so that dialog follows, then settle with whatever it yields.
+      const req = { ...live.req, resume_choice: choice };
+      setLive(null);
+      let agent: Agent | null;
+      try {
+        agent = await api.startAgent(req);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 428) {
+          setConfirming(false);
+          agent = await start(req);
+        } else {
+          throw e;
+        }
+      }
+      settle(agent);
+    } catch (e) {
+      setConfirming(false);
+      setErr(e instanceof Error ? e.message : "failed to start");
+      setLive((cur) => cur ?? live);
+    }
   }
 
   async function confirm() {
@@ -78,7 +125,40 @@ export function useTrustedStart(): {
     }
   }
 
-  const dialog: ReactNode = pending ? (
+  const liveDialog: ReactNode = live ? (
+    <div className="trust-backdrop" onClick={() => settle(null)} role="presentation">
+      <div className="trust-panel" role="dialog" aria-label="session is live elsewhere" onClick={(e) => e.stopPropagation()}>
+        <div className="trust-head">
+          <span className="label">This session is being written elsewhere</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn ghost sm" onClick={() => settle(null)}>esc</button>
+        </div>
+        <div className="mono trust-path">session {live.session.slice(0, 8)} · written {live.writtenAgo}s ago</div>
+        <p className="trust-lede">
+          Another process — a terminal, the desktop app, or another node — wrote to this transcript moments ago. Resuming it
+          here would put two processes on one transcript, which corrupts the history over time. Nothing has been started.
+        </p>
+        <div className="trust-lists">
+          <div>
+            <b>Fork</b> <span className="mono-meta">— keep the whole history, continue under a new session id here; the other process keeps the original. Lineage is recorded.</span>
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <b>Resume anyway</b> <span className="mono-meta">— use the same session id; only if you know the other process is gone.</span>
+          </div>
+        </div>
+        {err && <div className="error-bar">{err}</div>}
+        <div className="trust-actions">
+          <button className="btn ghost" onClick={() => settle(null)} disabled={confirming}>cancel</button>
+          <button className="btn ghost" onClick={() => void chooseLive("in_place")} disabled={confirming}>resume anyway</button>
+          <button className="btn primary" onClick={() => void chooseLive("fork")} disabled={confirming}>
+            {confirming ? "starting…" : "fork and start"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const dialog: ReactNode = live ? liveDialog : pending ? (
     <div className="trust-backdrop" onClick={() => settle(null)} role="presentation">
       <div
         className="trust-panel"

@@ -156,7 +156,29 @@ pub struct SpawnOpts {
     pub fork: bool,
     /// With `resume`: truncate history to this message first.
     pub resume_at: Option<String>,
+    /// The operator's answer when the session to resume is live elsewhere:
+    /// "fork" | "in_place". Absent → spawn refuses with `LiveElsewhere`.
+    pub resume_choice: Option<String>,
 }
+
+/// Refusal: the session to resume is being written by a process this node
+/// doesn't manage. The API turns this into a 409 the console asks about.
+#[derive(Debug, Clone)]
+pub struct LiveElsewhere {
+    pub session: String,
+    pub written_ago_secs: u64,
+}
+impl std::fmt::Display for LiveElsewhere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "session {} was written {}s ago by a process this node doesn't manage — fork it, or resume in place anyway",
+            &self.session[..8.min(self.session.len())],
+            self.written_ago_secs
+        )
+    }
+}
+impl std::error::Error for LiveElsewhere {}
 
 /// The one way a repo path enters or is looked up in the store. Resolves
 /// symlinks/relative parts like canonicalize, but on Windows yields the
@@ -378,8 +400,10 @@ impl Node {
 
         // Resuming in place a session that is being written right now by
         // a process we don't manage (a terminal, the desktop app, another
-        // node) would put two writers on one transcript. Fork instead —
-        // same history, new id, lineage recorded — and say so.
+        // node) would put two writers on one transcript. Never decide that
+        // silently: refuse with LiveElsewhere so the console can ask, and
+        // act only on an explicit choice — fork (history kept, new id) or
+        // resume in place anyway.
         let mut opts = opts;
         let mut spawn_note: Option<String> = None;
         if let (Some(sid), false) = (opts.resume.as_deref(), opts.fork) {
@@ -397,15 +421,31 @@ impl Node {
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs_f64());
-            let recent = mtime.is_some_and(|t| crate::store::now_epoch() - t < LIVE_ELSEWHERE_SECS);
+            let ago = mtime.map(|t| crate::store::now_epoch() - t);
+            let recent = ago.is_some_and(|a| a < LIVE_ELSEWHERE_SECS);
             if recent && !ours {
-                opts.fork = true;
-                spawn_note = Some(format!(
-                    "session {} was written to {}s ago by something other than this node — continued as a fork (new id, history kept) so two processes don't share one transcript",
-                    &sid[..8.min(sid.len())],
-                    (crate::store::now_epoch() - mtime.unwrap_or(0.0)) as u64
-                ));
-                tracing::info!(session = %sid, "resume of a session live elsewhere: forking instead");
+                match opts.resume_choice.as_deref() {
+                    Some("fork") => {
+                        opts.fork = true;
+                        spawn_note = Some(format!(
+                            "forked at your request: session {} was being written elsewhere",
+                            &sid[..8.min(sid.len())]
+                        ));
+                    }
+                    Some("in_place") => {
+                        spawn_note = Some(format!(
+                            "resumed in place at your request while session {} was being written elsewhere — two processes share this transcript",
+                            &sid[..8.min(sid.len())]
+                        ));
+                    }
+                    _ => {
+                        return Err(LiveElsewhere {
+                            session: sid.to_owned(),
+                            written_ago_secs: ago.unwrap_or(0.0) as u64,
+                        }
+                        .into());
+                    }
+                }
             }
         }
         let opts = opts;

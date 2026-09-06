@@ -875,6 +875,9 @@ struct SpawnBody {
     /// The operator reviewed this repo's autorun surface and trusts it.
     #[serde(default)]
     acknowledge_trust: bool,
+    /// When `resume` names a session being written elsewhere: "fork" or
+    /// "in_place". Absent → 409 with `live_elsewhere` for the console to ask.
+    resume_choice: Option<String>,
     /// Display title to set on the new agent (e.g. carried over from an
     /// mcc session name).
     title: Option<String>,
@@ -913,6 +916,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             "model": body.model, "resume": body.resume, "allow_all": body.allow_all,
             "skip_permissions": body.skip_permissions,
             "acknowledge_trust": body.acknowledge_trust,
+            "resume_choice": body.resume_choice,
             "title": body.title, "extra_args": body.extra_args,
         });
         return match mesh.api_call(node, "spawn", "", req, REMOTE_TIMEOUT).await {
@@ -923,6 +927,14 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
                 Json(json!({
                     "error": "untrusted repo: review what it auto-runs, then retry with acknowledge_trust",
                     "autorun": v.get("autorun").cloned().unwrap_or(Value::Null),
+                })),
+            )
+                .into_response(),
+            Ok(v) if v.get("live_elsewhere").is_some() => (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "session is being written elsewhere: choose fork or in_place (resume_choice)",
+                    "live_elsewhere": v.get("live_elsewhere").cloned().unwrap_or(Value::Null),
                 })),
             )
                 .into_response(),
@@ -972,6 +984,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         interactive: true,
         skip_permissions: body.skip_permissions,
         extra_args: body.extra_args.filter(|a| !a.trim().is_empty()),
+        resume_choice: body.resume_choice,
         ..Default::default()
     };
     match s
@@ -994,6 +1007,20 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
                 )
                 .into_response(),
             }
+        }
+        Err(e)
+            if e.downcast_ref::<aspen_node::node::LiveElsewhere>()
+                .is_some() =>
+        {
+            let le = e.downcast_ref::<aspen_node::node::LiveElsewhere>().unwrap();
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": e.to_string(),
+                    "live_elsewhere": { "session": le.session, "written_ago_secs": le.written_ago_secs },
+                })),
+            )
+                .into_response()
         }
         Err(e) if e.to_string().contains("already running") => {
             err(StatusCode::CONFLICT, format!("{e:#}")).into_response()

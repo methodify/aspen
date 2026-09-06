@@ -298,6 +298,9 @@ export interface StartAgentRequest {
   skip_permissions?: boolean;
   /** The operator reviewed the repo's autorun surface (trust gate). */
   acknowledge_trust?: boolean;
+  /** When `resume` names a session being written elsewhere: the operator's
+   *  answer. Absent → the node refuses (409) and the console asks. */
+  resume_choice?: "fork" | "in_place";
   /** Display title for the new agent (e.g. an mcc session name). */
   title?: string;
   /** Per-session harness CLI args, appended after the harness defaults. */
@@ -599,11 +602,15 @@ export interface RepoAutorun {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** The parsed JSON body, when the server sent one (structured refusals
+   *  like the trust gate and live-elsewhere carry their details here). */
+  readonly body: Record<string, unknown> | null;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body: Record<string, unknown> | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -639,18 +646,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await res.text();
   if (!res.ok) {
     let detail = text.trim();
+    let parsedBody: Record<string, unknown> | null = null;
     // If the body is JSON with an error/message field, prefer that.
     try {
       const parsed: unknown = JSON.parse(text);
       if (parsed && typeof parsed === "object") {
         const obj = parsed as Record<string, unknown>;
+        parsedBody = obj;
         const msg = obj["error"] ?? obj["message"];
         if (typeof msg === "string" && msg) detail = msg;
       }
     } catch {
       // plain-text body; keep as-is
     }
-    throw new ApiError(res.status, detail || `${res.status} ${res.statusText}`);
+    throw new ApiError(res.status, detail || `${res.status} ${res.statusText}`, parsedBody);
   }
   if (!text) return {} as T;
   return JSON.parse(text) as T;

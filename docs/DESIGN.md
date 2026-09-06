@@ -708,7 +708,9 @@ cleaner lane for roster updates than user-message headers.
   claude processes on one transcript — seen live when this project's own
   session was resumed from the mac via the WSL node. A resume of a
   transcript written in the last two minutes by a process this node
-  doesn't manage now forks instead (history kept, new id, lineage), and
-  the console says so. Companion: a message to a remote agent whose link
+  doesn't manage is **refused until the operator chooses** — fork
+  (history kept, new id, lineage) or resume in place anyway. Never
+  silently: a transparent fork would be confusing over time (the
+  operator's ruling, 2026-09-06). Companion: a message to a remote agent whose link
   is down is queued on the bus (202) rather than failing — a flapping link
   during a reconfiguration should never eat the operator's words.

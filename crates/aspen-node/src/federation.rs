@@ -1352,6 +1352,10 @@ async fn serve_api_req(
                     .and_then(|a| a.as_str())
                     .filter(|a| !a.trim().is_empty())
                     .map(str::to_owned),
+                resume_choice: body
+                    .get("resume_choice")
+                    .and_then(|a| a.as_str())
+                    .map(str::to_owned),
                 ..Default::default()
             };
             let ack = body.get("acknowledge_trust").and_then(|a| a.as_bool()) == Some(true);
@@ -1367,9 +1371,22 @@ async fn serve_api_req(
                     "autorun": autorun,
                 }));
             }
-            let sess = node
+            let sess = match node
                 .spawn_agent(&name, std::path::PathBuf::from(repo), opts)
-                .await?;
+                .await
+            {
+                Ok(s) => s,
+                // Mirror the local 409 as a structured reply the caller maps
+                // back to the fork / in-place question.
+                Err(e) => {
+                    if let Some(le) = e.downcast_ref::<crate::node::LiveElsewhere>() {
+                        return Ok(json!({
+                            "live_elsewhere": { "session": le.session, "written_ago_secs": le.written_ago_secs },
+                        }));
+                    }
+                    return Err(e);
+                }
+            };
             let key = sess.name.clone();
             if let Some(title) = body
                 .get("title")
