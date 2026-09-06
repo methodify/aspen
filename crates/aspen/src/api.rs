@@ -816,6 +816,7 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
             TurnState::Busy => "busy",
         }),
         "pending": s.node.inner.store.pending_count(&a.name).unwrap_or(0),
+        "spawn_note": live.as_ref().and_then(|m| m.spawn_note.lock().unwrap().clone()),
         "summary": live.as_ref().map(|m| aspen_node::node::summary_json(m)),
         "git": aspen_node::gitstate::get(&a.repo),
         "last_exit_code": a.last_exit_code,
@@ -1012,7 +1013,57 @@ async fn post_message(
     Json(body): Json<MessageBody>,
 ) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "message", &bare, json!({ "text": body.text })).await;
+        let Some(mesh) = s.node.inner.mesh() else {
+            return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+        };
+        // A link that is down right now shouldn't lose the operator's
+        // words: queue them on the bus (store-and-forward, and the relay
+        // mailbox if there is one) and say so.
+        let queue = |why: String| {
+            match aspen_node::tools::send_message(
+                &s.node.inner,
+                "operator",
+                &format!("@{name}"),
+                &body.text,
+                "normal",
+                None,
+                None,
+            ) {
+                Ok(notes) => (
+                    StatusCode::ACCEPTED,
+                    Json(json!({
+                        "queued": true,
+                        "note": format!("link to node '{node}' is down ({why}) — queued on the bus; delivers when it returns"),
+                        "notes": notes,
+                    })),
+                )
+                    .into_response(),
+                Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {why}; could not queue either: {e}")).into_response(),
+            }
+        };
+        if !mesh.link_up(&node) {
+            return queue("no live link".into());
+        }
+        return match mesh
+            .api_call(
+                &node,
+                "message",
+                &bare,
+                json!({ "text": body.text }),
+                REMOTE_TIMEOUT,
+            )
+            .await
+        {
+            Ok(v) => Json(v).into_response(),
+            Err(e)
+                if e.to_string().contains("no live link") || e.to_string().contains("dropped") =>
+            {
+                queue(e.to_string())
+            }
+            Err(e) => {
+                err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response()
+            }
+        };
     }
     match s.node.send_operator_message(&name, body.text).await {
         Ok(uuid) => Json(json!({ "uuid": uuid })).into_response(),

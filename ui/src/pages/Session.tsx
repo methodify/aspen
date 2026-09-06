@@ -696,8 +696,16 @@ function SessionView({ name }: { name: string }) {
     setNowTick(Date.now());
     setActionError(null);
     try {
-      const { uuid } = await api.sendMessage(name, text);
-      dispatch({ type: "sent", localKey, uuid });
+      const res = await api.sendMessage(name, text);
+      if (res.queued) {
+        // Not lost: it rides the bus until the node's link returns.
+        dispatch({ type: "send_failed", localKey });
+        setBusy(false);
+        busyLocalStartRef.current = null;
+        setCtlNote(res.note ?? "queued — delivers when the node's link returns");
+        return;
+      }
+      dispatch({ type: "sent", localKey, uuid: res.uuid ?? localKey });
     } catch (e) {
       dispatch({ type: "send_failed", localKey });
       setBusy(false);
@@ -1570,6 +1578,7 @@ function SessionView({ name }: { name: string }) {
             <>
               <span className="dim">{lastTurn ? `last turn: ${lastTurn.subtype}` : "idle"}</span>
               {statusNote && <span className="status-note">{statusNote}</span>}
+              {agent?.spawn_note && <span className="status-note" title={agent.spawn_note}>forked — {agent.spawn_note.split(" — ")[0]}</span>}
             </>
           )}
         </span>

@@ -66,7 +66,14 @@ pub struct ManagedSession {
     /// records lineage once the runtime announces the child's id.
     pub fork_from: Option<(String, Option<String>)>,
     pub summary: Mutex<WorkSummary>,
+    /// Something the operator should know about how this process started
+    /// (e.g. "forked: the session was live elsewhere").
+    pub spawn_note: Mutex<Option<String>>,
 }
+
+/// A transcript written this recently, by a process this node doesn't
+/// manage, counts as live elsewhere.
+const LIVE_ELSEWHERE_SECS: f64 = 120.0;
 
 impl ManagedSession {
     pub fn turn_state(&self) -> TurnState {
@@ -369,6 +376,40 @@ impl Node {
                 .unwrap_or(false)
         });
 
+        // Resuming in place a session that is being written right now by
+        // a process we don't manage (a terminal, the desktop app, another
+        // node) would put two writers on one transcript. Fork instead —
+        // same history, new id, lineage recorded — and say so.
+        let mut opts = opts;
+        let mut spawn_note: Option<String> = None;
+        if let (Some(sid), false) = (opts.resume.as_deref(), opts.fork) {
+            let ours = self
+                .inner
+                .store
+                .agents()
+                .unwrap_or_default()
+                .iter()
+                .any(|a| {
+                    a.session_id.as_deref() == Some(sid) && self.inner.live(&a.name).is_some()
+                });
+            let mtime = std::fs::metadata(aspen_claude::transcript::transcript_path(&repo, sid))
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64());
+            let recent = mtime.is_some_and(|t| crate::store::now_epoch() - t < LIVE_ELSEWHERE_SECS);
+            if recent && !ours {
+                opts.fork = true;
+                spawn_note = Some(format!(
+                    "session {} was written to {}s ago by something other than this node — continued as a fork (new id, history kept) so two processes don't share one transcript",
+                    &sid[..8.min(sid.len())],
+                    (crate::store::now_epoch() - mtime.unwrap_or(0.0)) as u64
+                ));
+                tracing::info!(session = %sid, "resume of a session live elsewhere: forking instead");
+            }
+        }
+        let opts = opts;
+
         let mut cfg = ClaudeConfig::new(repo.clone());
         cfg.model = opts.model.clone();
         cfg.resume = opts.resume.clone();
@@ -479,6 +520,7 @@ impl Node {
             } else {
                 None
             },
+            spawn_note: Mutex::new(spawn_note.clone()),
             summary: Mutex::new(WorkSummary {
                 idle_since: Some(crate::store::now_epoch()),
                 ..Default::default()

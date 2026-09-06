@@ -121,6 +121,9 @@ export interface Agent {
   last_exit_at?: number | null;
   /** null for remote agents (their repo lives on another node). */
   repo: string | null;
+  /** How this process started, when the operator should know (e.g. it
+   *  was forked because the session was live elsewhere). */
+  spawn_note?: string | null;
   channel: string;
   session_id: string;
   charter: string | null;
@@ -693,8 +696,10 @@ export const api = {
   deleteBookmark: (name: string, id: number) =>
     request<{ ok: boolean }>(`/api/agents/${enc(name)}/bookmarks/${id}`, { method: "DELETE" }),
 
+  /** `queued` (HTTP 202) when the agent's node is unreachable right now:
+   *  the text went on the bus and delivers when the link returns. */
   sendMessage: (name: string, text: string) =>
-    post<{ uuid: string }>(`/api/agents/${enc(name)}/message`, { text }),
+    post<{ uuid?: string; queued?: boolean; note?: string }>(`/api/agents/${enc(name)}/message`, { text }),
   interrupt: (name: string) =>
     post<Record<string, never>>(`/api/agents/${enc(name)}/interrupt`),
   answerPermission: (name: string, requestId: string, answer: PermissionAnswer) =>
