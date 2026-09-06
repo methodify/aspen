@@ -407,6 +407,13 @@ impl Node {
         let mut opts = opts;
         let mut spawn_note: Option<String> = None;
         if let (Some(sid), false) = (opts.resume.as_deref(), opts.fork) {
+            // "Ours" = a process this node manages right now, or one it
+            // managed when it last went down: the store's `live` mark
+            // survives a daemon restart precisely so auto-revive can bring
+            // the session back — and that session wrote its transcript
+            // seconds ago, by this node's own hand. Without the mark, every
+            // restart refused its own agents (seen on the mac, 2026-09-06).
+            let marked_live = self.inner.store.agents_marked_live().unwrap_or_default();
             let ours = self
                 .inner
                 .store
@@ -414,7 +421,8 @@ impl Node {
                 .unwrap_or_default()
                 .iter()
                 .any(|a| {
-                    a.session_id.as_deref() == Some(sid) && self.inner.live(&a.name).is_some()
+                    a.session_id.as_deref() == Some(sid)
+                        && (self.inner.live(&a.name).is_some() || marked_live.contains(&a.name))
                 });
             let mtime = std::fs::metadata(aspen_claude::transcript::transcript_path(&repo, sid))
                 .ok()

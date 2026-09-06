@@ -1199,7 +1199,10 @@ async fn post_revive(
                 .into_response(),
             }
         }
-        Err(e) if e.downcast_ref::<aspen_node::node::LiveElsewhere>().is_some() => {
+        Err(e)
+            if e.downcast_ref::<aspen_node::node::LiveElsewhere>()
+                .is_some() =>
+        {
             let le = e.downcast_ref::<aspen_node::node::LiveElsewhere>().unwrap();
             live_elsewhere_response(
                 e.to_string(),

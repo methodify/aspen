@@ -731,3 +731,12 @@ cleaner lane for roster updates than user-message headers.
   409 through the proxy, and the console's live-elsewhere dialog is a
   reusable gate (`useLiveGate`) that any such call runs through — fork /
   resume anyway / cancel, from the session banner and from Now.
+- **2026-09-06 — The gate must not refuse the node's own restart.** After
+  `aspen restart` on the mac, auto-revive refused its own agent: "written
+  2s ago by a process this node doesn't manage". Freshly restarted, the
+  node manages nothing in memory, yet the transcript was written by its
+  own child moments before shutdown. The store's `live` mark is exactly
+  the record of that ownership (it is kept through daemon shutdown so
+  revive can happen), so the one-writer gate now counts a marked-live
+  agent as "ours". Verified on the rig: an agent with a 0s-old transcript
+  comes back on restart.
