@@ -25,7 +25,7 @@ import {
 import { usePoll } from "../hooks";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
-import { useTrustedStart } from "../trust";
+import { useLiveGate, useTrustedStart } from "../trust";
 import { NewSessionPanel } from "../sessionStart";
 import { AdoptionCard, NodeChip, PermCard, QuestionCard } from "../needs";
 import { UpdateCard } from "../servicing";
@@ -194,6 +194,7 @@ export default function Now() {
   const activityPoll = usePoll<Activity>(api.activity, 3000);
   const needsPoll = usePoll<Needs>(api.needs, 2000);
   const trust = useTrustedStart();
+  const liveGate = useLiveGate();
   const [panelOpen, setPanelOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -298,6 +299,7 @@ export default function Now() {
 
       <div className="stage-body">
         {trust.dialog}
+        {liveGate.dialog}
         <ErrorBar error={err} />
         {panelOpen && (
           <NewSessionPanel
@@ -393,7 +395,7 @@ export default function Now() {
                 {relTime(a.last_exit_at!)} ago
               </span>
               <span style={{ flex: 1 }} />
-              <button className="btn sm" onClick={() => void act("revive", () => api.revive(a.name))}>revive</button>
+              <button className="btn sm" onClick={() => void act("revive", () => liveGate.guard((c) => api.revive(a.name, c)))}>revive</button>
             </div>
           ))}
         </section>
@@ -448,7 +450,7 @@ export default function Now() {
                       <span style={{ flex: 1 }} />
                       <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(a.name)}`)}>open</button>
                       {!a.live && (
-                        <button className="btn sm" onClick={() => void act("revive", () => api.revive(a.name))}>revive</button>
+                        <button className="btn sm" onClick={() => void act("revive", () => liveGate.guard((c) => api.revive(a.name, c)))}>revive</button>
                       )}
                     </div>
                   );

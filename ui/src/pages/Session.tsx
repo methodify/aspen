@@ -36,6 +36,7 @@ import {
 import { useAppData } from "./../App";
 import { Meter, presenceOf, relTime } from "./../components";
 import { useHotkeys } from "./../hotkeys";
+import { useLiveGate } from "./../trust";
 import {
   buildQuestionUpdatedInput,
   filterSlashCommands,
@@ -444,6 +445,7 @@ function TurnEndMarker({ item }: { item: TurnEndItem }) {
 // The page
 
 function SessionView({ name }: { name: string }) {
+  const liveGate = useLiveGate();
   const nav = useNavigate();
   const { agents, agentsLoaded, refreshAgents } = useAppData();
   const agent = agents.find((a) => a.name === name);
@@ -816,7 +818,9 @@ function SessionView({ name }: { name: string }) {
     setReviving(true);
     setActionError(null);
     try {
-      await api.revive(name);
+      // The live-elsewhere gate (409) puts fork / resume-anyway to the
+      // operator here, exactly as a start would; cancel leaves it down.
+      if ((await liveGate.guard((c) => api.revive(name, c))) === null) return;
       // Same session id resumes; the WS reconnect loop picks the live
       // session back up and history is already on screen.
       setExited(null);
@@ -1527,6 +1531,7 @@ function SessionView({ name }: { name: string }) {
         </div>
       )}
 
+      {liveGate.dialog}
       {exited && (
         <div className="exited-banner">
           <span>

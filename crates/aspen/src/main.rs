@@ -543,7 +543,7 @@ fn auto_revive(data_dir: &std::path::Path, node: Node) {
         // A beat for the listener to come up before sessions start talking.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         for name in names {
-            match node.revive_agent(&name, true).await {
+            match node.revive_agent(&name, true, None).await {
                 Ok(_) => eprintln!("[aspen] revived @{name}"),
                 Err(e) => eprintln!("[aspen] could not revive @{name}: {e:#}"),
             }

@@ -518,9 +518,25 @@ async fn proxy(
         return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
     };
     match mesh.api_call(node, op, agent, body, REMOTE_TIMEOUT).await {
+        // A peer refusing under the live-elsewhere gate answers with the
+        // structured reply; surface it as the same 409 a local call gives.
+        Ok(v) if v.get("live_elsewhere").is_some() => live_elsewhere_response(
+            "session is being written elsewhere: choose fork or in_place (resume_choice)",
+            v.get("live_elsewhere").cloned().unwrap_or(Value::Null),
+        ),
         Ok(v) => Json(v).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
     }
+}
+
+/// 409 with `live_elsewhere` — the console turns it into the fork /
+/// resume-in-place question.
+fn live_elsewhere_response(msg: impl Into<String>, le: Value) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({ "error": msg.into(), "live_elsewhere": le })),
+    )
+        .into_response()
 }
 
 // ------------------------------------------------------------------- handlers
@@ -1148,11 +1164,30 @@ async fn post_permission(
     }
 }
 
-async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+struct ReviveBody {
+    /// Answer to the live-elsewhere gate: "fork" | "in_place". Absent →
+    /// 409 with `live_elsewhere` for the console to ask, as on start.
+    resume_choice: Option<String>,
+}
+
+async fn post_revive(
+    State(s): S,
+    Path(name): Path<String>,
+    body: Option<Json<ReviveBody>>,
+) -> impl IntoResponse {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "revive", &bare, json!({})).await;
+        return proxy(
+            &s,
+            &node,
+            "revive",
+            &bare,
+            json!({ "resume_choice": body.resume_choice }),
+        )
+        .await;
     }
-    match s.node.revive_agent(&name, true).await {
+    match s.node.revive_agent(&name, true, body.resume_choice).await {
         Ok(_) => {
             let rows = s.node.inner.store.agents().unwrap_or_default();
             match rows.iter().find(|a| a.name == name) {
@@ -1163,6 +1198,13 @@ async fn post_revive(State(s): S, Path(name): Path<String>) -> impl IntoResponse
                 )
                 .into_response(),
             }
+        }
+        Err(e) if e.downcast_ref::<aspen_node::node::LiveElsewhere>().is_some() => {
+            let le = e.downcast_ref::<aspen_node::node::LiveElsewhere>().unwrap();
+            live_elsewhere_response(
+                e.to_string(),
+                json!({ "session": le.session, "written_ago_secs": le.written_ago_secs }),
+            )
         }
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }

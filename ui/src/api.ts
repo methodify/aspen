@@ -682,7 +682,9 @@ export const api = {
   startAgent: (req: StartAgentRequest) => post<Agent>("/api/agents", req),
   deleteAgent: (name: string) =>
     request<Record<string, never>>(`/api/agents/${enc(name)}`, { method: "DELETE" }),
-  revive: (name: string) => post<Agent>(`/api/agents/${enc(name)}/revive`),
+  /** `choice` answers the live-elsewhere gate (409) the same way a start does. */
+  revive: (name: string, choice?: "fork" | "in_place") =>
+    post<Agent>(`/api/agents/${enc(name)}/revive`, choice ? { resume_choice: choice } : {}),
   /** Branch here: bookmark the current tip, fork, move the head (carry) —
    *  or, with `as`, start the fork as a NEW agent and keep this one (split).
    *  Returns the agent that continues on the fork. */

@@ -292,7 +292,7 @@ pub async fn resolve(
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-                node.revive_agent(&agent, true).await?;
+                node.revive_agent(&agent, true, None).await?;
             }
             Ok(json!({ "ok": true, "agent": agent, "revived": was_live }))
         }
@@ -331,7 +331,7 @@ pub async fn resolve(
         }
         "revive" => {
             inner.store.resolve_adoption(id, "revive", Some(&agent))?;
-            node.revive_agent(&agent, true).await?;
+            node.revive_agent(&agent, true, None).await?;
             Ok(json!({ "ok": true, "agent": agent }))
         }
         other => Err(anyhow!(

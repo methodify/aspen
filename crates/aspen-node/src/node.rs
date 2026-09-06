@@ -640,7 +640,17 @@ impl Node {
 
     /// Bring a registered-but-down agent back by resuming its session. The
     /// conversation, not the process, is the identity.
-    pub async fn revive_agent(&self, name: &str, interactive: bool) -> Result<Arc<ManagedSession>> {
+    ///
+    /// `resume_choice` answers the live-elsewhere gate the same way a start
+    /// does ("fork" | "in_place"); absent, a transcript written moments ago
+    /// by a process this node doesn't manage is refused with
+    /// [`LiveElsewhere`] so the operator can choose.
+    pub async fn revive_agent(
+        &self,
+        name: &str,
+        interactive: bool,
+        resume_choice: Option<String>,
+    ) -> Result<Arc<ManagedSession>> {
         if self.inner.live(name).is_some() {
             return Err(anyhow!("@{name} is already running"));
         }
@@ -661,6 +671,7 @@ impl Node {
             resume,
             interactive,
             extra_args: row.extra_args.clone(),
+            resume_choice,
             ..Default::default()
         };
         self.spawn_agent(name, row.repo.clone(), opts).await

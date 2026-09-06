@@ -1016,8 +1016,21 @@ async fn serve_api_req(
             Ok(json!({}))
         }
         "revive" => {
-            node.revive_agent(agent, true).await?;
-            Ok(json!({}))
+            let choice = body
+                .get("resume_choice")
+                .and_then(|c| c.as_str())
+                .map(str::to_owned);
+            match node.revive_agent(agent, true, choice).await {
+                Ok(_) => Ok(json!({})),
+                // Same structured reply as a start: the caller maps it back
+                // to the fork / in-place question.
+                Err(e) => match e.downcast_ref::<crate::node::LiveElsewhere>() {
+                    Some(le) => Ok(json!({
+                        "live_elsewhere": { "session": le.session, "written_ago_secs": le.written_ago_secs },
+                    })),
+                    None => Err(e),
+                },
+            }
         }
         "branch" => {
             let sess = node

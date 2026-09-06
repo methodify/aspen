@@ -722,4 +722,12 @@ cleaner lane for roster updates than user-message headers.
   `live` flag for every agent, remote included: the header says *not
   running*, the banner says which node, and its **resume** button is the
   same revive, proxied to the home node. Now's folded rows offer revive
-  for remote agents on the same rule.
+  for remote agents on the same rule. **Revive answers the one-writer
+  gate too:** a revive can refuse with the same 409 as a start (the
+  transcript was written moments ago by a process the node doesn't
+  manage), and the console used to print that refusal as text with no
+  way to act on it. Revive now carries `resume_choice` end to end (API,
+  mesh op, node), the peer's structured refusal is surfaced as the same
+  409 through the proxy, and the console's live-elsewhere dialog is a
+  reusable gate (`useLiveGate`) that any such call runs through — fork /
+  resume anyway / cancel, from the session banner and from Now.
