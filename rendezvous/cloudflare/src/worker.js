@@ -188,9 +188,13 @@ export class MeshRelay {
       }
       console.log(`register mesh=${a.mesh} node=${msg.node} present=${this.presentNodes().join(',')}`);
       // One socket per node name: a newer registration replaces an older.
+      // Peers linked over the old one must hear "offline" first, or they
+      // keep sending into a session the node no longer has.
       const stale = this.socketFor(msg.node);
       if (stale && stale !== ws) {
+        try { stale.serializeAttachment({ mesh: a.mesh, node: null, nonce: null }); } catch {}
         try { stale.close(1000, 'replaced'); } catch {}
+        this.broadcastPresence(msg.node, false);
       }
       const peers = this.presentNodes().filter((n) => n !== msg.node);
       ws.serializeAttachment({ mesh: a.mesh, node: msg.node, nonce: null });

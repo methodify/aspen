@@ -86,12 +86,17 @@ pub async fn serve(
     // 3. Register the connection; announce presence.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let tx_probe = tx.clone();
-    let existing: Vec<String> = {
+    let (existing, replaced): (Vec<String>, bool) = {
         let mut nodes = host.nodes.lock().await;
         let peers = nodes.keys().filter(|n| *n != &name).cloned().collect();
-        nodes.insert(name.clone(), tx);
-        peers
+        let replaced = nodes.insert(name.clone(), tx).is_some();
+        (peers, replaced)
     };
+    if replaced {
+        // The node restarted: peers linked over its old socket must hear
+        // "offline" first, or they keep sending into a dead session.
+        broadcast_presence(&host, &name, false).await;
+    }
     let welcome = serde_json::to_string(&RelayFrame::Welcome {
         peers: existing,
         host: Some(host_node),

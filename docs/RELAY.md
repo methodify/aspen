@@ -194,6 +194,24 @@ object, so hibernation still costs nothing. The relay row in the console
 shows who else the relay says is present; that is the first thing to look
 at when two nodes on one relay don't see each other.
 
+**Restarts, precisely (2026-09-06).** Three more rules fell out of a
+restart storm run against the deployed worker (a node restarted three
+times, then both at once; every round must carry traffic afterwards):
+
+- Only a **hello** may start a relay link. Any other frame from a peer we
+  have no link with is dropped. Before, a stray mid-handshake or sealed
+  frame from a session that had just died spawned a fresh link that choked
+  on it — and its failure produced the next stray frame: a cascade of dead
+  links every 100 ms, seen live between a laptop and a WSL node.
+- A hello from a peer that dials us **replaces** the link we had with it
+  (it is telling us it started over). A hello from a peer *we* dial is
+  the reply to our attempt when one is in flight, and ignored otherwise.
+- A relay that sees a node **re-register while its old socket is still
+  there** announces `offline` for it before `online`, so peers linked over
+  the old socket drop that link at once instead of sending into it.
+  Handshakes time out after 15s so a crossed attempt never holds a peer's
+  slot.
+
 ## 9. Not built
 
 Console-through-relay (DESIGN §7 mentions it; the relay routes node↔node

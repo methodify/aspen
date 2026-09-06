@@ -512,10 +512,12 @@ pub async fn run_link(
         })?)
         .map_err(|_| anyhow!("link closed before hello"))?;
 
-    // 2. Hello in: verify the peer's cert against OUR trusted root.
-    let first = in_rx
-        .recv()
+    // 2. Hello in: verify the peer's cert against OUR trusted root. A
+    // handshake that stalls (the other side gave up, a crossed attempt)
+    // must not hold the peer's slot forever.
+    let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, in_rx.recv())
         .await
+        .map_err(|_| anyhow!("handshake timed out waiting for the peer's hello"))?
         .ok_or_else(|| anyhow!("link closed before peer hello"))?;
     let peer_hello: Hello = serde_json::from_str(&first)?;
     let peer_cert = peer_hello.hello;
@@ -581,9 +583,9 @@ pub async fn run_link(
         .send(serde_json::to_string(&auth_out)?)
         .map_err(|_| anyhow!("link closed during auth"))?;
 
-    let auth_frame = in_rx
-        .recv()
+    let auth_frame = tokio::time::timeout(HANDSHAKE_TIMEOUT, in_rx.recv())
         .await
+        .map_err(|_| anyhow!("handshake timed out waiting for the peer's auth"))?
         .ok_or_else(|| anyhow!("link closed before peer auth"))?;
     let env: SealedEnvelope = serde_json::from_str(&auth_frame)?;
     let payload: Value = serde_json::from_slice(&env.open(&mesh.identity, &peer_cert)?)?;
@@ -1856,15 +1858,42 @@ async fn relay_read_loop(
                 data,
                 ..
             } => {
-                let sender = peer_ins.lock().unwrap().get(&from).cloned();
-                match sender {
-                    Some(tx) => {
+                // Only a HELLO may start a link. A stray mid-handshake or
+                // sealed frame (from a session that just died) used to
+                // spawn a fresh link that then choked on it — and its
+                // failure produced the next stray frame: a cascade of
+                // dead links every 100 ms (seen live). Now: a hello from a
+                // peer that dials us replaces whatever link we had with
+                // it (it is telling us it started over); a hello from a
+                // peer WE dial is a crossing — ignore it, our attempt is
+                // the one that counts; anything else goes to the live
+                // link or the floor.
+                let is_hello = serde_json::from_str::<Hello>(&data).is_ok();
+                let existing = peer_ins.lock().unwrap().get(&from).cloned();
+                match (is_hello, existing) {
+                    // We dial this peer: its hello is the reply to our
+                    // attempt (feed it) — or, with no attempt in flight, a
+                    // stray from an older session (ignore; presence drives
+                    // our next attempt).
+                    (true, Some(tx)) if me < from.as_str() => {
                         let _ = tx.send(data);
                     }
-                    None => {
-                        // First contact from a peer that dials us: accept.
+                    (true, None) if me < from.as_str() => {
+                        tracing::info!(peer = %from, "hello from a peer we dial with no attempt in flight; ignored");
+                    }
+                    (true, existing) => {
+                        if existing.is_some() {
+                            tracing::info!(peer = %from, "peer restarted its relay link; replacing ours");
+                            peer_ins.lock().unwrap().remove(&from);
+                        }
                         let tx = start_relay_link(inner, me, &from, relay_url, relay_tx, peer_ins);
                         let _ = tx.send(data);
+                    }
+                    (false, Some(tx)) => {
+                        let _ = tx.send(data);
+                    }
+                    (false, None) => {
+                        tracing::debug!(peer = %from, "stray relay frame with no link; dropped");
                     }
                 }
             }
@@ -1892,7 +1921,10 @@ async fn relay_read_loop(
     result
 }
 
-/// Relay keepalive cadence (docs/RELAY.md §9).
+/// A link handshake (hello → auth) must complete within this.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Relay keepalive cadence (docs/RELAY.md §8).
 const RELAY_PING_SECS: u64 = 20;
 const RELAY_SILENCE_SECS: u64 = 45;
 
@@ -2086,4 +2118,16 @@ fn start_relay_link(
         peer_ins2.lock().unwrap().remove(&peer3);
     });
     in_tx
+}
+
+#[cfg(test)]
+mod hello_tests {
+    #[test]
+    fn sealed_envelope_is_not_a_hello() {
+        let env = serde_json::json!({
+            "v": 1, "from": "a", "to": "b", "nonce": "AAAA", "ciphertext": "AAAA", "sig": "AAAA"
+        })
+        .to_string();
+        assert!(serde_json::from_str::<super::Hello>(&env).is_err());
+    }
 }

@@ -132,12 +132,17 @@ async fn handle(relay: Relay, mut socket: WebSocket) {
     // 3. Register the connection; announce presence.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let tx_probe = tx.clone();
-    let existing: Vec<String> = {
+    let (existing, replaced): (Vec<String>, bool) = {
         let mut nodes = relay.nodes.lock().await;
         let peers = nodes.keys().filter(|n| *n != &node_name).cloned().collect();
-        nodes.insert(node_name.clone(), Node { tx });
-        peers
+        let replaced = nodes.insert(node_name.clone(), Node { tx }).is_some();
+        (peers, replaced)
     };
+    if replaced {
+        // The node restarted: peers linked over its old socket must hear
+        // "offline" first, or they keep sending into a dead session.
+        broadcast_presence(&relay, &node_name, false).await;
+    }
     let welcome = serde_json::to_string(&RelayFrame::Welcome {
         peers: existing,
         host: None,
