@@ -467,10 +467,13 @@ function SessionView({ name }: { name: string }) {
   // event — a page that loads (or reconnects) after the process died would
   // otherwise never learn it and strand the operator with dead controls.
   // The roster also clears the banner when the session is revived from
-  // another surface. (Remote agents on a down node are excluded: their
-  // `live=false` means "unreachable", not "exited".)
+  // another surface. Remote agents count too: a remote row is present only
+  // while its node's link is up (rosters vanish with the link), so
+  // `live=false` on one means "not running there", and revive proxies to
+  // that node. Before this, a down remote agent showed "reconnecting"
+  // forever with no way to start it (seen live from the mac).
   useEffect(() => {
-    if (!agentsLoaded || !agent || agent.remote) return;
+    if (!agentsLoaded || !agent) return;
     if (!agent.live) {
       // While a revive is in flight the roster lags a beat; don't flash
       // the banner back over it.
@@ -1254,7 +1257,7 @@ function SessionView({ name }: { name: string }) {
             className={wsState === "open" ? "dot dot-idle" : "dot dot-down"}
             aria-hidden="true"
           />
-          {wsState === "open" ? "live" : wsState}
+          {exited ? "not running" : wsState === "open" ? "live" : wsState}
         </span>
       </header>
 
@@ -1527,8 +1530,8 @@ function SessionView({ name }: { name: string }) {
       {exited && (
         <div className="exited-banner">
           <span>
-            session exited{exited.code !== null ? ` (code ${exited.code})` : ""} — the
-            conversation is on disk and can continue.
+            {agent?.remote ? `not running on ${agent.node}` : "session exited"}
+            {exited.code !== null ? ` (code ${exited.code})` : ""} — the conversation is on disk and can continue.
           </span>
           <button
             className="btn primary sm"

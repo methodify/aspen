@@ -714,3 +714,12 @@ cleaner lane for roster updates than user-message headers.
   operator's ruling, 2026-09-06). Companion: a message to a remote agent whose link
   is down is queued on the bus (202) rather than failing — a flapping link
   during a reconfiguration should never eat the operator's words.
+- **2026-09-06 — A down agent is down wherever you look at it from.** The
+  session view marked only *local* agents as exited; a remote agent whose
+  process had ended (on the WSL node, seen from the mac) stayed
+  "reconnecting" forever, with the live controls (stop, branch) showing
+  and nothing to start it. The exited state now derives from the roster's
+  `live` flag for every agent, remote included: the header says *not
+  running*, the banner says which node, and its **resume** button is the
+  same revive, proxied to the home node. Now's folded rows offer revive
+  for remote agents on the same rule.

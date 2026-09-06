@@ -447,7 +447,7 @@ export default function Now() {
                       </span>
                       <span style={{ flex: 1 }} />
                       <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(a.name)}`)}>open</button>
-                      {!a.live && !a.remote && (
+                      {!a.live && (
                         <button className="btn sm" onClick={() => void act("revive", () => api.revive(a.name))}>revive</button>
                       )}
                     </div>
