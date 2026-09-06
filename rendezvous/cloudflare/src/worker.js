@@ -107,6 +107,8 @@ export class MeshRelay {
   constructor(state, env) {
     this.state = state;
     this.env = env;
+    // Keepalive answered by the runtime while the object sleeps.
+    this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
   rootFor(mesh) {
@@ -135,7 +137,10 @@ export class MeshRelay {
     const url = new URL(request.url);
     const mesh = url.searchParams.get('mesh');
     const rootPub = this.rootFor(mesh);
-    if (!rootPub) return new Response('unknown mesh', { status: 403 });
+    if (!rootPub) {
+      console.log(`unknown mesh=${mesh}`);
+      return new Response('unknown mesh', { status: 403 });
+    }
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('websocket only', { status: 426 });
     }
@@ -157,14 +162,15 @@ export class MeshRelay {
   }
 
   async webSocketMessage(ws, data) {
+    const raw = typeof data === 'string' ? data : new TextDecoder().decode(data);
+    if (raw === 'ping') { ws.send('pong'); return; }
     let msg;
     try {
-      msg = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(data));
+      msg = JSON.parse(raw);
     } catch {
       return;
     }
     const a = ws.deserializeAttachment() || {};
-
     // 2. Register (first message on a socket that hasn't).
     if (!a.node) {
       const rootPub = this.rootFor(a.mesh);
@@ -175,10 +181,12 @@ export class MeshRelay {
         ok = 'verify error: ' + e;
       }
       if (ok !== true) {
+        console.log(`reject mesh=${a.mesh} node=${msg && msg.node} reason=${ok}`);
         ws.send(JSON.stringify({ t: 'rejected', reason: ok }));
         ws.close(1008, 'rejected');
         return;
       }
+      console.log(`register mesh=${a.mesh} node=${msg.node} present=${this.presentNodes().join(',')}`);
       // One socket per node name: a newer registration replaces an older.
       const stale = this.socketFor(msg.node);
       if (stale && stale !== ws) {
@@ -223,6 +231,7 @@ export class MeshRelay {
   }
   onGone(ws) {
     const a = ws.deserializeAttachment() || {};
+    console.log(`gone mesh=${a.mesh} node=${a.node}`);
     if (a.node && this.socketFor(a.node) === null) this.broadcastPresence(a.node, false);
   }
 

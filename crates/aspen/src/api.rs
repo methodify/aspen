@@ -1836,14 +1836,27 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
     let relays: Vec<Value> = {
         let up = mesh.relay_up.lock().unwrap();
         let errs = mesh.relay_errors.lock().unwrap();
+        let sessions = mesh.relay_sessions.lock().unwrap();
         mesh.relay_urls()
             .iter()
             .map(|u| {
+                // Who else the relay says is there — the first thing to
+                // look at when two nodes on one relay don't see each other.
+                let present: Vec<String> = sessions
+                    .get(u)
+                    .map(|s| {
+                        let mut v: Vec<String> = s.present.iter().cloned().collect();
+                        v.sort();
+                        v
+                    })
+                    .unwrap_or_default();
                 json!({
                     "url": u,
                     "connected_at": up.get(u).map(|(t, _)| *t),
                     "last_error": errs.get(u).map(|(e, _)| e.clone()),
                     "last_error_at": errs.get(u).map(|(_, t)| *t),
+                    "present": present,
+                    "host": sessions.get(u).and_then(|s| s.host.clone()),
                 })
             })
             .collect()

@@ -180,7 +180,21 @@ it, and the direct link supersedes the relay one; j2 restarted
 loopback-only → j1's direct link drops and falls back to the relay path
 within seconds, and drives j2's agent over it.
 
-## 8. Not built
+## 8. Keepalive (2026-09-06)
+
+A relay that restarts — a worker deploy, a host bounce — drops its sockets
+without a close frame reaching the client; TCP alone never says so. Seen
+live: a node reported its cloud relay *connected* for an hour after a
+deploy had emptied the room, so a node that joined later found nobody
+there. Now the client sends the text frame `ping` every 20s and treats 45s
+of silence as a dead session (reconnect, re-register, re-link); the Rust
+hosts answer `pong` in-loop, and the worker answers through
+`setWebSocketAutoResponse` — the runtime replies without waking the
+object, so hibernation still costs nothing. The relay row in the console
+shows who else the relay says is present; that is the first thing to look
+at when two nodes on one relay don't see each other.
+
+## 9. Not built
 
 Console-through-relay (DESIGN §7 mentions it; the relay routes node↔node
 only), a public multi-tenant relay (§2), rate limiting beyond the

@@ -531,7 +531,16 @@ export interface MeshInfo {
     url: string | null;
     connected_at: number | null;
     /** Every configured relay with its client state. */
-    relays?: { url: string; connected_at: number | null; last_error: string | null; last_error_at: number | null }[];
+    relays?: {
+      url: string;
+      connected_at: number | null;
+      last_error: string | null;
+      last_error_at: number | null;
+      /** Who else the relay says is present (the first thing to check when two nodes on one relay don't see each other). */
+      present?: string[];
+      /** The node hosting this relay, when it is a node. */
+      host?: string | null;
+    }[];
     /** Relays peers host, learned from their rosters (not configured). */
     discovered?: { url: string; from: string; connected_at: number | null }[];
     /** Bus rows handed to a relay mailbox, awaiting the peer's ack. */

@@ -125,6 +125,9 @@ pub async fn serve(
                 None => break,
             },
             inbound = socket.recv() => match inbound {
+                Some(Ok(Message::Text(t))) if t.as_str() == "ping" => {
+                    if socket.send(Message::Text("pong".into())).await.is_err() { break; }
+                }
                 Some(Ok(Message::Text(t))) => route(&host, &name, &t).await,
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Ok(_)) => {}

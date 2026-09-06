@@ -171,6 +171,9 @@ async fn handle(relay: Relay, mut socket: WebSocket) {
                 None => break,
             },
             inbound = socket.recv() => match inbound {
+                Some(Ok(Message::Text(t))) if t.as_str() == "ping" => {
+                    if socket.send(Message::Text("pong".into())).await.is_err() { break; }
+                }
                 Some(Ok(Message::Text(t))) => {
                     route(&relay, &node_name, &t).await;
                 }

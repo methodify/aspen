@@ -500,6 +500,12 @@ export function MeshPanel() {
                   <span className={`dot ${r.connected_at ? "dot-idle" : "dot-down"}`} aria-hidden />
                   <span className="mono" style={{ color: "var(--text-hi)" }}>{r.url}</span>
                   <span className="mono-meta">{r.connected_at ? `connected ${relTime(r.connected_at)}` : "not connected"}</span>
+                  {r.connected_at && (
+                    <span className="mono-meta" title="other nodes registered at this relay right now">
+                      {r.present && r.present.length > 0 ? `also here: ${r.present.join(", ")}` : "nobody else here"}
+                      {r.host ? ` · hosted by ${r.host}` : ""}
+                    </span>
+                  )}
                   {r.last_error && !r.connected_at && (
                     <span className="mono-meta" style={{ color: "var(--sig-gate)" }} title={r.last_error}>
                       {r.last_error.length > 80 ? `${r.last_error.slice(0, 80)}…` : r.last_error}

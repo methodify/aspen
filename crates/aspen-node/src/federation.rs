@@ -1634,7 +1634,7 @@ fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
                 break;
             }
             if let Err(e) = relay_session(&inner, &relay_url).await {
-                tracing::debug!(relay = %relay_url, error = %e, "relay session ended");
+                tracing::info!(relay = %relay_url, error = %e, "relay session ended; reconnecting");
                 mesh.note_relay(&relay_url, Some(format!("{e}")));
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -1757,12 +1757,47 @@ async fn relay_read_loop(
 ) -> Result<()> {
     use aspen_wire::relay::RelayFrame;
 
-    while let Some(msg) = stream.next().await {
-        let msg = msg?;
+    // Keepalive: a relay that restarts (a worker deploy, a host bounce)
+    // drops our socket without a close frame; TCP alone never tells us.
+    // Ping every 20s; anything inbound within 45s keeps the session, else
+    // it is dead and we reconnect (and re-register, and re-link).
+    let pinger = {
+        let tx = relay_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(RELAY_PING_SECS)).await;
+                if tx.send("ping".into()).is_err() {
+                    break;
+                }
+            }
+        })
+    };
+    let result = loop {
+        let next = tokio::time::timeout(
+            std::time::Duration::from_secs(RELAY_SILENCE_SECS),
+            stream.next(),
+        )
+        .await;
+        let msg = match next {
+            Ok(Some(m)) => m,
+            Ok(None) => break Ok(()),
+            Err(_) => {
+                break Err(anyhow!(
+                    "relay silent for {RELAY_SILENCE_SECS}s (no pong) — reconnecting"
+                ))
+            }
+        };
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => break Err(e.into()),
+        };
         let text = match msg.to_text() {
             Ok(t) => t,
             Err(_) => continue,
         };
+        if text == "pong" || text == "ping" {
+            continue;
+        }
         let frame: RelayFrame = match serde_json::from_str(text) {
             Ok(f) => f,
             Err(_) => continue,
@@ -1852,9 +1887,14 @@ async fn relay_read_loop(
             }
             _ => {}
         }
-    }
-    Ok(())
+    };
+    pinger.abort();
+    result
 }
+
+/// Relay keepalive cadence (docs/RELAY.md §9).
+const RELAY_PING_SECS: u64 = 20;
+const RELAY_SILENCE_SECS: u64 = 45;
 
 /// How long a handed-off row waits before being handed off again if it is
 /// still pending (the mailbox was full, the relay lost it, the ack got lost).
