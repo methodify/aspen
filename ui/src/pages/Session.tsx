@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useMemo,
   useReducer,
@@ -107,20 +108,20 @@ const PERMISSION_MODES = [
 // ---------------------------------------------------------------------------
 // Item renderers
 
-function Md({ text }: { text: string }) {
+const Md = memo(function Md({ text }: { text: string }) {
   return (
     <div className="md">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
-}
+});
 
 /**
  * Markdown rendered the way a terminal renders it — the claude TUI look.
  * One monospace size throughout; structure carried by weight, color, and
  * character prefixes (• bullets, │ quotes, ─ rules), never by font size.
  */
-function TuiMd({ text }: { text: string }) {
+const TuiMd = memo(function TuiMd({ text }: { text: string }) {
   return (
     <div className="tui-md">
       <ReactMarkdown
@@ -139,9 +140,9 @@ function TuiMd({ text }: { text: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});
 
-function AssistantBubble({ item, source }: { item: AssistantBubbleItem; source?: boolean }) {
+const AssistantBubble = memo(function AssistantBubble({ item, source }: { item: AssistantBubbleItem; source?: boolean }) {
   return (
     <div className="bubble bubble-assistant">
       {item.thinking && (
@@ -162,9 +163,9 @@ function AssistantBubble({ item, source }: { item: AssistantBubbleItem; source?:
       {item.open && item.text && <span className="caret" aria-hidden="true" />}
     </div>
   );
-}
+});
 
-function UserBubble({ item }: { item: UserBubbleItem }) {
+const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) {
   return (
     <div className="bubble bubble-user">
       <div className="bubble-tag mono">@operator</div>
@@ -173,9 +174,9 @@ function UserBubble({ item }: { item: UserBubbleItem }) {
       {item.failed && <div className="bubble-note error-text">send failed — not delivered</div>}
     </div>
   );
-}
+});
 
-function BusBubble({ item, source }: { item: BusBubbleItem; source?: boolean }) {
+const BusBubble = memo(function BusBubble({ item, source }: { item: BusBubbleItem; source?: boolean }) {
   const nl = item.text.indexOf("\n");
   const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
   const body = nl >= 0 ? item.text.slice(nl + 1) : "";
@@ -185,9 +186,9 @@ function BusBubble({ item, source }: { item: BusBubbleItem; source?: boolean }) 
       {body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} />)}
     </div>
   );
-}
+});
 
-function ToolCard({ item }: { item: ToolCardItem }) {
+const ToolCard = memo(function ToolCard({ item }: { item: ToolCardItem }) {
   const expandable = item.input !== null || item.result !== null;
   const summary = toolSummary(item.input);
   if (!expandable) {
@@ -226,7 +227,7 @@ function ToolCard({ item }: { item: ToolCardItem }) {
       </div>
     </details>
   );
-}
+});
 
 /**
  * AskUserQuestion rendered as a question card (§7.6): options as buttons,
@@ -431,7 +432,7 @@ function PermissionCard({
   );
 }
 
-function TurnEndMarker({ item }: { item: TurnEndItem }) {
+const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem }) {
   return (
     <div className="turn-end mono">
       turn ended · {item.subtype}
@@ -439,7 +440,7 @@ function TurnEndMarker({ item }: { item: TurnEndItem }) {
       {item.costUsd !== null && <> · session ${item.costUsd.toFixed(2)}</>}
     </div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // The page
