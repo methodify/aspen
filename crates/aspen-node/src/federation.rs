@@ -87,7 +87,31 @@ pub struct MeshState {
     pub relay_connected_at: Mutex<Option<f64>>,
     /// Per-peer diagnostics for the console: why isn't X linked?
     pub health: Mutex<HashMap<String, PeerHealth>>,
+    /// What we have learned about every URL we dial (peers' candidates,
+    /// relays): consecutive failures, when we may try it again, when it
+    /// last worked. Backoff lives here, so a dead candidate is tried less
+    /// and less (to a cap) and a proven one is tried first.
+    pub reach: Mutex<HashMap<String, UrlReach>>,
 }
+
+/// Reachability memory for one dial URL.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UrlReach {
+    pub fails: u32,
+    /// Epoch seconds before which this URL is not tried.
+    pub until: f64,
+    pub last_ok: Option<f64>,
+    pub last_error: Option<String>,
+}
+
+/// Connect timeout for any dial (peer or relay). A black-holed address
+/// otherwise holds the dialer for the OS's own timeout (75s on macOS), and
+/// every other candidate for that peer waits behind it.
+pub const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Backoff caps: a URL the operator configured is retried at least this
+/// often; one we merely learned (advertised, discovered) may sleep longer.
+pub const BACKOFF_CAP_CONFIGURED: f64 = 60.0;
+pub const BACKOFF_CAP_LEARNED: f64 = 600.0;
 
 /// One live relay session, as other parts of the node see it.
 pub struct RelaySession {
@@ -174,6 +198,84 @@ impl MeshState {
         let mut h = self.health.lock().unwrap();
         f(h.entry(peer.to_owned()).or_default());
     }
+
+    /// A dial to `url` succeeded: clear its backoff, remember it as proven.
+    pub fn url_ok(&self, url: &str) {
+        let mut r = self.reach.lock().unwrap();
+        let e = r.entry(url.to_owned()).or_default();
+        e.fails = 0;
+        e.until = 0.0;
+        e.last_ok = Some(crate::store::now_epoch());
+        e.last_error = None;
+    }
+
+    /// A dial to `url` failed: back off exponentially (5s doubling) up to
+    /// `cap` seconds. Returns the consecutive-failure count, so the caller
+    /// can log the first loudly and the rest quietly.
+    pub fn url_failed(&self, url: &str, err: &str, cap: f64) -> u32 {
+        let mut r = self.reach.lock().unwrap();
+        let e = r.entry(url.to_owned()).or_default();
+        e.fails = e.fails.saturating_add(1);
+        let wait = (5.0 * 2f64.powi(e.fails.saturating_sub(1).min(20) as i32)).min(cap);
+        e.until = crate::store::now_epoch() + wait;
+        e.last_error = Some(err.to_owned());
+        e.fails
+    }
+
+    /// The candidates we may try right now, best first: the one that last
+    /// worked, then the never-failed, then the rest by fewest failures.
+    /// A URL inside its backoff window is left out.
+    pub fn order_urls(&self, cands: &[String]) -> Vec<String> {
+        let now = crate::store::now_epoch();
+        let r = self.reach.lock().unwrap();
+        let mut v: Vec<(String, f64, u32)> = cands
+            .iter()
+            .filter_map(|u| {
+                let e = r.get(u).cloned().unwrap_or_default();
+                (e.until <= now).then(|| (u.clone(), e.last_ok.unwrap_or(0.0), e.fails))
+            })
+            .collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.2.cmp(&b.2)));
+        v.into_iter().map(|t| t.0).collect()
+    }
+
+    /// Any of `cands` never tried at all? Those are worth a probe at once,
+    /// even while a relay link carries the peer.
+    pub fn has_untried(&self, cands: &[String]) -> bool {
+        let r = self.reach.lock().unwrap();
+        cands.iter().any(|u| !r.contains_key(u))
+    }
+
+    /// Seconds until the soonest of `cands` leaves its backoff window
+    /// (0 when one is available now; 5 when none are known).
+    pub fn next_try_in(&self, cands: &[String]) -> f64 {
+        let now = crate::store::now_epoch();
+        let r = self.reach.lock().unwrap();
+        cands
+            .iter()
+            .map(|u| r.get(u).map(|e| (e.until - now).max(0.0)).unwrap_or(0.0))
+            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))))
+            .unwrap_or(5.0)
+    }
+
+    /// Reach memory for a set of URLs, for the console.
+    pub fn reach_of(&self, cands: &[String]) -> Vec<Value> {
+        let now = crate::store::now_epoch();
+        let r = self.reach.lock().unwrap();
+        cands
+            .iter()
+            .map(|u| {
+                let e = r.get(u).cloned().unwrap_or_default();
+                json!({
+                    "url": u,
+                    "fails": e.fails,
+                    "retry_in_secs": (e.until - now).max(0.0).round(),
+                    "last_ok": e.last_ok,
+                    "last_error": e.last_error,
+                })
+            })
+            .collect()
+    }
 }
 
 impl MeshState {
@@ -198,6 +300,7 @@ impl MeshState {
             remote_subs: Mutex::new(HashMap::new()),
             relay_connected_at: Mutex::new(None),
             health: Mutex::new(HashMap::new()),
+            reach: Mutex::new(HashMap::new()),
         }
     }
 
@@ -348,9 +451,7 @@ pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
         .map(|a| a.port());
     if let Some(port) = port {
         let mut hosts: Vec<String> = Vec::new();
-        if let Some(h) = hostname() {
-            hosts.push(h);
-        }
+        let mut v4s: Vec<std::net::Ipv4Addr> = Vec::new();
         if let Ok(ifs) = if_addrs::get_if_addrs() {
             for i in ifs {
                 if i.is_loopback() {
@@ -358,11 +459,22 @@ pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
                 }
                 if let std::net::IpAddr::V4(v4) = i.ip() {
                     if !v4.is_link_local() {
-                        hosts.push(v4.to_string());
+                        v4s.push(v4);
                     }
                 }
             }
         }
+        // The hostname goes first — but only when it names THIS machine
+        // for others: it must resolve to one of our own IPv4 addresses. A
+        // WSL node carries the Windows host's name, which resolves to the
+        // Windows side (IPv6 at that); advertising it sent every peer to
+        // the wrong box, and the relay client chased it forever.
+        if let Some(h) = hostname() {
+            if hostname_is_ours(&h, port, &v4s) {
+                hosts.push(h);
+            }
+        }
+        hosts.extend(v4s.iter().map(|v| v.to_string()));
         for h in hosts {
             let dial = format!("ws://{h}:{port}/api/federation/ws");
             if !out.dial_urls.contains(&dial) {
@@ -382,6 +494,41 @@ pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
         }
     }
     out
+}
+
+/// Does `host` resolve to one of our own non-loopback IPv4 addresses?
+/// Resolution is cached for five minutes (it runs on every roster).
+fn hostname_is_ours(host: &str, port: u16, ours: &[std::net::Ipv4Addr]) -> bool {
+    use std::net::ToSocketAddrs;
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, (std::time::Instant, bool)>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((at, ok)) = cache.lock().unwrap().get(host) {
+        if at.elapsed() < std::time::Duration::from_secs(300) {
+            return *ok;
+        }
+    }
+    let ok = (host, port)
+        .to_socket_addrs()
+        .map(|it| {
+            it.filter_map(|a| match a.ip() {
+                std::net::IpAddr::V4(v4) => Some(v4),
+                _ => None,
+            })
+            .any(|v4| ours.contains(&v4))
+        })
+        .unwrap_or(false);
+    if !ok {
+        tracing::info!(
+            host,
+            "hostname does not resolve to this node's own IPv4 address; not advertising it"
+        );
+    }
+    cache
+        .lock()
+        .unwrap()
+        .insert(host.to_owned(), (std::time::Instant::now(), ok));
+    ok
 }
 
 fn hostname() -> Option<String> {
@@ -1500,7 +1647,6 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
         }
         let inner = inner.clone();
         tokio::spawn(async move {
-            let mut attempt = 0usize;
             loop {
                 // Stop when the mesh is gone or this peer was removed.
                 let Some(m) = inner.mesh() else { break };
@@ -1521,11 +1667,33 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
                     .unwrap()
                     .get(&name)
                     .is_some_and(|k| k == "direct");
-                if !already {
-                    let url = candidates[attempt % candidates.len()].clone();
-                    attempt += 1;
-                    match tokio_tungstenite::connect_async(&url).await {
+                // Best candidate first; none = all backing off. The
+                // configured URL is retried at least every minute, a
+                // learned one may sleep up to ten.
+                let configured = m
+                    .peers()
+                    .iter()
+                    .find(|p| p.cert.node == name)
+                    .and_then(|p| p.url.clone());
+                let ready = m.order_urls(&candidates);
+                if !already && !ready.is_empty() {
+                    let url = ready[0].clone();
+                    let cap = if configured.as_deref() == Some(url.as_str()) {
+                        BACKOFF_CAP_CONFIGURED
+                    } else {
+                        BACKOFF_CAP_LEARNED
+                    };
+                    let dialed =
+                        tokio::time::timeout(DIAL_TIMEOUT, tokio_tungstenite::connect_async(&url))
+                            .await
+                            .map_err(|_| {
+                                anyhow!("connect timed out after {}s", DIAL_TIMEOUT.as_secs())
+                            })
+                            .and_then(|r| r.map_err(|e| anyhow!("{e}")));
+                    match dialed {
                         Ok((ws, _)) => {
+                            m.url_ok(&url);
+                            tracing::info!(peer = %name, url = %url, "direct dial connected");
                             let (mut sink, mut stream) = ws.split();
                             let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
                             let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
@@ -1554,24 +1722,44 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
                             reader.abort();
                         }
                         Err(e) => {
-                            tracing::debug!(peer = %name, error = %e, "dial failed");
-                            if let Some(m) = inner.mesh() {
-                                // A relay link is fine; only complain when
-                                // there is no link at all.
-                                if !m.link_up(&name) {
-                                    m.note(&name, |h| {
-                                        h.last_error = Some(format!("dial {url} failed: {e}"));
-                                        h.last_error_at = Some(crate::store::now_epoch());
-                                    });
-                                }
+                            let n = m.url_failed(&url, &e.to_string(), cap);
+                            // First failure of a URL is news; the rest are
+                            // the backoff doing its job.
+                            if n == 1 {
+                                tracing::info!(peer = %name, url = %url, error = %e, "direct dial failed; backing off");
+                            } else {
+                                tracing::debug!(peer = %name, url = %url, fails = n, error = %e, "direct dial failed");
+                            }
+                            // A relay link is fine; only complain when
+                            // there is no link at all.
+                            if !m.link_up(&name) {
+                                m.note(&name, |h| {
+                                    h.last_error = Some(format!("dial {url} failed: {e}"));
+                                    h.last_error_at = Some(crate::store::now_epoch());
+                                });
                             }
                         }
                     }
                 }
-                // Back off while a relay link carries the peer.
+                // Pace: a relay link carrying the peer → probe for a direct
+                // one every 30s; otherwise as soon as a candidate is out of
+                // backoff (at least 1s, at most 30s between looks).
+                // Decide on a fresh candidate list: the peer's advertisement
+                // usually lands over the relay link during the first dial.
                 let carried = inner.mesh().is_some_and(|m| m.link_up(&name));
-                tokio::time::sleep(std::time::Duration::from_secs(if carried { 30 } else { 5 }))
-                    .await;
+                let (untried, next_in) = inner
+                    .mesh()
+                    .map(|m| {
+                        let fresh = dial_candidates(&m, &name);
+                        (m.has_untried(&fresh), m.next_try_in(&fresh))
+                    })
+                    .unwrap_or((false, 5.0));
+                let wait = if carried && !untried {
+                    30.0
+                } else {
+                    next_in.clamp(1.0, 30.0)
+                };
+                tokio::time::sleep(std::time::Duration::from_secs_f64(wait)).await;
             }
         });
     }
@@ -1624,7 +1812,7 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
 
 /// Direct dial URLs for a peer: the configured one first, then what the
 /// peer advertises (deduped, never our own address).
-fn dial_candidates(mesh: &MeshState, peer: &str) -> Vec<String> {
+pub fn dial_candidates(mesh: &MeshState, peer: &str) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(u) = mesh
         .peers()
@@ -1665,20 +1853,78 @@ fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
                 mesh.relay_running.lock().unwrap().remove(&relay_url);
                 break;
             }
-            if let Err(e) = relay_session(&inner, &relay_url).await {
-                tracing::info!(relay = %relay_url, error = %e, "relay session ended; reconnecting");
-                mesh.note_relay(&relay_url, Some(format!("{e}")));
+            // The relay under every name we know for it: the configured
+            // URL plus the other addresses its host advertises (one relay,
+            // many names — a hostname that resolves badly from here must
+            // not keep us off a relay reachable by IP).
+            let cands = relay_candidates(&mesh, &relay_url);
+            let ready = mesh.order_urls(&cands);
+            let Some(dial) = ready.first().cloned() else {
+                let wait = mesh.next_try_in(&cands).clamp(1.0, 60.0);
+                tokio::time::sleep(std::time::Duration::from_secs_f64(wait)).await;
+                continue;
+            };
+            let cap = if dial == relay_url {
+                BACKOFF_CAP_CONFIGURED
+            } else {
+                BACKOFF_CAP_LEARNED
+            };
+            match relay_session(&inner, &relay_url, &dial).await {
+                Ok(()) => {
+                    // Clean end (relay closed): try again shortly.
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+                Err(e) => {
+                    let was_up = mesh.relay_up.lock().unwrap().contains_key(&relay_url);
+                    let n = mesh.url_failed(&dial, &e.to_string(), cap);
+                    if n == 1 || was_up {
+                        tracing::info!(relay = %relay_url, dial = %dial, error = %e, "relay session ended; backing off");
+                    } else {
+                        tracing::debug!(relay = %relay_url, dial = %dial, fails = n, error = %e, "relay dial failed");
+                    }
+                    mesh.note_relay(&relay_url, Some(format!("{e}")));
+                    let wait = mesh.next_try_in(&cands).clamp(1.0, 60.0);
+                    tokio::time::sleep(std::time::Duration::from_secs_f64(wait)).await;
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     });
 }
 
-async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str) -> Result<()> {
+/// Every URL we know for the relay at `relay_url`: itself, then the other
+/// relay URLs advertised by whichever peer advertises this one (that peer
+/// hosts it). Order is by reach memory at dial time.
+pub fn relay_candidates(mesh: &MeshState, relay_url: &str) -> Vec<String> {
+    let mut out = vec![relay_url.to_owned()];
+    let health = mesh.health.lock().unwrap();
+    for h in health.values() {
+        if let Some(a) = &h.advertised {
+            if a.relay_urls.iter().any(|u| u == relay_url) {
+                for u in &a.relay_urls {
+                    if !out.contains(u) {
+                        out.push(u.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One relay session. `relay_url` is the relay's identity (the configured
+/// or discovered URL, which keys every table); `dial` is the address used
+/// this time — the same, or an alternate name for the same host.
+async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str, dial: &str) -> Result<()> {
     use aspen_wire::relay::{Challenge, Register};
 
     let mesh = inner.mesh().ok_or_else(|| anyhow!("no mesh"))?.clone();
-    let (ws, _) = tokio_tungstenite::connect_async(relay_url).await?;
+    let (ws, _) = tokio::time::timeout(DIAL_TIMEOUT, tokio_tungstenite::connect_async(dial))
+        .await
+        .map_err(|_| anyhow!("connect timed out after {}s", DIAL_TIMEOUT.as_secs()))??;
+    mesh.url_ok(dial);
+    if dial != relay_url {
+        tracing::info!(relay = %relay_url, dial = %dial, "relay reached under an alternate address");
+    }
     let (mut sink, mut stream) = ws.split();
 
     // Challenge → Register.

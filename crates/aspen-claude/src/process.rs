@@ -110,6 +110,11 @@ pub fn spawn(spec: &SpawnSpec) -> Result<ClaudeProcess> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // The daemon runs with ASPEN_DETACHED set (it is the detached
+        // child of `aspen up -d`); a session must not inherit it, or an
+        // `aspen up -d` run from inside the session thinks it already is
+        // the child and runs the node in the foreground.
+        .env_remove("ASPEN_DETACHED")
         .kill_on_drop(true);
     for (k, v) in &spec.extra_env {
         // A UI bug must never be able to blank PATH (reference §2.2): names

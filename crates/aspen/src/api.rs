@@ -236,6 +236,19 @@ async fn shutdown_signal(api_request: Arc<tokio::sync::Notify>) {
             _ = term.recv() => {}
             _ = api_request.notified() => {}
         }
+        // A daemon that wedges during the session ladder (a lock held
+        // across it, say) must still be stoppable: a second signal, or
+        // 60s, ends the process outright. Live marks are already on disk.
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                    eprintln!("[aspen] shutdown did not finish in 60s; exiting hard");
+                }
+            }
+            std::process::exit(2);
+        });
     }
     #[cfg(not(unix))]
     {
@@ -243,6 +256,15 @@ async fn shutdown_signal(api_request: Arc<tokio::sync::Notify>) {
             _ = tokio::signal::ctrl_c() => {}
             _ = api_request.notified() => {}
         }
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                    eprintln!("[aspen] shutdown did not finish in 60s; exiting hard");
+                }
+            }
+            std::process::exit(2);
+        });
     }
 }
 
@@ -1996,6 +2018,17 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
     };
     let my_adv = aspen_node::federation::advertised(&s.node.inner);
     let kinds = mesh.link_kind.lock().unwrap().clone();
+    // Reach memory per peer — computed before `health` is held below
+    // (dial_candidates takes that lock itself).
+    let candidates: std::collections::HashMap<String, Vec<Value>> = mesh
+        .peers()
+        .iter()
+        .map(|p| {
+            let name = p.cert.node.clone();
+            let c = mesh.reach_of(&aspen_node::federation::dial_candidates(&mesh, &name));
+            (name, c)
+        })
+        .collect();
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
     let health = mesh.health.lock().unwrap();
@@ -2015,6 +2048,9 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
                 // "direct" or "relay:<url>" while linked.
                 "link_kind": kinds.get(name),
                 "advertised": h.advertised,
+                // Every URL we may dial for this peer, with what we know
+                // about each: failures, backoff left, when it last worked.
+                "candidates": candidates.get(name.as_str()),
                 "agents": remote.get(name).map(|v| v.len()).unwrap_or(0),
                 "fingerprint": aspen_node::federation::fingerprint(&p.cert.ed_public),
                 "has_root": h.has_root,

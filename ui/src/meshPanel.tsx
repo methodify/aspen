@@ -92,6 +92,29 @@ function Orientation() {
   );
 }
 
+
+/** Tooltip for a peer's reach: every URL we may dial, best first, with
+ *  what we know about each — proven, never tried, or failing and how
+ *  long until it is tried again. */
+function pathsTitle(p: MeshPeer): string {
+  const lines: string[] = [];
+  if (p.url) lines.push(`configured: ${p.url}`);
+  const cs = p.candidates ?? [];
+  if (cs.length === 0) {
+    if (p.advertised?.dial_urls?.length) lines.push(`advertises: ${p.advertised.dial_urls.join(", ")}`);
+    if (lines.length === 0) lines.push("no dial URL (relay or inbound only)");
+    return lines.join("\n");
+  }
+  lines.push("paths, best first:");
+  for (const c of cs) {
+    const host = c.url.split("://")[1]?.split("/")[0] ?? c.url;
+    if (c.last_ok && c.fails === 0) lines.push(`  ✓ ${host} — worked ${relTime(c.last_ok)} ago`);
+    else if (c.fails === 0) lines.push(`  · ${host} — not tried yet`);
+    else lines.push(`  ✗ ${host} — ${c.last_error ?? "failed"} (×${c.fails}${c.retry_in_secs > 0 ? `, retry in ${Math.round(c.retry_in_secs)}s` : ""})`);
+  }
+  return lines.join("\n");
+}
+
 function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: string; onRemove?: () => void }) {
   const h = p.health;
   const skew = h?.version && selfVersion && h.version !== selfVersion;
@@ -108,7 +131,7 @@ function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: stri
             ? `down since ${relTime(h.last_down)} ago`
             : "not linked"}
       </span>
-      <span className="mono-meta" title={p.url ? `configured dial URL: ${p.url}` : (p.advertised?.dial_urls?.length ? `advertises: ${p.advertised.dial_urls.join(", ")}` : "no dial URL")}>
+      <span className="mono-meta" title={pathsTitle(p)}>
         {p.link_up
           ? p.link_kind === "direct"
             ? "direct"
@@ -119,6 +142,11 @@ function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: stri
             ? "not linked"
             : "no dial URL (relay or inbound only)"}
       </span>
+      {(p.candidates?.length ?? 0) > 1 && (
+        <span className="mono-meta" title={pathsTitle(p)}>
+          {p.candidates!.length} paths{p.candidates!.some((c) => c.retry_in_secs > 0) ? ` · ${p.candidates!.filter((c) => c.retry_in_secs > 0).length} backing off` : ""}
+        </span>
+      )}
       <span className="mono-meta">{p.agents} agent{p.agents === 1 ? "" : "s"}</span>
       {p.fingerprint && <span className="mono-meta" title="cert key fingerprint">⌘ {p.fingerprint}</span>}
       {h?.version && (

@@ -15,6 +15,9 @@
 # A failed build never touches the daemon.
 
 set -u
+# Inherited from the daemon when run inside a managed session; `up -d` would
+# mistake itself for the already-detached child.
+unset ASPEN_DETACHED
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="${ASPEN_DATA_DIR:-$HOME/.aspen}"
 BUILD=1

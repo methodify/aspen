@@ -740,3 +740,11 @@ cleaner lane for roster updates than user-message headers.
   revive can happen), so the one-writer gate now counts a marked-live
   agent as "ours". Verified on the rig: an agent with a 0s-old transcript
   comes back on restart.
+- **2026-09-06 — Reach memory.** Dialing is bounded and remembered: every
+  URL (peer candidates, relays and their aliases) carries failures, a
+  backoff window (5s doubling; 60s cap configured, 10 min learned), and
+  its last success; dials time out at 10s; candidates are tried best
+  first and untried ones at once; a relay is reached under any alias its
+  host advertises; a hostname is advertised only if it resolves to the
+  node itself. Found by auditing the live mesh, where a WSL node's shared
+  Windows hostname sent every peer to the wrong box. RELAY.md §9.

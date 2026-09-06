@@ -490,7 +490,18 @@ export interface MeshPeer {
   link_kind?: string | null;
   /** Where the peer says it can be reached (empty = a spoke by choice). */
   advertised?: { dial_urls: string[]; relay_urls: string[] } | null;
+  /** Every URL this node may dial for the peer, with reach memory:
+   *  consecutive failures, seconds of backoff left, last success. */
+  candidates?: DialCandidate[] | null;
   health?: PeerHealth;
+}
+
+export interface DialCandidate {
+  url: string;
+  fails: number;
+  retry_in_secs: number;
+  last_ok: number | null;
+  last_error: string | null;
 }
 
 /** A queued mesh change (the console authors; `aspen mesh apply` executes). */

@@ -212,7 +212,65 @@ times, then both at once; every round must carry traffic afterwards):
   Handshakes time out after 15s so a crossed attempt never holds a peer's
   slot.
 
-## 9. Not built
+## 9. Reach memory: backoff, timeouts, alternates (2026-09-06)
+
+An audit on the live mesh found three kinds of waste, all from dialing
+addresses that could never work. A WSL node carries the Windows host's
+name, which from the mac resolves to the Windows box (so `anindor:7421`
+black-holed: a 75s OS connect timeout, every ~80s, all day), and from the
+WSL side resolves only to IPv6 while the Windows node listens on IPv4 (so
+the configured relay `ws://anindor:7420/…` was refused every 5s, forever,
+at INFO — while the direct link to the same node was up by IP). And a
+black-holed candidate held the peer's whole dialer for the OS timeout,
+so the working candidates behind it waited.
+
+Now every URL a node dials — a peer's configured URL, its advertised
+addresses, a relay and its aliases — has **reach memory**
+(`MeshState::reach`): consecutive failures, the moment it may be tried
+again, when it last worked, the last error.
+
+- **Timeout.** Every dial is bounded by `DIAL_TIMEOUT` (10s). A black
+  hole costs ten seconds, once, then backs off.
+- **Backoff.** Failures double the wait from 5s, capped at 60s for a URL
+  the operator configured and 10 minutes for one merely learned
+  (advertised, discovered). Success resets it. The first failure of a
+  URL logs at INFO; the rest at DEBUG, so a dead address is one line,
+  not a heartbeat.
+- **Order.** Candidates are tried best first: the one that last worked,
+  then the never-tried, then the rest by fewest failures — and a URL in
+  its backoff window is skipped. A peer carried by a relay link is
+  probed for a direct path every 30s, unless an untried candidate exists,
+  which is probed at once. The list is recomputed for that decision,
+  because the peer's advertisement usually lands during the first dial.
+- **Relay aliases.** A configured relay URL that a peer advertises among
+  its `relay_urls` is that peer's relay; the other URLs in that set are
+  aliases for the same host, and the relay client dials whichever is
+  reachable, keeping the configured URL as the session's identity
+  (`Welcome.host` dedupe still applies).
+- **Hostname honesty.** A node advertises its hostname only when that
+  name resolves to one of its own non-loopback IPv4 addresses (cached
+  five minutes). The WSL node no longer sends peers to the Windows box.
+
+The console shows it: a peer row with several paths reads "N paths · M
+backing off", and its tooltip lists each — proven, untried, or failing
+with the error and the seconds until the next try (`candidates` in
+`GET /api/mesh`).
+
+Verified on the rig: a relay configured under an IPv6-only alias is
+refused once, then reached under its IPv4 alias five seconds later, and
+peers link over it; a black-holed configured dial URL fails in 10s and
+the peer's advertised working address connects one second later,
+superseding the relay link; a hostname that does not resolve to the node
+is dropped from its advertisement.
+
+Two more things came out of the audit. The daemon leaked `ASPEN_DETACHED`
+into the sessions it spawns, so `aspen up -d` run inside a session ran the
+node in the foreground; sessions no longer inherit it. And a daemon wedged
+during shutdown (a lock held across the session ladder) ignored SIGTERM;
+a second signal, or 60s, now ends the process outright — the live marks
+are already on disk.
+
+## 10. Not built
 
 Console-through-relay (DESIGN §7 mentions it; the relay routes node↔node
 only), a public multi-tenant relay (§2), rate limiting beyond the
