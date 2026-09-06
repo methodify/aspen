@@ -49,7 +49,12 @@ echo '{"mymesh":"<base64 root pubkey>"}' | npx wrangler secret put MESH_ROOTS
 
 The Durable Object class is declared with `new_sqlite_classes`, which the
 free plan requires (and which is what alarms and storage need anyway).
-Re-run `secret put` with the whole JSON to add or remove a mesh.
+
+**Adding a mesh later, from the dashboard:** Workers & Pages →
+`aspen-rendezvous` → Settings → Variables and Secrets → add a **secret**
+named `MESH_ROOT_<mesh>` with `-` written as `_` (`MESH_ROOT_bryon_work`)
+whose value is that mesh's `aspen mesh root-pubkey`. No redeploy needed.
+`MESH_ROOTS` (JSON for many at once) still works; a per-mesh variable wins.
 
 Nodes point at the Worker with the mesh in the query string:
 

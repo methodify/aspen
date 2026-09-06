@@ -266,6 +266,15 @@ pub fn relay(files: &MeshFiles, url: Option<&str>, remove: bool) -> Result<Done>
             }
         }
         Some(u) => {
+            // The console shows relays as https://…; that's wss:// here.
+            let u = if let Some(rest) = u.strip_prefix("https://") {
+                format!("wss://{rest}")
+            } else if let Some(rest) = u.strip_prefix("http://") {
+                format!("ws://{rest}")
+            } else {
+                u.to_owned()
+            };
+            let u = u.as_str();
             if !u.starts_with("ws://") && !u.starts_with("wss://") {
                 bail!("relay URL must start with ws:// or wss:// (got {u:?})");
             }

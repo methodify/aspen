@@ -15,7 +15,13 @@
 // recipient and swept by alarm.
 //
 // Deploy: `wrangler deploy` (see wrangler.toml). Mesh root public keys go
-// in the MESH_ROOTS secret: JSON { meshName: base64RootPubkey }.
+// in either of two places, both editable in the dashboard (Workers & Pages
+// → aspen-rendezvous → Settings → Variables and Secrets):
+//   - one variable per mesh: MESH_ROOT_<name> with '-' as '_' (e.g.
+//     MESH_ROOT_bryons_mesh) = the base64 root public key — add a mesh by
+//     adding a variable;
+//   - or MESH_ROOTS = JSON { meshName: base64RootPubkey } for many at once.
+// Per-mesh variables win on conflict.
 
 import { verifyAsync } from '@noble/ed25519';
 
@@ -104,7 +110,12 @@ export class MeshRelay {
   }
 
   rootFor(mesh) {
-    const roots = JSON.parse(this.env.MESH_ROOTS || '{}');
+    const single = this.env['MESH_ROOT_' + String(mesh).replace(/-/g, '_')];
+    if (single) {
+      try { return b64(String(single).trim()); } catch { return null; }
+    }
+    let roots = {};
+    try { roots = JSON.parse(this.env.MESH_ROOTS || '{}'); } catch { return null; }
     return roots[mesh] ? b64(roots[mesh]) : null;
   }
 
