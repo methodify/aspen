@@ -260,3 +260,43 @@ offers `aspen update --version v0.3.1` (auto never downgrades).
 - **A tunable quiet interval** — one constant until someone needs it.
 - **Harness update orchestration** — Claude Code updates itself; we report
   its version and skew, nothing more.
+
+## Local development cycle (2026-09-06)
+
+Releases are for the fleet; day-to-day work on a node runs from its own
+checkout. The mechanism is the same one an update uses, minus the download:
+build, stop, start, and let the `live` marks bring every session back.
+
+**Why revive is unconditional.** Whatever took the daemon down — crash,
+`aspen down`, `aspen restart`, `aspen update --restart`, a relaunch — a
+session that was running comes back at the next start. The `live` mark in
+the agents table is maintained continuously and is *not* cleared by a
+daemon shutdown or crash, only by an operator stop or the session exiting
+on its own. The one-writer gate (DESIGN §14b) treats a marked-live agent as
+the node's own; the first mac restart after that gate landed refused its own
+session as "written by a process this node doesn't manage" — fixed 2026-09-06.
+
+**Why the relaunch is detached.** The operator's Claude session is usually
+one of the daemon's managed sessions. A restart run from inside it stops
+the daemon, which stops that session, which would kill a plain shell script
+mid-cycle — daemon down, nothing to start it. `scripts/relaunch` re-execs
+itself under a new session (`setsid nohup`, all fds to
+`$DATA_DIR/relaunch.log`) and returns at once; the detached copy builds the
+UI and the release binary, refuses to touch the daemon if either build
+fails, then runs `aspen restart` with the freshly built binary (so the new
+daemon is the new code even if `PATH` points elsewhere), waits for
+`daemon.json`, and writes `aspen status` and the revive lines to the log.
+The session that ran it is revived by the new daemon and reads the log to
+see how the cycle went.
+
+```
+scripts/relaunch              # build + restart, detached
+scripts/relaunch --no-build   # restart only (binary already built)
+tail -n 30 ~/.aspen/relaunch.log
+```
+
+Per platform: WSL/Linux and mac run the script from their checkout
+(`~/.local/bin/aspen` may symlink to `target/release/aspen`; the running
+daemon keeps its old inode, so the build never disturbs it). Windows locks
+a running executable, so there the daemon goes down before the build;
+the operator does that cycle by hand (`aspen down`, build, `aspen up -d`).

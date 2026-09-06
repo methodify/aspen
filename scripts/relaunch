@@ -1,0 +1,69 @@
+#!/bin/bash
+# Local servicing: build this checkout and relaunch the node on it —
+# detached from whoever ran it.
+#
+# Why detached: the operator's Claude session is usually one of the daemon's
+# own managed sessions. `aspen restart` from inside it stops the daemon,
+# which stops the session, which would take a plain shell script down with
+# it before the daemon came back. This script re-execs itself under a new
+# session (setsid + nohup, all fds to the log), so the cycle finishes on
+# its own: build → stop → start → the new daemon revives every session that
+# was live (their `live` marks), the caller included.
+#
+# Usage: scripts/relaunch [--no-build] [--data-dir DIR]
+#   log: $DATA_DIR/relaunch.log (default ~/.aspen/relaunch.log)
+# A failed build never touches the daemon.
+
+set -u
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR="${ASPEN_DATA_DIR:-$HOME/.aspen}"
+BUILD=1
+for a in "$@"; do
+  case "$a" in
+    --no-build) BUILD=0 ;;
+    --data-dir=*) DATA_DIR="${a#--data-dir=}" ;;
+    --data-dir) shift_next=1 ;;
+    *) if [ "${shift_next:-0}" = 1 ]; then DATA_DIR="$a"; shift_next=0; fi ;;
+  esac
+done
+LOG="$DATA_DIR/relaunch.log"
+BIN="$REPO/target/release/aspen"
+
+if [ -z "${RELAUNCH_DETACHED:-}" ]; then
+  mkdir -p "$DATA_DIR"
+  RELAUNCH_DETACHED=1 setsid nohup "$BASH_SOURCE" "$@" >>"$LOG" 2>&1 </dev/null &
+  echo "relaunch started in the background (pid $!); it survives this shell."
+  echo "log: $LOG"
+  echo "when the daemon is back, sessions that were live are revived — including the one that ran this."
+  exit 0
+fi
+
+# ---- detached from here ----------------------------------------------------
+log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*"; }
+log "==== relaunch: repo=$REPO data=$DATA_DIR head=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)"
+cd "$REPO" || { log "cannot cd to $REPO"; exit 1; }
+
+if [ "$BUILD" = 1 ]; then
+  log "building ui"
+  ( cd ui && { [ -d node_modules ] || npm ci; } && npm run build ) || { log "UI BUILD FAILED — daemon untouched"; exit 1; }
+  log "building release binary"
+  cargo build --release || { log "CARGO BUILD FAILED — daemon untouched"; exit 1; }
+  log "built: $("$BIN" --version)"
+fi
+[ -x "$BIN" ] || { log "no binary at $BIN"; exit 1; }
+
+log "restarting daemon (data $DATA_DIR)"
+if ! "$BIN" --data-dir "$DATA_DIR" restart; then
+  log "restart failed; trying a plain start"
+  "$BIN" --data-dir "$DATA_DIR" up -d || { log "START FAILED — run: aspen up -d"; exit 1; }
+fi
+for _ in $(seq 1 60); do
+  [ -f "$DATA_DIR/daemon.json" ] && break
+  sleep 0.5
+done
+sleep 3
+log "daemon state: $(cat "$DATA_DIR/daemon.json" 2>/dev/null)"
+"$BIN" --data-dir "$DATA_DIR" status 2>&1 | sed 's/^/    /'
+log "revive lines from the daemon log:"
+grep -a "revive" "$DATA_DIR/aspen.log" | tail -n 8 | sed 's/^/    /'
+log "==== relaunch done"
