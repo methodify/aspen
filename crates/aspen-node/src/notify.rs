@@ -122,12 +122,15 @@ fn run_command(cmd: &str, stdin: &str) -> Result<(), String> {
 
 /// Which activity ids are running for a session right now — the pump keeps
 /// the previous set to raise `activity_settled` when one disappears.
-pub fn running_ids(repo: &std::path::Path, session_id: Option<&str>, since: Option<f64>) -> std::collections::HashMap<String, String> {
+pub fn running_ids(inner: &crate::node::NodeInner, harness: aspen_core::Harness, repo: &std::path::Path, session_id: Option<&str>, since: Option<f64>) -> std::collections::HashMap<String, String> {
     let mut m = std::collections::HashMap::new();
     if let Some(sid) = session_id {
-        for a in aspen_claude::activity::activities_for(repo, sid, since) {
-            if a.status == "running" {
-                m.insert(format!("{}:{}", a.kind, a.id), a.label);
+        for a in inner.store_for(harness).activities(repo, sid, since) {
+            if a.get("status").and_then(|s| s.as_str()) == Some("running") {
+                let kind = a.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                let id = a.get("id").and_then(|k| k.as_str()).unwrap_or("");
+                let label = a.get("label").and_then(|k| k.as_str()).unwrap_or("").to_owned();
+                m.insert(format!("{kind}:{id}"), label);
             }
         }
     }

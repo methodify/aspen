@@ -28,6 +28,74 @@ pub struct Artifact {
     pub tool: String,
 }
 
+/// Files a session named, by its harness's own record: Claude's transcript
+/// tool calls, Codex's `FileChange` items in the rollout (and the rollouts
+/// it chains to).
+pub fn touched_paths_for(harness: aspen_core::Harness, main_path: &Path) -> Vec<Artifact> {
+    match harness {
+        aspen_core::Harness::Claude => touched_paths(main_path),
+        aspen_core::Harness::Codex => touched_paths_codex(main_path),
+    }
+}
+
+fn touched_paths_codex(path: &Path) -> Vec<Artifact> {
+    let store = aspen_codex::CodexStore::new();
+    let Ok(lines) = aspen_codex::store::read_lines_with_history(&store, path, 0) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Artifact> = Vec::new();
+    for line in lines.iter().rev() {
+        if line.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
+            continue;
+        }
+        let p = &line["payload"];
+        if p.get("type").and_then(|t| t.as_str()) != Some("item_completed") {
+            continue;
+        }
+        let item = &p["item"];
+        let at = line.get("timestamp").and_then(|t| t.as_str()).map(str::to_owned);
+        match item.get("type").and_then(|t| t.as_str()) {
+            Some("FileChange") => {
+                if item.get("status").and_then(|s| s.as_str()) != Some("completed") {
+                    continue;
+                }
+                if let Some(changes) = item.get("changes").and_then(|c| c.as_object()) {
+                    for (path, ch) in changes {
+                        let kind = match ch.get("type").and_then(|t| t.as_str()) {
+                            Some("add") => "wrote",
+                            Some("delete") => continue,
+                            _ => "edited",
+                        };
+                        if let Some(existing) = out.iter_mut().find(|a| &a.path == path) {
+                            if existing.kind == "edited" && kind == "wrote" {
+                                existing.kind = kind.into();
+                            }
+                        } else {
+                            out.push(Artifact { path: path.clone(), kind: kind.into(), at: at.clone(), tool: "fileChange".into() });
+                        }
+                    }
+                }
+            }
+            Some("CommandExecution") => {
+                // Reads the app-server parsed (`cat`, `head`, …).
+                if let Some(actions) = item.get("parsed_cmd").and_then(|a| a.as_array()) {
+                    for a in actions {
+                        if a.get("type").and_then(|t| t.as_str()) == Some("read") {
+                            if let Some(path) = a.get("path").or_else(|| a.get("name")).and_then(|x| x.as_str()) {
+                                if !out.iter().any(|x| x.path == path) {
+                                    out.push(Artifact { path: path.to_owned(), kind: "read".into(), at: at.clone(), tool: "commandExecution".into() });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Files named by a session's tool calls, newest first, deduplicated to
 /// the strongest kind seen (wrote > edited > read).
 pub fn touched_paths(path: &Path) -> Vec<Artifact> {
@@ -181,6 +249,7 @@ pub fn resolve(
     repo: &Path,
     session_id: Option<&str>,
     path: &str,
+    harness: aspen_core::Harness,
 ) -> Result<PathBuf> {
     let raw = expand_home(path.trim());
     let target = if raw.is_absolute() {
@@ -200,6 +269,7 @@ pub fn resolve(
     ));
     roots.push(canon(&claude.join("image-cache")));
     roots.push(canon(&claude.join("plans")));
+    roots.push(canon(&aspen_codex::codex_home().join("sessions")));
     roots.push(canon(&std::env::temp_dir()));
     if let (Some(dd), Some(sid)) = (data_dir, session_id) {
         roots.push(canon(&attachments_dir(dd, sid)));
@@ -208,7 +278,11 @@ pub fn resolve(
         return Ok(target);
     }
     if let Some(sid) = session_id {
-        let touched = touched_paths(&aspen_claude::transcript::transcript_path(repo, sid));
+        let main = match harness {
+            aspen_core::Harness::Claude => aspen_claude::transcript::transcript_path(repo, sid),
+            aspen_core::Harness::Codex => aspen_core::SessionStore::main_path(&aspen_codex::CodexStore::new(), repo, sid),
+        };
+        let touched = touched_paths_for(harness, &main);
         if touched
             .iter()
             .any(|a| canon(&expand_home(&a.path)) == target)

@@ -1,7 +1,7 @@
 # Harnesses: the seam as built
 
-**Status:** reference for v0.20–v0.22 (2026-09-07), phases 0–2 of
-PROPOSALS-HARNESSES.md. Code: `crates/aspen-core/src/{harness,permission,
+**Status:** reference for v0.20–v0.23 (2026-09-07), phases 0–3 of
+PROPOSALS-HARNESSES.md — the Codex swath as built. Code: `crates/aspen-core/src/{harness,permission,
 store,adapter,event}.rs` (the vocabulary and traits),
 `crates/aspen-claude/src/adapter.rs` (the Claude implementation),
 `node.rs` (`adapters`, `store_for`, `harness_of`, the neutral spawn),
@@ -172,3 +172,31 @@ about a harness without naming one:
   raised as before.
 - **Defaults**: Library carries a defaults form per harness
   (`settings.harness.<name>.args`).
+
+## 8. The mesh features (v0.23)
+
+Everything that carries a session between machines reads the session
+through its store and names the harness in the manifest:
+
+- **Migration** (MIGRATION.md): `AgentSpec.harness` rides in the bundle;
+  tier A is whatever `files()` lists — Claude's transcript (and the
+  transcripts bookmarks point at), Codex's rollout and the rollouts its
+  history base chains to — placed on the target where that harness
+  keeps them (`{{CODEX_HOME}}/sessions/<date>/…`, a new path anchor).
+  Tiers B and C are Claude-only (Codex has no subagent files and no
+  per-project memory); tier D reads touched paths per harness
+  (`artifacts::touched_paths_for`). Import registers the agent on the
+  manifest's harness; revive resumes it there (`thread/resume` with
+  the localized cwd). Verified: a Codex session moved j2 → j1 resumed
+  with its memory and reported its new node over the bus.
+- **Preflight** reports the harness name and the version on both ends;
+  a target without the harness is not accepting, with the reason.
+- **Replication** already listed files per store (v0.20); a replica
+  carries its harness so the fallback reader rehydrates it right.
+- **Artifacts**: the viewer serves the Codex sessions root and the
+  files a Codex session changed (from `FileChange` items) or read (from
+  the parsed commands).
+- **Activity pump**: running-activity ids come from the session's
+  store, not a Claude call.
+- **Templates on peers**: the harness in a template's spec reaches the
+  peer's spawn (the template spawn reads it on whichever node runs it).

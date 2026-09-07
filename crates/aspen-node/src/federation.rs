@@ -2193,11 +2193,14 @@ async fn serve_api_req(
             // Can this node receive the session described by `spec`?
             let spec: crate::migrate::AgentSpec = serde_json::from_value(body.get("spec").cloned().unwrap_or(Value::Null))?;
             let counterpart = crate::migrate::find_counterpart(&inner.store, &spec);
+            let adapter = inner.adapters.get(&spec.harness);
             Ok(json!({
                 "counterpart": counterpart.map(|p| p.to_string_lossy().into_owned()),
-                "harness": inner.servicing.inventory.json()["claude_version"],
+                "harness": adapter.and_then(|a| a.version()),
+                "harness_name": spec.harness,
                 "state": inner.servicing.state().name(),
-                "accepting": inner.servicing.accepting_spawns(),
+                "accepting": inner.servicing.accepting_spawns() && adapter.is_some(),
+                "error": if adapter.is_none() { Some(format!("{} is not available on this node", spec.harness)) } else { None },
             }))
         }
         "node_update" => {

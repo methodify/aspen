@@ -70,36 +70,6 @@ pub struct SourceState {
     pub target: Option<String>,
 }
 
-/// Files that make up a session on disk: `(rel, path)`; rel is the path
-/// under the project dir (`<sid>.jsonl`, `<sid>/subagents/agent-x.jsonl`).
-pub fn session_files(repo: &Path, sid: &str) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    let main = aspen_claude::transcript::transcript_path(repo, sid);
-    if main.is_file() {
-        out.push((format!("{sid}.jsonl"), main.clone()));
-    }
-    let Some(project) = main.parent() else {
-        return out;
-    };
-    let sub = project.join(sid);
-    if sub.is_dir() {
-        let mut stack = vec![(sub.clone(), String::new())];
-        while let Some((dir, prefix)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
-                let name = e.file_name().to_string_lossy().to_string();
-                let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
-                if p.is_dir() {
-                    stack.push((p, rel));
-                } else if p.is_file() {
-                    out.push((format!("{sid}/{rel}"), p));
-                }
-            }
-        }
-    }
-    out
-}
 
 /// The replicator: every few seconds, push what has grown.
 pub fn spawn_replicator(inner: Arc<NodeInner>) {
@@ -409,7 +379,9 @@ pub fn list(inner: &Arc<NodeInner>) -> Vec<Replica> {
                 e.ctx = r.ctx.clone();
             }
         }
-        if r.rel == format!("{}.jsonl", r.session_id) {
+        // The session's main file: Claude's `<sid>.jsonl`, Codex's
+        // `sessions/<date>/rollout-<ts>-<sid>.jsonl` — both end in the id.
+        if r.rel.ends_with(&format!("{}.jsonl", r.session_id)) {
             e.main = Some(dir.join(&r.rel));
         }
     }
@@ -469,6 +441,10 @@ pub fn stage_bundle(data_dir: &Path, r: &Replica) -> Result<PathBuf> {
         let src = r.dir.join(&rel);
         let (tier, dest, out_rel) = if rel == format!("{sid}.jsonl") {
             ("A", "transcript", format!("transcript/{sid}.jsonl"))
+        } else if rel.starts_with("sessions/") && rel.ends_with(".jsonl") {
+            // Codex rollouts (the session's and its history base) keep
+            // their date path (MIGRATION.md, Harnesses).
+            ("A", "rollout", format!("rollout/{rel}"))
         } else if let Some(rest) = rel.strip_prefix(&format!("{sid}/")) {
             ("B", "sidechain", format!("sidechain/{rest}"))
         } else {
@@ -512,6 +488,7 @@ pub fn stage_bundle(data_dir: &Path, r: &Replica) -> Result<PathBuf> {
             extra_args: None,
             repo_basename: r.repo.clone(),
             repo_origin: None,
+            harness: r.harness,
         },
         tiers: vec!["A".into(), "B".into()],
         files,
@@ -584,6 +561,7 @@ mod tests {
             project_dir: "/home/alice/.claude/projects/-home-alice-src-hub".into(),
             encoded: "-home-alice-src-hub".into(),
             tmp: "/tmp".into(),
+            codex_home: String::new(),
         };
         std::fs::write(
             rdir.join("sid1.jsonl"),

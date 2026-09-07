@@ -1290,7 +1290,7 @@ impl Node {
         Ok(row
             .session_id
             .as_deref()
-            .map(|sid| crate::artifacts::touched_paths(&self.inner.store_for(row.harness).main_path(&row.repo, sid)))
+            .map(|sid| crate::artifacts::touched_paths_for(row.harness, &self.inner.store_for(row.harness).main_path(&row.repo, sid)))
             .unwrap_or_default())
     }
 
@@ -1303,6 +1303,7 @@ impl Node {
             &row.repo,
             row.session_id.as_deref(),
             path,
+            row.harness,
         )
     }
 
@@ -1552,9 +1553,10 @@ impl Node {
         let files = self.inner.store_for(row.harness).files(&row.repo, &sid);
         let mut a = 0u64;
         let mut b = 0u64;
-        for (rel, p) in &files {
+        let main = self.inner.store_for(row.harness).main_path(&row.repo, &sid);
+        for (_rel, p) in &files {
             let n = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-            if rel == &format!("{sid}.jsonl") {
+            if p == &main {
                 a += n;
             } else {
                 b += n;
@@ -1568,7 +1570,8 @@ impl Node {
             "agent": spec,
             "tiers": { "A": a, "B": b, "C": c },
             "files": files.len(),
-            "harness": self.inner.servicing.inventory.json()["claude_version"],
+            "harness": self.inner.adapter(row.harness).and_then(|a| a.version()),
+            "harness_name": row.harness,
             "dirty": git.as_ref().map(|g| g.dirty).unwrap_or(0),
             "branch": git.as_ref().and_then(|g| g.branch.clone()),
             "busy": live.as_ref().map(|m| matches!(m.turn_state(), TurnState::Busy)).unwrap_or(false),
@@ -1598,6 +1601,7 @@ impl Node {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             repo_origin: crate::migrate::git_origin(&row.repo),
+            harness: row.harness,
         })
     }
 
@@ -2214,7 +2218,7 @@ async fn pump(
                         .and_then(|rows| rows.into_iter().find(|a| a.name == sess.name))
                         .and_then(|a| a.session_id);
                     let now_running =
-                        crate::notify::running_ids(&sess.repo, sid.as_deref(), Some(sess.spawned_at));
+                        crate::notify::running_ids(&inner, sess.harness, &sess.repo, sid.as_deref(), Some(sess.spawned_at));
                     let mut prev = sess.running_acts.lock().unwrap();
                     for (key, label) in prev.iter() {
                         if !now_running.contains_key(key) {

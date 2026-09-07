@@ -2279,7 +2279,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                             carries {Math.round((preflight.source.tiers.A + preflight.source.tiers.B) / 1024)} KB of transcript
                             {preflight.source.tiers.C > 0 ? ` · ${Math.round(preflight.source.tiers.C / 1024)} KB memory` : ""} · {preflight.source.files} files
                             {preflight.source.branch ? ` · ${preflight.source.branch}` : ""}
-                            {preflight.source.harness ? ` · claude ${preflight.source.harness}` : ""}
+                            {preflight.source.harness ? ` · ${preflight.source.harness_name ?? "claude"} ${preflight.source.harness}` : ""}
                             {preflight.target?.harness ? ` → ${preflight.target.harness}` : ""}
                             {preflight.target?.counterpart ? ` · repo there: ${preflight.target.counterpart}` : ""}
                           </span>

@@ -163,3 +163,13 @@ patch-carry default for dirty trees; History's session lists for a down
 node (the sizes, harness skew, dirty
 state) before confirming; deleting the source's transcript files after a
 move (they stay on disk beside the tombstone).
+
+## Harnesses (v0.23)
+
+A bundle names the session's harness (`agent.harness`). Tier A is what
+the harness's store lists: Claude's transcript; Codex's rollout and the
+rollouts its history base chains to, placed under `{{CODEX_HOME}}/
+sessions/<date>/` on the target (a new path anchor beside
+`{{CLAUDE_PROJECT_DIR}}`). Tiers B and C are Claude-only. Preflight
+carries `harness_name` and the harness version on both ends, and a
+target without the harness is not accepting. See HARNESSES.md §8.

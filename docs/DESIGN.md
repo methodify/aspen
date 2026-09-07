@@ -937,3 +937,13 @@ cleaner lane for roster updates than user-message headers.
   what the file says. Repo default runtime and per-harness defaults
   give the operator the two knobs the proposal asked for; templates
   carry a harness.
+- **2026-09-07 — v0.23, the mesh features for a second harness**
+  (PROPOSALS-HARNESSES.md §8 phase 3; HARNESSES.md §8). The last Claude
+  couplings above the seam — migration tiers, artifact roots and
+  touched paths, the activity pump, preflight's version — now read the
+  session's store and name the harness in the manifest. A Codex session
+  moved between rig nodes and resumed with its memory. This closes H-1:
+  Aspen is a multi-harness control plane, with Claude's flows verified
+  unchanged at every phase. Left for the backlog: a shared per-node
+  app-server, Codex memory convergence, Codex plugins in the library,
+  `turn/steer` as a first-class control, third-party MCP elicitations.

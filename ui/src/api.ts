@@ -632,12 +632,13 @@ export interface MovePreflight {
     tiers: { A: number; B: number; C: number };
     files: number;
     harness: string | null;
+    harness_name?: Harness;
     dirty: number;
     branch: string | null;
     busy: boolean;
     live: boolean;
   };
-  target?: { counterpart: string | null; harness: string | null; state: string; accepting: boolean; error?: string };
+  target?: { counterpart: string | null; harness: string | null; harness_name?: Harness; state: string; accepting: boolean; error?: string };
   blockers: string[];
   warnings?: string[];
 }

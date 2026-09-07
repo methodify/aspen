@@ -39,11 +39,16 @@ pub struct PathCtx {
     /// The encoded repo dir name alone (`-home-me-src-repo`).
     pub encoded: String,
     pub tmp: String,
+    /// `$CODEX_HOME` (HARNESSES.md §6): Codex rollouts name skill roots
+    /// and their own home; absent in bundles from before v0.23.
+    #[serde(default)]
+    pub codex_home: String,
 }
 
-const SENTINELS: [&str; 5] = [
+const SENTINELS: [&str; 6] = [
     "{{REPO}}",
     "{{CLAUDE_PROJECT_DIR}}",
+    "{{CODEX_HOME}}",
     "{{ENCODED_DIR}}",
     "{{HOME}}",
     "{{TMP}}",
@@ -67,6 +72,7 @@ impl PathCtx {
                 .to_string_lossy()
                 .trim_end_matches(['/', '\\'])
                 .to_owned(),
+            codex_home: aspen_codex::codex_home().to_string_lossy().into_owned(),
         }
     }
 
@@ -75,6 +81,7 @@ impl PathCtx {
     fn anchors(&self) -> Vec<(&'static str, String)> {
         let mut v = vec![
             ("{{CLAUDE_PROJECT_DIR}}", self.project_dir.clone()),
+            ("{{CODEX_HOME}}", self.codex_home.clone()),
             ("{{REPO}}", self.repo.clone()),
             ("{{TMP}}", self.tmp.clone()),
             ("{{HOME}}", self.home.clone()),
@@ -191,6 +198,7 @@ pub fn localize_str(s: &str, ctx: &PathCtx) -> String {
     'outer: while !rest.is_empty() {
         for (sentinel, value) in [
             ("{{CLAUDE_PROJECT_DIR}}", ctx.project_dir.as_str()),
+            ("{{CODEX_HOME}}", ctx.codex_home.as_str()),
             ("{{REPO}}", ctx.repo.as_str()),
             ("{{ENCODED_DIR}}", ctx.encoded.as_str()),
             ("{{HOME}}", ctx.home.as_str()),
@@ -298,6 +306,10 @@ pub struct AgentSpec {
     pub repo_basename: String,
     /// `git remote get-url origin`, when the repo has one.
     pub repo_origin: Option<String>,
+    /// Which runtime the session runs on (HARNESSES.md); bundles from
+    /// before v0.23 are Claude's.
+    #[serde(default)]
+    pub harness: aspen_core::Harness,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -377,37 +389,63 @@ pub fn export(
     let project_dir = PathBuf::from(&ctx.project_dir);
     let mut sources: Vec<(PathBuf, String, String, String, String, Option<String>)> = Vec::new(); // (src, rel, tier, kind, dest, canon_path)
 
-    // A: the transcript, plus the transcripts bookmarks point at.
-    let tpath = aspen_claude::transcript::transcript_path(&repo, &sid);
+    // A: the session's files, as its harness keeps them (HARNESSES.md §2).
+    // Claude: the transcript (plus the ones bookmarks point at); Codex:
+    // the rollout and the rollouts its history base chains to, kept
+    // under the same date paths on the target.
+    let codex_store = aspen_codex::CodexStore::new();
+    let is_codex = row.harness == aspen_core::Harness::Codex;
+    let tpath = if is_codex {
+        aspen_core::SessionStore::main_path(&codex_store, &repo, &sid)
+    } else {
+        aspen_claude::transcript::transcript_path(&repo, &sid)
+    };
     if !tpath.is_file() {
         return Err(anyhow!("no transcript for session {sid}"));
     }
-    sources.push((
-        tpath.clone(),
-        format!("transcript/{sid}.jsonl"),
-        "A".into(),
-        "jsonl".into(),
-        "transcript".into(),
-        None,
-    ));
     let bookmarks = store.bookmarks(&row.name).unwrap_or_default();
-    for b in &bookmarks {
-        if b.session_id != sid {
-            let p = aspen_claude::transcript::transcript_path(&repo, &b.session_id);
-            if p.is_file() {
-                sources.push((
-                    p,
-                    format!("transcript/{}.jsonl", b.session_id),
-                    "A".into(),
-                    "jsonl".into(),
-                    "transcript".into(),
-                    None,
-                ));
+    if is_codex {
+        let mut listed: Vec<String> = vec![sid.clone()];
+        for b in &bookmarks {
+            if !listed.contains(&b.session_id) {
+                listed.push(b.session_id.clone());
+            }
+        }
+        for id in listed {
+            for (rel, p) in aspen_core::SessionStore::files(&codex_store, &repo, &id) {
+                if sources.iter().any(|(sp, ..)| sp == &p) {
+                    continue;
+                }
+                sources.push((p, format!("rollout/{rel}"), "A".into(), "jsonl".into(), "rollout".into(), None));
+            }
+        }
+    } else {
+        sources.push((
+            tpath.clone(),
+            format!("transcript/{sid}.jsonl"),
+            "A".into(),
+            "jsonl".into(),
+            "transcript".into(),
+            None,
+        ));
+        for b in &bookmarks {
+            if b.session_id != sid {
+                let p = aspen_claude::transcript::transcript_path(&repo, &b.session_id);
+                if p.is_file() {
+                    sources.push((
+                        p,
+                        format!("transcript/{}.jsonl", b.session_id),
+                        "A".into(),
+                        "jsonl".into(),
+                        "transcript".into(),
+                        None,
+                    ));
+                }
             }
         }
     }
-    // B: the session's subfolder.
-    if tiers.iter().any(|t| t == "B") {
+    // B: the session's subfolder (Claude's subagents; Codex keeps none).
+    if tiers.iter().any(|t| t == "B") && !is_codex {
         let sub = project_dir.join(&sid);
         if sub.is_dir() {
             let mut v = Vec::new();
@@ -431,8 +469,8 @@ pub fn export(
             }
         }
     }
-    // C: project memory.
-    if tiers.iter().any(|t| t == "C") {
+    // C: project memory (Codex memory is global — nothing per project).
+    if tiers.iter().any(|t| t == "C") && !is_codex {
         let mem = project_dir.join("memory");
         if mem.is_dir() {
             let mut v = Vec::new();
@@ -454,7 +492,7 @@ pub fn export(
     if tiers.iter().any(|t| t == "D") {
         let repo_c = std::fs::canonicalize(&repo).unwrap_or(repo.clone());
         let mut n = 0usize;
-        for a in crate::artifacts::touched_paths(&aspen_claude::transcript::transcript_path(&repo, &sid)) {
+        for a in crate::artifacts::touched_paths_for(row.harness, &tpath) {
             if a.kind != "wrote" && a.kind != "edited" {
                 continue;
             }
@@ -591,7 +629,11 @@ pub fn export(
         created_at: crate::store::now_epoch(),
         source_node: node_name.to_owned(),
         source: ctx.clone(),
-        harness_version: harness_version_of(&tpath),
+        harness_version: if is_codex {
+            aspen_codex::store::read_meta(&tpath).and_then(|m| m.cli_version)
+        } else {
+            harness_version_of(&tpath)
+        },
         mode: if opts.mode.is_empty() {
             "export".into()
         } else {
@@ -609,6 +651,7 @@ pub fn export(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             repo_origin: git_origin(&repo),
+            harness: row.harness,
         },
         tiers,
         files,
@@ -722,6 +765,8 @@ pub fn import(
         let src = dir.join(&f.rel);
         let target: Option<PathBuf> = match f.dest.as_str() {
             "transcript" => Some(project_dir.join(f.rel.trim_start_matches("transcript/"))),
+            // Codex rollouts keep their date path under the target's home.
+            "rollout" => Some(aspen_codex::codex_home().join(f.rel.trim_start_matches("rollout/"))),
             "sidechain" => Some(
                 project_dir
                     .join(&sid)
@@ -867,7 +912,7 @@ pub fn import(
         &sid,
         manifest.agent.charter.as_deref(),
         manifest.agent.extra_args.as_deref(),
-        aspen_core::Harness::Claude,
+        manifest.agent.harness,
     )?;
     if let Some(t) = &manifest.agent.title {
         let _ = store.set_agent_title(&full, Some(t));
@@ -957,6 +1002,7 @@ mod tests {
             project_dir: "/home/me/.claude/projects/-home-me-src-catalog".into(),
             encoded: "-home-me-src-catalog".into(),
             tmp: "/tmp".into(),
+            codex_home: String::new(),
         }
     }
     fn mac() -> PathCtx {
@@ -967,6 +1013,7 @@ mod tests {
             project_dir: "/Users/me/.claude/projects/-Users-me-src-catalog".into(),
             encoded: "-Users-me-src-catalog".into(),
             tmp: "/var/folders/xx/T".into(),
+            codex_home: String::new(),
         }
     }
     fn win() -> PathCtx {
@@ -977,6 +1024,7 @@ mod tests {
             project_dir: "C:\\Users\\me\\.claude\\projects\\C--Users-me-src-catalog".into(),
             encoded: "C--Users-me-src-catalog".into(),
             tmp: "C:\\Users\\me\\AppData\\Local\\Temp".into(),
+            codex_home: String::new(),
         }
     }
 
