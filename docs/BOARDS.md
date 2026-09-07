@@ -70,8 +70,15 @@ only writes; a delete propagates as a tombstone.
   across mounts (zoom, navigation, the same session in two boards). On
   return it shows the cached state at once and fetches only the items
   after its last user line (`GET …/transcript?after=<uuid>`, also over
-  the mesh); if that line is gone it refetches everything. No more
-  "no transcript yet" flash and no full re-transfer per zoom.
+  the mesh); if that line is gone it refetches everything. The cache
+  lives in memory for the page and in IndexedDB across page loads
+  (saved at every turn end, on unmount, and on `pagehide`; ≤8 MB per
+  agent), so a reload also asks only for the tail. No more "no
+  transcript yet" flash and no full re-transfer per zoom or reload.
+- **Hotkeys**: `b` goes to Boards, `[` collapses or expands the rail —
+  both registered in the global scope, so the `?` help lists them from
+  the registry like everything else. The narrow rail shows sessions as
+  two-letter glyphs colored by presence.
 - **The rail collapses** («/» at its top) to a strip of keys and dots,
   remembered per browser.
 - **Attention.** The board polls open prompts (the needs endpoint) every

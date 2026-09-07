@@ -573,7 +573,7 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .mesh-col.narrow { padding: var(--sp-3) 0; gap: var(--sp-1); overflow-x: hidden; }
 .mesh-col.narrow .rail-toggle { align-self: center; margin: 0 0 var(--sp-2); }
 .mesh-col.narrow .nav-item { padding: var(--sp-2) 0; justify-content: center; gap: 0; }
-.mesh-col.narrow .nav-item > span:not(.nav-key):not(.badge-count) { display: none; }
+.mesh-col.narrow .nav-item > span:not(.nav-key):not(.badge-count):not(.rail-glyph) { display: none; }
 .mesh-col.narrow .nav-item .nav-key { width: auto !important; }
 .mesh-col.narrow .nav-item .badge-count { position: absolute; margin: 0; transform: translate(14px, -10px); }
 .mesh-col.narrow .nav-item { position: relative; }
@@ -581,3 +581,12 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .mesh-col.narrow .nav-item.rail-session .rail-body,
 .mesh-col.narrow .nav-item.rail-session button { display: none; }
 .mesh-col.narrow div[style*="padding: 4px 16px"] { display: none; }
+
+/* narrow rail: sessions as two-letter glyphs colored by presence */
+.rail-glyph { display: none; }
+.mesh-col.narrow .rail-glyph { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 22px; border-radius: 4px; font: 600 0.62rem/1 var(--font-mono); letter-spacing: 0.04em; color: var(--text-hi); background: var(--bg-strip); border: 1px solid var(--line); }
+.mesh-col.narrow .rail-glyph.busy { border-color: var(--live); color: var(--live); }
+.mesh-col.narrow .rail-glyph.idle { border-color: var(--idle); }
+.mesh-col.narrow .rail-glyph.off { opacity: 0.5; }
+.mesh-col.narrow .nav-item.rail-session .meter { display: none; }
+.mesh-col.narrow .nav-item.rail-session { padding: 3px 0; }

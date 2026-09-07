@@ -230,6 +230,8 @@ export function GlobalHotkeys() {
     { key: "f", description: "go to Flow", handler: () => nav("/flow") },
     { key: "m", description: "go to Mesh", handler: () => nav("/mesh") },
     { key: "h", description: "go to History", handler: () => nav("/history") },
+    { key: "b", description: "go to Boards", handler: () => nav("/boards") },
+    { key: "[", description: "collapse / expand the rail", handler: () => window.dispatchEvent(new Event("aspen:rail")) },
     { key: "⌘K", description: "command palette" },
     { key: "?", description: "this help" },
   ]);

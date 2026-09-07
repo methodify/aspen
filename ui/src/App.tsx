@@ -102,6 +102,12 @@ function MeshColumn() {
     document.body.classList.toggle("rail-narrow", narrow);
   }, [narrow]);
   useEffect(() => {
+    const onToggle = () => setNarrow((n) => !n);
+    window.addEventListener("aspen:rail", onToggle);
+    return () => window.removeEventListener("aspen:rail", onToggle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
     let stop = false;
     const load = () => api.boards().then((b) => !stop && setBoards(b)).catch(() => {});
     void load();
@@ -165,6 +171,9 @@ function MeshColumn() {
         title={`${a.repo ?? `remote · ${a.node}`} · ${a.live ? (a.turn_state ?? "live") : "down"}`}
       >
         <Meter presence={presenceOf(a.live, a.turn_state)} />
+        <span className={`rail-glyph ${presenceOf(a.live, a.turn_state)}`} aria-hidden>
+          {bare.slice(0, 2).toUpperCase()}
+        </span>
         <span className="rail-body">
           <span className="rail-line1">
             <span className="mono rail-name">@{bare}</span>

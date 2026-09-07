@@ -44,6 +44,8 @@ import {
   addOpenPrompts,
   cachedTranscript,
   rememberTranscript,
+  loadPersistedTranscript,
+  persistTranscript,
   transcriptHead,
   mergeAfter,
 } from "./../transcript";
@@ -622,12 +624,20 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
   const [transcript, dispatch] = useReducer(reducer, undefined, emptyTranscript);
   const transcriptRef = useRef(transcript);
   transcriptRef.current = transcript;
-  useEffect(
-    () => () => {
-      if (transcriptRef.current.items.length) rememberTranscript(name, transcriptRef.current);
-    },
-    [name],
-  );
+  useEffect(() => {
+    // A page unload skips React's cleanup; save what we have first.
+    const onHide = () => {
+      if (transcriptRef.current.items.length) persistTranscript(name, transcriptRef.current, true);
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      if (transcriptRef.current.items.length) {
+        rememberTranscript(name, transcriptRef.current);
+        persistTranscript(name, transcriptRef.current);
+      }
+    };
+  }, [name]);
   const [wsState, setWsState] = useState<WsState>("connecting");
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -928,6 +938,9 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
         case "turn_ended":
           // §5.3: `turn_ended` is the single unlock signal for the composer.
           setBusy(false);
+          // The state after this event is the one worth keeping across
+          // page loads (the reducer has applied it by the next tick).
+          window.setTimeout(() => persistTranscript(name, transcriptRef.current), 0);
           setInterrupting(false);
           setStatusNote(null);
           busyLocalStartRef.current = null;
@@ -1003,7 +1016,8 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
       try {
         // A cached state shows at once; only the tail after its last user
         // line is fetched (the whole history if that line is gone).
-        const cached = cachedTranscript(name);
+        const cached = cachedTranscript(name) ?? (await loadPersistedTranscript(name));
+        if (disposed) return;
         const head = cached ? transcriptHead(cached) : null;
         if (cached) dispatch({ type: "seed", state: cached });
         if (cached && head) {

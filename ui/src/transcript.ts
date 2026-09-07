@@ -743,3 +743,69 @@ export function mergeAfter(state: TranscriptState, head: string, history: Histor
   const renumbered = fresh.items.map((it) => ({ ...it, id: nextId++ }));
   return { items: [...kept, ...renumbered], nextId, openBubbleId: null };
 }
+
+// ---- persisted across page loads (IndexedDB: transcripts run to MBs, past
+// localStorage's budget). The delta protocol makes a stale copy harmless:
+// the anchor is re-checked on the node and everything refetches if gone.
+
+const DB_NAME = "aspen";
+const STORE = "transcripts";
+const PERSIST_MAX_BYTES = 8 * 1024 * 1024; // per agent; larger states are not persisted
+
+function openDb(): Promise<IDBDatabase | null> {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export async function loadPersistedTranscript(name: string): Promise<TranscriptState | undefined> {
+  const db = await openDb();
+  if (!db) return undefined;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE, "readonly");
+      const req = tx.objectStore(STORE).get(name);
+      req.onsuccess = () => {
+        const v = req.result as { state?: TranscriptState } | undefined;
+        resolve(v?.state && Array.isArray(v.state.items) ? v.state : undefined);
+      };
+      req.onerror = () => resolve(undefined);
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
+let persistTimers = new Map<string, number>();
+/** Persist (debounced) — called on unmount and at every turn end. */
+export function persistTranscript(name: string, state: TranscriptState, now = false): void {
+  const write = async () => {
+    persistTimers.delete(name);
+    const db = await openDb();
+    if (!db) return;
+    try {
+      const size = JSON.stringify(state).length;
+      if (size > PERSIST_MAX_BYTES) return;
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put({ state, savedAt: Date.now() }, name);
+    } catch {
+      // storage full or unavailable: the in-memory copy still serves
+    }
+  };
+  const t = persistTimers.get(name);
+  if (t) window.clearTimeout(t);
+  if (now) {
+    void write();
+    return;
+  }
+  persistTimers.set(name, window.setTimeout(() => void write(), 250));
+}
