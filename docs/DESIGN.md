@@ -825,3 +825,18 @@ cleaner lane for roster updates than user-message headers.
   is the right tool for memory convergence (text), when that is built.
   Also: removing a marketplace now cascades — its rules tombstone (and
   sync), its catalog entries, checkout and unused cache go, on every node.
+- **2026-09-07 — v0.15, fleet activity, notifications, usage**
+  (PROPOSALS-2026-09-B §2 §3 §4 §12; references: ACTIVITY.md,
+  NOTIFICATIONS.md, USAGE.md). Now gains an Activity band of everything
+  running anywhere (`GET /api/activities` scatter-gathers; remote roster
+  entries keep their counts). Notices are the unit "Needs you" lacked:
+  the pump raises turn_ended / question / permission / activity_settled
+  / exited, the bus raises inbox; the console polls them with per-node
+  cursors into toasts, a tab-title count, optional browser
+  notifications and a bell; a node can push each notice to a webhook or
+  a command. Usage keeps tokens (from transcripts, subagents folded in)
+  apart from money (the harness's own cost-state line for lifetime, the
+  observed per-turn deltas for a window) rather than keeping a price
+  table. Task notifications collapse to a card. Elapsed times are
+  anchored to the server clock via the `Date` header, since a browser
+  on the Windows side of a WSL node ran seconds behind it.

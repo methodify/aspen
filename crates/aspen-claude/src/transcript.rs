@@ -411,6 +411,20 @@ pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
                     .and_then(|i| i.as_str())
                     .map(str::to_owned);
                 let text = extract_text(&v);
+                let usage = v.get("message").and_then(|m| m.get("usage")).map(|u| {
+                    let n = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                    json!({
+                        "input": n("input_tokens"),
+                        "output": n("output_tokens"),
+                        "cache_read": n("cache_read_input_tokens"),
+                        "cache_create": n("cache_creation_input_tokens"),
+                    })
+                });
+                let model = v
+                    .get("message")
+                    .and_then(|m| m.get("model"))
+                    .and_then(|m| m.as_str())
+                    .map(str::to_owned);
                 let mut tools: Vec<Value> = Vec::new();
                 if let Some(blocks) = v
                     .get("message")
@@ -449,6 +463,13 @@ pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
                         if let Some(arr) = last["tools"].as_array_mut() {
                             arr.extend(tools);
                         }
+                        if let Some(u) = &usage {
+                            for k in ["input", "output", "cache_read", "cache_create"] {
+                                let a = last["usage"][k].as_u64().unwrap_or(0);
+                                let b = u[k].as_u64().unwrap_or(0);
+                                last["usage"][k] = json!(a + b);
+                            }
+                        }
                         continue;
                     }
                 }
@@ -456,6 +477,7 @@ pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
                 items.push(json!({
                     "role": "assistant", "text": text.unwrap_or_default(),
                     "tools": tools, "uuid": uuid, "timestamp": timestamp,
+                    "usage": usage, "model": model,
                 }));
             }
             _ => {}

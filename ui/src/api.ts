@@ -181,6 +181,21 @@ export interface Activity {
   detail: Record<string, unknown>;
   has_transcript?: boolean;
 }
+/** One running item from `GET /api/activities` (PROPOSALS-B §2): a
+ *  ledger entry tagged with its agent's full address and node. */
+export interface FleetActivityItem {
+  id: string;
+  kind: string;
+  label: string;
+  tool_use_id: string;
+  started_at: string | null;
+  ended_at: string | null;
+  status: string;
+  detail: Record<string, unknown>;
+  has_transcript?: boolean;
+  agent: string;
+  node: string | null;
+}
 export interface ActivityCounts {
   running: number;
   agents: number;
@@ -491,9 +506,65 @@ export interface DiscoveredRepo {
 }
 
 /** Node settings (GET/PUT /api/settings). PUT merges top-level keys. */
+export interface NotifySettings {
+  webhook?: string;
+  command?: string;
+  kinds?: string[];
+}
 export interface Settings {
   harness?: Record<string, { args: string }>;
   update?: UpdatePolicy;
+  notify?: NotifySettings;
+}
+
+/** Notices (NOTIFICATIONS.md). */
+export type NoticeKind = "turn_ended" | "question" | "permission" | "activity_settled" | "exited" | "inbox" | string;
+export interface Notice {
+  id: number;
+  ts: number;
+  node: string | null;
+  agent: string;
+  kind: NoticeKind;
+  title: string;
+  body: string | null;
+  link: string | null;
+}
+/** Usage (USAGE.md). */
+export interface ModelUsage {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_create: number;
+  calls: number;
+  cost_usd: number | null;
+}
+export interface SessionUsage {
+  session_id: string;
+  models: Record<string, ModelUsage>;
+  total: ModelUsage;
+  turns: number;
+  cost_usd: number | null;
+  subagents: number;
+  subagent_tokens: number;
+  first_ts: string | null;
+  last_ts: string | null;
+  lines_added: number | null;
+  lines_removed: number | null;
+}
+export interface UsageRow {
+  agent: string;
+  node: string | null;
+  repo: string;
+  channel: string;
+  title: string | null;
+  session_id: string;
+  live: boolean;
+  usage: SessionUsage;
+  window: { cost_usd: number; turns: number };
+}
+export interface NoticesPage {
+  notices: Notice[];
+  cursors: Record<string, number>;
 }
 
 export interface BusSendRequest {
@@ -810,6 +881,21 @@ export function nodeToken(): string | null {
   }
 }
 
+/** Server clock minus browser clock, in seconds, from the `Date` header
+ *  of every response. Elapsed-time displays use `serverNow()` so a browser
+ *  whose clock drifts from the node (WSL vs Windows, a laptop vs a server)
+ *  still shows "running 42s" rather than "0s". */
+let clockSkew = 0;
+export function serverNow(): number {
+  return Date.now() / 1000 + clockSkew;
+}
+function noteServerDate(res: Response): void {
+  const d = res.headers.get("date");
+  if (!d) return;
+  const t = Date.parse(d);
+  if (Number.isFinite(t)) clockSkew = (t - Date.now()) / 1000;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -817,6 +903,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers ?? {});
     if (token) headers.set("X-Aspen-Token", token);
     res = await fetch(path, { ...init, headers });
+    noteServerDate(res);
   } catch (e) {
     throw new ApiError(0, e instanceof Error ? e.message : "network error");
   }
@@ -906,6 +993,10 @@ export const api = {
     request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
   activities: (name: string) => request<Activity[]>(`/api/agents/${enc(name)}/activities`),
+  fleetActivities: () => request<FleetActivityItem[]>("/api/activities"),
+  usage: (from: number) => request<UsageRow[]>(`/api/usage?from=${from}`),
+  agentUsage: (name: string) => request<UsageRow[]>(`/api/agents/${enc(name)}/usage`),
+  notices: (since: string) => request<NoticesPage>(`/api/notices?since=${encodeURIComponent(since)}`),
   subagent: (name: string, id: string) => request<HistoryItem[]>(`/api/agents/${enc(name)}/subagent/${enc(id)}`),
   plugins: () => request<PluginRegistry>("/api/plugins"),
   pluginsSync: (marketplace?: string) =>

@@ -48,6 +48,7 @@ export function scopeForPath(pathname: string): string {
   if (pathname.startsWith("/session/")) return "session";
   if (pathname.startsWith("/board")) return "board";
   if (pathname.startsWith("/plugins")) return "plugins";
+  if (pathname.startsWith("/usage")) return "usage";
   if (pathname.startsWith("/mesh")) return "mesh";
   if (pathname.startsWith("/history")) return "history";
   return "global";
@@ -60,6 +61,9 @@ const SCOPE_LABELS: Record<string, string> = {
   session: "Session",
   mesh: "Mesh",
   history: "History",
+  board: "Board",
+  plugins: "Plugins",
+  usage: "Usage",
 };
 
 function isEditable(target: EventTarget | null): boolean {
@@ -233,6 +237,7 @@ export function GlobalHotkeys() {
     { key: "h", description: "go to History", handler: () => nav("/history") },
     { key: "b", description: "go to Boards", handler: () => nav("/boards") },
     { key: "p", description: "go to Plugins", handler: () => nav("/plugins") },
+    { key: "u", description: "go to Usage", handler: () => nav("/usage") },
     { key: "[", description: "collapse / expand the rail", handler: () => window.dispatchEvent(new Event("aspen:rail")) },
     { key: "⌘K", description: "command palette" },
     { key: "?", description: "this help" },

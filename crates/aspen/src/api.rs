@@ -71,6 +71,10 @@ pub async fn serve(
         .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/artifacts", get(get_artifacts))
         .route("/agents/{name}/activities", get(get_activities))
+        .route("/activities", get(get_fleet_activities))
+        .route("/notices", get(get_notices))
+        .route("/usage", get(get_usage))
+        .route("/agents/{name}/usage", get(get_agent_usage))
         .route("/agents/{name}/subagent/{id}", get(get_subagent))
         .route("/agents/{name}/move", post(post_move))
         .route("/plugins", get(get_plugins))
@@ -918,6 +922,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "charter": null,
                             "live": a.live && reachable,
                             "turn_state": if reachable { json!(a.turn_state) } else { Value::Null },
+                            "activities": if reachable { a.activities.clone() } else { None },
                             "pending": s.node.inner.store.pending_count(&format!("{}@{}", a.name, node)).unwrap_or(0),
                             "node": node,
                             "remote": true,
@@ -1608,6 +1613,192 @@ async fn get_activities(State(s): S, Path(name): Path<String>) -> impl IntoRespo
     let mut acts = aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at);
     acts.reverse();
     Json(json!(acts)).into_response()
+}
+
+/// Everything running across the estate: this node's live sessions plus
+/// every up peer's, each item tagged `agent` (full address) and `node`.
+async fn get_fleet_activities(State(s): S) -> impl IntoResponse {
+    let me = s.node.inner.mesh().map(|m| m.identity.node.clone());
+    let mut out: Vec<Value> = aspen_node::node::fleet_activities(&s.node.inner);
+    for v in out.iter_mut() {
+        v["node"] = json!(me);
+    }
+    if let Some(mesh) = s.node.inner.mesh() {
+        let peers: Vec<String> = mesh.up_peers();
+        let calls = peers.iter().map(|p| {
+            let mesh = mesh.clone();
+            let p = p.clone();
+            async move {
+                let r = mesh
+                    .api_call(&p, "fleet_activities", "", json!({}), LIST_TIMEOUT)
+                    .await;
+                (p, r)
+            }
+        });
+        for (p, r) in futures_util::future::join_all(calls).await {
+            if let Ok(Value::Array(items)) = r {
+                for mut v in items {
+                    if let Some(a) = v.get("agent").and_then(|a| a.as_str()) {
+                        v["agent"] = json!(format!("{a}@{p}"));
+                    }
+                    v["node"] = json!(p);
+                    out.push(v);
+                }
+            }
+        }
+    }
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    from: Option<f64>,
+    to: Option<f64>,
+    mesh: Option<bool>,
+}
+
+/// Usage (USAGE.md) across the estate: every agent's transcript totals and
+/// the spend observed in the window, this node's and every up peer's.
+async fn get_usage(State(s): S, Query(q): Query<UsageQuery>) -> impl IntoResponse {
+    let from = q.from.unwrap_or(0.0);
+    let to = q.to.unwrap_or(f64::MAX);
+    let me = s.node.inner.mesh().map(|m| m.identity.node.clone());
+    let inner = s.node.inner.clone();
+    let mut out: Vec<Value> = tokio::task::spawn_blocking(move || aspen_node::node::usage_rows(&inner, from, to, None))
+        .await
+        .unwrap_or_default();
+    for v in out.iter_mut() {
+        v["node"] = json!(me);
+    }
+    if q.mesh.unwrap_or(true) {
+        if let Some(mesh) = s.node.inner.mesh() {
+            let peers = mesh.up_peers();
+            let calls = peers.iter().map(|p| {
+                let mesh = mesh.clone();
+                let p = p.clone();
+                async move {
+                    let r = mesh
+                        .api_call(&p, "usage", "", json!({ "from": from, "to": to }), REMOTE_TIMEOUT)
+                        .await;
+                    (p, r)
+                }
+            });
+            for (p, r) in futures_util::future::join_all(calls).await {
+                if let Ok(Value::Array(items)) = r {
+                    for mut v in items {
+                        if let Some(a) = v.get("agent").and_then(|a| a.as_str()) {
+                            v["agent"] = json!(format!("{a}@{p}"));
+                        }
+                        v["node"] = json!(p);
+                        out.push(v);
+                    }
+                }
+            }
+        }
+    }
+    Json(out).into_response()
+}
+
+async fn get_agent_usage(State(s): S, Path(name): Path<String>, Query(q): Query<UsageQuery>) -> impl IntoResponse {
+    let from = q.from.unwrap_or(0.0);
+    let to = q.to.unwrap_or(f64::MAX);
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "usage", &bare, json!({ "from": from, "to": to })).await;
+    }
+    let inner = s.node.inner.clone();
+    let rows = tokio::task::spawn_blocking(move || aspen_node::node::usage_rows(&inner, from, to, Some(&name)))
+        .await
+        .unwrap_or_default();
+    Json(json!(rows)).into_response()
+}
+
+#[derive(Deserialize)]
+struct NoticesQuery {
+    /// Per-node cursors: `node=id,node=id`. A node absent from the list
+    /// answers with its head and no notices (the first poll learns where
+    /// "now" is instead of replaying a week).
+    #[serde(default)]
+    since: String,
+    #[serde(default)]
+    mesh: Option<bool>,
+}
+
+/// Notices (NOTIFICATIONS.md) since the given cursors, this node's and
+/// every up peer's, with the new cursors.
+async fn get_notices(State(s): S, Query(q): Query<NoticesQuery>) -> impl IntoResponse {
+    let mut cursors: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for part in q.since.split(',') {
+        if let Some((n, id)) = part.split_once('=') {
+            if let Ok(id) = id.trim().parse::<i64>() {
+                cursors.insert(n.trim().to_owned(), id);
+            }
+        }
+    }
+    let me = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| "local".to_owned());
+    let mut notices: Vec<Value> = Vec::new();
+    let mut heads: serde_json::Map<String, Value> = serde_json::Map::new();
+    match cursors.get(&me) {
+        Some(&since) => {
+            let rows = s.node.inner.store.notices_since(since, 200).unwrap_or_default();
+            let head = rows.last().map(|n| n.id).unwrap_or(since);
+            heads.insert(me.clone(), json!(head));
+            for n in &rows {
+                notices.push(aspen_node::notify::notice_json(n, Some(&me)));
+            }
+        }
+        None => {
+            heads.insert(me.clone(), json!(s.node.inner.store.notices_head()));
+        }
+    }
+    if q.mesh.unwrap_or(true) {
+        if let Some(mesh) = s.node.inner.mesh() {
+            let peers = mesh.up_peers();
+            let calls = peers.iter().map(|p| {
+                let mesh = mesh.clone();
+                let p = p.clone();
+                let since = cursors.get(&p).copied().unwrap_or(-1);
+                async move {
+                    let r = mesh
+                        .api_call(&p, "notices", "", json!({ "since": since }), LIST_TIMEOUT)
+                        .await;
+                    (p, r)
+                }
+            });
+            for (p, r) in futures_util::future::join_all(calls).await {
+                if let Ok(v) = r {
+                    if let Some(h) = v.get("head") {
+                        heads.insert(p.clone(), h.clone());
+                    }
+                    if let Some(Value::Array(items)) = v.get("notices") {
+                        for mut n in items.clone() {
+                            n["node"] = json!(p);
+                            if let Some(a) = n.get("agent").and_then(|a| a.as_str()) {
+                                let full = format!("{a}@{p}");
+                                n["agent"] = json!(full);
+                                if let Some(l) = n.get("link").and_then(|l| l.as_str()) {
+                                    if let Some(rest) = l.strip_prefix("/session/") {
+                                        n["link"] = json!(format!("/session/{rest}@{p}"));
+                                    }
+                                }
+                            }
+                            notices.push(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    notices.sort_by(|a, b| {
+        let ta = a.get("ts").and_then(|t| t.as_f64()).unwrap_or(0.0);
+        let tb = b.get("ts").and_then(|t| t.as_f64()).unwrap_or(0.0);
+        ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Json(json!({ "notices": notices, "cursors": heads })).into_response()
 }
 
 /// A subagent's own transcript, rehydrated like the session's.

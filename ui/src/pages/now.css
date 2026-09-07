@@ -65,3 +65,13 @@
   cursor: pointer; font-size: 10px; padding: 0 4px; opacity: 0;
 }
 .rail-session:hover .rail-pin, .rail-session.active .rail-pin { opacity: 1; }
+
+/* Activity band (PROPOSALS-B §2) */
+.activity-band { display: flex; flex-direction: column; gap: 8px; }
+.activity-group {
+  background: var(--bg-panel); border: 1px solid var(--line); border-left: 3px solid var(--live);
+  padding: 6px 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.activity-agent { font-weight: 600; color: var(--text-hi); text-decoration: none; }
+.activity-agent:hover { text-decoration: underline dotted; }
+.activity-group .act-row { display: flex; align-items: flex-start; gap: 10px; padding: 3px 0; font-size: 0.82rem; }

@@ -32,6 +32,35 @@ pub struct Settings {
     /// name, a port-forward…), comma-separated. Rides the roster.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advertise: Option<String>,
+    /// Outbound notifications (docs/NOTIFICATIONS.md).
+    #[serde(default)]
+    pub notify: NotifySettings,
+}
+
+/// Where notices go beyond the console: a webhook URL that receives each
+/// notice as JSON by POST, and/or a command given the JSON on stdin.
+/// `kinds` limits which kinds fire (default: question, permission, exited).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NotifySettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kinds: Option<Vec<String>>,
+}
+
+impl NotifySettings {
+    pub fn fires(&self, kind: &str) -> bool {
+        match &self.kinds {
+            Some(k) => k.iter().any(|x| x == kind || x == "*"),
+            None => matches!(kind, "question" | "permission" | "exited"),
+        }
+    }
+    pub fn configured(&self) -> bool {
+        self.webhook.as_deref().is_some_and(|w| !w.trim().is_empty())
+            || self.command.as_deref().is_some_and(|c| !c.trim().is_empty())
+    }
 }
 
 impl Settings {

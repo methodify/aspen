@@ -248,3 +248,17 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - `GET /api/agents/{name}/subagent/{id}` — a subagent's transcript rehydrated like the session's.
 - Agents (and roster entries) carry `activities: {running, agents, tasks, workflows, monitors}` while live.
 - Mesh ops `activities`, `subagent`.
+
+
+## Fleet activity, notices, usage (v0.15) — ACTIVITY.md, NOTIFICATIONS.md, USAGE.md
+
+- `GET /api/activities` — every running activity across the estate, each with `agent` (full
+  address) and `node`. Mesh op `fleet_activities`. Remote roster entries now carry `activities`.
+- `GET /api/notices?since=node=id,…[&mesh=false]` — `{notices: [Notice {id, ts, node, agent, kind,
+  title, body, link}], cursors: {node: id}}`; a node missing from `since` answers with its head only.
+  Mesh op `notices {since}` → `{head, notices}`.
+- `GET /api/usage?from=&to=` — `[{agent, node, repo, channel, title, session_id, live, usage:
+  SessionUsage, window: {cost_usd, turns}}]`; `GET /api/agents/{name}/usage` for one (proxied).
+  Mesh op `usage {from, to}`. Rehydrated assistant items carry `usage {input, output, cache_read,
+  cache_create}` and `model`.
+- Settings: `notify {webhook?, command?, kinds?}`.

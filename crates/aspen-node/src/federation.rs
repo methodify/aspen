@@ -40,6 +40,9 @@ pub struct RemoteAgent {
     pub summary: Option<Value>,
     #[serde(default)]
     pub title: Option<String>,
+    /// Running-activity counts (ACTIVITY.md), live sessions only.
+    #[serde(default)]
+    pub activities: Option<Value>,
 }
 
 pub struct MeshState {
@@ -366,6 +369,11 @@ impl MeshState {
 
     pub fn link_up(&self, node: &str) -> bool {
         self.links.lock().unwrap().contains_key(node)
+    }
+
+    /// Every peer with a link up right now.
+    pub fn up_peers(&self) -> Vec<String> {
+        self.links.lock().unwrap().keys().cloned().collect()
     }
 
     /// Where a bare agent name is homed remotely, if anywhere.
@@ -1258,6 +1266,22 @@ async fn serve_api_req(
         "reload" => node.reload_plugins(agent).await,
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
+        "fleet_activities" => Ok(json!(crate::node::fleet_activities(&node.inner))),
+        "usage" => {
+            let from = body.get("from").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let to = body.get("to").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
+            let one = if agent.is_empty() { None } else { Some(agent) };
+            Ok(json!(crate::node::usage_rows(&node.inner, from, to, one)))
+        }
+        "notices" => {
+            let since = body.get("since").and_then(|v| v.as_i64()).unwrap_or(-1);
+            if since < 0 {
+                return Ok(json!({ "head": node.inner.store.notices_head(), "notices": [] }));
+            }
+            let rows = node.inner.store.notices_since(since, 200)?;
+            let out: Vec<Value> = rows.iter().map(|n| crate::notify::notice_json(n, None)).collect();
+            Ok(json!({ "head": rows.last().map(|n| n.id).unwrap_or(since), "notices": out }))
+        }
         "activities" => {
             let rows = node.inner.store.agents()?;
             let row = rows

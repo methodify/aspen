@@ -196,6 +196,16 @@ pub fn send_message(
     // logical message for conversation views.
     let post = uuid::Uuid::new_v4().to_string();
     let mut out = Vec::new();
+    if recipients.iter().any(|r| r == "operator") && from != "operator" {
+        crate::notify::raise(
+            inner,
+            from,
+            "inbox",
+            &format!("@{from} wrote to you"),
+            Some(&body.chars().take(200).collect::<String>()),
+            Some("/"),
+        );
+    }
     for recipient in &recipients {
         inner
             .store
@@ -418,6 +428,7 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
                                 turn_state: None,
                                 summary: None,
                                 title: None,
+                                activities: None,
                             }),
                         ))
                     }

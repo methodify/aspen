@@ -4,6 +4,10 @@
 //               permission gates, questions, operator mail, agents that
 //               just finished an ask (your cue to give the next one),
 //               agents blocked on a peer, and exits.
+//   ACTIVITY    everything running beside a main turn anywhere in the
+//               estate — subagents, background tasks, workflows,
+//               monitors — one row each (PROPOSALS-B §2). Absent when
+//               nothing runs.
 //   THE FLEET   every live agent as a WORK card — what it was asked, what
 //               it's doing right now and for how long, what it has changed,
 //               how far through its context, what it cost. Presence is a
@@ -13,10 +17,12 @@
 // This replaces Command, Sessions, and the rail's fleet list.
 
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   api,
+  serverNow,
   type Activity,
+  type FleetActivityItem,
   type Agent,
   type BusMessage,
   type Needs,
@@ -198,6 +204,7 @@ export default function Now() {
   const { agents, refreshAgents, refreshInbox, node } = useAppData();
   const activityPoll = usePoll<Activity>(api.activity, 3000);
   const needsPoll = usePoll<Needs>(api.needs, 2000);
+  const fleetActs = usePoll<FleetActivityItem[]>(api.fleetActivities, 3000);
   const trust = useTrustedStart();
   const liveGate = useLiveGate();
   const [panelOpen, setPanelOpen] = useState(false);
@@ -423,6 +430,9 @@ export default function Now() {
           ))}
         </section>
 
+        {/* ─────────────────────────── ACTIVITY ─────────────────────────── */}
+        {(fleetActs.data?.length ?? 0) > 0 && <ActivityBand items={fleetActs.data ?? []} />}
+
         {/* ─────────────────────────── THE FLEET ─────────────────────────── */}
         <section className="now-band">
           <div className="now-band-head">
@@ -483,5 +493,84 @@ export default function Now() {
         </section>
       </div>
     </>
+  );
+}
+
+function fmtElapsed(startIso: string | null): string {
+  if (!startIso) return "";
+  const a = Date.parse(startIso);
+  if (!Number.isFinite(a)) return "";
+  const s = Math.max(0, Math.round(serverNow() - a / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** The Activity band: every running item across the estate, grouped by
+ *  agent; an agent with a transcript opens the subagent view, anything
+ *  else opens the session. */
+function ActivityBand({ items }: { items: FleetActivityItem[] }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const groups = useMemo(() => {
+    const m = new Map<string, FleetActivityItem[]>();
+    for (const it of items) {
+      const arr = m.get(it.agent) ?? [];
+      arr.push(it);
+      m.set(it.agent, arr);
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [items]);
+  const counts = items.reduce(
+    (c, it) => {
+      c[it.kind] = (c[it.kind] ?? 0) + 1;
+      return c;
+    },
+    {} as Record<string, number>,
+  );
+  const summary = ["agent", "task", "workflow", "monitor"]
+    .filter((k) => counts[k])
+    .map((k) => `${counts[k]} ${k}${counts[k] === 1 ? "" : "s"}`)
+    .join(" · ");
+  return (
+    <section className="now-band">
+      <div className="now-band-head">
+        <span className="label">Activity</span>
+        <span className="mono-meta">{summary}</span>
+      </div>
+      <div className="activity-band">
+        {groups.map(([agent, acts]) => (
+          <div className="activity-group" key={agent}>
+            <Link className="activity-agent mono" to={`/session/${encodeURIComponent(agent)}`}>
+              @{agent}
+            </Link>
+            {acts.map((a) => (
+              <div className="row act-row act-running" key={`${a.kind}:${a.id}:${a.tool_use_id}`}>
+                <span className={`chip mono act-kind act-${a.kind}`}>{a.kind}</span>
+                <span className="act-body">
+                  <span className="act-label">
+                    {a.kind === "agent" && a.has_transcript ? (
+                      <Link to={`/session/${encodeURIComponent(agent)}/agent/${encodeURIComponent(a.id)}`} title="open this agent's transcript">
+                        {a.label}
+                      </Link>
+                    ) : (
+                      a.label
+                    )}
+                  </span>
+                  <span className="mono-meta act-detail">
+                    {a.kind === "task" && typeof a.detail["command"] === "string" ? `$ ${String(a.detail["command"]).slice(0, 140)}` : ""}
+                    {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
+                    {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 140) : ""}
+                    {a.kind === "monitor" && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
+                  </span>
+                </span>
+                <span className="mono-meta act-status live">running {fmtElapsed(a.started_at)}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

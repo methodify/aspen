@@ -52,6 +52,18 @@ export interface UserBubbleItem {
   images?: HistoryImage[];
 }
 
+/** A harness task notification (`<task-notification>…`): a background
+ *  task, subagent or workflow reporting back. Rendered collapsed
+ *  (PROPOSALS-B §12) — the full text can run to many screens. */
+export interface TaskNoticeItem {
+  kind: "notice";
+  id: number;
+  text: string;
+  taskId: string | null;
+  status: string | null;
+  summary: string | null;
+}
+
 /** A bus injection observed on the wire (user-role frame with the envelope header). */
 export interface BusBubbleItem {
   kind: "bus";
@@ -99,6 +111,7 @@ export type TranscriptItem =
   | AssistantBubbleItem
   | UserBubbleItem
   | BusBubbleItem
+  | TaskNoticeItem
   | ToolCardItem
   | PermissionCardItem
   | TurnEndItem;
@@ -159,6 +172,28 @@ export function settleTools(state: TranscriptState): TranscriptState {
   };
 }
 
+export const TASK_NOTICE_MARKER = "<task-notification>";
+
+function tagOf(text: string, tag: string): string | null {
+  const m = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return m ? m[1].trim() : null;
+}
+
+export function isTaskNotice(text: string): boolean {
+  return text.trimStart().startsWith(TASK_NOTICE_MARKER);
+}
+
+export function taskNoticeItem(id: number, text: string): TaskNoticeItem {
+  return {
+    kind: "notice",
+    id,
+    text,
+    taskId: tagOf(text, "task-id"),
+    status: tagOf(text, "status"),
+    summary: tagOf(text, "summary"),
+  };
+}
+
 export function seedFromHistory(history: HistoryItem[]): TranscriptState {
   const items: TranscriptItem[] = [];
   let nextId = 1;
@@ -168,6 +203,8 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
     if (h.role === "user") {
       if (h.bus === true || text.startsWith(BUS_HEADER)) {
         items.push({ kind: "bus", id: nextId++, text });
+      } else if (isTaskNotice(text)) {
+        items.push(taskNoticeItem(nextId++, text));
       } else if (!text.startsWith(INTERRUPT_MARKER)) {
         items.push({
           kind: "user",
@@ -670,6 +707,10 @@ function applyUserReplay(state: TranscriptState, ev: UserReplayEvent): Transcrip
 
   // 2. A bus injection whose body rode along on the replay.
   if (text.startsWith(BUS_HEADER)) return pushBusBubble(state, text);
+  if (isTaskNotice(text)) {
+    if (state.items.some((it) => it.kind === "notice" && it.text === text)) return state;
+    return { ...state, items: [...state.items, taskNoticeItem(state.nextId, text)], nextId: state.nextId + 1 };
+  }
 
   // 3. The synthetic interrupt message — never render as something typed. §5.4
   if (text.startsWith(INTERRUPT_MARKER)) return state;
@@ -696,6 +737,10 @@ function applyRaw(state: TranscriptState, ev: RawEvent): TranscriptState {
   if (!r || r["type"] !== "user") return state;
   const text = extractText(ev.raw);
   if (text.startsWith(BUS_HEADER)) return pushBusBubble(state, text);
+  if (isTaskNotice(text)) {
+    if (state.items.some((it) => it.kind === "notice" && it.text === text)) return state;
+    return { ...state, items: [...state.items, taskNoticeItem(state.nextId, text)], nextId: state.nextId + 1 };
+  }
   return state;
 }
 

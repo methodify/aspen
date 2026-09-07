@@ -26,6 +26,8 @@ import {
   type ActivePlugin,
   type PluginUpdate,
   type Activity,
+  type UsageRow,
+  serverNow,
   type ActivityCounts,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
@@ -44,6 +46,7 @@ import {
   type TranscriptState,
   type TurnEndItem,
   type UserBubbleItem,
+  type TaskNoticeItem,
   settleTools,
   addOpenPrompts,
   cachedTranscript,
@@ -248,6 +251,116 @@ const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) 
     </div>
   );
 });
+
+/** A task notification, collapsed to one line (PROPOSALS-B §12): the
+ *  harness reporting a background task, subagent or workflow back to the
+ *  model. Click to read the full text. */
+const NoticeCard = memo(function NoticeCard({ item, tui }: { item: TaskNoticeItem; tui?: boolean }) {
+  const status = item.status ?? "done";
+  const bad = status === "failed" || status === "error" || status === "killed";
+  return (
+    <details className={`tool-card notice-card${tui ? " tool-card-tui" : ""}`}>
+      <summary>
+        <span className={bad ? "dot dot-error" : "dot dot-idle"} />
+        <span className="tool-name mono">task notification</span>
+        {item.summary && <span className="tool-summary mono">{item.summary}</span>}
+        <span className={`tool-hint mono-meta${bad ? " error-text" : ""}`}>
+          {status}
+          {item.taskId ? ` · ${item.taskId.slice(0, 12)}` : ""}
+        </span>
+      </summary>
+      <div className="tool-detail">
+        <pre className="src-body notice-body">{item.text}</pre>
+      </div>
+    </details>
+  );
+});
+
+/** The status bar's cost figure, opening into the session's usage
+ *  (USAGE.md): tokens by model, subagents folded in, the harness's own
+ *  session total. */
+function UsagePopover({ agent, liveCost }: { agent: string; liveCost: number | null }) {
+  const [open, setOpen] = useState(false);
+  const [row, setRow] = useState<UsageRow | null>(null);
+  const [at, setAt] = useState({ top: 0, left: 0 });
+  useEffect(() => {
+    if (!open) return;
+    api
+      .agentUsage(agent)
+      .then((rows) => setRow(rows[0] ?? null))
+      .catch(() => setRow(null));
+  }, [open, agent]);
+  const cost = liveCost ?? row?.usage.cost_usd ?? (row && row.window.cost_usd > 0 ? row.window.cost_usd : null);
+  const observedOnly = liveCost === null && row?.usage.cost_usd === null;
+  const fmtT = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n));
+  return (
+    <span className="artifacts-wrap">
+      <button
+        className="status-right mono usage-btn"
+        title="session cost (the harness's figure) — click for tokens by model"
+        onClick={(e) => {
+          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+          setAt({ top: r.top - 8, left: Math.max(8, r.right - 420) });
+          setOpen((o) => !o);
+        }}
+      >
+        {cost !== null ? `session $${cost.toFixed(2)}` : "session $—"}
+      </button>
+      {open &&
+        createPortal(
+          <div className="artifacts-menu usage-pop" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 420, transform: "translateY(-100%)" }} role="menu" onMouseLeave={() => setOpen(false)}>
+            {row === null ? (
+              <div className="row dim">loading…</div>
+            ) : (
+              <>
+                <div className="row">
+                  <span className="label">Usage</span>
+                  <span className="spacer" />
+                  <span className="mono-meta">
+                    {row.usage.turns} turns · {row.usage.total.calls} calls
+                    {row.usage.subagents > 0 ? ` · ${row.usage.subagents} subagents (${fmtT(row.usage.subagent_tokens)} tokens)` : ""}
+                  </span>
+                </div>
+                <table className="usage-mini">
+                  <thead>
+                    <tr>
+                      <th>model</th>
+                      <th>in</th>
+                      <th>cache rd</th>
+                      <th>cache wr</th>
+                      <th>out</th>
+                      <th>cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(row.usage.models).filter(([m, u]) => !m.startsWith("<") || u.output > 0).map(([m, u]) => (
+                      <tr key={m}>
+                        <td className="mono">{m.replace(/^claude-/, "")}</td>
+                        <td className="mono num">{fmtT(u.input)}</td>
+                        <td className="mono num">{fmtT(u.cache_read)}</td>
+                        <td className="mono num">{fmtT(u.cache_create)}</td>
+                        <td className="mono num">{fmtT(u.output)}</td>
+                        <td className="mono num">{u.cost_usd !== null ? `$${u.cost_usd.toFixed(2)}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="row mono-meta">
+                  {observedOnly ? `observed $${row.window.cost_usd.toFixed(2)} over ${row.window.turns} turns (the harness has not priced this session)` : `session total $${(row.usage.cost_usd ?? 0).toFixed(2)}`}
+                  {row.usage.lines_added !== null ? ` · +${row.usage.lines_added}/−${row.usage.lines_removed ?? 0} lines` : ""}
+                  {" · "}
+                  <Link to="/usage" onClick={() => setOpen(false)}>
+                    all sessions
+                  </Link>
+                </div>
+              </>
+            )}
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
+}
 
 const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBubbleItem; source?: boolean; agent?: string }) {
   const nl = item.text.indexOf("\n");
@@ -540,7 +653,7 @@ const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem 
 function fmtElapsed(startIso: string | null, endIso: string | null): string {
   if (!startIso) return "";
   const a = Date.parse(startIso);
-  const b = endIso ? Date.parse(endIso) : Date.now();
+  const b = endIso ? Date.parse(endIso) : serverNow() * 1000;
   if (!Number.isFinite(a) || !Number.isFinite(b)) return "";
   const s = Math.max(0, Math.round((b - a) / 1000));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
@@ -1591,6 +1704,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             {"> " + item.text}
           </div>
         );
+      case "notice":
+        return <NoticeCard key={item.id} item={item} tui />;
       case "bus": {
         // Keep the [aspen bus] header line as raw terminal text; the body
         // is agent prose and renders as TUI markdown like everything else.
@@ -1700,6 +1815,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         return <AssistantBubble key={item.id} item={item} source={source} agent={name} />;
       case "user":
         return <UserBubble key={item.id} item={item} />;
+      case "notice":
+        return <NoticeCard key={item.id} item={item} />;
       case "bus":
         return <BusBubble key={item.id} item={item} source={source} agent={name} />;
       case "tool":
@@ -2356,11 +2473,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           )}
         </span>
         {actionError && <span className="error-text">{actionError}</span>}
-        <span className="status-right mono" title="session-cumulative cost, not per-turn">
-          {lastTurn?.costUsd !== null && lastTurn?.costUsd !== undefined
-            ? `session $${lastTurn.costUsd.toFixed(2)}`
-            : "session $—"}
-        </span>
+        <UsagePopover agent={name} liveCost={lastTurn?.costUsd ?? null} />
       </div>
 
       {!subagent && <div className="composer">

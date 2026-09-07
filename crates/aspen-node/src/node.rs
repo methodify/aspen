@@ -72,6 +72,11 @@ pub struct ManagedSession {
     /// The plugins this process was started with (plugins.rs), so a newer
     /// cached version can be offered as a restart, never a surprise.
     pub plugins: Vec<crate::plugins::ActivePlugin>,
+    /// Activities running at the last turn end (`kind:id` → label), so the
+    /// next turn end can raise `activity_settled` for what is gone.
+    pub running_acts: Mutex<HashMap<String, String>>,
+    /// When this process started — the ledger's stale cutoff (ACTIVITY.md).
+    pub spawned_at: f64,
 }
 
 /// A transcript written this recently, by a process this node doesn't
@@ -195,6 +200,71 @@ pub fn normalize_repo(p: &Path) -> PathBuf {
 
 /// The work summary as the API/roster carries it (files as a count + a
 /// short list; busy_since/last_tool folded in).
+/// Every running activity of every live session on this node, each tagged
+/// with its agent's local key — the node's half of `GET /api/activities`.
+pub fn fleet_activities(inner: &Arc<NodeInner>) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let Ok(rows) = inner.store.agents() else {
+        return out;
+    };
+    for row in rows {
+        if inner.live(&row.name).is_none() {
+            continue;
+        }
+        let Some(sid) = row.session_id.as_deref() else {
+            continue;
+        };
+        for a in aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at) {
+            if a.status != "running" {
+                continue;
+            }
+            let mut v = serde_json::to_value(&a).unwrap_or(serde_json::Value::Null);
+            v["agent"] = serde_json::json!(row.name);
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// Usage (USAGE.md) for every agent on this node: transcript totals plus
+/// spend observed in [from, to] from the fleet trail. `agent` limits it
+/// to one.
+pub fn usage_rows(inner: &Arc<NodeInner>, from: f64, to: f64, agent: Option<&str>) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let Ok(rows) = inner.store.agents() else {
+        return out;
+    };
+    let observed = inner.store.observed_cost(from, to).unwrap_or_default();
+    for row in rows {
+        if let Some(a) = agent {
+            if row.name != a {
+                continue;
+            }
+        }
+        let Some(sid) = row.session_id.as_deref() else {
+            continue;
+        };
+        let u = aspen_claude::usage::session_usage(&row.repo, sid);
+        let (win_cost, win_turns) = observed
+            .iter()
+            .find(|(a, _, _)| a == &row.name)
+            .map(|(_, c, n)| (*c, *n))
+            .unwrap_or((0.0, 0));
+        let live = inner.live(&row.name);
+        out.push(serde_json::json!({
+            "agent": row.name,
+            "repo": row.repo.to_string_lossy(),
+            "channel": row.channel,
+            "title": row.title,
+            "session_id": sid,
+            "live": live.is_some(),
+            "usage": *u,
+            "window": { "cost_usd": win_cost, "turns": win_turns },
+        }));
+    }
+    out
+}
+
 /// Running-activity counts for a live session (activity.rs), from the
 /// transcript on disk; cached by the file's size and mtime.
 pub fn activity_counts(
@@ -607,6 +677,8 @@ impl Node {
         }
         let managed = Arc::new(ManagedSession {
             plugins: active_plugins,
+            running_acts: Mutex::new(HashMap::new()),
+            spawned_at: crate::store::now_epoch(),
             name: name.to_owned(),
             repo,
             channel,
@@ -1726,6 +1798,47 @@ async fn pump(
                         }
                     }
                 }
+                // Notices (NOTIFICATIONS.md): the turn ended; anything that
+                // was running at the last boundary and is gone now settled.
+                {
+                    let link = format!("/session/{}", sess.name);
+                    let first = result_text
+                        .as_deref()
+                        .map(|t| t.trim())
+                        .filter(|t| !t.is_empty())
+                        .map(|t| snippet(t, 200));
+                    crate::notify::raise(
+                        &inner,
+                        &sess.name,
+                        "turn_ended",
+                        &format!("@{} finished a turn", sess.name),
+                        first.as_deref(),
+                        Some(&link),
+                    );
+                    let sid = inner
+                        .store
+                        .agents()
+                        .ok()
+                        .and_then(|rows| rows.into_iter().find(|a| a.name == sess.name))
+                        .and_then(|a| a.session_id);
+                    let now_running =
+                        crate::notify::running_ids(&sess.repo, sid.as_deref(), Some(sess.spawned_at));
+                    let mut prev = sess.running_acts.lock().unwrap();
+                    for (key, label) in prev.iter() {
+                        if !now_running.contains_key(key) {
+                            let kind = key.split(':').next().unwrap_or("task");
+                            crate::notify::raise(
+                                &inner,
+                                &sess.name,
+                                "activity_settled",
+                                &format!("{kind} settled for @{}", sess.name),
+                                Some(label),
+                                Some(&link),
+                            );
+                        }
+                    }
+                    *prev = now_running;
+                }
                 // A boundary is a delivery opportunity for anything that
                 // arrived for us while nothing could be written.
                 inner.tick_delivery(&sess.name);
@@ -1766,12 +1879,45 @@ async fn pump(
                 sess.mark_busy();
                 *sess.last_tool.lock().unwrap() = Some(tool_name.clone());
             }
-            SessionEvent::PermissionAsked { tool_name, .. } => {
+            SessionEvent::PermissionAsked { tool_name, input, .. } => {
                 let _ = inner.store.record_event(
                     &sess.name,
                     "prompt",
                     serde_json::json!({ "tool": tool_name }),
                 );
+                let link = format!("/session/{}", sess.name);
+                if tool_name == "AskUserQuestion" {
+                    let q = input
+                        .get("questions")
+                        .and_then(|q| q.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|q| q.get("question"))
+                        .and_then(|q| q.as_str())
+                        .map(|q| snippet(q, 200));
+                    crate::notify::raise(
+                        &inner,
+                        &sess.name,
+                        "question",
+                        &format!("@{} has a question", sess.name),
+                        q.as_deref(),
+                        Some(&link),
+                    );
+                } else {
+                    let what = input
+                        .get("command")
+                        .or_else(|| input.get("file_path"))
+                        .or_else(|| input.get("path"))
+                        .and_then(|v| v.as_str())
+                        .map(|v| snippet(v, 160));
+                    crate::notify::raise(
+                        &inner,
+                        &sess.name,
+                        "permission",
+                        &format!("@{} needs permission: {tool_name}", sess.name),
+                        what.as_deref(),
+                        Some(&link),
+                    );
+                }
             }
             SessionEvent::UserReplay { uuid } => {
                 let _ = inner.store.mark_ingested(uuid);
@@ -1819,6 +1965,19 @@ async fn pump(
                     // Died on its own (or operator stop): not a revive
                     // candidate. During daemon shutdown the mark stays.
                     let _ = inner.store.set_agent_live(&sess.name, false);
+                    if *code != Some(0) {
+                        crate::notify::raise(
+                            &inner,
+                            &sess.name,
+                            "exited",
+                            &format!("@{} exited", sess.name),
+                            Some(&match code {
+                                Some(c) => format!("exit code {c}"),
+                                None => "killed by a signal".to_owned(),
+                            }),
+                            Some(&format!("/session/{}", sess.name)),
+                        );
+                    }
                 }
                 let _ = sess.events.send(ev);
                 crate::federation::broadcast_roster(&inner);

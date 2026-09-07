@@ -53,6 +53,15 @@ notification will never come. Counts (`running`, `agents`, `tasks`,
   while the agent runs; served locally or over the mesh (`subagent` op).
 - API: `GET /api/agents/{name}/activities`, `GET /api/agents/{name}/
   subagent/{id}`; mesh ops `activities`, `subagent`.
+- **Fleet-wide (v0.15)**: `GET /api/activities` gathers every running
+  item on this node and every up peer (`fleet_activities` op), tagged
+  with the agent's full address; Now shows them as an **Activity** band
+  between *Needs you* and *The fleet*, grouped by agent, present only
+  while something runs. Remote agents' counts now survive the roster
+  (`RemoteAgent.activities`), so chips show for peers' sessions too.
+- **Task notifications (v0.15)**: a `<task-notification>` user line
+  renders as a collapsed card (summary, status, task id) instead of a
+  bubble; click to read it.
 
 ## 4. Verified (rig, 2026-09-07)
 
@@ -64,7 +73,7 @@ Tasks from before a restart were settled as `unknown`.
 
 ## 5. Not built
 
-A fleet-wide activity list in Now; cost roll-up from subagent
-transcripts; a live tail of a subagent over a socket rather than a poll;
+Cost roll-up from subagent transcripts (USAGE.md folds their tokens);
+a live tail of a subagent over a socket rather than a poll;
 recognizing tasks the harness stopped without a notification (they age
 out with the stale rule at the next restart).

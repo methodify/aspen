@@ -129,6 +129,16 @@ CREATE TABLE IF NOT EXISTS plugin_rules(
   updated_at  REAL NOT NULL,
   deleted     INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS notices(
+  id INTEGER PRIMARY KEY,
+  ts REAL NOT NULL,
+  agent TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  link TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notices_id ON notices(id);
 CREATE TABLE IF NOT EXISTS seen_sessions(
   repo       TEXT NOT NULL,
   session_id TEXT NOT NULL,
@@ -216,6 +226,18 @@ pub struct Board {
 }
 
 /// One entry in the fleet event log.
+/// A notice (PROPOSALS-B §3): a moment the operator may want told about.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Notice {
+    pub id: i64,
+    pub ts: f64,
+    pub agent: String,
+    pub kind: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub link: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FleetEvent {
     pub id: i64,
@@ -623,6 +645,86 @@ impl BusStore {
             params![now_epoch(), agent, kind, detail.to_string()],
         )?;
         Ok(())
+    }
+
+    /// Add a notice; notices older than seven days are pruned as we go.
+    pub fn add_notice(
+        &self,
+        agent: &str,
+        kind: &str,
+        title: &str,
+        body: Option<&str>,
+        link: Option<&str>,
+    ) -> Result<Notice> {
+        let conn = self.conn.lock().unwrap();
+        let ts = now_epoch();
+        conn.execute(
+            "INSERT INTO notices(ts, agent, kind, title, body, link) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![ts, agent, kind, title, body, link],
+        )?;
+        let id = conn.last_insert_rowid();
+        let _ = conn.execute(
+            "DELETE FROM notices WHERE ts < ?1",
+            params![ts - 7.0 * 86400.0],
+        );
+        Ok(Notice {
+            id,
+            ts,
+            agent: agent.to_owned(),
+            kind: kind.to_owned(),
+            title: title.to_owned(),
+            body: body.map(str::to_owned),
+            link: link.map(str::to_owned),
+        })
+    }
+
+    /// Notices with id > `since`, oldest first, at most `limit`.
+    pub fn notices_since(&self, since: i64, limit: i64) -> Result<Vec<Notice>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, agent, kind, title, body, link FROM notices WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![since, limit], |r| {
+            Ok(Notice {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                agent: r.get(2)?,
+                kind: r.get(3)?,
+                title: r.get(4)?,
+                body: r.get(5)?,
+                link: r.get(6)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// The newest notice id (0 when none) — a cursor for "from now on".
+    pub fn notices_head(&self) -> i64 {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COALESCE(MAX(id), 0) FROM notices", [], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
+    /// Observed spend per agent in [from, to]: the sum of `cost_delta` on
+    /// `turn` events — the harness's own per-turn figure, kept across
+    /// restarts. Also the turn count in the window.
+    pub fn observed_cost(&self, from: f64, to: f64) -> Result<Vec<(String, f64, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT agent, detail FROM events WHERE kind = 'turn' AND ts >= ?1 AND ts <= ?2",
+        )?;
+        let mut acc: std::collections::BTreeMap<String, (f64, i64)> = Default::default();
+        let rows = stmt.query_map(params![from, to], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for (agent, detail) in rows.flatten() {
+            let d: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+            let c = d.get("cost_delta").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let e = acc.entry(agent).or_insert((0.0, 0));
+            e.0 += c;
+            e.1 += 1;
+        }
+        Ok(acc.into_iter().map(|(a, (c, n))| (a, c, n)).collect())
     }
 
     /// Events in [from, to], optionally for one agent, newest last.

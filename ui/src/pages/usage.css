@@ -1,0 +1,14 @@
+/* Usage (USAGE.md) */
+.usage-page { display: flex; flex-direction: column; gap: 12px; }
+.usage-note { max-width: 80ch; margin: 0; font-size: 0.82rem; }
+.usage-table-wrap { overflow-x: auto; }
+.usage-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.usage-table th, .usage-table td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; white-space: nowrap; }
+.usage-table th { font: 600 0.68rem/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.usage-table .num { text-align: right; }
+.usage-table .cost { color: var(--text-hi); }
+.usage-table .key-cell a { color: var(--text-hi); text-decoration: none; }
+.usage-table .key-cell a:hover { text-decoration: underline dotted; }
+.usage-table .models-cell { white-space: normal; max-width: 30ch; }
+.usage-title { font-family: var(--font-body); }
+.usage-table .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--live); margin-left: 6px; vertical-align: middle; }

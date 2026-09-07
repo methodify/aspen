@@ -9,9 +9,11 @@ import Session from "./pages/Session";
 import View from "./pages/View";
 import BoardPage, { BoardsPage } from "./pages/Board";
 import Plugins from "./pages/Plugins";
+import Usage from "./pages/Usage";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
 import Palette from "./Palette";
+import { NoticesBell, NoticesProvider } from "./notices";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
 import { evictStaleTranscripts } from "./transcript";
 
@@ -57,6 +59,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean }[] = [
   { to: "/history", key: "H", label: "History" },
   { to: "/boards", key: "B", label: "Boards" },
   { to: "/plugins", key: "P", label: "Plugins" },
+  { to: "/usage", key: "U", label: "Usage" },
 ];
 
 // ── working set: pinned + recently opened sessions (per browser) ──────────
@@ -354,6 +357,7 @@ function StatusBar() {
       <span className="micro" style={{ color: "var(--live)" }}>{busy} BUSY</span>
       <span className="micro" style={{ color: "var(--idle)" }}>{idle} IDLE</span>
       <span className="micro" style={{ color: "var(--offline)" }}>{off} OFF</span>
+      <NoticesBell />
       <button className="btn ghost sm" onClick={toggleTheme} title={`theme: ${theme}`} aria-label="toggle theme">
         {theme === "dark" ? "◑" : theme === "light" ? "◐" : "◒"}
       </button>
@@ -381,6 +385,7 @@ export default function App() {
   return (
     <AppDataContext.Provider value={data}>
       <HotkeysProvider>
+        <NoticesProvider>
         <GlobalHotkeys />
         <Palette />
         <div className="shell">
@@ -397,6 +402,7 @@ export default function App() {
               <Route path="/view/:name" element={<View />} />
               <Route path="/boards" element={<BoardsPage />} />
               <Route path="/plugins" element={<Plugins />} />
+              <Route path="/usage" element={<Usage />} />
               <Route path="/board/:id" element={<BoardPage />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />
@@ -411,6 +417,7 @@ export default function App() {
           </main>
           </div>
         </div>
+        </NoticesProvider>
       </HotkeysProvider>
     </AppDataContext.Provider>
   );
