@@ -50,6 +50,11 @@ pub struct MeshState {
     /// Interior-mutable so `aspen mesh peers-add` / `relay` take effect in
     /// the running daemon without a restart (see Node::reload_mesh).
     pub config: std::sync::RwLock<MeshConfig>,
+    /// Additional meshes (MESHES.md): each with its own root, peers,
+    /// relays and policy. Node names are unique across all of them.
+    pub extra: std::sync::RwLock<Vec<MeshConfig>>,
+    /// node → the mesh its live link was made in.
+    pub link_mesh: Mutex<HashMap<String, String>>,
     /// Peers with a dialer task already running (idempotent ensure_dialers).
     pub dialing: Mutex<std::collections::HashSet<String>>,
     /// Relay URLs with a client task running (idempotent ensure_dialers).
@@ -97,6 +102,31 @@ pub struct MeshState {
     pub reach: Mutex<HashMap<String, UrlReach>>,
 }
 
+/// What an op does to this node (MESHES.md §capabilities).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    Observe,
+    Control,
+    Spawn,
+    Trust,
+}
+
+/// Classify a mesh op. Anything not listed as a read is control.
+pub fn op_capability(op: &str) -> Capability {
+    match op {
+        "transcript" | "activities" | "subagent" | "artifacts" | "file_stat" | "file_read"
+        | "runtime" | "context" | "bookmarks" | "plugins_effective" | "boards"
+        | "plugin_registry" | "plugins_registry_view" | "templates" | "needs" | "node_repos"
+        | "node_sessions" | "history" | "node_update_status" | "node_logs" | "adoptions"
+        | "usage" | "fleet_activities" | "notices" | "memory_files" | "memory_conflicts"
+        | "replica_offsets" | "session_spec" | "session_preflight" | "node_preflight_target"
+        | "sub" | "http" => Capability::Observe,
+        "spawn" | "template_spawn" => Capability::Spawn,
+        "adoption" | "node_repo_skip" => Capability::Trust,
+        _ => Capability::Control,
+    }
+}
+
 /// Reachability memory for one dial URL.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct UrlReach {
@@ -131,6 +161,11 @@ pub struct Advertised {
     /// Federation dial URLs peers may try directly.
     #[serde(default)]
     pub dial_urls: Vec<String>,
+    /// "wsl-nat": every address here is WSL's NAT-internal one and no
+    /// `aspen config advertise` URL is set — other machines cannot dial
+    /// this node without a forwarded port or a relay (RELAY.md §9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     /// Relay endpoints this node hosts that peers may rendezvous at.
     #[serde(default)]
     pub relay_urls: Vec<String>,
@@ -286,6 +321,8 @@ impl MeshState {
         Self {
             identity,
             config: std::sync::RwLock::new(config),
+            extra: std::sync::RwLock::new(Vec::new()),
+            link_mesh: Mutex::new(HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
             relay_running: Mutex::new(std::collections::HashSet::new()),
             relay_up: Mutex::new(HashMap::new()),
@@ -350,15 +387,90 @@ impl MeshState {
 }
 
 impl MeshState {
+    /// Every peer across every mesh (names are unique across them).
     pub fn peers(&self) -> Vec<crate::mesh::PeerConfig> {
-        self.config.read().unwrap().peers.clone()
+        let mut v = self.config.read().unwrap().peers.clone();
+        for m in self.extra.read().unwrap().iter() {
+            v.extend(m.peers.iter().cloned());
+        }
+        v
+    }
+    /// Every mesh config, the primary first.
+    pub fn configs(&self) -> Vec<MeshConfig> {
+        let mut v = vec![self.config.read().unwrap().clone()];
+        v.extend(self.extra.read().unwrap().iter().cloned());
+        v
+    }
+    pub fn mesh_names(&self) -> Vec<String> {
+        self.configs().into_iter().map(|c| c.mesh).collect()
+    }
+    pub fn is_multi(&self) -> bool {
+        !self.extra.read().unwrap().is_empty()
+    }
+    /// The mesh a peer is configured in, else the mesh its link was made
+    /// in (a peer met through a relay before any config listed it).
+    pub fn mesh_of_peer(&self, node: &str) -> Option<String> {
+        for c in self.configs() {
+            if c.peers.iter().any(|p| p.cert.node == node) {
+                return Some(c.mesh);
+            }
+        }
+        self.link_mesh.lock().unwrap().get(node).cloned()
+    }
+    pub fn root_for(&self, mesh: &str) -> Option<Vec<u8>> {
+        self.configs().into_iter().find(|c| c.mesh == mesh).map(|c| c.root_public)
+    }
+    /// "full" | "observe" for a mesh (MESHES.md §capabilities).
+    pub fn policy_of(&self, mesh: &str) -> String {
+        let primary = self.config.read().unwrap().mesh.clone();
+        self.configs()
+            .into_iter()
+            .find(|c| c.mesh == mesh)
+            .map(|c| c.policy_or(if c.mesh == primary { "full" } else { "observe" }))
+            .unwrap_or_else(|| "observe".into())
+    }
+    /// The mesh a relay URL belongs to: the config listing it, else the
+    /// mesh of the peer that advertised it, else the primary.
+    pub fn relay_mesh(&self, url: &str) -> String {
+        for c in self.configs() {
+            if c.relay_urls().iter().any(|u| u == url) {
+                return c.mesh;
+            }
+        }
+        if let Some(from) = self.discovered_relays.lock().unwrap().get(url).cloned() {
+            if let Some(m) = self.mesh_of_peer(&from) {
+                return m;
+            }
+        }
+        self.mesh_name()
+    }
+    /// What a peer may do here: every capability for a "full" mesh; reads
+    /// only for "observe"; a console peer reads and controls, never spawns
+    /// or trusts (MESHES.md).
+    pub fn allows(&self, peer: &str, cap: Capability) -> bool {
+        if peer.starts_with("console-") {
+            return matches!(cap, Capability::Observe | Capability::Control);
+        }
+        let mesh = self.mesh_of_peer(peer).unwrap_or_else(|| self.mesh_name());
+        match self.policy_of(&mesh).as_str() {
+            "full" => true,
+            _ => matches!(cap, Capability::Observe),
+        }
     }
     /// First configured relay (status readouts); `relay_urls` has them all.
     pub fn relay_url(&self) -> Option<String> {
         self.relay_urls().into_iter().next()
     }
     pub fn relay_urls(&self) -> Vec<String> {
-        self.config.read().unwrap().relay_urls()
+        let mut v = self.config.read().unwrap().relay_urls();
+        for m in self.extra.read().unwrap().iter() {
+            for u in m.relay_urls() {
+                if !v.contains(&u) {
+                    v.push(u);
+                }
+            }
+        }
+        v
     }
     pub fn mesh_name(&self) -> String {
         self.config.read().unwrap().mesh.clone()
@@ -399,13 +511,11 @@ impl MeshState {
     }
 
     fn peer_cert(&self, node: &str) -> Option<NodeCert> {
-        self.config
-            .read()
-            .unwrap()
-            .peers
-            .iter()
+        // Across every mesh (MESHES.md): names are unique across them.
+        self.peers()
+            .into_iter()
             .find(|p| p.cert.node == node)
-            .map(|p| p.cert.clone())
+            .map(|p| p.cert)
     }
 
     /// Seal and queue a payload for a peer. Err if no live link.
@@ -492,16 +602,28 @@ pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
                 .push(format!("ws://{h}:{port}/api/federation/relay"));
         }
     }
-    for u in crate::settings::load(dir).advertise_urls() {
-        if !out.dial_urls.contains(&u) {
+    let configured = crate::settings::load(dir).advertise_urls();
+    for u in &configured {
+        if !out.dial_urls.contains(u) {
             out.dial_urls.push(u.clone());
         }
         let relay = u.replacen("/api/federation/ws", "/api/federation/relay", 1);
-        if relay != u && !out.relay_urls.contains(&relay) {
+        if relay != *u && !out.relay_urls.contains(&relay) {
             out.relay_urls.push(relay);
         }
     }
+    if configured.is_empty() && is_wsl() {
+        out.hint = Some("wsl-nat".into());
+    }
     out
+}
+
+/// WSL2's virtual NIC sits behind Windows' NAT: its addresses mean
+/// nothing to other machines.
+fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_ascii_lowercase().contains("microsoft"))
+        .unwrap_or(false)
 }
 
 /// Does `host` resolve to one of our own non-loopback IPv4 addresses?
@@ -553,9 +675,22 @@ fn hostname() -> Option<String> {
 }
 
 pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
+    roster_payload_for(inner, None)
+}
+
+/// The roster a peer in `mesh` receives: only agents whose repo is
+/// exposed to that mesh (MESHES.md §exposure); mesh-wide digests only for
+/// the primary mesh, so boards, plugins and templates never cross meshes.
+pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
     let agents = inner.store.agents().unwrap_or_default();
+    let primary = inner.mesh().map(|m| m.mesh_name());
+    let for_primary = mesh.is_none() || mesh == primary.as_deref();
     let list: Vec<Value> = agents
         .iter()
+        .filter(|a| match mesh {
+            Some(m) => crate::node::repo_exposed(inner, &a.repo, m),
+            None => true,
+        })
         .map(|a| {
             let live = inner.live(&a.name);
             json!({
@@ -591,19 +726,25 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         "servicing": inner.servicing.roster_json(mode),
         "has_root": has_root,
         "advertised": advertised(inner),
-        "boards_digest": inner.store.boards_digest(),
-        "plugins_digest": inner.store.plugin_registry_digest(),
-        "templates_digest": inner.store.templates_digest(),
-        "memory": crate::memory::roster_digests(inner),
+        "boards_digest": if for_primary { Some(inner.store.boards_digest()) } else { None },
+        "plugins_digest": if for_primary { Some(inner.store.plugin_registry_digest()) } else { None },
+        "templates_digest": if for_primary { Some(inner.store.templates_digest()) } else { None },
+        "memory": if for_primary { crate::memory::roster_digests(inner) } else { None },
+        "meshes": inner.mesh().map(|m| m.mesh_names()),
     })
 }
 
 /// Push the current roster to every connected peer (spawns/exits/timer).
 pub fn broadcast_roster(inner: &Arc<NodeInner>) {
     let Some(mesh) = inner.mesh() else { return };
-    let payload = roster_payload(inner);
     let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
+    let mut by_mesh: HashMap<Option<String>, Value> = HashMap::new();
     for p in peers {
+        let m = mesh.mesh_of_peer(&p);
+        let payload = by_mesh
+            .entry(m.clone())
+            .or_insert_with(|| roster_payload_for(inner, m.as_deref()))
+            .clone();
         if let Err(e) = mesh.send_to(&p, &payload) {
             tracing::debug!(peer = %p, error = %e, "roster push failed");
         }
@@ -635,6 +776,10 @@ struct Hello {
     /// Absent on pre-servicing daemons → treated as 1.
     #[serde(default = "proto_one")]
     proto: u32,
+    /// Certs for every additional mesh the sender is in (MESHES.md);
+    /// `hello` is the primary. The receiver picks one for a mesh it shares.
+    #[serde(default)]
+    certs: Vec<NodeCert>,
 }
 fn proto_one() -> u32 {
     1
@@ -669,6 +814,7 @@ pub async fn run_link(
             hello: my_cert,
             nonce: my_nonce.clone(),
             proto: PROTOCOL,
+            certs: mesh.identity.certs.clone(),
         })?)
         .map_err(|_| anyhow!("link closed before hello"))?;
 
@@ -680,17 +826,43 @@ pub async fn run_link(
         .map_err(|_| anyhow!("handshake timed out waiting for the peer's hello"))?
         .ok_or_else(|| anyhow!("link closed before peer hello"))?;
     let peer_hello: Hello = serde_json::from_str(&first)?;
-    let peer_cert = peer_hello.hello;
-    if let Err(e) = peer_cert.verify_against(&mesh.root_public()) {
-        mesh.note(&peer_cert.node, |h| {
-            h.last_error = Some(format!(
-                "cert from '{}' does not verify against this mesh's root: {e}",
-                peer_cert.node
-            ));
+    // Pick the peer's cert for a mesh we share (MESHES.md): the primary
+    // `hello` first, then any extra; each verified against THAT mesh's
+    // root. No shared mesh = no link.
+    let mut offered: Vec<NodeCert> = vec![peer_hello.hello.clone()];
+    offered.extend(peer_hello.certs.iter().cloned());
+    let mut chosen: Option<(NodeCert, String)> = None;
+    let mut last_err: Option<anyhow::Error> = None;
+    for c in &offered {
+        let Some(root) = mesh.root_for(&c.mesh) else { continue };
+        match c.verify_against(&root) {
+            Ok(()) => {
+                chosen = Some((c.clone(), c.mesh.clone()));
+                break;
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    let Some((peer_cert, link_mesh)) = chosen else {
+        let who = peer_hello.hello.node.clone();
+        let msg = match last_err {
+            Some(e) => format!("cert from '{who}' does not verify against this mesh's root: {e}"),
+            None => format!(
+                "'{who}' is in mesh {} — this node is in {}",
+                offered.iter().map(|c| c.mesh.as_str()).collect::<Vec<_>>().join("/"),
+                mesh.mesh_names().join("/")
+            ),
+        };
+        mesh.note(&who, |h| {
+            h.last_error = Some(msg.clone());
             h.last_error_at = Some(crate::store::now_epoch());
         });
-        return Err(e);
-    }
+        bail!("{msg}");
+    };
+    mesh.link_mesh
+        .lock()
+        .unwrap()
+        .insert(peer_cert.node.clone(), link_mesh.clone());
     mesh.note(&peer_cert.node, |h| {
         h.fingerprint = Some(fingerprint(&peer_cert.ed_public));
     });
@@ -715,18 +887,34 @@ pub async fn run_link(
         // send_to (envelopes are sealed to the peer's cert) and on disk so
         // it is a known peer from now on (no dial URL: reached via relay or
         // inbound).
-        tracing::info!(peer = %peer_cert.node, "peer cert not on file; recording it (root signature verified)");
+        tracing::info!(peer = %peer_cert.node, mesh = %link_mesh, "peer cert not on file; recording it (root signature verified)");
         {
-            let mut cfg = mesh.config.write().unwrap();
-            cfg.peers.retain(|p| p.cert.node != peer_cert.node);
-            cfg.peers.push(crate::mesh::PeerConfig {
-                cert: peer_cert.clone(),
-                url: None,
-            });
+            let primary = mesh.config.read().unwrap().mesh.clone();
+            if link_mesh == primary {
+                let mut cfg = mesh.config.write().unwrap();
+                cfg.peers.retain(|p| p.cert.node != peer_cert.node);
+                cfg.peers.push(crate::mesh::PeerConfig {
+                    cert: peer_cert.clone(),
+                    url: None,
+                });
+            } else {
+                let mut ex = mesh.extra.write().unwrap();
+                if let Some(cfg) = ex.iter_mut().find(|c| c.mesh == link_mesh) {
+                    cfg.peers.retain(|p| p.cert.node != peer_cert.node);
+                    cfg.peers.push(crate::mesh::PeerConfig {
+                        cert: peer_cert.clone(),
+                        url: None,
+                    });
+                }
+            }
         }
-        if let Some(dir) = inner.data_dir.as_deref() {
-            if let Err(e) = crate::mesh::MeshFiles::new(dir).add_peer(peer_cert.clone(), None) {
-                tracing::warn!(peer = %peer_cert.node, error = %e, "could not persist peer cert");
+        // A console peer (RELAY.md §11) lives only for its link: it is
+        // never a configured peer on disk.
+        if !peer_cert.node.starts_with("console-") {
+            if let Some(dir) = inner.data_dir.as_deref() {
+                if let Err(e) = crate::mesh::MeshFiles::new(dir).add_peer(peer_cert.clone(), None) {
+                    tracing::warn!(peer = %peer_cert.node, error = %e, "could not persist peer cert");
+                }
             }
         }
     }
@@ -798,7 +986,7 @@ pub async fn run_link(
         h.last_error = None;
         h.last_error_at = None;
     });
-    let _ = mesh.send_to(&peer, &roster_payload(&inner));
+    let _ = mesh.send_to(&peer, &roster_payload_for(&inner, mesh.mesh_of_peer(&peer).as_deref()));
     // Anything pending for agents homed there can move now.
     let homed: Vec<String> = mesh
         .remote
@@ -840,6 +1028,7 @@ pub async fn run_link(
         }
     }
     mesh.remote.lock().unwrap().remove(&peer);
+    mesh.link_mesh.lock().unwrap().remove(&peer);
     // Consumers of subscriptions served over this link learn immediately
     // (their channel closes) rather than waiting on silence.
     mesh.remote_subs
@@ -884,6 +1073,9 @@ async fn link_loop(
             }
         };
         match payload.get("t").and_then(|t| t.as_str()).unwrap_or("") {
+            "bus" if !mesh.allows(peer, Capability::Control) => {
+                tracing::info!(peer, "bus row from an observe-only peer dropped");
+            }
             "bus" => {
                 let uuid = payload.get("uuid").and_then(|u| u.as_str()).unwrap_or("");
                 let sender = payload
@@ -1092,8 +1284,34 @@ async fn link_loop(
                 let inner = inner.clone();
                 let mesh = mesh.clone();
                 let peer = peer.to_owned();
+                // The capability layer (MESHES.md): what this peer's mesh
+                // policy grants, checked before dispatch; spawn/trust from a
+                // peer is audited on the fleet trail.
+                let cap = op_capability(&op);
+                if !mesh.allows(&peer, cap) {
+                    let m = mesh.mesh_of_peer(&peer).unwrap_or_default();
+                    let reply = json!({ "t": "api_res", "id": id, "ok": false,
+                        "error": format!("forbidden: {cap:?} not granted to mesh '{m}' here (policy {})", mesh.policy_of(&m)) });
+                    let _ = mesh.send_to(&peer, &reply);
+                    continue;
+                }
+                if matches!(cap, Capability::Spawn | Capability::Trust) {
+                    let _ = inner.store.record_event(
+                        "node",
+                        "remote_control",
+                        json!({ "peer": peer, "mesh": mesh.mesh_of_peer(&peer), "op": op, "agent": agent }),
+                    );
+                }
                 tokio::spawn(async move {
-                    let res = serve_api_req(&inner, &peer, &op, &agent, body).await;
+                    // Exposure (MESHES.md): a peer sees and acts on only what
+                    // its mesh is allowed to; checked before and after.
+                    let peer_mesh = mesh.mesh_of_peer(&peer).unwrap_or_else(|| mesh.mesh_name());
+                    let res = match exposure_precheck(&inner, &peer_mesh, &op, &agent, &body) {
+                        Err(e) => Err(e),
+                        Ok(()) => serve_api_req(&inner, &peer, &op, &agent, body)
+                            .await
+                            .map(|v| exposure_filter(&inner, &peer_mesh, &op, v)),
+                    };
                     let reply = match res {
                         Ok(body) => json!({ "t": "api_res", "id": id, "ok": true, "body": body }),
                         Err(e) => {
@@ -1121,6 +1339,42 @@ async fn link_loop(
                     .and_then(|a| a.as_str())
                     .unwrap_or("")
                     .to_owned();
+                // A console peer may ask for an agent homed on another
+                // node (`bare@node`): subscribe there on its behalf and
+                // relay the frames (RELAY.md §11).
+                if inner.live(&agent).is_none() {
+                    if let Some((bare, home)) = agent.rsplit_once('@').filter(|(_, h)| mesh.peers().iter().any(|p| p.cert.node == *h)) {
+                        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+                        let up_id = uuid::Uuid::new_v4().to_string();
+                        mesh.remote_subs.lock().unwrap().insert(up_id.clone(), (home.to_owned(), tx));
+                        if mesh.send_to(home, &json!({ "t": "sub", "id": up_id, "agent": bare })).is_err() {
+                            mesh.remote_subs.lock().unwrap().remove(&up_id);
+                            let _ = mesh.send_to(peer, &json!({ "t": "sub_end", "id": id, "reason": format!("no live link to {home}") }));
+                            continue;
+                        }
+                        let mesh2 = mesh.clone();
+                        let peer2 = peer.to_owned();
+                        let id2 = id.clone();
+                        let home2 = home.to_owned();
+                        let up_id2 = up_id.clone();
+                        let task = tokio::spawn(async move {
+                            while let Some(f) = rx.recv().await {
+                                let t = f.get("t").and_then(|t| t.as_str()).unwrap_or("");
+                                if t == "sub_end" {
+                                    break;
+                                }
+                                if mesh2.send_to(&peer2, &json!({ "t": "ev", "id": id2, "ev": f.get("ev").cloned().unwrap_or(Value::Null) })).is_err() {
+                                    break;
+                                }
+                            }
+                            mesh2.remote_subs.lock().unwrap().remove(&up_id2);
+                            let _ = mesh2.send_to(&home2, &json!({ "t": "unsub", "id": up_id2 }));
+                            let _ = mesh2.send_to(&peer2, &json!({ "t": "sub_end", "id": id2 }));
+                        });
+                        mesh.served_subs.lock().unwrap().insert(id.clone(), task);
+                        continue;
+                    }
+                }
                 let Some(sess) = inner.live(&agent) else {
                     let _ = mesh.send_to(
                         peer,
@@ -1192,6 +1446,101 @@ async fn link_loop(
 
 /// Execute a peer console's request against this node. The op vocabulary
 /// mirrors the local REST API; every op is scoped to one named agent.
+/// Refuse before dispatch what a peer's mesh may not touch: a local agent
+/// in an unexposed repo; a spawn into one; mesh-wide tables from a mesh
+/// that is not the primary (boards, plugins, templates, memory never
+/// cross meshes). With one mesh nothing is filtered.
+fn exposure_precheck(inner: &Arc<NodeInner>, peer_mesh: &str, op: &str, agent: &str, body: &Value) -> Result<()> {
+    let Some(mesh) = inner.mesh() else { return Ok(()) };
+    if !mesh.is_multi() {
+        return Ok(());
+    }
+    let primary = mesh.mesh_name();
+    if peer_mesh != primary
+        && matches!(
+            op,
+            "boards" | "plugin_registry" | "plugins_sync" | "plugins_registry_view" | "templates"
+                | "template_spawn" | "memory_files" | "memory_conflicts" | "memory_resolve"
+                | "inbox_read" | "link_add" | "link_del" | "node_update" | "node_update_cancel"
+                | "node_update_policy" | "node_evacuate" | "adoption" | "adoptions" | "node_logs"
+        )
+    {
+        return Err(anyhow!("{op}: mesh-wide state and node servicing belong to this node's primary mesh"));
+    }
+    if !agent.is_empty() && !crate::node::agent_exposed(inner, agent, peer_mesh) {
+        return Err(anyhow!("@{agent} is not exposed to mesh '{peer_mesh}'"));
+    }
+    if matches!(op, "spawn" | "node_sessions" | "node_repo_skip" | "node_repo_rename" | "node_repo_forget") {
+        if let Some(r) = body.get("repo").or_else(|| body.get("path")).and_then(|r| r.as_str()) {
+            let path = crate::node::normalize_repo(std::path::Path::new(r));
+            if !crate::node::repo_exposed(inner, &path, peer_mesh) {
+                return Err(anyhow!("{r} is not exposed to mesh '{peer_mesh}'"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Drop from a response what a peer's mesh may not see: repo rows and
+/// anything tagged with an unexposed agent.
+fn exposure_filter(inner: &Arc<NodeInner>, peer_mesh: &str, op: &str, v: Value) -> Value {
+    let Some(mesh) = inner.mesh() else { return v };
+    if !mesh.is_multi() {
+        return v;
+    }
+    let agent_ok = |item: &Value| -> bool {
+        for k in ["agent", "of_agent", "name"] {
+            if let Some(a) = item.get(k).and_then(|a| a.as_str()) {
+                if op == "node_repos" || op == "node_discover" {
+                    break;
+                }
+                return crate::node::agent_exposed(inner, a, peer_mesh);
+            }
+        }
+        true
+    };
+    let repo_ok = |item: &Value| -> bool {
+        match item.get("path").and_then(|p| p.as_str()) {
+            Some(p) => crate::node::repo_exposed(inner, std::path::Path::new(p), peer_mesh),
+            None => true,
+        }
+    };
+    match (op, v) {
+        ("node_repos" | "node_discover", Value::Array(items)) => {
+            Value::Array(items.into_iter().filter(|i| repo_ok(i)).collect())
+        }
+        ("fleet_activities" | "usage" | "adoptions", Value::Array(items)) => {
+            Value::Array(items.into_iter().filter(|i| agent_ok(i)).collect())
+        }
+        ("history", mut v) => {
+            for k in ["events", "messages"] {
+                if let Some(Value::Array(items)) = v.get(k).cloned() {
+                    v[k] = Value::Array(items.into_iter().filter(|i| agent_ok(i)).collect());
+                }
+            }
+            v
+        }
+        ("needs", mut v) => {
+            for k in ["prompts", "adoptions"] {
+                if let Some(Value::Array(items)) = v.get(k).cloned() {
+                    v[k] = Value::Array(items.into_iter().filter(|i| agent_ok(i)).collect());
+                }
+            }
+            // Operator mail and memory conflicts are this operator's.
+            v["inbox"] = json!([]);
+            v["memory"] = json!([]);
+            v
+        }
+        ("notices", mut v) => {
+            if let Some(Value::Array(items)) = v.get("notices").cloned() {
+                v["notices"] = Value::Array(items.into_iter().filter(|i| agent_ok(i)).collect());
+            }
+            v
+        }
+        (_, v) => v,
+    }
+}
+
 async fn serve_api_req(
     inner: &Arc<NodeInner>,
     peer: &str,
@@ -1293,6 +1642,27 @@ async fn serve_api_req(
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
         "fleet_activities" => Ok(json!(crate::node::fleet_activities(&node.inner))),
+        "http" => {
+            // A console peer's request, dispatched into this node's own
+            // router (RELAY.md §11). Only /api/ paths; the gateway sets the
+            // node token, since the link already authenticated the caller.
+            let gw = inner
+                .http_gateway
+                .get()
+                .cloned()
+                .ok_or_else(|| anyhow!("no http gateway on this node (headless?)"))?;
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("GET").to_owned();
+            let path = body.get("path").and_then(|p| p.as_str()).unwrap_or("/").to_owned();
+            if !path.starts_with("/api/") {
+                return Err(anyhow!("http op serves /api/ paths only"));
+            }
+            let b = body.get("body").and_then(|b| b.as_str()).map(str::to_owned);
+            let headers: HashMap<String, String> = body
+                .get("headers")
+                .and_then(|h| serde_json::from_value(h.clone()).ok())
+                .unwrap_or_default();
+            Ok(gw(method, path, b, headers).await)
+        }
         "templates" => Ok(json!(node.inner.store.templates(true)?)),
         "template_spawn" => {
             let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
@@ -2299,17 +2669,18 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str, dial: &str) -> R
         .await
         .ok_or_else(|| anyhow!("relay closed before challenge"))??;
     let challenge: Challenge = serde_json::from_str(first.to_text()?)?;
+    let relay_mesh = mesh.relay_mesh(relay_url);
     let cert = mesh
         .identity
-        .cert
-        .clone()
-        .ok_or_else(|| anyhow!("node not certified"))?;
+        .cert_for(&relay_mesh)
+        .cloned()
+        .ok_or_else(|| anyhow!("node not certified in mesh {relay_mesh}"))?;
     let reg = Register {
-        mesh: mesh.mesh_name(),
+        mesh: relay_mesh.clone(),
         node: mesh.identity.node.clone(),
         challenge_sig: mesh
             .identity
-            .sign_relay_challenge(&mesh.mesh_name(), &challenge.nonce)?,
+            .sign_relay_challenge(&relay_mesh, &challenge.nonce)?,
         cert,
     };
     sink.send(tokio_tungstenite::tungstenite::Message::text(
@@ -2470,7 +2841,7 @@ async fn relay_read_loop(
                     s.host = host;
                 }
                 for p in peers {
-                    if me < p.as_str() && !mesh.link_up(&p) {
+                    if me < p.as_str() && !p.starts_with("console-") && !mesh.link_up(&p) {
                         start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
                     }
                 }
@@ -2512,15 +2883,18 @@ async fn relay_read_loop(
                 // link or the floor.
                 let is_hello = serde_json::from_str::<Hello>(&data).is_ok();
                 let existing = peer_ins.lock().unwrap().get(&from).cloned();
+                // A console peer always dials us (RELAY.md §11), whatever
+                // its name sorts as.
+                let i_dial = me < from.as_str() && !from.starts_with("console-");
                 match (is_hello, existing) {
                     // We dial this peer: its hello is the reply to our
                     // attempt (feed it) — or, with no attempt in flight, a
                     // stray from an older session (ignore; presence drives
                     // our next attempt).
-                    (true, Some(tx)) if me < from.as_str() => {
+                    (true, Some(tx)) if i_dial => {
                         let _ = tx.send(data);
                     }
-                    (true, None) if me < from.as_str() => {
+                    (true, None) if i_dial => {
                         tracing::info!(peer = %from, "hello from a peer we dial with no attempt in flight; ignored");
                     }
                     (true, existing) => {

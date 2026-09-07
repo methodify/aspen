@@ -129,6 +129,7 @@ pub async fn serve(
         .route("/activity", get(get_activity))
         .route("/repos", get(get_repos).post(post_repo))
         .route("/repos/skip", post(post_repo_skip))
+        .route("/repos/expose", post(post_repo_expose))
         .route("/repos/forget", post(post_repo_forget))
         .route("/repo/autorun", get(get_autorun))
         .route("/repo/skills", get(get_skills))
@@ -206,6 +207,58 @@ pub async fn serve(
         // embed ui/dist at compile time; debug builds read it from disk
         // live, so UI iteration needs no rebuild.
         app = app.fallback(embedded_ui);
+    }
+
+    // The `http` mesh op (RELAY.md §11): a console peer's request runs
+    // through this same router, with the node token set — the link
+    // already proved who is asking.
+    {
+        let gw_router = app.clone();
+        let gw_token = token.clone();
+        let gateway: aspen_node::node::HttpGateway = Arc::new(move |method: String, path: String, body: Option<String>, headers: std::collections::HashMap<String, String>| {
+            let router = gw_router.clone();
+            let tk = gw_token.clone();
+            Box::pin(async move {
+                use tower::ServiceExt;
+                let mut req = axum::http::Request::builder().method(method.as_str()).uri(path.as_str());
+                if let Some(t) = tk.as_deref() {
+                    req = req.header("x-aspen-token", t);
+                }
+                let mut has_ct = false;
+                for (k, v) in &headers {
+                    if k.eq_ignore_ascii_case("content-type") {
+                        has_ct = true;
+                    }
+                    req = req.header(k.as_str(), v.as_str());
+                }
+                if body.is_some() && !has_ct {
+                    req = req.header("content-type", "application/json");
+                }
+                let req = match req.body(axum::body::Body::from(body.unwrap_or_default())) {
+                    Ok(r) => r,
+                    Err(e) => return json!({ "status": 400, "body": format!("bad request: {e}") }),
+                };
+                match router.oneshot(req).await {
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        let ct = resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_owned);
+                        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.unwrap_or_default();
+                        let texty = ct.as_deref().map(|c| c.starts_with("application/json") || c.starts_with("text/")).unwrap_or(true);
+                        if texty {
+                            json!({ "status": status, "content_type": ct, "body": String::from_utf8_lossy(&bytes) })
+                        } else {
+                            json!({ "status": status, "content_type": ct, "body_b64": aspen_wire::b64::encode(&bytes) })
+                        }
+                    }
+                    Err(e) => json!({ "status": 500, "body": format!("{e}") }),
+                }
+            })
+        });
+        let _ = state.node.inner.http_gateway.set(gateway);
     }
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -934,6 +987,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "pending": s.node.inner.store.pending_count(&format!("{}@{}", a.name, node)).unwrap_or(0),
                             "node": node,
                             "remote": true,
+                            "mesh": mesh.mesh_of_peer(node),
                         }));
                     }
                 }
@@ -2438,10 +2492,9 @@ async fn ws_relay(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
         .into_response();
     };
     let host = s.relay.clone();
-    let name = mesh.mesh_name();
-    let root = mesh.root_public();
+    let meshes: Vec<(String, Vec<u8>)> = mesh.configs().into_iter().map(|c| (c.mesh, c.root_public)).collect();
     let me = mesh.identity.node.clone();
-    ws.on_upgrade(move |socket| crate::relayhost::serve(host, name, root, me, socket))
+    ws.on_upgrade(move |socket| crate::relayhost::serve(host, meshes, me, socket))
         .into_response()
 }
 
@@ -3182,14 +3235,18 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
     let links = mesh.links.lock().unwrap();
     let remote = mesh.remote.lock().unwrap();
     let health = mesh.health.lock().unwrap();
+    // Console peers (RELAY.md §11) are links, not members: listed apart.
+    let consoles: Vec<String> = links.keys().filter(|k| k.starts_with("console-")).cloned().collect();
     let peers: Vec<Value> = mesh
         .peers()
         .iter()
+        .filter(|p| !p.cert.node.starts_with("console-"))
         .map(|p| {
             let name = &p.cert.node;
             let h = health.get(name).cloned().unwrap_or_default();
             json!({
                 "node": name,
+                "mesh": mesh.mesh_of_peer(name),
                 "url": p.url,
                 // Where that node's console probably is: its dial URL minus
                 // the federation path (a guess when it listens headless).
@@ -3225,6 +3282,17 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
     Json(json!({
         "in_mesh": true,
         "mesh": mesh.mesh_name(),
+        // Every mesh this node is in (MESHES.md), the primary first.
+        "meshes": mesh.configs().iter().map(|c| json!({
+            "mesh": c.mesh,
+            "primary": c.mesh == mesh.mesh_name(),
+            "policy": mesh.policy_of(&c.mesh),
+            "peers": c.peers.iter().map(|p| p.cert.node.clone()).collect::<Vec<_>>(),
+            "relays": c.relay_urls(),
+            "root_here": c.mesh == mesh.mesh_name() && s.node.inner.data_dir.as_deref().map(aspen_node::mesh::MeshFiles::new).and_then(|f| f.load_root().ok().flatten()).is_some(),
+        })).collect::<Vec<_>>(),
+        "multi_mesh": mesh.is_multi(),
+        "consoles": consoles,
         "node": mesh.identity.node,
         "identity": {
             "node": mesh.identity.node,
@@ -4022,9 +4090,11 @@ fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
         .filter(|a| a.repo == r.path && s.node.inner.live(&a.name).is_some())
         .count();
     let (autorun, trusted) = s.node.trust_state(&r.path);
+    let multi = s.node.inner.mesh().is_some_and(|m| m.is_multi());
     json!({
         "path": r.path.to_string_lossy(),
         "handle": r.handle,
+        "meshes": if multi { Some(s.node.inner.store.exposed_meshes(&r.path).unwrap_or_default()) } else { None },
         "git": aspen_node::gitstate::get(&r.path),
         "skip_permissions": r.skip_permissions,
         "last_used_at": r.last_used_at,
@@ -4038,6 +4108,28 @@ fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
 async fn get_repos(State(s): S) -> impl IntoResponse {
     match s.node.inner.store.repos() {
         Ok(rows) => Json(rows.iter().map(|r| repo_json(&s, r)).collect::<Vec<_>>()).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExposeBody {
+    path: String,
+    meshes: Vec<String>,
+}
+
+/// Set which meshes a repo is exposed to (MESHES.md §exposure).
+async fn post_repo_expose(State(s): S, Json(b): Json<ExposeBody>) -> impl IntoResponse {
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
+    let known = s.node.inner.mesh().map(|m| m.mesh_names()).unwrap_or_default();
+    if let Some(bad) = b.meshes.iter().find(|m| !known.contains(m)) {
+        return err(StatusCode::BAD_REQUEST, format!("this node is not in mesh '{bad}'")).into_response();
+    }
+    match s.node.inner.store.set_exposure(&path, &b.meshes) {
+        Ok(()) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true, "meshes": b.meshes })).into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }

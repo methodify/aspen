@@ -93,8 +93,11 @@ pub struct NodeIdentity {
     pub x_secret: Vec<u8>,
     #[serde(with = "b64")]
     pub x_public: Vec<u8>,
-    /// Present once certified.
+    /// Present once certified (the primary mesh).
     pub cert: Option<NodeCert>,
+    /// Certs for additional meshes (docs/MESHES.md): one keypair, N roots.
+    #[serde(default)]
+    pub certs: Vec<NodeCert>,
 }
 
 impl NodeIdentity {
@@ -109,7 +112,49 @@ impl NodeIdentity {
             x_public: x_pub.to_bytes().to_vec(),
             x_secret: x.to_bytes().to_vec(),
             cert: None,
+            certs: Vec::new(),
         }
+    }
+
+    /// Every cert this identity holds, primary first.
+    pub fn all_certs(&self) -> Vec<NodeCert> {
+        let mut v: Vec<NodeCert> = self.cert.iter().cloned().collect();
+        v.extend(self.certs.iter().cloned());
+        v
+    }
+
+    /// The cert for one mesh, if held.
+    pub fn cert_for(&self, mesh: &str) -> Option<&NodeCert> {
+        if let Some(c) = &self.cert {
+            if c.mesh == mesh {
+                return Some(c);
+            }
+        }
+        self.certs.iter().find(|c| c.mesh == mesh)
+    }
+
+    /// Install a cert for an additional mesh (same keys, same name).
+    pub fn install_extra_cert(&mut self, cert: NodeCert) -> Result<()> {
+        if cert.node != self.node {
+            bail!("cert names node {:?}, this node is {:?}", cert.node, self.node);
+        }
+        if cert.ed_public != self.ed_public || cert.x_public != self.x_public {
+            bail!("cert covers different keys than this node holds");
+        }
+        cert.verify_against(&cert.root_public)?;
+        if self.cert.as_ref().is_some_and(|c| c.mesh == cert.mesh) {
+            bail!("already certified in mesh {:?} (the primary)", cert.mesh);
+        }
+        self.certs.retain(|c| c.mesh != cert.mesh);
+        self.certs.push(cert);
+        Ok(())
+    }
+
+    /// Drop the cert for an additional mesh; returns whether one was held.
+    pub fn remove_extra_cert(&mut self, mesh: &str) -> bool {
+        let before = self.certs.len();
+        self.certs.retain(|c| c.mesh != mesh);
+        self.certs.len() != before
     }
 
     pub fn join_request(&self) -> JoinRequest {

@@ -309,6 +309,43 @@ function SessionRow({
   );
 }
 
+/** Which meshes see this repo (MESHES.md §exposure): one chip per mesh
+ *  this node is in, toggled by click. Shown only while in more than one. */
+function ExposureChips({ repo, onChanged }: { repo: Repo; onChanged: () => void }) {
+  const [meshes, setMeshes] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.mesh().then((m) => setMeshes((m.meshes ?? []).map((x) => x.mesh))).catch(() => setMeshes([]));
+  }, []);
+  if (meshes.length < 2) return null;
+  const on = repo.meshes ?? [];
+  return (
+    <span className="mono-meta" title="which meshes may see (and act on) this repo's sessions; click to toggle" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+      exposed to
+      {meshes.map((m) => (
+        <button
+          key={m}
+          type="button"
+          className={`chip mono kind-toggle${on.includes(m) ? "" : " off"}`}
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            const next = on.includes(m) ? on.filter((x) => x !== m) : [...on, m];
+            try {
+              await api.exposeRepo(repo.path, next);
+              onChanged();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {m}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 function RepoStrip({
   repo,
   node,
@@ -418,6 +455,7 @@ function RepoStrip({
             {repo.path}
           </span>
         </button>
+        {!node && repo.meshes && <ExposureChips repo={repo} onChanged={onChanged} />}
         {/* The handle: address segment (`arch@<handle>`) and channel name. */}
         {renaming ? (
           <form

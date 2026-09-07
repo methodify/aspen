@@ -274,7 +274,12 @@ enum MeshCommand {
         url: Option<String>,
     },
     /// On the new node: install a join bundle (or bare cert blob).
-    Join { blob: String },
+    Join {
+        blob: String,
+        /// For a second mesh: what its peers may do here (full | observe)
+        #[arg(long)]
+        policy: Option<String>,
+    },
     /// Tell the running daemon to re-read mesh files (done automatically
     /// after every mesh command; use this if the daemon was down then).
     Reload,
@@ -304,7 +309,12 @@ enum MeshCommand {
         /// This node holds the root key: delete it too, ending the mesh.
         #[arg(long)]
         discard_root: bool,
+        /// Leave an additional mesh by name (the primary needs no --mesh)
+        #[arg(long)]
+        mesh: Option<String>,
     },
+    /// What peers of a mesh may do on this node: full | observe
+    Policy { mesh: String, policy: String },
     /// Print this mesh's ROOT PUBLIC key (safe to give a relay).
     RootPubkey,
     /// Rendezvous relays this node sits on: add one, remove one, or clear
@@ -1463,7 +1473,20 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             notify_daemon_reload(data_dir);
             Ok(())
         }
-        MeshCommand::Leave { discard_root } => {
+        MeshCommand::Policy { mesh, policy } => {
+            let d = meshops::policy(&files, &mesh, &policy)?;
+            println!("{}", d.summary);
+            notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        MeshCommand::Leave { discard_root, mesh: Some(m) } => {
+            let d = meshops::leave_mesh(&files, &m)?;
+            let _ = discard_root;
+            println!("{}", d.summary);
+            notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        MeshCommand::Leave { discard_root, mesh: None } => {
             let d = meshops::leave(&files, discard_root)?;
             println!("{}", d.summary);
             notify_daemon_reload(data_dir);
@@ -1481,8 +1504,8 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             notify_daemon_reload(data_dir);
             Ok(())
         }
-        MeshCommand::Join { blob } => {
-            let d = meshops::join(&files, &blob)?;
+        MeshCommand::Join { blob, policy } => {
+            let d = meshops::join_with_policy(&files, &blob, policy.as_deref())?;
             println!("{}", d.summary);
             println!(
                 "(this node's cert blob is saved — print it any time with `aspen mesh export`)"
@@ -1689,6 +1712,18 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                                 .map(|u| format!(" — dials {u}"))
                                 .unwrap_or_else(|| " — inbound only (this peer dials us)".into())
                         );
+                    }
+                    for m in files.load_extra_meshes()? {
+                        println!(
+                            "also in mesh '{}' (policy {}): {} peer(s){}",
+                            m.mesh,
+                            m.policy_or("observe"),
+                            m.peers.len(),
+                            if m.relay_urls().is_empty() { String::new() } else { format!(", relays {}", m.relay_urls().join(", ")) }
+                        );
+                        for p in &m.peers {
+                            println!("  peer '{}'{}", p.cert.node, p.url.as_deref().map(|u| format!(" — dials {u}")).unwrap_or_default());
+                        }
                     }
                 }
                 (Some(id), None) => println!(

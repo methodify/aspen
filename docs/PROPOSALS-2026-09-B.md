@@ -3,7 +3,8 @@
 **Status:** designs for the three-tier slate approved 2026-09-07 (BACKLOG
 S-1..S-12). Shipped: §2 §3 §4 §12 as v0.15 (ACTIVITY.md, NOTIFICATIONS.md,
 USAGE.md); §6 §1 §5 as v0.16 (SYNC.md §3, REPLICATION.md, MEMORY.md); §7 §8 as
-v0.17 (PLUGINS.md §7b, SERVICING.md §13b, MIGRATION.md §4b). Rounds: v0.15 (§2 §3 §4 §12), v0.16 (§6 §1 §5), v0.17 (§7 §8),
+v0.17 (PLUGINS.md §7b, SERVICING.md §13b, MIGRATION.md §4b); §9 §10 as
+v0.18 (MESHES.md, RELAY.md §11). Rounds: v0.15 (§2 §3 §4 §12), v0.16 (§6 §1 §5), v0.17 (§7 §8),
 v0.18 (§9 §10), v0.19 (§11). Each section: the ask, what exists, the
 design, what it implies, the cost, open questions. As each round ships
 its section gets a `docs/<NAME>.md` reference and a DESIGN.md log entry.

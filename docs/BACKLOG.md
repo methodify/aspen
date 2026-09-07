@@ -31,8 +31,8 @@ S-10, P-5), v0.19 (S-11).
 | ~~S-6~~ v0.16 | protocol | **Hybrid logical clock** for mesh-wide rows (boards, marketplaces, rules). | §6 |
 | ~~S-7~~ v0.17 | sessions + console | **Session templates.** Named recipe: repo, plugins, model, prompt additions, board placement; one click or CLI. | §7 |
 | ~~S-8~~ v0.17 | servicing + console | **Evacuate a node; bring it here.** Move every live session off a node before servicing; one-click pull on any session; preflight readout. (B-5b) | §8 |
-| S-9 | protocol | **Multi-mesh membership** for one node. (P-1, docs/proposals/multi-mesh.md) | §9 |
-| S-10 | protocol + console | **Console through the relay** (P-4), with WSL address detection (P-5). | §10 |
+| ~~S-9~~ v0.18 | protocol | **Multi-mesh membership** for one node. (P-1, docs/proposals/multi-mesh.md) | §9 |
+| ~~S-10~~ v0.18 | protocol + console | **Console through the relay** (P-4), with WSL address detection (P-5). | §10 |
 | S-11 | console + protocol | **Pair mode on boards.** Two panes' sessions joined on a bus thread. | §11 |
 | ~~S-12~~ v0.15 | console | **Task notifications collapsed.** A `<task-notification>` in the transcript renders as a one-line summary card (agent name, status) with click-to-expand, like tool cards; one spanned dozens of screens. | §12 |
 
@@ -59,9 +59,9 @@ S-10, P-5), v0.19 (S-11).
 
 | id | tag | ask | notes |
 |---|---|---|---|
-| P-1 | protocol | Multi-mesh membership for one node (personal + work). | proposal sketched in conversation 2026-09-05; not written up |
+| ~~P-1~~ v0.18 | protocol | Multi-mesh membership for one node (personal + work). | MESHES.md |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
-| P-4 | protocol | Console-through-relay (the relay routes node↔node only). | RELAY.md §10 |
+| ~~P-4~~ v0.18 | protocol | Console-through-relay (the relay routes node↔node only). | RELAY.md §11 |
 | B-5b | protocol + sessions | Migration phases 3–4: memory convergence over the bus with 3-way merge; transcript replication (instant move, mesh-wide History); evacuate-a-node; bring-it-here one-click; dialog preflight readout. | [PROPOSALS-2026-09.md §5.4](PROPOSALS-2026-09.md#54-what-it-implies--the-product-ideas) |
-| P-5 | protocol | WSL nodes advertise only NAT-internal addresses; a forwarded port needs `aspen config advertise` by hand. Could detect the WSL case and say so in the console. | RELAY.md §9 |
+| ~~P-5~~ v0.18 | protocol | WSL nodes advertise only NAT-internal addresses; a forwarded port needs `aspen config advertise` by hand. Could detect the WSL case and say so in the console. | RELAY.md §11 (`hint: wsl-nat`) |

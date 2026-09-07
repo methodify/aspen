@@ -625,3 +625,12 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .notice-row { cursor: pointer; align-items: flex-start; }
 .notice-row:hover { background: var(--bg-strip); }
 .notices-hook { display: flex; flex-direction: column; gap: 6px; padding: 6px 10px; }
+.mesh-group { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.mesh-group-head { gap: 8px; }
+/* attach page (RELAY.md §11) */
+.attach-page { display: flex; flex-direction: column; gap: 14px; max-width: 900px; }
+.attach-step { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.attach-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.attach-blob { white-space: pre-wrap; word-break: break-all; font-size: 0.75rem; background: var(--bg-well); border: 1px solid var(--line); padding: 8px; margin: 0; max-height: 160px; overflow: auto; }
+.attach-state.s-up { color: var(--live); border-color: var(--live); }
+.attach-state.s-down { color: var(--sig-gate); border-color: var(--sig-gate); }

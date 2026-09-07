@@ -151,6 +151,11 @@ CREATE TABLE IF NOT EXISTS replicas(
   updated_at REAL NOT NULL,
   PRIMARY KEY(node, agent, rel)
 );
+CREATE TABLE IF NOT EXISTS repo_meshes(
+  path TEXT NOT NULL,
+  mesh TEXT NOT NULL,
+  PRIMARY KEY(path, mesh)
+);
 CREATE TABLE IF NOT EXISTS templates(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -751,6 +756,33 @@ impl BusStore {
             params![now_epoch(), agent, kind, detail.to_string()],
         )?;
         Ok(())
+    }
+
+    /// Meshes a repo is exposed to (MESHES.md); meaningful only while the
+    /// node is in more than one mesh.
+    pub fn exposed_meshes(&self, path: &Path) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT mesh FROM repo_meshes WHERE path=?1 ORDER BY mesh")?;
+        let rows = stmt.query_map(params![path.to_string_lossy()], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn set_exposure(&self, path: &Path, meshes: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let p = path.to_string_lossy().to_string();
+        conn.execute("DELETE FROM repo_meshes WHERE path=?1", params![p])?;
+        for m in meshes {
+            conn.execute(
+                "INSERT OR IGNORE INTO repo_meshes(path, mesh) VALUES(?1, ?2)",
+                params![p, m],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn exposure_rows(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row("SELECT COUNT(*) FROM repo_meshes", [], |r| r.get::<_, i64>(0))? as usize)
     }
 
     pub fn templates(&self, with_deleted: bool) -> Result<Vec<Template>> {

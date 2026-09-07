@@ -278,3 +278,43 @@ platform's, a persistent mailbox for the Rust hosts, relay preference
 order (the list is nominally ordered; nothing consumes the order yet —
 the console offers no reordering for that reason), and IPv6 in
 advertisements.
+
+
+## 11. The console as a peer (v0.18)
+
+A browser with no daemon of its own can reach a node through a relay.
+The console (`/attach`) keeps an identity in the browser — ed25519 +
+x25519 keys (`@noble/curves`), a name `console-<id>` — and prints an
+enroll blob; the mesh root certifies it (`aspen mesh certify <blob>`)
+and the bundle installs the cert, the certifier's cert and the relay.
+From then on the console **is a peer**: it registers with the relay
+(challenge → `Register` signed over the `aspen-relay-challenge-v1`
+context), sends a `Hello` to one node through a `Route`, proves the
+nonce, and speaks sealed envelopes (`XChaCha20-Poly1305` over the raw
+x25519 shared secret, `aspen-env-v1` signing bytes, `@noble/ciphers`).
+The relay reads nothing.
+
+What crosses the link: `api_req {op: "http", body: {method, path,
+body, headers}}` — the node dispatches the request into its own axum
+router with its token set (the link already proved who is asking) and
+answers `{status, content_type, body | body_b64}`; and the existing
+`sub`/`ev`/`sub_end` frames for a session's live events, which the node
+also proxies to a peer's session when the console asks for
+`bare@node`. `api.ts` switches every request and event stream to the
+tunnel when it is on; the status bar shows *via relay → node · up*.
+
+Consoles are links, not members: their certs are never written to
+disk, they are always the dialing side whatever their name sorts as,
+`GET /api/mesh` lists them under `consoles` rather than `peers`, and the
+node grants them observe + control, never spawn or trust (MESHES.md §4).
+Binary bodies (the artifact viewer's images) come back base64 and may
+not render through the tunnel.
+
+Also in v0.18 (P-5): a node on WSL with no `aspen config advertise` URL
+advertises `hint: "wsl-nat"`; the Mesh panel says it is reachable only
+through a relay or a forwarded port.
+
+Verified (rig, 2026-09-07): a console certified by the root node,
+attached through that node's embedded relay to a third node, rendered
+that node's fleet, opened one of its sessions and exchanged a turn with
+it — every request and event over the relay.

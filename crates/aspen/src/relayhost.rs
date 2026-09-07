@@ -43,8 +43,7 @@ impl RelayHost {
 /// mesh's root) → welcome → route until it closes.
 pub async fn serve(
     host: Arc<RelayHost>,
-    mesh: String,
-    root_pubkey: Vec<u8>,
+    meshes: Vec<(String, Vec<u8>)>,
     host_node: String,
     mut socket: WebSocket,
 ) {
@@ -75,6 +74,12 @@ pub async fn serve(
             Some(Ok(_)) => continue,
             _ => return,
         }
+    };
+    // Admit a member of any mesh this node is in (MESHES.md), verified
+    // against that mesh's root.
+    let Some((mesh, root_pubkey)) = meshes.iter().find(|(m, _)| *m == reg.mesh).cloned() else {
+        reject(&mut socket, &format!("this relay serves mesh {}, not {}", meshes.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join("/"), reg.mesh)).await;
+        return;
     };
     if let Err(reason) = aspen_wire::relay::verify_register(&mesh, &root_pubkey, &reg, &nonce) {
         reject(&mut socket, &reason).await;

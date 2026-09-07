@@ -865,3 +865,20 @@ cleaner lane for roster updates than user-message headers.
   dialog; a session with no transcript is now refused before it is
   stopped. Bring-it-here is the move dialog aimed at the console's own
   node, one click from any remote session.
+- **2026-09-07 — v0.18, meshes, capabilities, the console as a peer**
+  (PROPOSALS-2026-09-B §9 §10, docs/proposals/multi-mesh.md; references:
+  MESHES.md, RELAY.md §11). One keypair, one name, N certs: the mesh
+  state became a union over per-mesh configs (each with its root, peers,
+  relays and policy), a hello offers every cert and the receiver picks
+  the mesh it shares. Exposure moved down to the repo: a second mesh
+  pins existing repos to the first and sees only what is exposed;
+  mesh-wide tables never leave the primary mesh. The capability layer
+  the proposal called a prerequisite ships with it: ops are classed and
+  a mesh's policy (full / observe) is enforced before dispatch, with
+  spawn and trust from any peer on the fleet trail. The console can now
+  be a peer of its own — an identity in the browser, a cert from the
+  root, the federation protocol in TypeScript over a relay, and an
+  `http` op that dispatches into the node's router — so a browser with
+  no daemon reaches a node it cannot dial, with the relay reading
+  nothing. The standalone relay does not serve the page (any node's
+  console does); consoles are links, never members.

@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   api,
-  sessionEventsUrl,
+  openSessionEvents,
   type BookmarksInfo,
   type PermissionAnswer,
   type RuntimeInfo,
@@ -1309,33 +1309,31 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // History first, then live WS with reconnect + backoff.
   useEffect(() => {
     let disposed = false;
-    let ws: WebSocket | null = null;
+    let closeEvents: (() => void) | null = null;
     let timer: number | undefined;
     let attempt = 0;
 
     function connect() {
       if (disposed) return;
-      ws = new WebSocket(sessionEventsUrl(name));
-      ws.onopen = () => {
-        if (disposed) return;
-        attempt = 0;
-        setWsState("open");
-      };
-      ws.onmessage = (e: MessageEvent) => {
-        if (disposed) return;
-        const ev = parseSessionEvent(e.data);
-        if (ev) handleEventRef.current(ev);
-      };
-      ws.onclose = () => {
-        if (disposed) return;
-        setWsState("reconnecting");
-        attempt += 1;
-        const delay = Math.min(15000, 1000 * 2 ** Math.min(attempt - 1, 4));
-        timer = window.setTimeout(connect, delay);
-      };
-      ws.onerror = () => {
-        ws?.close();
-      };
+      closeEvents = openSessionEvents(name, {
+        onOpen: () => {
+          if (disposed) return;
+          attempt = 0;
+          setWsState("open");
+        },
+        onMessage: (data) => {
+          if (disposed) return;
+          const ev = parseSessionEvent(data);
+          if (ev) handleEventRef.current(ev);
+        },
+        onClose: () => {
+          if (disposed) return;
+          setWsState("reconnecting");
+          attempt += 1;
+          const delay = Math.min(15000, 1000 * 2 ** Math.min(attempt - 1, 4));
+          timer = window.setTimeout(connect, delay);
+        },
+      });
     }
 
     async function start() {
@@ -1404,7 +1402,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       disposed = true;
       if (subPollRef.current) window.clearInterval(subPollRef.current);
       if (timer !== undefined) window.clearTimeout(timer);
-      ws?.close();
+      closeEvents?.();
     };
   }, [name]);
 

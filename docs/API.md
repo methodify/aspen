@@ -295,3 +295,18 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
   replica?}`. Mesh ops `session_preflight`, `node_preflight_target {spec}`.
 - `/session/<name>?bring=1` opens the move dialog aimed at this node; `/?new=<template>` opens the
   new-session panel with a template.
+
+
+## Meshes and the console peer (v0.18) — MESHES.md, RELAY.md §11
+
+- `GET /api/mesh` gains `meshes: [{mesh, primary, policy, peers, relays, root_here}]`, `multi_mesh`,
+  `consoles: [names]`; each peer carries `mesh`; `identity.advertised.hint` may be `"wsl-nat"`.
+- `POST /api/repos/expose {path, meshes}`; repo rows carry `meshes` while multi-mesh; remote agents
+  carry `mesh`.
+- CLI: `aspen mesh join <bundle> [--policy full|observe]` (a cert for another mesh joins it as a
+  second membership), `aspen mesh leave --mesh <name>`, `aspen mesh policy <mesh> full|observe`;
+  `aspen mesh enroll` on a certified node prints the blob for a second mesh.
+- Hello frames carry `certs` (extra meshes); rosters carry `meshes`; ops are classed observe /
+  control / spawn / trust and refused per mesh policy (`forbidden: …`); fleet event `remote_control`.
+- Mesh op `http {method, path, body, headers}` → `{status, content_type, body|body_b64}` for console
+  peers; `sub` for `bare@node` is proxied to the home node. `/attach` in the console.

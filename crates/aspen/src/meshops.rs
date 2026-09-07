@@ -60,6 +60,7 @@ pub fn init(files: &MeshFiles, mesh: &str, node_name: &str) -> Result<Done> {
         peers: vec![],
         relay: None,
         relays: vec![],
+        policy: None,
     })?;
     let blob = identity::to_blob("cert", id.cert.as_ref().unwrap())?;
     Ok(done(
@@ -93,11 +94,20 @@ pub fn leave(files: &MeshFiles, discard_root: bool) -> Result<Done> {
 /// back the enroll blob for the root holder.
 pub fn enroll(files: &MeshFiles, node_name: &str) -> Result<Done> {
     let id = match files.load_identity()? {
+        // Already certified: the same identity can enroll in a SECOND mesh
+        // (docs/MESHES.md) — same keys, same name; the blob is the same.
         Some(existing) if existing.cert.is_some() => {
-            bail!(
-                "this node already has a certified identity ('{}') — `aspen mesh leave` first to re-enroll",
-                existing.node
-            )
+            // The name is fixed by the first mesh (the CLI passes the
+            // hostname when none was given; that is not a rename request).
+            let blob = identity::to_blob("enroll", &existing.join_request())?;
+            return Ok(done(
+                format!(
+                    "'{}' is already certified in mesh '{}'; this enroll blob joins the SAME identity to another mesh — run `aspen mesh certify <blob>` where that mesh's root key lives, then `aspen mesh join <bundle> [--policy full|observe]` here",
+                    existing.node,
+                    existing.cert.as_ref().map(|c| c.mesh.as_str()).unwrap_or("?")
+                ),
+                Some(blob),
+            ));
         }
         // An uncertified identity keeps its keypair but takes the name
         // asked for: the name is not part of the keys, and a mistyped one
@@ -182,8 +192,15 @@ pub fn certify(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Done>
     ))
 }
 
-/// Install a join bundle (or bare cert) on this node.
+/// Install a join bundle (or bare cert) on this node. A cert for a mesh
+/// other than the one already joined makes this node a member of a
+/// second mesh (docs/MESHES.md): same keypair and name, its own peers,
+/// relays and policy (`observe` unless told otherwise).
 pub fn join(files: &MeshFiles, blob: &str) -> Result<Done> {
+    join_with_policy(files, blob, None)
+}
+
+pub fn join_with_policy(files: &MeshFiles, blob: &str, policy: Option<&str>) -> Result<Done> {
     let bundle: Option<JoinBundle> = identity::from_blob("bundle", blob).ok();
     let cert: NodeCert = match &bundle {
         Some(b) => b.cert.clone(),
@@ -192,6 +209,11 @@ pub fn join(files: &MeshFiles, blob: &str) -> Result<Done> {
     let mut id = files
         .load_identity()?
         .ok_or_else(|| anyhow!("no identity here — run `aspen mesh enroll` first"))?;
+    if let Some(primary) = files.load_mesh()? {
+        if id.cert.is_some() && cert.mesh != primary.mesh {
+            return join_extra(files, id, primary, cert, bundle, policy);
+        }
+    }
     id.install_cert(cert.clone())?;
     files.save_identity(&id)?;
     if files.load_mesh()?.is_none() {
@@ -203,6 +225,7 @@ pub fn join(files: &MeshFiles, blob: &str) -> Result<Done> {
             peers: vec![],
             relay: None,
             relays: vec![],
+            policy: None,
         })?;
     }
     let mut summary = format!("joined mesh '{}' as node '{}'", cert.mesh, cert.node);
@@ -227,6 +250,77 @@ pub fn join(files: &MeshFiles, blob: &str) -> Result<Done> {
         summary.push_str(" (bare cert: add peers with `aspen mesh peers-add`)");
     }
     Ok(done(summary, None))
+}
+
+fn join_extra(
+    files: &MeshFiles,
+    mut id: NodeIdentity,
+    primary: MeshConfig,
+    cert: NodeCert,
+    bundle: Option<JoinBundle>,
+    policy: Option<&str>,
+) -> Result<Done> {
+    // Names route the mesh: this node's name must be the same in every
+    // mesh, and no peer anywhere may share a name with another.
+    if cert.node != id.node {
+        bail!(
+            "that cert names '{}' but this node is '{}' — enroll in the second mesh with the same name (aspen mesh enroll --node {})",
+            cert.node, id.node, id.node
+        );
+    }
+    let taken = files.all_peer_names()?;
+    if let Some(b) = &bundle {
+        if taken.contains(&b.certifier.node) || b.certifier.node == id.node {
+            bail!(
+                "peer name '{}' already exists in another mesh here; node names must be unique across every mesh this node is in",
+                b.certifier.node
+            );
+        }
+    }
+    let policy = match policy {
+        Some(p) if matches!(p, "full" | "observe") => Some(p.to_owned()),
+        Some(p) => bail!("policy must be full|observe, not {p:?}"),
+        None => Some("observe".to_owned()),
+    };
+    id.install_extra_cert(cert.clone())?;
+    files.save_identity(&id)?;
+    let mut m = MeshConfig {
+        mesh: cert.mesh.clone(),
+        root_public: cert.root_public.clone(),
+        peers: vec![],
+        relay: None,
+        relays: vec![],
+        policy: policy.clone(),
+    };
+    let mut summary = format!(
+        "joined a SECOND mesh '{}' as '{}' (policy {}); existing repos stay in '{}', new ones are exposed to no mesh until you say",
+        cert.mesh,
+        cert.node,
+        policy.as_deref().unwrap_or("observe"),
+        primary.mesh
+    );
+    if let Some(b) = bundle {
+        b.certifier.verify_against(&m.root_public)?;
+        m.peers.push(aspen_node::mesh::PeerConfig { cert: b.certifier.clone(), url: b.certifier_url.clone() });
+        summary.push_str(&format!("; peer '{}' registered", b.certifier.node));
+        if let Some(relay) = b.relay {
+            m.add_relay(&relay);
+            summary.push_str(&format!("; relay {relay}"));
+        }
+    }
+    files.save_extra_mesh(&m)?;
+    Ok(done(summary, None))
+}
+
+/// Leave an additional mesh by name.
+pub fn leave_mesh(files: &MeshFiles, mesh: &str) -> Result<Done> {
+    Ok(done(files.leave_extra(mesh)?, None))
+}
+
+/// Set what peers of a mesh may do here.
+pub fn policy(files: &MeshFiles, mesh: &str, policy: &str) -> Result<Done> {
+    files.set_policy(mesh, policy)?;
+    Ok(done(format!("mesh '{mesh}': peers may now {} here", if policy == "full" { "do everything (full)" } else { "only observe" }), None))
 }
 
 pub fn peers_add(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Done> {

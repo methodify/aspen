@@ -122,7 +122,22 @@ pub struct NodeInner {
     pub servicing: crate::servicing::Servicing,
     /// What the replication target has acknowledged (replicate.rs).
     pub replication: Mutex<crate::replicate::SourceState>,
+    /// Dispatch an HTTP request into this node's own router — the `http`
+    /// mesh op a console peer uses (RELAY.md §11). Set by the API server.
+    pub http_gateway: std::sync::OnceLock<HttpGateway>,
 }
+
+/// (method, path, body, headers) → `{status, content_type, body|body_b64}`.
+pub type HttpGateway = Arc<
+    dyn Fn(
+            String,
+            String,
+            Option<String>,
+            HashMap<String, String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>>
+        + Send
+        + Sync,
+>;
 
 impl NodeInner {
     /// The mesh, if this node is in one (cheap Arc clone; may change at
@@ -202,6 +217,46 @@ pub fn normalize_repo(p: &Path) -> PathBuf {
 
 /// The work summary as the API/roster carries it (files as a count + a
 /// short list; busy_since/last_tool folded in).
+/// Is a repo visible to peers of `mesh` (MESHES.md §exposure)? With one
+/// mesh everything is; with more, only what the operator exposed.
+pub fn repo_exposed(inner: &Arc<NodeInner>, repo: &Path, mesh: &str) -> bool {
+    let Some(m) = inner.mesh() else { return true };
+    if !m.is_multi() {
+        return true;
+    }
+    inner
+        .store
+        .exposed_meshes(repo)
+        .map(|v| v.iter().any(|x| x == mesh))
+        .unwrap_or(false)
+}
+
+/// Is an agent (by local key) visible to peers of `mesh`?
+pub fn agent_exposed(inner: &Arc<NodeInner>, agent: &str, mesh: &str) -> bool {
+    let Ok(rows) = inner.store.agents() else { return false };
+    match rows.iter().find(|a| a.name == agent) {
+        Some(a) => repo_exposed(inner, &a.repo, mesh),
+        None => true,
+    }
+}
+
+/// Joining a second mesh pins every existing repo to the first, so the
+/// rule change leaks nothing; repos added later start unexposed.
+fn pin_exposure_on_first_extra(inner: &Arc<NodeInner>) {
+    let Some(m) = inner.mesh() else { return };
+    if !m.is_multi() {
+        return;
+    }
+    if inner.store.exposure_rows().unwrap_or(1) > 0 {
+        return;
+    }
+    let primary = m.mesh_name();
+    for r in inner.store.repos().unwrap_or_default() {
+        let _ = inner.store.set_exposure(&r.path, std::slice::from_ref(&primary));
+    }
+    tracing::info!(mesh = %primary, "second mesh joined: existing repos pinned to the primary mesh");
+}
+
 /// Every running activity of every live session on this node, each tagged
 /// with its agent's local key — the node's half of `GET /api/activities`.
 pub fn fleet_activities(inner: &Arc<NodeInner>) -> Vec<serde_json::Value> {
@@ -331,14 +386,15 @@ impl Node {
         let mesh = match (files.load_identity()?, files.load_mesh()?) {
             (Some(identity), Some(mut config)) if identity.cert.is_some() => {
                 config.peers = files.verified_peers()?;
-                Some(Arc::new(crate::federation::MeshState::new(
-                    identity, config,
-                )))
+                let st = crate::federation::MeshState::new(identity, config);
+                *st.extra.write().unwrap() = files.load_extra_meshes()?;
+                Some(Arc::new(st))
             }
             _ => None,
         };
         let node = Self::build(store, mesh, Some(data_dir.to_owned()));
         if node.inner.mesh().is_some() {
+            pin_exposure_on_first_extra(&node.inner);
             crate::federation::ensure_dialers(node.inner.clone());
         }
         crate::gitstate::spawn_refresher(node.inner.clone(), 30);
@@ -389,6 +445,9 @@ impl Node {
                 mesh.remote.lock().unwrap().remove(n);
                 mesh.dialing.lock().unwrap().remove(n);
             }
+            *mesh.extra.write().unwrap() = files.load_extra_meshes()?;
+            // Identity certs may have grown (a second mesh joined): the
+            // live state keeps its identity, so reload extras' certs too.
             let cur = mesh.config.read().unwrap();
             summary = format!(
                 "mesh '{}' config reloaded: {} peer(s) (was {}){}, relay {}",
@@ -405,10 +464,12 @@ impl Node {
         } else {
             let name = config.mesh.clone();
             let peers = config.peers.len();
-            let state = Arc::new(crate::federation::MeshState::new(identity, config));
-            *self.inner.mesh.write().unwrap() = Some(state);
+            let state = crate::federation::MeshState::new(identity, config);
+            *state.extra.write().unwrap() = files.load_extra_meshes()?;
+            *self.inner.mesh.write().unwrap() = Some(Arc::new(state));
             summary = format!("joined mesh '{name}' live: {peers} peer(s)");
         }
+        pin_exposure_on_first_extra(&self.inner);
         crate::federation::ensure_dialers(self.inner.clone());
         Ok(summary)
     }
@@ -431,6 +492,7 @@ impl Node {
             data_dir,
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             replication: Mutex::new(Default::default()),
+            http_gateway: std::sync::OnceLock::new(),
             servicing: crate::servicing::Servicing::new(
                 crate::federation::VERSION
                     .get()

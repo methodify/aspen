@@ -531,9 +531,24 @@ export function MeshPanel() {
                 {me.cert_blob && <Copy text={me.cert_blob} label="copy my cert blob" />}
                 {mesh.root_public && <Copy text={mesh.root_public} label="copy root public key" />}
               </div>
-              {peers.map((p) => (
-                <PeerRow key={p.node} p={p} selfVersion={me.version} onRemove={() => void propose("peers_remove", { node: p.node })} evacuateTargets={[me.node, ...peers.filter((x) => x.link_up).map((x) => x.node)]} />
-              ))}
+              {(mesh.meshes ?? []).length > 1
+                ? (mesh.meshes ?? []).map((m) => (
+                    <div key={m.mesh} className="mesh-group">
+                      <div className="mesh-row mesh-group-head">
+                        <span className="mono" style={{ color: "var(--text-hi)" }}>mesh {m.mesh}</span>
+                        {m.primary && <span className="chip mono" title="the first mesh: boards, plugins, templates and memory sync live here">primary</span>}
+                        <span className="chip mono" title="what peers of this mesh may do on this node: full = everything; observe = read only (aspen mesh policy)">{m.policy}</span>
+                        {m.root_here && <span className="chip mono">root key</span>}
+                        <span className="mono-meta">{m.peers.length} peer{m.peers.length === 1 ? "" : "s"}</span>
+                      </div>
+                      {peers.filter((p) => (p.mesh ?? mesh.mesh) === m.mesh).map((p) => (
+                        <PeerRow key={p.node} p={p} selfVersion={me.version} onRemove={() => void propose("peers_remove", { node: p.node })} evacuateTargets={[me.node, ...peers.filter((x) => x.link_up).map((x) => x.node)]} />
+                      ))}
+                    </div>
+                  ))
+                : peers.map((p) => (
+                    <PeerRow key={p.node} p={p} selfVersion={me.version} onRemove={() => void propose("peers_remove", { node: p.node })} evacuateTargets={[me.node, ...peers.filter((x) => x.link_up).map((x) => x.node)]} />
+                  ))}
               {peers.length === 0 && <span className="mono-meta">no other nodes yet — add one below.</span>}
               {stage === "root" && me.root_key_path && (
                 <span className="micro" style={{ color: "var(--text-dim)" }}>

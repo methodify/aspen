@@ -10,6 +10,8 @@ import View from "./pages/View";
 import BoardPage, { BoardsPage } from "./pages/Board";
 import Plugins from "./pages/Plugins";
 import Usage from "./pages/Usage";
+import Attach from "./pages/Attach";
+import { tunnel } from "./tunnel";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
 import Palette from "./Palette";
@@ -342,6 +344,21 @@ function FlowRedirect() {
   return <Navigate to={location.pathname.replace(/^\/conversations/, "/flow")} replace />;
 }
 
+/** "via relay → node" while the console is attached through a relay
+ *  (RELAY.md §11); click opens the attach page. */
+function TunnelPill() {
+  const [, setTick] = useState(0);
+  useEffect(() => tunnel.onChange(() => setTick((n) => n + 1)), []);
+  const nav = useNavigate();
+  if (!tunnel.enabled && tunnel.state === "off") return null;
+  const color = tunnel.state === "up" ? "var(--live)" : tunnel.state === "down" ? "var(--sig-gate)" : "var(--sig-normal)";
+  return (
+    <button className="btn ghost sm mono" style={{ color }} onClick={() => nav("/attach")} title={tunnel.error ?? `console attached through ${tunnel.config.relay}`}>
+      via relay → {tunnel.config.node} · {tunnel.state}
+    </button>
+  );
+}
+
 function StatusBar() {
   const { agents, node } = useAppData();
   const [theme, toggleTheme] = useTheme();
@@ -357,6 +374,7 @@ function StatusBar() {
       <span className="micro" style={{ color: "var(--live)" }}>{busy} BUSY</span>
       <span className="micro" style={{ color: "var(--idle)" }}>{idle} IDLE</span>
       <span className="micro" style={{ color: "var(--offline)" }}>{off} OFF</span>
+      <TunnelPill />
       <NoticesBell />
       <button className="btn ghost sm" onClick={toggleTheme} title={`theme: ${theme}`} aria-label="toggle theme">
         {theme === "dark" ? "◑" : theme === "light" ? "◐" : "◒"}
@@ -403,6 +421,7 @@ export default function App() {
               <Route path="/boards" element={<BoardsPage />} />
               <Route path="/plugins" element={<Plugins />} />
               <Route path="/usage" element={<Usage />} />
+              <Route path="/attach" element={<Attach />} />
               <Route path="/board/:id" element={<BoardPage />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />

@@ -141,6 +141,8 @@ export interface Agent {
   node: string;
   /** true for agents hosted on another node (names like `west@beta`). */
   remote?: boolean;
+  /** For a remote agent: the mesh its node was reached through (MESHES.md). */
+  mesh?: string | null;
   /** Operator-set display title (the @name stays the bus identity). */
   title?: string | null;
   /** Epoch seconds the current turn started, when busy. */
@@ -457,6 +459,8 @@ export interface Repo {
   handle?: string;
   git?: GitState | null;
   skip_permissions: boolean;
+  /** While this node is in more than one mesh: which meshes see this repo. */
+  meshes?: string[] | null;
   /** Present on remote (node_repos) rows; local rows use live_agents. */
   live?: number;
   /** epoch seconds (local rows only) */
@@ -798,6 +802,8 @@ export interface PeerHealth {
 
 export interface MeshPeer {
   node: string;
+  /** Which mesh the peer is in (MESHES.md). */
+  mesh?: string | null;
   url: string | null;
   /** That node's console, derived from its dial URL (a guess when headless). */
   console_url?: string | null;
@@ -845,9 +851,20 @@ export interface MeshPending {
   outcomes: MeshOutcome[];
 }
 
+export interface MeshMembership {
+  mesh: string;
+  primary: boolean;
+  policy: "full" | "observe" | string;
+  peers: string[];
+  relays: string[];
+  root_here: boolean;
+}
 export interface MeshInfo {
   in_mesh: boolean;
   mesh?: string;
+  /** Every mesh this node is in (MESHES.md), the primary first. */
+  meshes?: MeshMembership[];
+  multi_mesh?: boolean;
   node: string;
   identity?: {
     node: string;
@@ -979,7 +996,41 @@ function noteServerDate(res: Response): void {
   if (Number.isFinite(t)) clockSkew = (t - Date.now()) / 1000;
 }
 
+/** The console-as-peer tunnel (tunnel.ts): when on, every request goes
+ *  through the relay to the attached node instead of this origin. */
+import { tunnel } from "./tunnel";
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (tunnel.enabled) {
+    let r: { status: number; body?: string; body_b64?: string };
+    try {
+      const h: Record<string, string> = {};
+      new Headers(init?.headers ?? {}).forEach((v, k) => {
+        h[k] = v;
+      });
+      r = await tunnel.http(init?.method ?? "GET", path, typeof init?.body === "string" ? init.body : undefined, h);
+    } catch (e) {
+      throw new ApiError(0, e instanceof Error ? e.message : "tunnel error");
+    }
+    const text = r.body ?? (r.body_b64 ? atob(r.body_b64) : "");
+    if (r.status < 200 || r.status >= 300) {
+      let detail = text.trim();
+      let parsedBody: Record<string, unknown> | null = null;
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === "object") {
+          parsedBody = parsed as Record<string, unknown>;
+          const msg = parsedBody["error"] ?? parsedBody["message"];
+          if (typeof msg === "string" && msg) detail = msg;
+        }
+      } catch {
+        // plain text
+      }
+      throw new ApiError(r.status, detail || `${r.status}`, parsedBody);
+    }
+    if (!text) return {} as T;
+    return JSON.parse(text) as T;
+  }
   let res: Response;
   try {
     const token = nodeToken();
@@ -1105,6 +1156,7 @@ export const api = {
   },
   /** Move (or copy) a session to another node; resolves the target's report. */
   replicas: () => request<ReplicaInfo[]>("/api/replicas"),
+  exposeRepo: (path: string, meshes: string[]) => post<{ ok: boolean }>("/api/repos/expose", { path, meshes }),
   templates: () => request<Template[]>("/api/templates"),
   putTemplate: (id: string, name: string, spec: TemplateSpec) =>
     request<{ ok: boolean; template: Template }>(`/api/templates/${enc(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, spec }) }),
@@ -1295,6 +1347,44 @@ export const api = {
 };
 
 /** WebSocket URL for a session's event stream, honoring the page origin. */
+/** A session's live event stream: a WebSocket to this origin, or a `sub`
+ *  over the tunnel. Returns a closer. */
+export function openSessionEvents(
+  name: string,
+  handlers: { onOpen: () => void; onMessage: (data: string) => void; onClose: () => void },
+): () => void {
+  if (tunnel.enabled) {
+    let opened = false;
+    const stop = tunnel.subscribe(
+      name,
+      (ev) => {
+        if (!opened) {
+          opened = true;
+          handlers.onOpen();
+        }
+        handlers.onMessage(typeof ev === "string" ? ev : JSON.stringify(ev));
+      },
+      () => handlers.onClose(),
+    );
+    // The node answers the first event only when something happens;
+    // report open once the tunnel itself is up.
+    if (tunnel.state === "up") {
+      opened = true;
+      handlers.onOpen();
+    }
+    return stop;
+  }
+  const ws = new WebSocket(sessionEventsUrl(name));
+  ws.onopen = () => handlers.onOpen();
+  ws.onmessage = (e: MessageEvent) => handlers.onMessage(String(e.data));
+  ws.onclose = () => handlers.onClose();
+  ws.onerror = () => ws.close();
+  return () => {
+    ws.onclose = null;
+    ws.close();
+  };
+}
+
 export function sessionEventsUrl(name: string): string {
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   const token = nodeToken();
