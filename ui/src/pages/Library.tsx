@@ -687,6 +687,7 @@ function RepositoriesSection({
       <ServicingPanel />
       <AddRepoForm onAdded={refresh} />
       <HarnessDefaults />
+      <ReplicasSection />
       <LinksSection />
 
       {nodes.reduce((acc, n) => acc + n.repos.length, 0) > 8 && (
@@ -1304,6 +1305,39 @@ function humanEndpoint(ep: string): string {
 }
 
 /** Declared links, as a list (the map draws them). */
+/** Replicas of peers' sessions held on this node (REPLICATION.md). */
+function ReplicasSection() {
+  const poll = usePoll(api.replicas, 10000);
+  const nav = useNavigate();
+  const rows = poll.data ?? [];
+  if (rows.length === 0) return null;
+  const byNode = new Map<string, typeof rows>();
+  for (const r of rows) byNode.set(r.node, [...(byNode.get(r.node) ?? []), r]);
+  return (
+    <div className="strip flat" style={{ display: "flex", flexDirection: "column", gap: 6, padding: 14 }}>
+      <span className="label">Replicas held here · {rows.length}</span>
+      <span className="micro" style={{ color: "var(--text-dim)" }}>
+        transcripts streamed from peers that replicate to this node; readable when their node is down, and a move can start from one.
+      </span>
+      {[...byNode.entries()].map(([node, rs]) => (
+        <div key={node} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span className="mono-meta">from {node}</span>
+          {rs.map((r) => (
+            <div key={`${r.node}:${r.agent}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "3px 0 3px 12px" }}>
+              <button type="button" className="mono" onClick={() => nav(`/session/${encodeURIComponent(`${r.agent}@${r.node}`)}`)} style={{ color: "var(--text-hi)", background: "none", border: 0, padding: 0, cursor: "pointer", textDecoration: "underline dotted" }}>
+                @{r.agent}
+              </button>
+              {r.title && <span style={{ color: "var(--text-mid)" }}>{r.title}</span>}
+              <span className="mono-meta">{Math.round(r.bytes / 1024)} KB · {r.files} files · {relTime(r.as_of)} ago</span>
+              {!r.has_transcript && <span className="mono-meta">(no main transcript yet)</span>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function LinksSection() {
   const poll = usePoll(api.links, 5000);
   const links = poll.data ?? [];

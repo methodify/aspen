@@ -94,7 +94,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "aspen"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-claude"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "aspen-core",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-node"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "aspen-claude",
@@ -161,6 +161,7 @@ dependencies = [
  "aspen-wire",
  "async-trait",
  "chrono",
+ "diffy",
  "dunce",
  "futures-util",
  "if-addrs",
@@ -173,6 +174,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shell-words",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.27.0",
  "tracing",
@@ -182,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-relay"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "aspen-wire",
@@ -200,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "aspen-wire"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -553,6 +555,15 @@ checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
  "zeroize",
+]
+
+[[package]]
+name = "diffy"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b545b8c50194bdd008283985ab0b31dba153cfd5b3066a92770634fbc0d7d291"
+dependencies = [
+ "nu-ansi-term",
 ]
 
 [[package]]

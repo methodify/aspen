@@ -57,12 +57,18 @@ for the same rows. For three tables of a few hundred rows written by one
 person, that trade is wrong: the failure modes above are rare and
 recoverable (edit again), and the current scheme is fifty lines a table.
 
-What *is* worth doing, cheaply, is fixing the clock: replace wall-clock
-`updated_at` with a **hybrid logical clock** — a per-node counter folded
-into the timestamp and advanced past any timestamp received — so "last
-writer" means causally last, not whose clock runs fast. Same tables,
-same digests, no new dependency. That is the next step if a skew
-problem ever shows up.
+**Done (v0.16): the clock is hybrid.** `BusStore::hlc_now()` issues
+`max(wall, last + 1 ms)` where `last` is the newest `updated_at` this
+node issued *or merged* (`hlc_observe` runs in every `upsert_*`, and the
+clock is seeded from the tables at open). Every mesh-wide write —
+boards, marketplaces, rules, the marketplace cascade, and every table
+added after — takes its timestamp from it, so "last writer" means
+causally last: a node that has merged a peer's row always writes past
+it, however its wall clock stands. Values stay seconds-as-f64; digests
+and older nodes are unaffected. A console write always gets a fresh
+timestamp (the operator's edit wins over anything merged meanwhile).
+Equal timestamps keep the local row; at 1 ms resolution for one
+operator that tie is not worth a node-name tiebreak.
 
 Where a CRDT would earn its place is **memory convergence** (PROPOSALS
 §5.4, backlog B-5b): project memory files edited on several nodes need

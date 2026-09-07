@@ -562,7 +562,7 @@ pub fn updates_for(data_dir: &Path, running: &[ActivePlugin]) -> Vec<Value> {
 /// and its cache — except versions a live session was started with,
 /// which stay until that process ends (the harness watches those dirs).
 pub fn remove_marketplace(inner: &Arc<NodeInner>, name: &str) -> Result<usize> {
-    let now = crate::store::now_epoch();
+    let now = inner.store.hlc_now();
     let mut n = 0usize;
     for mut r in inner
         .store

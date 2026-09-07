@@ -511,10 +511,32 @@ export interface NotifySettings {
   command?: string;
   kinds?: string[];
 }
+export interface ReplicationSettings {
+  to?: string | null;
+  repos?: string[];
+  accept?: boolean;
+  keep_days?: number;
+}
 export interface Settings {
   harness?: Record<string, { args: string }>;
   update?: UpdatePolicy;
   notify?: NotifySettings;
+  replication?: ReplicationSettings;
+  memory?: MemorySettings;
+}
+
+/** A replica of a peer's session held on this node (REPLICATION.md). */
+export interface ReplicaInfo {
+  node: string;
+  agent: string;
+  session_id: string;
+  repo: string;
+  title: string | null;
+  bytes: number;
+  files: number;
+  as_of: number;
+  held_on: string;
+  has_transcript: boolean;
 }
 
 /** Notices (NOTIFICATIONS.md). */
@@ -681,10 +703,24 @@ export interface Adoption {
   node: string | null;
 }
 
+/** A memory conflict (MEMORY.md): both nodes edited a memory file. */
+export interface MemoryConflict {
+  node: string | null;
+  repo: string;
+  handle: string;
+  rel: string;
+  from: string;
+  copy: string;
+  at: number;
+}
 export interface Needs {
   prompts: OpenPrompt[];
   inbox: (BusMessage & { node: string | null })[];
   adoptions?: Adoption[];
+  memory?: MemoryConflict[];
+}
+export interface MemorySettings {
+  sync?: boolean;
 }
 
 export interface DmPair {
@@ -1021,7 +1057,11 @@ export const api = {
     return r;
   },
   /** Move (or copy) a session to another node; resolves the target's report. */
-  moveAgent: (name: string, body: { to: string; mode: "move" | "copy"; repo?: string; name?: string; apply_patch?: boolean }) =>
+  replicas: () => request<ReplicaInfo[]>("/api/replicas"),
+  resolveMemory: (c: MemoryConflict, choice: "mine" | "theirs") =>
+    post<{ ok: boolean }>("/api/memory/resolve", { node: c.node, repo: c.repo, rel: c.rel, copy: c.copy, choice }),
+  agentReplica: (name: string) => request<{ replica: ReplicaInfo | null; home_up: boolean }>(`/api/agents/${enc(name)}/replica`),
+  moveAgent: (name: string, body: { to: string; mode: "move" | "copy"; repo?: string; name?: string; apply_patch?: boolean; from_replica?: boolean }) =>
     post<MoveReport>(`/api/agents/${enc(name)}/move`, body),
   fileStat: (name: string, path: string) =>
     request<FileStat>(`/api/agents/${enc(name)}/file?path=${enc(path)}&stat=1`),

@@ -840,3 +840,16 @@ cleaner lane for roster updates than user-message headers.
   table. Task notifications collapse to a card. Elapsed times are
   anchored to the server clock via the `Date` header, since a browser
   on the Windows side of a WSL node ran seconds behind it.
+- **2026-09-07 — v0.16, clock, replication, memory** (PROPOSALS-2026-09-B
+  §6 §1 §5; references: SYNC.md §3, REPLICATION.md, MEMORY.md). The
+  store issues a hybrid logical clock for every mesh-wide row, so
+  last-writer-wins is causal. Transcript replication is opt-in per node
+  (`replication.to`): an append stream of a session's files to one peer,
+  offsets learned from the target so outages resolve to "send what is
+  missing"; a down node's sessions read from the replica, and a move
+  whose source is down starts from it as a fork. Memory convergence is
+  opt-in per node (`memory.sync`): per-repo digests on the roster, a
+  stored base per file, line-level 3-way merges, tombstones for
+  deletions, and conflicts kept beside the file with keep-mine /
+  take-theirs in Now. Both settings are per node and off by default, as
+  the operator asked: replication is a choice, not the mode of operation.

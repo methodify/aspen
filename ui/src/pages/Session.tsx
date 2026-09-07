@@ -27,6 +27,7 @@ import {
   type PluginUpdate,
   type Activity,
   type UsageRow,
+  type ReplicaInfo,
   serverNow,
   type ActivityCounts,
 } from "./../api";
@@ -1082,12 +1083,36 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       setNodes([]);
     }
   }
+  // A replica held here of a remote session whose home is down
+  // (REPLICATION.md): the transcript endpoint serves it; this tells the
+  // page to say so and to offer starting from it.
+  const [replica, setReplica] = useState<{ replica: ReplicaInfo | null; home_up: boolean } | null>(null);
+  // A remote address has a node segment (`bare@repo@node`); the agent row
+  // itself vanishes from the fleet list while its node is down, so the
+  // check keys off the name.
+  const remoteName = name.split("@").length >= 3;
+  useEffect(() => {
+    if (!remoteName || subagent) {
+      setReplica(null);
+      return;
+    }
+    let live = true;
+    const load = () => api.agentReplica(name).then((r) => live && setReplica(r)).catch(() => {});
+    void load();
+    const t = window.setInterval(load, 10000);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [name, remoteName, subagent]);
+  const replicaShown = !!(replica && !replica.home_up && replica.replica);
+
   async function doMove() {
     if (!moveTo) return;
     setMoveBusy(true);
     setMoveErr(null);
     try {
-      const r = await api.moveAgent(name, { to: moveTo, mode: moveMode, repo: moveRepo.trim() || undefined });
+      const r = await api.moveAgent(name, { to: moveTo, mode: moveMode, repo: moveRepo.trim() || undefined, from_replica: replicaShown || undefined });
       setMoveOpen(false);
       const target = r.node === (nodes.find((n) => n.me)?.node ?? "") ? r.name : `${r.name}@${r.node}`;
       setCtlNote(`${moveMode === "copy" ? "copied" : "moved"} to ${r.node} · ${r.files} files · ${Math.round(r.bytes / 1024)} KB${r.notes.length ? ` · ${r.notes.length} note(s)` : ""}`);
@@ -2147,7 +2172,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                   <label>
                     <span className="mono-meta">to node</span>
                     <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)} disabled={moveBusy}>
-                      {nodes.filter((n) => n.node !== (agent?.node ?? nodes.find((x) => x.me)?.node)).map((n) => (
+                      {nodes.filter((n) => n.node !== (agent?.node ?? name.split("@")[2] ?? nodes.find((x) => x.me)?.node)).map((n) => (
                         <option key={n.node} value={n.node} disabled={!n.up}>
                           {n.node}{n.me ? " (this console)" : ""}{n.up ? "" : " — link down"}
                         </option>
@@ -2166,6 +2191,11 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                     <input className="mono" value={moveRepo} onChange={(e) => setMoveRepo(e.target.value)} placeholder="/path/on/that/node" disabled={moveBusy} />
                   </label>
                 </div>
+                {replicaShown && (
+                  <p className="trust-lede">
+                    The home node is down: the copy will start from the replica held on {replica?.replica?.held_on} (as of {relTime(replica?.replica?.as_of ?? 0)} ago). The original may still be running there; when it returns, keep one.
+                  </p>
+                )}
                 {moveErr && <div className="error-bar">{moveErr}</div>}
                 <div className="trust-actions">
                   <button className="btn ghost" onClick={() => setMoveOpen(false)} disabled={moveBusy}>cancel</button>
@@ -2404,7 +2434,26 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           </span>
         </div>
       )}
-      {exited && !agent?.moved_to && (
+      {replicaShown && replica?.replica && (
+        <div className="exited-banner replica-banner">
+          <span>
+            {replica.replica.node} is down — showing the replica held on {replica.replica.held_on} as of {relTime(replica.replica.as_of)} ago
+            ({Math.round(replica.replica.bytes / 1024)} KB, {replica.replica.files} files). Messages cannot be delivered until the node returns.
+          </span>
+          <button
+            className="btn primary sm"
+            onClick={() => {
+              setMoveMode("copy");
+              setMoveTo(nodes.find((n) => n.me)?.node ?? "");
+              setMoveOpen(true);
+            }}
+            title="start a session here from this replica (a fork; the original may still run when its node returns)"
+          >
+            start from the replica here
+          </button>
+        </div>
+      )}
+      {exited && !agent?.moved_to && !replicaShown && (
         <div className="exited-banner">
           <span>
             {agent?.remote ? `not running on ${agent.node}` : "session exited"}

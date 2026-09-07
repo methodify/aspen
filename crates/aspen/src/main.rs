@@ -409,6 +409,7 @@ async fn main() -> Result<()> {
             if !no_resume {
                 auto_revive(&cli.data_dir, node.clone());
                 aspen_node::plugins::spawn_sync_timer(node.inner.clone());
+                aspen_node::replicate::spawn_replicator(node.inner.clone());
             }
             // Servicing: report the last updater's outcome, learn the
             // harness version, start the release check + drain loops.
@@ -728,6 +729,14 @@ fn config_command(
             s.advertise.clone().unwrap_or_else(|| "(none)".into())
         );
         println!(
+            "memory-sync {}   (converge project memory with peers that also have it on)",
+            if s.memory.on() { "on" } else { "off" }
+        );
+        println!(
+            "replicate   {}   (peer that receives this node's transcripts; off = none)",
+            s.replication.to.clone().unwrap_or_else(|| "off".into())
+        );
+        println!(
             "update-check {}   (false = never contact the release channel)",
             u.check
                 .map(|b| b.to_string())
@@ -800,6 +809,19 @@ fn config_command(
                 Some(value.trim_start_matches('v').to_owned())
             };
         }
+        "memory-sync" => {
+            let v = value.trim().to_ascii_lowercase();
+            s.memory.sync = Some(matches!(v.as_str(), "on" | "true" | "1" | "yes"));
+        }
+        "replicate" => {
+            // `aspen config replicate <node>` | `off`
+            let v = value.trim();
+            s.replication.to = if v.is_empty() || v == "off" || v == "none" {
+                None
+            } else {
+                Some(v.to_owned())
+            };
+        }
         "advertise" => {
             if !clear {
                 for u in value.split(',').map(str::trim).filter(|u| !u.is_empty()) {
@@ -823,7 +845,7 @@ fn config_command(
         }
         other => {
             anyhow::bail!(
-                "unknown setting '{other}' (headless | listen | topology | claude-args | advertise | update | update-window | update-soak | update-skip | update-check)"
+                "unknown setting '{other}' (headless | listen | topology | claude-args | advertise | replicate | memory-sync | update | update-window | update-soak | update-skip | update-check)"
             )
         }
     }

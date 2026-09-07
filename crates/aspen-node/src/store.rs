@@ -139,6 +139,26 @@ CREATE TABLE IF NOT EXISTS notices(
   link TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notices_id ON notices(id);
+CREATE TABLE IF NOT EXISTS replicas(
+  node TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  rel TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  title TEXT,
+  ctx TEXT,
+  bytes INTEGER NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(node, agent, rel)
+);
+CREATE TABLE IF NOT EXISTS memory_base(
+  repo TEXT NOT NULL,
+  rel TEXT NOT NULL,
+  content TEXT,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(repo, rel)
+);
 CREATE TABLE IF NOT EXISTS seen_sessions(
   repo       TEXT NOT NULL,
   session_id TEXT NOT NULL,
@@ -226,6 +246,28 @@ pub struct Board {
 }
 
 /// One entry in the fleet event log.
+/// The last content both sides of a memory sync agreed on (MEMORY.md).
+#[derive(Debug, Clone)]
+pub struct MemoryBase {
+    pub content: Option<String>,
+    pub deleted: bool,
+    pub updated_at: f64,
+}
+
+/// One replicated file (REPLICATION.md): a peer's session file held here.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReplicaRow {
+    pub node: String,
+    pub agent: String,
+    pub session_id: String,
+    pub repo: String,
+    pub title: Option<String>,
+    pub ctx: serde_json::Value,
+    pub rel: String,
+    pub bytes: u64,
+    pub updated_at: f64,
+}
+
 /// A notice (PROPOSALS-B §3): a moment the operator may want told about.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Notice {
@@ -323,6 +365,10 @@ pub struct AgentRow {
 #[derive(Clone)]
 pub struct BusStore {
     conn: Arc<Mutex<Connection>>,
+    /// Hybrid logical clock (SYNC.md §3): the last `updated_at` this node
+    /// issued or merged, so "last writer wins" on mesh-wide rows means
+    /// causally last, not whose wall clock runs fast.
+    clock: Arc<Mutex<f64>>,
 }
 
 impl BusStore {
@@ -369,9 +415,46 @@ impl BusStore {
         Self::normalize_stored_paths(&conn)?;
         Self::assign_repo_handles(&conn)?;
         Self::scope_agent_names(&conn)?;
+        let seed = Self::max_updated_at(&conn);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            clock: Arc::new(Mutex::new(seed)),
         })
+    }
+
+    /// The newest `updated_at` across the mesh-wide tables, to seed the
+    /// clock after a restart so a fresh write is never behind a row we
+    /// already hold.
+    fn max_updated_at(conn: &Connection) -> f64 {
+        let mut m = 0.0f64;
+        for sql in [
+            "SELECT COALESCE(MAX(updated_at), 0) FROM boards",
+            "SELECT COALESCE(MAX(updated_at), 0) FROM marketplaces",
+            "SELECT COALESCE(MAX(updated_at), 0) FROM plugin_rules",
+        ] {
+            if let Ok(v) = conn.query_row(sql, [], |r| r.get::<_, f64>(0)) {
+                m = m.max(v);
+            }
+        }
+        m
+    }
+
+    /// Issue a timestamp for a mesh-wide row: wall time, unless that would
+    /// not be later than the last issued or merged one, in which case one
+    /// millisecond past it. Stays in seconds so older nodes interoperate.
+    pub fn hlc_now(&self) -> f64 {
+        let mut c = self.clock.lock().unwrap();
+        let t = now_epoch().max(*c + 0.001);
+        *c = t;
+        t
+    }
+
+    /// Note a timestamp seen on a peer's row, so our next write is later.
+    pub fn hlc_observe(&self, t: f64) {
+        let mut c = self.clock.lock().unwrap();
+        if t > *c {
+            *c = t;
+        }
     }
 
     /// Fold every stored repo path onto its normalized form (see
@@ -509,6 +592,7 @@ impl BusStore {
         conn.execute_batch(SCHEMA)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            clock: Arc::new(Mutex::new(0.0)),
         })
     }
 
@@ -643,6 +727,106 @@ impl BusStore {
         conn.execute(
             "INSERT INTO events(ts, agent, kind, detail) VALUES(?1, ?2, ?3, ?4)",
             params![now_epoch(), agent, kind, detail.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn memory_base(&self, repo: &str) -> Result<std::collections::BTreeMap<String, MemoryBase>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT rel, content, deleted, updated_at FROM memory_base WHERE repo=?1")?;
+        let rows = stmt.query_map(params![repo], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                MemoryBase {
+                    content: r.get(1)?,
+                    deleted: r.get::<_, i64>(2)? != 0,
+                    updated_at: r.get(3)?,
+                },
+            ))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn set_memory_base(
+        &self,
+        repo: &str,
+        rel: &str,
+        content: Option<&str>,
+        deleted: bool,
+        updated_at: f64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO memory_base(repo, rel, content, deleted, updated_at) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(repo, rel) DO UPDATE SET content=?3, deleted=?4, updated_at=?5",
+            params![repo, rel, content, deleted as i64, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_replica(&self, r: &ReplicaRow) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO replicas(node, agent, rel, session_id, repo, title, ctx, bytes, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(node, agent, rel) DO UPDATE SET session_id=?4, repo=?5, title=COALESCE(?6, title),
+               ctx=COALESCE(?7, ctx), bytes=?8, updated_at=?9",
+            params![
+                r.node,
+                r.agent,
+                r.rel,
+                r.session_id,
+                r.repo,
+                r.title,
+                if r.ctx.is_null() { None } else { Some(r.ctx.to_string()) },
+                r.bytes as i64,
+                r.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn replicas(&self) -> Result<Vec<ReplicaRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT node, agent, rel, session_id, repo, title, ctx, bytes, updated_at FROM replicas ORDER BY node, agent, rel",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ReplicaRow {
+                node: r.get(0)?,
+                agent: r.get(1)?,
+                rel: r.get(2)?,
+                session_id: r.get(3)?,
+                repo: r.get(4)?,
+                title: r.get(5)?,
+                ctx: r
+                    .get::<_, Option<String>>(6)?
+                    .and_then(|c| serde_json::from_str(&c).ok())
+                    .unwrap_or(serde_json::Value::Null),
+                bytes: r.get::<_, i64>(7)? as u64,
+                updated_at: r.get(8)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// `(rel, bytes)` for one agent's replica from one node.
+    pub fn replica_files(&self, node: &str, agent: &str) -> Result<Vec<(String, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT rel, bytes FROM replicas WHERE node=?1 AND agent=?2")?;
+        let rows = stmt.query_map(params![node, agent], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn delete_replica(&self, node: &str, agent: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM replicas WHERE node=?1 AND agent=?2",
+            params![node, agent],
         )?;
         Ok(())
     }
@@ -1076,6 +1260,7 @@ impl BusStore {
     /// Write a board if it is newer than what we hold (last writer wins
     /// by `updated_at`); returns whether anything changed.
     pub fn upsert_board(&self, b: &Board) -> Result<bool> {
+        self.hlc_observe(b.updated_at);
         let conn = self.conn.lock().unwrap();
         let cur: Option<f64> = conn
             .query_row(
@@ -1103,10 +1288,11 @@ impl BusStore {
     }
 
     pub fn delete_board(&self, id: &str) -> Result<()> {
+        let t = self.hlc_now();
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE boards SET deleted=1, updated_at=?2 WHERE id=?1",
-            params![id, now_epoch()],
+            params![id, t],
         )?;
         Ok(())
     }
@@ -1166,6 +1352,7 @@ impl BusStore {
     }
 
     pub fn upsert_marketplace(&self, m: &crate::plugins::Marketplace) -> Result<bool> {
+        self.hlc_observe(m.updated_at);
         let conn = self.conn.lock().unwrap();
         let cur: Option<f64> = conn
             .query_row(
@@ -1212,6 +1399,7 @@ impl BusStore {
     }
 
     pub fn upsert_plugin_rule(&self, r: &crate::plugins::Rule) -> Result<bool> {
+        self.hlc_observe(r.updated_at);
         let conn = self.conn.lock().unwrap();
         let cur: Option<f64> = conn
             .query_row(
@@ -2019,6 +2207,25 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> std::result::Result<StoredMessage, r
         ingested_at: r.get(12)?,
         post: r.get(13)?,
     })
+}
+
+#[cfg(test)]
+mod hlc_tests {
+    use super::*;
+
+    #[test]
+    fn issues_monotonic_and_past_observed() {
+        let st = BusStore::open_in_memory().unwrap();
+        let a = st.hlc_now();
+        let b = st.hlc_now();
+        assert!(b > a);
+        let far = now_epoch() + 3600.0;
+        st.hlc_observe(far);
+        let c = st.hlc_now();
+        assert!(c > far && c < far + 0.01);
+        let d = st.hlc_now();
+        assert!(d > c);
+    }
 }
 
 #[cfg(test)]

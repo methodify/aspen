@@ -4,7 +4,8 @@
 
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type Adoption, type OpenPrompt } from "./api";
+import {
+  type MemoryConflict, api, type Adoption, type OpenPrompt } from "./api";
 import { relTime } from "./components";
 import "./pages/command.css";
 
@@ -299,6 +300,39 @@ export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAns
 
 /** Which identity follows a session that was forked or driven from outside
  *  Aspen. Nothing moves until a human answers; ignore is the default. */
+/** A memory conflict card (MEMORY.md): keep mine drops the incoming copy;
+ *  take theirs replaces the file with it. */
+export function MemoryConflictCard({ c, onDone }: { c: MemoryConflict; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function act(choice: "mine" | "theirs") {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.resolveMemory(c, choice);
+      onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="need-card need-cue" style={{ flexWrap: "wrap" }}>
+      <span className="chip mono" style={{ color: "var(--sig-normal)" }}>memory conflict</span>
+      <span>
+        <span className="mono">#{c.handle}</span> memory <span className="mono">{c.rel}</span> was edited here and on {c.from} since the two last agreed; {c.from}'s copy is beside it as <span className="mono">{c.copy}</span>
+      </span>
+      <span className="mono-meta">{relTime(c.at)} ago</span>
+      {c.node && <NodeChip node={c.node} />}
+      <span style={{ flex: 1 }} />
+      <button className="btn sm" disabled={busy} onClick={() => void act("mine")} title="drop the incoming copy; keep this node's file">keep mine</button>
+      <button className="btn sm" disabled={busy} onClick={() => void act("theirs")} title="replace this node's file with the incoming copy">take theirs</button>
+      {err && <span className="error-text mono-meta">{err}</span>}
+    </div>
+  );
+}
+
 export function AdoptionCard({ a, onDone }: { a: Adoption; onDone: () => void }) {
   const nav = useNavigate();
   const [splitName, setSplitName] = useState<string | null>(null);

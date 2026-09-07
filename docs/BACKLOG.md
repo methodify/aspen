@@ -23,12 +23,12 @@ S-10, P-5), v0.19 (S-11).
 
 | id | tag | ask | design |
 |---|---|---|---|
-| S-1 | protocol + sessions | **Transcript replication, opt-in.** A session's transcript tail streams to a designated node so move is near-instant, History is mesh-wide, and a dead node's sessions stay readable. Off by default; enabled per mesh, node, or repo. (B-5b phase 4) | §1 |
+| ~~S-1~~ v0.16 | protocol + sessions | **Transcript replication, opt-in.** A session's transcript tail streams to a designated node so move is near-instant, History is mesh-wide, and a dead node's sessions stay readable. Off by default; enabled per mesh, node, or repo. (B-5b phase 4) | §1 |
 | ~~S-2~~ v0.15 | console | **Fleet-wide activity in Now.** One list of everything running across the estate, with the v0.14 chips. | §2 |
 | ~~S-3~~ v0.15 | console + protocol | **Notifications.** Turn end, question, permission prompt, activity settled: browser push from the console, plus an optional outbound hook. | §3 |
 | ~~S-4~~ v0.15 | console + sessions | **Cost and usage roll-up.** Per session, repo, node; subagents folded in; from transcript usage fields. | §4 |
-| S-5 | protocol + sessions | **Memory convergence** with a stored base and 3-way merge over the bus. (B-5b phase 3) | §5 |
-| S-6 | protocol | **Hybrid logical clock** for mesh-wide rows (boards, marketplaces, rules). | §6 |
+| ~~S-5~~ v0.16 | protocol + sessions | **Memory convergence** with a stored base and 3-way merge over the bus. (B-5b phase 3) | §5 |
+| ~~S-6~~ v0.16 | protocol | **Hybrid logical clock** for mesh-wide rows (boards, marketplaces, rules). | §6 |
 | S-7 | sessions + console | **Session templates.** Named recipe: repo, plugins, model, prompt additions, board placement; one click or CLI. | §7 |
 | S-8 | servicing + console | **Evacuate a node; bring it here.** Move every live session off a node before servicing; one-click pull on any session; preflight readout. (B-5b) | §8 |
 | S-9 | protocol | **Multi-mesh membership** for one node. (P-1, docs/proposals/multi-mesh.md) | §9 |
@@ -36,7 +36,13 @@ S-10, P-5), v0.19 (S-11).
 | S-11 | console + protocol | **Pair mode on boards.** Two panes' sessions joined on a bus thread. | §11 |
 | ~~S-12~~ v0.15 | console | **Task notifications collapsed.** A `<task-notification>` in the transcript renders as a one-line summary card (agent name, status) with click-to-expand, like tool cards; one spanned dozens of screens. | §12 |
 
-## Open — 2026-09-06 feature dump
+## Next major swath — after S-12: Codex as a second harness (H-1)
+
+| id | tag | ask | design |
+|---|---|---|---|
+| H-1 | sessions + protocol + console | **Multi-harness: OpenAI Codex.** Codex is open source (clone at `~/src/codex`), so its protocol is read, not reverse-engineered. Before any code: a full design of how Aspen becomes multi-harness and stays coherent — what is cross-harness (bus, mesh, boards, activity, notices, usage, migration, plugins?) and what is per-harness (transcript shape, events, permissions, tools, memory, plugin dirs), what the adapter seam (DESIGN.md §5) really needs, what the product affords per harness, and how nothing regresses for claude. Then methodical implementation. | to be written as docs/PROPOSALS-HARNESSES.md |
+
+
 
 | id | tag | ask | design |
 |---|---|---|---|

@@ -182,6 +182,65 @@ function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: stri
   );
 }
 
+/** "replicate to": this node's transcripts stream to the chosen peer
+ *  (REPLICATION.md); off by default. */
+function ReplicatePicker({ peers }: { peers: MeshPeer[] }) {
+  const [to, setTo] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => {
+    api.settings().then((s) => setTo(s.replication?.to ?? "")).catch(() => setTo(""));
+  }, []);
+  if (to === null) return null;
+  return (
+    <label className="mono-meta" title="stream this node's session transcripts to a peer as they grow, so they stay readable (and movable) when this node is down. Off by default." style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+      replicate to
+      <select
+        value={to}
+        onChange={(e) => {
+          const v = e.target.value;
+          setTo(v);
+          api
+            .saveSettings({ replication: { to: v || null } })
+            .then(() => setNote(v ? `streaming to ${v}` : "off"))
+            .catch((e) => setNote(e instanceof Error ? e.message : String(e)));
+        }}
+      >
+        <option value="">off</option>
+        {peers.map((p) => (
+          <option key={p.node} value={p.node}>
+            {p.node}
+          </option>
+        ))}
+      </select>
+      {note && <span className="mono-meta">{note}</span>}
+    </label>
+  );
+}
+
+/** "memory sync": converge project memory with peers that also have it on
+ *  (MEMORY.md); off by default. */
+function MemorySyncToggle() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    api.settings().then((s) => setOn(s.memory?.sync ?? false)).catch(() => setOn(false));
+  }, []);
+  if (on === null) return null;
+  return (
+    <label className="mono-meta" title="converge this node's project memory (per repo) with peers that hold a counterpart repo and also have this on; conflicts surface in Now" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+      <input
+        type="checkbox"
+        checked={on}
+        onChange={(e) => {
+          const v = e.target.checked;
+          setOn(v);
+          api.saveSettings({ memory: { sync: v } }).catch(() => setOn(!v));
+        }}
+      />
+      memory sync
+    </label>
+  );
+}
+
 export function MeshPanel() {
   const poll = usePoll<MeshInfo>(api.mesh, 5000);
   const mesh = poll.data;
@@ -420,6 +479,8 @@ export function MeshPanel() {
                     spoke (loopback only)
                   </span>
                 )}
+                <ReplicatePicker peers={peers} />
+                <MemorySyncToggle />
                 <span style={{ flex: 1 }} />
                 {me.cert_blob && <Copy text={me.cert_blob} label="copy my cert blob" />}
                 {mesh.root_public && <Copy text={mesh.root_public} label="copy root public key" />}

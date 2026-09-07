@@ -74,6 +74,9 @@ pub async fn serve(
         .route("/activities", get(get_fleet_activities))
         .route("/notices", get(get_notices))
         .route("/usage", get(get_usage))
+        .route("/replicas", get(get_replicas))
+        .route("/memory/resolve", post(post_memory_resolve))
+        .route("/agents/{name}/replica", get(get_agent_replica))
         .route("/agents/{name}/usage", get(get_agent_usage))
         .route("/agents/{name}/subagent/{id}", get(get_subagent))
         .route("/agents/{name}/move", post(post_move))
@@ -1272,7 +1275,7 @@ async fn put_marketplace(
     Path(name): Path<String>,
     Json(b): Json<MarketBody>,
 ) -> impl IntoResponse {
-    let now = aspen_node::store::now_epoch();
+    let now = s.node.inner.store.hlc_now();
     let m = aspen_node::plugins::Marketplace {
         name,
         source: b.source,
@@ -1307,7 +1310,7 @@ async fn delete_marketplace(State(s): S, Path(name): Path<String>) -> impl IntoR
         return err(StatusCode::NOT_FOUND, "no such marketplace").into_response();
     };
     m.deleted = true;
-    m.updated_at = aspen_node::store::now_epoch();
+    m.updated_at = s.node.inner.store.hlc_now();
     match s.node.inner.store.upsert_marketplace(&m) {
         Ok(_) => {
             let rules =
@@ -1326,7 +1329,7 @@ async fn put_plugin_rule(
 ) -> impl IntoResponse {
     r.id = id;
     r.deleted = false;
-    r.updated_at = aspen_node::store::now_epoch();
+    r.updated_at = s.node.inner.store.hlc_now();
     if !matches!(r.scope_kind.as_str(), "mesh" | "node" | "repo" | "session") {
         return err(
             StatusCode::BAD_REQUEST,
@@ -1364,7 +1367,7 @@ async fn delete_plugin_rule(State(s): S, Path(id): Path<String>) -> impl IntoRes
         return err(StatusCode::NOT_FOUND, "no such rule").into_response();
     };
     r.deleted = true;
-    r.updated_at = aspen_node::store::now_epoch();
+    r.updated_at = s.node.inner.store.hlc_now();
     match s.node.inner.store.upsert_plugin_rule(&r) {
         Ok(_) => {
             aspen_node::federation::broadcast_roster(&s.node.inner);
@@ -1441,9 +1444,9 @@ async fn put_board(
 ) -> impl IntoResponse {
     b.id = id;
     b.deleted = false;
-    if b.updated_at <= 0.0 {
-        b.updated_at = aspen_node::store::now_epoch();
-    }
+    // The console sends no timestamp (or an old one): the node's clock
+    // decides, so a write here is later than anything it has merged.
+    b.updated_at = s.node.inner.store.hlc_now();
     match s.node.inner.store.upsert_board(&b) {
         Ok(changed) => {
             if changed {
@@ -1524,6 +1527,9 @@ async fn post_import(State(s): S, Json(body): Json<ImportBody>) -> impl IntoResp
 struct MoveBody {
     /// Target node name.
     to: String,
+    /// Start from the replica held on the target even if the source is up.
+    #[serde(default)]
+    from_replica: Option<bool>,
     /// "move" (default) | "copy"
     #[serde(default)]
     mode: Option<String>,
@@ -1569,6 +1575,22 @@ async fn post_move(
     });
     if body.to == me {
         let o: aspen_node::migrate::ImportOpts = serde_json::from_value(opts).unwrap_or_default();
+        let source_up = mesh.link_up(&from);
+        if !source_up || body.from_replica.unwrap_or(false) {
+            if aspen_node::replicate::find(&s.node.inner, &from, &bare).is_some() {
+                return match s.node.pull_from_replica(&from, &bare, &o).await {
+                    Ok(v) => Json(v).into_response(),
+                    Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+                };
+            }
+            if !source_up {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    format!("node '{from}' is unreachable and no replica of @{bare} is held here"),
+                )
+                .into_response();
+            }
+        }
         return match s.node.pull_session(&from, &bare, &o).await {
             Ok(v) => Json(v).into_response(),
             Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
@@ -1648,6 +1670,33 @@ async fn get_fleet_activities(State(s): S) -> impl IntoResponse {
         }
     }
     Json(out).into_response()
+}
+
+/// Replicas held on this node (REPLICATION.md), one per (node, agent).
+async fn get_replicas(State(s): S) -> impl IntoResponse {
+    let me = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| "local".into());
+    let out: Vec<Value> = aspen_node::replicate::list(&s.node.inner)
+        .iter()
+        .map(|r| aspen_node::replicate::replica_json(r, &me))
+        .collect();
+    Json(out).into_response()
+}
+
+/// Is there a replica of this (remote) agent here, and is its home up?
+async fn get_agent_replica(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    let Some((bare, node)) = remote_parts(&s, &name) else {
+        return Json(json!({ "replica": null, "home_up": true })).into_response();
+    };
+    let me = s.node.inner.mesh().map(|m| m.identity.node.clone()).unwrap_or_default();
+    let up = s.node.inner.mesh().is_some_and(|m| m.link_up(&node));
+    let r = aspen_node::replicate::find(&s.node.inner, &node, &bare)
+        .map(|r| aspen_node::replicate::replica_json(&r, &me));
+    Json(json!({ "replica": r, "home_up": up })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -2325,6 +2374,25 @@ async fn get_transcript(
     axum::extract::Query(q): axum::extract::Query<TranscriptQuery>,
 ) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
+        // The home node is down: serve the replica held here, if any
+        // (REPLICATION.md). The console learns it is a replica from
+        // `GET /api/agents/{name}/replica`.
+        let up = s.node.inner.mesh().is_some_and(|m| m.link_up(&node));
+        if !up {
+            if let Some(r) = aspen_node::replicate::find(&s.node.inner, &node, &bare) {
+                if let Some(main) = r.main.as_deref() {
+                    if let Some(after) = q.after.as_deref() {
+                        let items = aspen_claude::transcript::rehydrate_file(main).unwrap_or_default();
+                        let idx = items.iter().position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(after));
+                        return match idx {
+                            Some(i) => Json(json!({ "items": items[i + 1..], "after_found": true })).into_response(),
+                            None => Json(json!({ "items": items, "after_found": false })).into_response(),
+                        };
+                    }
+                    return Json(aspen_claude::transcript::rehydrate_file(main).unwrap_or_default()).into_response();
+                }
+            }
+        }
         return proxy(&s, &node, "transcript", &bare, json!({ "after": q.after })).await;
     }
     let rows = match s.node.inner.store.agents() {
@@ -2569,6 +2637,13 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
         })
         .collect();
 
+    let mut memory: Vec<Value> = aspen_node::memory::conflicts(&s.node.inner)
+        .into_iter()
+        .map(|mut v| {
+            v["node"] = Value::Null;
+            v
+        })
+        .collect();
     if let Some(mesh) = s.node.inner.mesh() {
         let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
         for peer in peers {
@@ -2611,6 +2686,13 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
                             adoptions.push(a);
                         }
                     }
+                    if let Some(ms) = v.get("memory").and_then(|m| m.as_array()) {
+                        for m in ms {
+                            let mut m = m.clone();
+                            m["node"] = json!(peer);
+                            memory.push(m);
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::debug!(peer, error = %e, "needs aggregation: peer unreachable");
@@ -2618,7 +2700,35 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
             }
         }
     }
-    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions })).into_response()
+    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions, "memory": memory })).into_response()
+}
+
+#[derive(Deserialize)]
+struct MemoryResolveBody {
+    node: Option<String>,
+    repo: String,
+    rel: String,
+    copy: String,
+    /// mine | theirs
+    choice: String,
+}
+
+/// Resolve a memory conflict (MEMORY.md) here or on the node it lives on.
+async fn post_memory_resolve(State(s): S, Json(b): Json<MemoryResolveBody>) -> impl IntoResponse {
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(
+            &s,
+            node,
+            "memory_resolve",
+            "",
+            json!({ "repo": b.repo, "rel": b.rel, "copy": b.copy, "choice": b.choice }),
+        )
+        .await;
+    }
+    match aspen_node::memory::resolve(&s.node.inner, std::path::Path::new(&b.repo), &b.rel, &b.copy, &b.choice) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
 }
 
 // ----------------------------------------------------------------- adoption

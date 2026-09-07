@@ -120,6 +120,8 @@ pub struct NodeInner {
     pub shutting_down: std::sync::atomic::AtomicBool,
     /// Self-update state, inventory, rollout (servicing.rs).
     pub servicing: crate::servicing::Servicing,
+    /// What the replication target has acknowledged (replicate.rs).
+    pub replication: Mutex<crate::replicate::SourceState>,
 }
 
 impl NodeInner {
@@ -428,6 +430,7 @@ impl Node {
             mesh: std::sync::RwLock::new(mesh),
             data_dir,
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            replication: Mutex::new(Default::default()),
             servicing: crate::servicing::Servicing::new(
                 crate::federation::VERSION
                     .get()
@@ -1205,6 +1208,72 @@ impl Node {
     }
 
     /// What a target needs to preflight a move: the repo's identity.
+    /// Start a session here from a replica of `agent@from_node` held on
+    /// this node (REPLICATION.md): stage it as a bundle, import as a copy
+    /// (a fork — the original may still run), spawn it.
+    pub async fn pull_from_replica(
+        &self,
+        from_node: &str,
+        agent: &str,
+        opts: &crate::migrate::ImportOpts,
+    ) -> Result<serde_json::Value> {
+        let inner = self.inner.clone();
+        let data_dir = inner
+            .data_dir
+            .clone()
+            .ok_or_else(|| anyhow!("no data dir"))?;
+        let r = crate::replicate::find(&inner, from_node, agent)
+            .ok_or_else(|| anyhow!("no replica of @{agent}@{from_node} held here"))?;
+        if r.main.is_none() {
+            return Err(anyhow!("the replica of @{agent}@{from_node} has no main transcript yet"));
+        }
+        let mut o = opts.clone();
+        o.mode = Some("copy".into());
+        let dd = data_dir.clone();
+        let store = inner.store.clone();
+        let (report, dir) = tokio::task::spawn_blocking(
+            move || -> Result<(crate::migrate::ImportReport, PathBuf)> {
+                let dir = crate::replicate::stage_bundle(&dd, &r)?;
+                let rep = crate::migrate::import(&dd, &store, &dir, &o)?;
+                Ok((rep, dir))
+            },
+        )
+        .await??;
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = PathBuf::from(&report.repo);
+        let revived = self
+            .spawn_agent(
+                &report.name,
+                repo,
+                SpawnOpts {
+                    resume: Some(report.session_id.clone()),
+                    fork: true,
+                    interactive: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let (ok, note) = match revived {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(format!("{e:#}"))),
+        };
+        let _ = inner.store.record_event(
+            &report.name,
+            "migrated",
+            serde_json::json!({ "from": from_node, "mode": "replica", "session_id": report.session_id }),
+        );
+        Ok(serde_json::json!({
+            "name": report.name,
+            "repo": report.repo,
+            "session_id": report.session_id,
+            "mode": "replica",
+            "files": report.files,
+            "notes": report.notes,
+            "revived": ok,
+            "revive_note": note,
+        }))
+    }
+
     pub fn session_spec(&self, name: &str) -> Result<crate::migrate::AgentSpec> {
         let row = self.agent_row(name)?;
         if let Some(to) = &row.moved_to {

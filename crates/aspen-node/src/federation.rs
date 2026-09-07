@@ -593,6 +593,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         "advertised": advertised(inner),
         "boards_digest": inner.store.boards_digest(),
         "plugins_digest": inner.store.plugin_registry_digest(),
+        "memory": crate::memory::roster_digests(inner),
     })
 }
 
@@ -990,6 +991,20 @@ async fn link_loop(
                             });
                         }
                     }
+                    if let Some(m) = payload.get("memory").and_then(|m| m.as_object()) {
+                        if let Some(mine) = crate::memory::roster_digests(inner) {
+                            for (key, d) in m {
+                                if mine.get(key).is_some() && mine.get(key) != Some(d) {
+                                    let inner2 = inner.clone();
+                                    let peer2 = peer.to_owned();
+                                    let key2 = key.clone();
+                                    tokio::spawn(async move {
+                                        crate::memory::sync_from(&inner2, &peer2, &key2).await;
+                                    });
+                                }
+                            }
+                        }
+                    }
                     if let Some(d) = payload.get("plugins_digest").and_then(|d| d.as_str()) {
                         if d != inner.store.plugin_registry_digest() {
                             let inner2 = inner.clone();
@@ -1068,7 +1083,7 @@ async fn link_loop(
                 let mesh = mesh.clone();
                 let peer = peer.to_owned();
                 tokio::spawn(async move {
-                    let res = serve_api_req(&inner, &op, &agent, body).await;
+                    let res = serve_api_req(&inner, &peer, &op, &agent, body).await;
                     let reply = match res {
                         Ok(body) => json!({ "t": "api_res", "id": id, "ok": true, "body": body }),
                         Err(e) => {
@@ -1169,6 +1184,7 @@ async fn link_loop(
 /// mirrors the local REST API; every op is scoped to one named agent.
 async fn serve_api_req(
     inner: &Arc<NodeInner>,
+    peer: &str,
     op: &str,
     agent: &str,
     body: Value,
@@ -1267,6 +1283,27 @@ async fn serve_api_req(
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
         "fleet_activities" => Ok(json!(crate::node::fleet_activities(&node.inner))),
+        "replica_offsets" => crate::replicate::offsets(&node.inner, peer, agent),
+        "memory_files" => {
+            let key = body.get("key").and_then(|k| k.as_str()).unwrap_or("").to_owned();
+            let inner = node.inner.clone();
+            tokio::task::spawn_blocking(move || crate::memory::files_for_key(&inner, &key)).await?
+        }
+        "memory_conflicts" => Ok(json!(crate::memory::conflicts(&node.inner))),
+        "memory_resolve" => {
+            let repo = std::path::PathBuf::from(body.get("repo").and_then(|v| v.as_str()).unwrap_or(""));
+            let rel = body.get("rel").and_then(|v| v.as_str()).unwrap_or("");
+            let copy = body.get("copy").and_then(|v| v.as_str()).unwrap_or("");
+            let choice = body.get("choice").and_then(|v| v.as_str()).unwrap_or("");
+            crate::memory::resolve(&node.inner, &repo, rel, copy, choice)?;
+            Ok(json!({ "ok": true }))
+        }
+        "replica_append" => {
+            let inner = node.inner.clone();
+            let peer = peer.to_owned();
+            let agent = agent.to_owned();
+            tokio::task::spawn_blocking(move || crate::replicate::append(&inner, &peer, &agent, &body)).await?
+        }
         "usage" => {
             let from = body.get("from").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let to = body.get("to").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
@@ -1469,7 +1506,10 @@ async fn serve_api_req(
                 .iter()
                 .map(crate::adoption::adoption_json)
                 .collect();
-            Ok(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions }))
+            Ok(json!({
+                "prompts": prompts, "inbox": inbox, "adoptions": adoptions,
+                "memory": crate::memory::conflicts(inner),
+            }))
         }
         "inbox_read" => {
             let rows = inner.store.pending_for("operator")?;

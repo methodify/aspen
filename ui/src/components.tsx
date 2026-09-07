@@ -4,7 +4,7 @@
 // class selector all speak the same two color systems (priority + presence).
 
 import { useEffect, useState, type ReactNode } from "react";
-import type { Urgency, TurnState } from "./api";
+import { serverNow, type Urgency, type TurnState } from "./api";
 
 export type Presence = "busy" | "idle" | "off";
 
@@ -132,7 +132,7 @@ export function Empty({ mark, children }: { mark?: string; children: ReactNode }
 
 /** Relative "42s / 6m / 3h / 2d" from an epoch-seconds timestamp. */
 export function relTime(epochSeconds: number): string {
-  const s = Math.max(0, Date.now() / 1000 - epochSeconds);
+  const s = Math.max(0, serverNow() - epochSeconds);
   if (s < 60) return `${Math.floor(s)}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;

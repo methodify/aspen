@@ -35,6 +35,12 @@ pub struct Settings {
     /// Outbound notifications (docs/NOTIFICATIONS.md).
     #[serde(default)]
     pub notify: NotifySettings,
+    /// Transcript replication, opt-in (docs/REPLICATION.md).
+    #[serde(default)]
+    pub replication: crate::replicate::ReplicationSettings,
+    /// Memory convergence, opt-in (docs/MEMORY.md).
+    #[serde(default)]
+    pub memory: crate::memory::MemorySettings,
 }
 
 /// Where notices go beyond the console: a webhook URL that receives each

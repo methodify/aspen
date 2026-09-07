@@ -262,3 +262,20 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
   Mesh op `usage {from, to}`. Rehydrated assistant items carry `usage {input, output, cache_read,
   cache_create}` and `model`.
 - Settings: `notify {webhook?, command?, kinds?}`.
+
+
+## Replication, memory, clock (v0.16) — REPLICATION.md, MEMORY.md, SYNC.md
+
+- Settings: `replication {to?, repos?, accept?, keep_days?}`, `memory {sync?}`; CLI `aspen config
+  replicate <node>|off`, `aspen config memory-sync on|off`.
+- `GET /api/replicas` — replicas held here: `[{node, agent, session_id, repo, title, bytes, files,
+  as_of, held_on, has_transcript}]`. `GET /api/agents/{name}/replica` — `{replica, home_up}`.
+- `GET /api/agents/{name}/transcript` serves the replica when the home node's link is down.
+- `POST /api/agents/{name}/move` accepts `from_replica: true`; a move to this node whose source is
+  down starts from the replica automatically (mode copy, a fork).
+- Mesh ops `replica_offsets {agent}` → `{offsets: {rel: bytes}}`, `replica_append {session_id, repo,
+  title, ctx, rel, offset, data, truncate}` → `{bytes}`.
+- Roster field `memory: {key: digest}`; mesh ops `memory_files {key}`, `memory_conflicts`,
+  `memory_resolve {repo, rel, copy, choice}`. `GET /api/needs` gains `memory: [{node, repo, handle,
+  rel, from, copy, at}]`; `POST /api/memory/resolve {node?, repo, rel, copy, choice: mine|theirs}`.
+- Every mesh-wide row's `updated_at` now comes from the store's hybrid logical clock.
