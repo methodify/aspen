@@ -165,6 +165,18 @@ export interface BusMessage {
 export interface HistoryToolChip {
   id: string;
   name: string;
+  /** Capped by the node (REHYDRATE_TOOL_CAP); long strings end in a "truncated" note. */
+  input?: unknown;
+  result?: string | null;
+  is_error?: boolean;
+}
+
+/** A pasted image in a user message, as stored in the transcript. */
+export interface HistoryImage {
+  media_type: string;
+  data?: string;
+  /** Present instead of `data` when the node left the image out for size. */
+  omitted_bytes?: number;
 }
 
 /** REST `TranscriptItem`: rehydrated history from the runtime's on-disk transcript. */
@@ -175,6 +187,8 @@ export interface HistoryItem {
   bus?: boolean;
   /** assistant items only */
   tools?: HistoryToolChip[];
+  /** user items only: pasted images */
+  images?: HistoryImage[];
   uuid?: string;
   timestamp?: string;
 }

@@ -12,7 +12,7 @@
 //
 // This replaces Command, Sessions, and the rail's fleet list.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   api,
@@ -199,7 +199,25 @@ export default function Now() {
   const [query, setQuery] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
-  const [replyText, setReplyText] = useState("");
+  const [replyText, setReplyTextRaw] = useState("");
+  // Reply drafts survive leaving the view (PROPOSALS §1), per recipient.
+  const setReplyText = (t: string) => {
+    setReplyTextRaw(t);
+    try {
+      if (t) localStorage.setItem(`aspen.draft.now.${replyTo ?? ""}`, t);
+      else localStorage.removeItem(`aspen.draft.now.${replyTo ?? ""}`);
+    } catch {
+      // storage unavailable
+    }
+  };
+  useEffect(() => {
+    if (!replyTo) return;
+    try {
+      setReplyTextRaw(localStorage.getItem(`aspen.draft.now.${replyTo}`) ?? "");
+    } catch {
+      // storage unavailable
+    }
+  }, [replyTo]);
   const [replyClass, setReplyClass] = useState<Urgency>("normal");
   const [showFolded, setShowFolded] = useState(false);
   const now = Date.now() / 1000;

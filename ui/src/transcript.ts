@@ -6,7 +6,7 @@
 // No React, no I/O — every function takes a TranscriptState and returns a
 // new one, so this module is unit-testable in isolation.
 
-import type { HistoryItem } from "./api";
+import type { HistoryImage, HistoryItem } from "./api";
 import type {
   SessionEvent,
   AssistantMessageEvent,
@@ -48,6 +48,8 @@ export interface UserBubbleItem {
   /** Awaiting the replay ack. */
   pending: boolean;
   failed: boolean;
+  /** Pasted images, in marker order. */
+  images?: HistoryImage[];
 }
 
 /** A bus injection observed on the wire (user-role frame with the envelope header). */
@@ -68,6 +70,8 @@ export interface ToolCardItem {
   isError: boolean;
   /** Result attached, or the turn ended (a card may not stay "running" after the turn). */
   done: boolean;
+  /** Wall-clock ms when the call was seen live; null for rehydrated history. */
+  startedAt: number | null;
 }
 
 export interface PermissionCardItem {
@@ -116,10 +120,21 @@ export function emptyTranscript(): TranscriptState {
  * tool chips carry no input/result (the on-disk rehydration is name+id only),
  * bus-flagged user items render as bus bubbles. Live WS events append after.
  */
+/** Every tool card marked done — for a page that learns the turn is over
+ *  (or was never running) after seeding history that ended mid-call. */
+export function settleTools(state: TranscriptState): TranscriptState {
+  if (!state.items.some((it) => it.kind === "tool" && !it.done)) return state;
+  return {
+    ...state,
+    items: state.items.map((it) => (it.kind === "tool" && !it.done ? { ...it, done: true } : it)),
+  };
+}
+
 export function seedFromHistory(history: HistoryItem[]): TranscriptState {
   const items: TranscriptItem[] = [];
   let nextId = 1;
-  for (const h of history) {
+  for (const [hi, h] of history.entries()) {
+    const lastHistory = hi === history.length - 1;
     const text = typeof h.text === "string" ? h.text : "";
     if (h.role === "user") {
       if (h.bus === true || text.startsWith(BUS_HEADER)) {
@@ -133,6 +148,7 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
           localKey: null,
           pending: false,
           failed: false,
+          images: h.images && h.images.length ? h.images : undefined,
         });
       }
     } else {
@@ -152,10 +168,14 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
           id: nextId++,
           toolUseId: typeof t.id === "string" ? t.id : "",
           name: typeof t.name === "string" ? t.name : "tool",
-          input: null,
-          result: null,
-          isError: false,
-          done: true,
+          input: t.input === undefined ? null : t.input,
+          result: typeof t.result === "string" ? t.result : null,
+          isError: t.is_error === true,
+          // A call with no result on the last line may still be running
+          // (the page opened mid-turn); the page settles it if the agent
+          // turns out to be idle.
+          done: !(lastHistory && typeof t.result !== "string"),
+          startedAt: null,
         });
       }
     }
@@ -505,6 +525,7 @@ function applyToolUse(state: TranscriptState, ev: ToolUseEvent): TranscriptState
     result: null,
     isError: false,
     done: false,
+    startedAt: Date.now(),
   };
   return { ...state, items: [...state.items, item], nextId: state.nextId + 1 };
 }

@@ -212,12 +212,130 @@ fn extract_text(v: &Value) -> Option<String> {
 /// experienced (reference §10.2): skip meta/sidechain/compact lines and
 /// harness wrappers; merge consecutive same-id assistant lines; text in
 /// full, tool traffic as name-level cards.
+/// Per-item cap on tool inputs and results carried by rehydration: enough
+/// to open a card and read what happened, small enough that a long
+/// session's history stays a quick fetch. Larger values are cut and marked.
+pub const REHYDRATE_TOOL_CAP: usize = 16 * 1024;
+/// Per-message cap on pasted images carried by rehydration (base64 bytes).
+pub const REHYDRATE_IMAGE_CAP: usize = 3 * 1024 * 1024;
+
+fn cap_text(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_owned();
+    }
+    let mut end = cap;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… (truncated, {} more bytes)", &s[..end], s.len() - end)
+}
+
+/// Cut long string leaves of a tool input so the structure survives for
+/// the per-tool renderers while the payload stays bounded.
+fn cap_value(v: &Value, cap: usize) -> Value {
+    match v {
+        Value::String(s) => Value::String(cap_text(s, cap)),
+        Value::Array(a) => Value::Array(a.iter().map(|x| cap_value(x, cap)).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| (k.clone(), cap_value(x, cap)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The text of a tool_result block: a string, or the text blocks joined.
+fn tool_result_text(b: &Value) -> String {
+    match b.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|x| {
+                if x.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    x.get("text").and_then(|t| t.as_str()).map(str::to_owned)
+                } else if x.get("type").and_then(|t| t.as_str()) == Some("image") {
+                    Some("[image]".to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Pasted images in a user message: `{media_type, data}` per image block,
+/// bounded per message; past the cap an image is replaced by its size.
+fn user_images(v: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut budget = REHYDRATE_IMAGE_CAP;
+    if let Some(blocks) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
+        for b in blocks {
+            if b.get("type").and_then(|t| t.as_str()) != Some("image") {
+                continue;
+            }
+            let src = b.get("source").cloned().unwrap_or(Value::Null);
+            let media = src
+                .get("media_type")
+                .and_then(|m| m.as_str())
+                .unwrap_or("image/png");
+            let data = src.get("data").and_then(|d| d.as_str()).unwrap_or("");
+            if data.len() <= budget {
+                budget -= data.len();
+                out.push(json!({ "media_type": media, "data": data }));
+            } else {
+                out.push(json!({ "media_type": media, "omitted_bytes": data.len() }));
+            }
+        }
+    }
+    out
+}
+
 pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
     let path = transcript_path(project_path, session_id);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading transcript {}", path.display()))?;
     let mut items: Vec<Value> = Vec::new();
     let mut last_assistant_id: Option<String> = None;
+
+    // Pass 1: tool results, keyed by tool_use_id. They ride user lines that
+    // follow the assistant's call; the card wants them attached to the call.
+    let mut results: std::collections::HashMap<String, (String, bool)> =
+        std::collections::HashMap::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("user")
+            || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true)
+        {
+            continue;
+        }
+        if let Some(blocks) = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        {
+            for b in blocks {
+                if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                    continue;
+                }
+                if let Some(id) = b.get("tool_use_id").and_then(|i| i.as_str()) {
+                    let is_error = b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                    results.insert(
+                        id.to_owned(),
+                        (cap_text(&tool_result_text(b), REHYDRATE_TOOL_CAP), is_error),
+                    );
+                }
+            }
+        }
+    }
 
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -241,8 +359,10 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
                     continue;
                 };
                 let is_bus = text.trim_start().starts_with("[aspen bus]");
+                let images = user_images(&v);
                 items.push(json!({
                     "role": "user", "bus": is_bus, "text": text,
+                    "images": images,
                     "uuid": uuid, "timestamp": timestamp,
                 }));
                 last_assistant_id = None;
@@ -262,9 +382,17 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
                 {
                     for b in blocks {
                         if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                            let id = b.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                            let (result, is_error) = results
+                                .get(id)
+                                .map(|(r, e)| (Value::String(r.clone()), *e))
+                                .unwrap_or((Value::Null, false));
                             tools.push(json!({
                                 "id": b.get("id"),
                                 "name": b.get("name"),
+                                "input": b.get("input").map(|i| cap_value(i, REHYDRATE_TOOL_CAP)),
+                                "result": result,
+                                "is_error": is_error,
                             }));
                         }
                     }

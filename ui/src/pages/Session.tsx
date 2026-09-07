@@ -33,11 +33,13 @@ import {
   type TranscriptState,
   type TurnEndItem,
   type UserBubbleItem,
+  settleTools,
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { Meter, presenceOf, relTime } from "./../components";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
+import { ToolBody, resultHint } from "./../toolViews";
 import {
   buildQuestionUpdatedInput,
   filterSlashCommands,
@@ -68,7 +70,8 @@ type Action =
   | { type: "event"; ev: SessionEvent }
   | { type: "local_send"; text: string; localKey: string }
   | { type: "sent"; localKey: string; uuid: string }
-  | { type: "send_failed"; localKey: string };
+  | { type: "send_failed"; localKey: string }
+  | { type: "settle_tools" };
 
 function reducer(state: TranscriptState, action: Action): TranscriptState {
   switch (action.type) {
@@ -82,6 +85,8 @@ function reducer(state: TranscriptState, action: Action): TranscriptState {
       return markLocalUserMessage(state, action.localKey, { uuid: action.uuid });
     case "send_failed":
       return markLocalUserMessage(state, action.localKey, { failed: true });
+    case "settle_tools":
+      return settleTools(state);
   }
 }
 
@@ -170,6 +175,17 @@ const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) 
     <div className="bubble bubble-user">
       <div className="bubble-tag mono">@operator</div>
       <div className="user-text">{item.text}</div>
+      {item.images && item.images.length > 0 && (
+        <div className="user-images">
+          {item.images.map((im, i) =>
+            im.data ? (
+              <img key={i} src={`data:${im.media_type};base64,${im.data}`} alt={`attachment ${i + 1}`} />
+            ) : (
+              <span key={i} className="mono-meta">{`[image ${i + 1}: ${Math.round((im.omitted_bytes ?? 0) / 1024)} KB, not loaded]`}</span>
+            ),
+          )}
+        </div>
+      )}
       {item.pending && !item.failed && <div className="bubble-note dim">sending…</div>}
       {item.failed && <div className="bubble-note error-text">send failed — not delivered</div>}
     </div>
@@ -188,19 +204,44 @@ const BusBubble = memo(function BusBubble({ item, source }: { item: BusBubbleIte
   );
 });
 
-const ToolCard = memo(function ToolCard({ item }: { item: ToolCardItem }) {
+/** A tool call. Open while it is the active call (the newest item of a
+ *  busy turn) or when the operator pinned it open; a click toggles and
+ *  pins. `now` ticks while the turn is busy so the running timer moves. */
+const ToolCard = memo(function ToolCard({
+  item,
+  open,
+  onToggle,
+  now,
+  tui,
+}: {
+  item: ToolCardItem;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+  now: number;
+  tui?: boolean;
+}) {
   const expandable = item.input !== null || item.result !== null;
   const summary = toolSummary(item.input);
   if (!expandable) {
-    // Rehydrated history carries only { id, name }: render a plain chip.
+    // History without inputs (older nodes): a plain chip.
     return (
-      <div className="tool-chip">
-        <span className="mono">{item.name}</span>
+      <div className={tui ? "cline cline-tool" : "tool-chip"}>
+        <span className="mono">{tui ? `[tool] ${item.name}` : item.name}</span>
       </div>
     );
   }
+  const hint = resultHint(item);
+  const elapsed =
+    !item.done && item.startedAt !== null ? Math.max(0, Math.floor((now - item.startedAt) / 1000)) : null;
   return (
-    <details className="tool-card">
+    <details
+      className={tui ? "tool-card tool-card-tui" : "tool-card"}
+      open={open}
+      onToggle={(e) => {
+        const next = (e.currentTarget as HTMLDetailsElement).open;
+        if (next !== open) onToggle(next);
+      }}
+    >
       <summary>
         <span
           className={
@@ -209,21 +250,13 @@ const ToolCard = memo(function ToolCard({ item }: { item: ToolCardItem }) {
         />
         <span className="tool-name mono">{item.name}</span>
         {summary && <span className="tool-summary mono">{summary}</span>}
-        {!item.done && <span className="chip chip-busy">running</span>}
-        {item.isError && <span className="chip chip-error">error</span>}
+        {hint && <span className={`tool-hint mono-meta${item.isError ? " error-text" : ""}`}>{hint}</span>}
+        {!item.done && (
+          <span className="chip chip-busy">{elapsed === null ? "running" : `running ${elapsed}s`}</span>
+        )}
       </summary>
       <div className="tool-detail">
-        <div className="tool-section-label">input</div>
-        <pre>{JSON.stringify(item.input, null, 2)}</pre>
-        {item.result !== null && (
-          <>
-            <div className="tool-section-label">result</div>
-            <pre>{item.result}</pre>
-          </>
-        )}
-        {item.result === null && item.done && (
-          <div className="dim tool-section-label">no result recorded (turn ended)</div>
-        )}
+        <ToolBody item={item} />
       </div>
     </details>
   );
@@ -459,7 +492,30 @@ function SessionView({ name }: { name: string }) {
   const [lastTurn, setLastTurn] = useState<TurnInfo | null>(null);
   const [exited, setExited] = useState<{ code: number | null } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  // The composer draft survives leaving the view (PROPOSALS §1): per
+  // agent, per browser, cleared on send.
+  const draftKey = `aspen.draft.${name}`;
+  const [draft, setDraft] = useState(() => {
+    try {
+      return localStorage.getItem(draftKey) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      try {
+        if (draft) localStorage.setItem(draftKey, draft);
+        else localStorage.removeItem(draftKey);
+      } catch {
+        // storage unavailable: the draft just doesn't persist
+      }
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [draft, draftKey]);
+  // Tool cards the operator opened or closed by hand; auto open/close
+  // (the active call) applies only to untouched cards.
+  const [pinnedTools, setPinnedTools] = useState<Map<number, boolean>>(() => new Map());
   const [reloading, setReloading] = useState(false);
   const [reloadNote, setReloadNote] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
@@ -558,10 +614,22 @@ function SessionView({ name }: { name: string }) {
   }, [name]);
 
   // Context on mount, but only once the agent is known idle (never mid-turn).
+  // Opened mid-turn, the page starts busy: the composer locks and the
+  // active tool card opens, exactly as if the turn had begun on screen;
+  // `turn_ended` on the socket unlocks it as usual.
   const ctxSeededRef = useRef(false);
+  const agentRef = useRef(agent);
+  agentRef.current = agent;
   useEffect(() => {
     if (ctxSeededRef.current || !agent) return;
     ctxSeededRef.current = true;
+    if (agent.turn_state === "busy" && agent.live) {
+      setBusy(true);
+      if (busyLocalStartRef.current === null) busyLocalStartRef.current = Date.now();
+      setNowTick(Date.now());
+    } else {
+      dispatch({ type: "settle_tools" });
+    }
     if (agent.turn_state !== "busy") void fetchContext();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent]);
@@ -652,6 +720,10 @@ function SessionView({ name }: { name: string }) {
         const history = await api.transcript(name);
         if (disposed) return;
         dispatch({ type: "seed", state: seedFromHistory(history) });
+        // History that ends mid-call shows the call running only while
+        // the agent really is busy.
+        const a = agentRef.current;
+        if (a && !(a.live && a.turn_state === "busy")) dispatch({ type: "settle_tools" });
         setHistoryError(null);
       } catch (e) {
         if (disposed) return;
@@ -1010,11 +1082,7 @@ function SessionView({ name }: { name: string }) {
         );
       }
       case "tool":
-        return (
-          <div key={item.id} className="cline cline-tool">
-            [tool] {item.name}
-          </div>
-        );
+        return toolCard(item, true);
       case "permission":
         if (item.settled) {
           return (
@@ -1064,6 +1132,34 @@ function SessionView({ name }: { name: string }) {
     );
   }
 
+  // The active call: the newest unfinished tool while the turn is busy
+  // (a permission prompt or status line may sit after it; the harness
+  // reports the result only when the call ends).
+  let activeToolId: number | null = null;
+  if (busy) {
+    for (let i = transcript.items.length - 1; i >= 0; i--) {
+      const it = transcript.items[i]!;
+      if (it.kind === "tool") {
+        if (!it.done) activeToolId = it.id;
+        break;
+      }
+    }
+  }
+  function toolCard(item: ToolCardItem, tui: boolean) {
+    const pinned = pinnedTools.get(item.id);
+    const open = pinned !== undefined ? pinned : item.id === activeToolId;
+    return (
+      <ToolCard
+        key={item.id}
+        item={item}
+        open={open}
+        now={nowTick}
+        tui={tui}
+        onToggle={(o) => setPinnedTools((m) => new Map(m).set(item.id, o))}
+      />
+    );
+  }
+
   function renderItem(item: TranscriptItem) {
     if (renderMode === "console") return renderConsoleItem(item);
     const source = renderMode === "source";
@@ -1075,7 +1171,7 @@ function SessionView({ name }: { name: string }) {
       case "bus":
         return <BusBubble key={item.id} item={item} source={source} />;
       case "tool":
-        return <ToolCard key={item.id} item={item} />;
+        return toolCard(item, false);
       case "permission":
         return renderPermissionItem(item);
       case "turn_end":
