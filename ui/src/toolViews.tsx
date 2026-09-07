@@ -56,9 +56,52 @@ export function resultHint(item: ToolCardItem): string {
       const n = lineCount(result);
       return /no (matches|files) found/i.test(result) ? "no matches" : n ? `${n} match${n === 1 ? "" : "es"}` : "done";
     }
+    // Codex items (CODEX_RUNTIME_REFERENCE.md §8)
+    case "commandExecution": {
+      if (/^declined/.test(result)) return "declined";
+      const n = lineCount(result.replace(/\n\(exit code \d+\)$/, ""));
+      return n === 0 ? "no output" : `${n} line${n === 1 ? "" : "s"}`;
+    }
+    case "fileChange": {
+      const changes = Array.isArray(input?.["changes"]) ? (input!["changes"] as unknown[]) : [];
+      if (/^declined/.test(result)) return "declined";
+      return changes.length === 1 ? "changed" : `${changes.length} files`;
+    }
     default:
       return item.result === null ? "" : "done";
   }
+}
+
+/** A Codex file change: path, kind, and the diff the app-server sent. */
+function FileChangeView({ changes, agent }: { changes: unknown[]; agent?: string }) {
+  return (
+    <>
+      {changes.map((c, i) => {
+        const r = rec(c);
+        const path = str(r?.["path"]) ?? "";
+        const kind = str(rec(r?.["kind"])?.["type"]) ?? str(r?.["kind"]) ?? "update";
+        const diff = str(r?.["diff"]) ?? "";
+        return (
+          <div key={`${path}-${i}`}>
+            <div className="mono">
+              <PathLink path={path} agent={agent} />
+              <span className="mono-meta">{` · ${kind}`}</span>
+            </div>
+            {diff && (
+              <pre className="tool-diff">
+                {diff.split("\n").map((l, j) => (
+                  <span
+                    key={j}
+                    className={l.startsWith("+") && !l.startsWith("+++") ? "diff-add" : l.startsWith("-") && !l.startsWith("---") ? "diff-del" : undefined}
+                  >{`${kind === "add" && !/^[+-]/.test(l) ? "+ " : ""}${l}\n`}</span>
+                ))}
+              </pre>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 /** Unified-ish diff of old→new for an Edit: whole blocks, prefixed. */
@@ -151,6 +194,37 @@ export function ToolBody({ item, agent }: { item: ToolCardItem; agent?: string }
             <span className="mono-meta">{` · ${lineCount(content)} lines`}</span>
           </div>
           <Collapsible text={content} />
+          {resultBlock}
+        </>
+      );
+    }
+    case "commandExecution": {
+      const cmd = str(input?.["command"]) ?? "";
+      const cwd = str(input?.["cwd"]);
+      const reason = str(input?.["reason"]);
+      return (
+        <>
+          {reason && <div className="mono-meta">{reason}</div>}
+          <pre className="tool-cmd">{`$ ${cmd}`}</pre>
+          {cwd && <div className="mono-meta">{`in ${cwd.replace(/^file:\/\//, "")}`}</div>}
+          {resultBlock}
+        </>
+      );
+    }
+    case "fileChange": {
+      const changes = Array.isArray(input?.["changes"]) ? (input!["changes"] as unknown[]) : [];
+      return (
+        <>
+          <FileChangeView changes={changes} agent={agent} />
+          {resultBlock}
+        </>
+      );
+    }
+    case "webSearch": {
+      const q = str(input?.["query"]) ?? "";
+      return (
+        <>
+          <div className="mono"><span className="tool-pattern">{q}</span></div>
           {resultBlock}
         </>
       );

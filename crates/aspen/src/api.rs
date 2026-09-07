@@ -129,6 +129,7 @@ pub async fn serve(
         .route("/activity", get(get_activity))
         .route("/repos", get(get_repos).post(post_repo))
         .route("/repos/skip", post(post_repo_skip))
+        .route("/repos/harness", post(post_repo_harness))
         .route("/repos/expose", post(post_repo_expose))
         .route("/repos/forget", post(post_repo_forget))
         .route("/repo/autorun", get(get_autorun))
@@ -4158,6 +4159,7 @@ fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
         "meshes": if multi { Some(s.node.inner.store.exposed_meshes(&r.path).unwrap_or_default()) } else { None },
         "git": aspen_node::gitstate::get(&r.path),
         "skip_permissions": r.skip_permissions,
+        "default_harness": s.node.inner.store.repo_default_harness(&r.path),
         "last_used_at": r.last_used_at,
         "sessions": sessions,
         "live_agents": live,
@@ -4224,6 +4226,38 @@ struct RepoSkipBody {
     skip_permissions: bool,
     /// Owning node; absent or this node's name = local.
     node: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RepoHarnessBody {
+    path: String,
+    /// `claude` | `codex` | null (clear: the node's default, claude).
+    harness: Option<String>,
+    node: Option<String>,
+}
+
+/// The repo's default harness for new sessions (HARNESSES.md §4).
+async fn post_repo_harness(State(s): S, Json(b): Json<RepoHarnessBody>) -> impl IntoResponse {
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_repo_harness", "", json!({ "path": b.path, "harness": b.harness })).await;
+    }
+    let harness = match b.harness.as_deref().filter(|h| !h.is_empty()) {
+        Some(h) => match aspen_core::Harness::parse(h) {
+            Some(h) => Some(h),
+            None => return err(StatusCode::BAD_REQUEST, format!("unknown harness {h:?}")).into_response(),
+        },
+        None => None,
+    };
+    if let Some(h) = harness {
+        if s.node.inner.adapters.get(&h).is_none() {
+            return err(StatusCode::CONFLICT, format!("{h} is not available on this node")).into_response();
+        }
+    }
+    let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
+    match s.node.inner.store.set_repo_default_harness(&path, harness) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
 }
 
 async fn post_repo_skip(State(s): S, Json(b): Json<RepoSkipBody>) -> impl IntoResponse {

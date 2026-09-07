@@ -135,6 +135,10 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
+        /// Which harness's hooks: `claude` (~/.claude/settings.json) or
+        /// `codex` (~/.codex/hooks.json). The payload and the relay are the same.
+        #[arg(long, global = true, default_value = "claude")]
+        harness: String,
     },
     /// Tail the daemon log (<data-dir>/aspen.log).
     Logs {
@@ -516,7 +520,7 @@ async fn main() -> Result<()> {
         ),
         Command::Hook => hook_relay(&cli.data_dir),
         Command::Mcp => mcp_bridge(),
-        Command::Hooks { command } => hooks_command(&cli.data_dir, command),
+        Command::Hooks { command, harness } => hooks_command(&cli.data_dir, command, &harness),
         Command::Logs { lines } => {
             for l in aspen_node::servicing::tail_log(&cli.data_dir, lines) {
                 println!("{l}");
@@ -1032,7 +1036,9 @@ fn mcp_bridge() -> Result<()> {
 }
 
 fn hook_relay(data_dir: &std::path::Path) -> Result<()> {
-    if std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("aspen") {
+    if std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("aspen")
+        || std::env::var("CODEX_INTERNAL_ORIGINATOR_OVERRIDE").as_deref() == Ok("aspen")
+    {
         return Ok(());
     }
     let mut input = String::new();
@@ -1118,8 +1124,22 @@ fn is_our_hook(entry: &serde_json::Value) -> bool {
     })
 }
 
-fn hooks_command(data_dir: &std::path::Path, cmd: HooksCommand) -> Result<()> {
-    let path = claude_settings_path();
+fn codex_hooks_path() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs_home().join(".codex"))
+        .join("hooks.json")
+}
+
+fn hooks_command(data_dir: &std::path::Path, cmd: HooksCommand, harness: &str) -> Result<()> {
+    // Codex reads the same `{hooks: {Event: [{hooks: [{type, command}]}]}}`
+    // shape from its own file (CODEX_RUNTIME_REFERENCE.md §1), and its
+    // SessionStart payload carries the same fields, so one relay serves both.
+    let path = match harness {
+        "claude" => claude_settings_path(),
+        "codex" => codex_hooks_path(),
+        other => anyhow::bail!("unknown harness {other:?}: claude or codex"),
+    };
     let mut settings: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())

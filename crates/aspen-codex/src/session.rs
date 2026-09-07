@@ -272,6 +272,11 @@ impl CodexSession {
                 }
                 match ty {
                     "agentMessage" | "reasoning" | "userMessage" | "plan" | "hookPrompt" | "contextCompaction" => {}
+                    // Extensions (clock.sleep while a question waits, …) are
+                    // status, not tool cards.
+                    "extension" | "sleep" => {
+                        send(SessionEvent::Status { raw: json!({ "type": "extension", "kind": item.get("kind"), "duration_ms": item.get("durationMs") }) }).await;
+                    }
                     _ => {
                         if let Some(ev) = normalize::tool_use_of(&item) {
                             send(ev).await;
@@ -299,7 +304,7 @@ impl CodexSession {
                         }
                     }
                     "plan" => send(SessionEvent::Status { raw: json!({ "type": "plan", "text": item.get("text") }) }).await,
-                    "userMessage" | "reasoning" | "hookPrompt" | "contextCompaction" => {}
+                    "userMessage" | "reasoning" | "hookPrompt" | "contextCompaction" | "extension" | "sleep" => {}
                     _ => {
                         if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
                             self.items.lock().unwrap().remove(id);
@@ -721,6 +726,28 @@ impl CodexSession {
             .await;
     }
 
+    /// Text → Codex input blocks. A `$name` token naming a known skill
+    /// becomes a skill block (Codex's own mention form) beside the text.
+    fn input_blocks(&self, text: &str) -> Value {
+        let skills = self.runtime.lock().unwrap().skills.clone();
+        let mut blocks = vec![json!({ "type": "text", "text": text, "text_elements": [] })];
+        for tok in text.split_whitespace() {
+            let Some(name) = tok.strip_prefix('$') else { continue };
+            let name = name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(sk) = skills.iter().find(|s| s.get("name").and_then(|n| n.as_str()) == Some(name)) {
+                if let Some(path) = sk.get("path").and_then(|p| p.as_str()) {
+                    if !blocks.iter().any(|b| b.get("type") == Some(&json!("skill")) && b.get("name") == Some(&json!(name))) {
+                        blocks.push(json!({ "type": "skill", "name": name, "path": path }));
+                    }
+                }
+            }
+        }
+        json!(blocks)
+    }
+
     fn turn_params(&self, input: Value) -> Value {
         let mode = *self.mode.lock().unwrap();
         let mut p = json!({
@@ -777,7 +804,7 @@ impl SessionHandle for CodexSession {
     }
 
     async fn send_user(&self, text: String) -> Result<String> {
-        self.start_or_steer(json!([{ "type": "text", "text": text, "text_elements": [] }])).await
+        self.start_or_steer(self.input_blocks(&text)).await
     }
 
     /// Claude-shaped content blocks (`text`, `image` with base64 source)

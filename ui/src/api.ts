@@ -421,6 +421,8 @@ export interface HistoryItem {
 export interface SessionInfo {
   session_id: string;
   title: string | null;
+  /** Which runtime wrote it (HARNESSES.md). */
+  harness?: Harness;
   entrypoint: string | null;
   /** epoch seconds */
   modified: number;
@@ -515,6 +517,8 @@ export interface Repo {
   handle?: string;
   git?: GitState | null;
   skip_permissions: boolean;
+  /** The harness new sessions here run on unless told otherwise (null = claude). */
+  default_harness?: Harness | null;
   /** While this node is in more than one mesh: which meshes see this repo. */
   meshes?: string[] | null;
   /** Present on remote (node_repos) rows; local rows use live_agents. */
@@ -595,6 +599,8 @@ export interface Settings {
 export interface TemplateSpec {
   name?: string;
   repo?: string;
+  /** Which runtime; omit for the repo's default. */
+  harness?: Harness;
   model?: string;
   permission?: "ask" | "skip";
   charter?: string;
@@ -998,6 +1004,20 @@ export interface RuntimeInfo {
     [k: string]: unknown;
   } | null;
   inventory: Record<string, unknown> | null;
+  /** Which runtime, and what it can do (HARNESSES.md). */
+  harness?: Harness;
+  capabilities?: HarnessCapabilities;
+  /** The harness's own modes, for the mode select. */
+  modes?: { id: string; label: string; hint?: string; posture?: Posture | null }[];
+  /** The neutral runtime info: model, mode, models, commands, skills. */
+  runtime?: {
+    model?: string | null;
+    mode?: string | null;
+    models?: unknown[];
+    commands?: unknown[];
+    skills?: { name?: string; description?: string | null; path?: string; scope?: string }[];
+    context_window?: number | null;
+  } | null;
 }
 
 export interface WaitingEdge {
@@ -1285,6 +1305,8 @@ export const api = {
       path,
       ...(skipPermissions !== undefined ? { skip_permissions: skipPermissions } : {}),
     }),
+  setRepoHarness: (path: string, harness: Harness | null, node?: string) =>
+    post<{ ok: boolean }>("/api/repos/harness", { path, harness, ...(node ? { node } : {}) }),
   setRepoSkip: (path: string, skipPermissions: boolean, node?: string) =>
     post<{ ok: boolean }>("/api/repos/skip", {
       path,

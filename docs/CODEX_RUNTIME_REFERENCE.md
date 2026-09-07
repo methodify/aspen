@@ -26,7 +26,19 @@ writing `config.toml`:
 
 Env: `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=aspen` stamps the rollout's
 `originator` (the entrypoint, as Claude's `CLAUDE_CODE_ENTRYPOINT` does);
-`ASPEN_DETACHED` is removed.
+`ASPEN_DETACHED` is removed. **A fork inherits its parent's originator**
+(verified: a thread forked by another app-server client from an Aspen
+thread still says `aspen`), so the stamp identifies the lineage, not
+the writer; adoption relies on the registry for Codex.
+
+Hooks: `$CODEX_HOME/hooks.json` (and `.codex/hooks.json` in a project)
+use Claude's shape — `{hooks: {SessionStart: [{hooks: [{type: "command",
+command}]}]}}` — and the SessionStart payload carries the same fields
+(`cwd, session_id, source, hook_event_name, model, permission_mode,
+transcript_path`); events: SessionStart, SessionEnd, UserPromptSubmit,
+PreToolUse, PostToolUse, PermissionRequest, PreCompact, PostCompact,
+SubagentStart, SubagentStop, Stop, Interrupt. `aspen hooks install
+--harness codex` writes the relay there.
 
 ## 2. Handshake and thread
 

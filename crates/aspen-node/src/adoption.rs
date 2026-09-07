@@ -64,7 +64,8 @@ pub fn scan(inner: &Arc<NodeInner>) -> Result<Vec<i64>> {
 
     for repo in &repos {
         let path = repo.path.as_path();
-        let sessions = aspen_claude::transcript::enumerate_sessions(path).unwrap_or_default();
+        // Every harness's sessions for the repo, each tagged (HARNESSES.md).
+        let sessions = crate::node::enumerate_all(inner, path);
         let seen = inner.store.seen_sessions(path)?;
         if seen.is_empty() {
             // First look at this repo: baseline, don't announce history.
@@ -81,8 +82,13 @@ pub fn scan(inner: &Arc<NodeInner>) -> Result<Vec<i64>> {
             if now - si.modified_epoch < GRACE_SECS {
                 continue; // look again next pass
             }
-            let origin = aspen_claude::transcript::session_origin(path, &si.session_id);
-            if origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT) {
+            let origin = inner.store_for(si.harness).origin(path, &si.session_id).unwrap_or_default();
+            // Claude stamps every line with the writer's entrypoint, so
+            // "aspen" on the newest line means ours. A Codex fork inherits
+            // its parent's originator, so for Codex "ours" is what the
+            // registry knows (`known`, checked above) — the stamp says
+            // nothing about who forked it.
+            if si.harness == aspen_core::Harness::Claude && origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT) {
                 // Ours (spawned here; its id is recorded at the first turn).
                 // Not marked seen: a copied prefix still says "aspen" even
                 // when someone else forked it, so re-check once it has
@@ -96,7 +102,13 @@ pub fn scan(inner: &Arc<NodeInner>) -> Result<Vec<i64>> {
             // a candidate wholly contained in the new file wins outright —
             // it is the line that was actually forked.
             let parent = origin.forked_from.clone().or_else(|| {
-                origin.first_uuid.as_ref()?;
+                // Prefix inference is a Claude transcript trick (a fork
+                // copies its parent's lines, uuids intact); other harnesses
+                // stamp the parent in their metadata.
+                if si.harness != aspen_core::Harness::Claude {
+                    return None;
+                }
+                origin.first_ref.as_ref()?;
                 let child = aspen_claude::transcript::conversation_uuids(path, &si.session_id);
                 let mut best: Option<(String, usize, bool)> = None;
                 for sid in agents
@@ -172,8 +184,8 @@ pub fn scan(inner: &Arc<NodeInner>) -> Result<Vec<i64>> {
             {
                 continue;
             }
-            let origin = aspen_claude::transcript::session_origin(path, head);
-            if origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT) {
+            let origin = inner.store_for(si.harness).origin(path, head).unwrap_or_default();
+            if si.harness == aspen_core::Harness::Claude && origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT) {
                 continue;
             }
             if let Some(id) = inner.store.upsert_adoption(
@@ -303,7 +315,11 @@ pub async fn resolve(
                 .ok_or_else(|| anyhow!("split needs a name"))?;
             let rows = inner.store.agents()?;
             let row = rows.iter().find(|a| a.name == agent);
+            // The fork runs on whatever wrote it: the agent it forked from
+            // says which harness that is.
+            let harness = row.map(|r| r.harness).unwrap_or_else(|| inner.harness_of(&agent));
             let opts = crate::node::SpawnOpts {
+                harness: Some(harness),
                 charter: row.and_then(|r| r.charter.clone()),
                 resume: Some(ad.session_id.clone()),
                 interactive: true,

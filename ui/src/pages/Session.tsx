@@ -1221,7 +1221,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       const inv = rt.inventory;
       const m = inv?.["model"];
       if (typeof m === "string" && m) setModelValue(m);
-      const pm = inv?.["permissionMode"] ?? inv?.["permission_mode"];
+      const pm = inv?.["permissionMode"] ?? inv?.["permission_mode"] ?? rt.runtime?.mode;
       if (typeof pm === "string" && pm) setModeValue(pm);
     } catch {
       setRuntime(null); // autocomplete/model list degrade gracefully
@@ -1708,26 +1708,49 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // --- slash-command autocomplete ---
 
   const commands = useMemo(() => slashCommandsOf(runtime), [runtime]);
-  const slashPartial = slashPartialOf(draft);
-  const acMatches = useMemo(
-    () => (slashPartial !== null && !acDismissed ? filterSlashCommands(commands, slashPartial) : []),
-    [commands, slashPartial, acDismissed],
+  // Skills as `$name` mentions (Codex's form; HARNESSES.md §6): the same
+  // menu, matched on a trailing `$partial`.
+  const skills = useMemo<SlashCommand[]>(
+    () =>
+      (runtime?.runtime?.skills ?? [])
+        .filter((sk) => typeof sk.name === "string" && sk.name)
+        .map((sk) => ({ name: `$${sk.name}`, description: sk.description ?? null, argumentHint: null })),
+    [runtime],
   );
+  const slashPartial = slashPartialOf(draft);
+  const skillPartial = useMemo(() => {
+    if (skills.length === 0) return null;
+    const m = /(?:^|\s)\$([A-Za-z0-9_-]*)$/.exec(draft);
+    return m ? m[1]! : null;
+  }, [draft, skills.length]);
+  const acMatches = useMemo(() => {
+    if (acDismissed) return [];
+    if (slashPartial !== null) return filterSlashCommands(commands, slashPartial);
+    if (skillPartial !== null) {
+      const q = skillPartial.toLowerCase();
+      return skills.filter((sk) => sk.name.slice(1).toLowerCase().startsWith(q));
+    }
+    return [];
+  }, [commands, skills, slashPartial, skillPartial, acDismissed]);
   const acOpen = acMatches.length > 0;
 
   useEffect(() => {
     setAcIdx(0);
-  }, [slashPartial]);
+  }, [slashPartial, skillPartial]);
 
   function pickCommand(cmd: SlashCommand | undefined) {
     if (!cmd) return;
-    setDraft(`/${cmd.name} `);
+    if (cmd.name.startsWith("$")) {
+      setDraft((d) => `${d.replace(/\$[A-Za-z0-9_-]*$/, "")}${cmd.name} `);
+    } else {
+      setDraft(`/${cmd.name} `);
+    }
     setAcDismissed(false);
   }
 
   function onDraftChange(v: string) {
     setDraft(v);
-    if (acDismissed && slashPartialOf(v) === null) setAcDismissed(false);
+    if (acDismissed && slashPartialOf(v) === null && !/(?:^|\s)\$[A-Za-z0-9_-]*$/.test(v)) setAcDismissed(false);
   }
 
   // --- model options ---
@@ -2100,9 +2123,12 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             onChange={(e) => void changeMode(e.target.value)}
             title="permission mode"
           >
-            {PERMISSION_MODES.map((m) => (
-              <option key={m} value={m}>
-                {m}
+            {(runtime?.modes?.length
+              ? runtime.modes.map((m) => ({ id: m.id, label: m.label, hint: m.hint }))
+              : PERMISSION_MODES.map((m) => ({ id: m, label: m, hint: undefined }))
+            ).map((m) => (
+              <option key={m.id} value={m.id} title={m.hint}>
+                {m.label}
               </option>
             ))}
           </select>
@@ -2623,7 +2649,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                 }}
                 onMouseEnter={() => setAcIdx(i)}
               >
-                <span className="mono ac-name">/{c.name}</span>
+                <span className="mono ac-name">{c.name.startsWith("$") ? c.name : `/${c.name}`}</span>
                 {c.argumentHint && <span className="mono ac-args">{c.argumentHint}</span>}
                 {c.description && <span className="ac-desc">{c.description}</span>}
               </div>

@@ -1,6 +1,6 @@
 # Harnesses: the seam as built
 
-**Status:** reference for v0.20–v0.21 (2026-09-07), phases 0–1 of
+**Status:** reference for v0.20–v0.22 (2026-09-07), phases 0–2 of
 PROPOSALS-HARNESSES.md. Code: `crates/aspen-core/src/{harness,permission,
 store,adapter,event}.rs` (the vocabulary and traits),
 `crates/aspen-claude/src/adapter.rs` (the Claude implementation),
@@ -136,3 +136,39 @@ agent, async question answered from the console API, interrupt, revive
 across a daemon restart (`thread/resume`), branch (`thread/fork`) with
 the parent history rehydrated, usage, context, runtime inventory
 (models, skills), session enumeration mixed with Claude's.
+
+## 7. The console and the gates (v0.22)
+
+What became harness-aware above the seam, and how each surface speaks
+about a harness without naming one:
+
+- **Choosing**: the new-session panel's runtime select (shown when the
+  node lists more than one), a repo's default runtime (Library; `POST
+  /api/repos/harness`), a template's `spec.harness`, and the session
+  header's chip. Resolution order for a spawn: the request, the agent's
+  last harness, the repo default, claude.
+- **The session page**: the mode select lists the harness's own modes
+  (`runtime.modes`, with hints), the model select its models; `$name`
+  in the composer offers the runtime's skills (Codex's mention form;
+  the adapter sends a skill block beside the text). Tool cards render
+  Codex's `commandExecution`, `fileChange` (per-path diffs) and
+  `webSearch` items; extension items (a sleep while a question waits)
+  are status, not cards.
+- **Prompts**: the gate card renders the harness's decision set; the
+  question card serves Claude's `AskUserQuestion`, Codex's
+  `requestUserInput` and Codex's async agent question alike.
+- **Trust**: the review lists Codex's project surface beside Claude's,
+  each entry labelled — `.codex/hooks.json` and `[hooks]` in
+  `.codex/config.toml`, `[mcp_servers.*]`, skills under `.codex/skills`
+  and `.agents/skills`.
+- **Hooks and adoption**: `aspen hooks install --harness codex` writes
+  the same SessionStart/SessionEnd relay into `$CODEX_HOME/hooks.json`
+  (Codex's hook file shares Claude's shape and payload). The adoption
+  scan walks every harness's store; for Claude the newest line's
+  entrypoint says who wrote it, for Codex a fork inherits its parent's
+  originator, so "ours" is what the registry knows. Verified: a Codex
+  thread forked outside Aspen is raised as a fork of its agent and can
+  be split into a new Codex agent; a Claude fork outside is still
+  raised as before.
+- **Defaults**: Library carries a defaults form per harness
+  (`settings.harness.<name>.args`).

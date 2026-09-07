@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError, type MeshRepoNode, type Repo, type SessionInfo, type SkillEntry } from "../api";
+import { api, ApiError, type MeshRepoNode, type Harness, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
@@ -177,6 +177,15 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
 }
 
 function HarnessDefaults() {
+  return (
+    <>
+      <HarnessArgsForm harness="claude" placeholder="extra CLI args for every claude session, e.g. --chrome" />
+      <HarnessArgsForm harness="codex" placeholder={"extra args for every codex app-server, e.g. -c model=\"gpt-5.6-sol\""} />
+    </>
+  );
+}
+
+function HarnessArgsForm({ harness, placeholder }: { harness: "claude" | "codex"; placeholder: string }) {
   const [args, setArgs] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -189,14 +198,14 @@ function HarnessDefaults() {
       .settings()
       .then((s) => {
         if (!live) return;
-        setArgs(s.harness?.claude?.args ?? "");
+        setArgs(s.harness?.[harness]?.args ?? "");
         setLoaded(true);
       })
       .catch((e) => live && setError(errText(e)));
     return () => {
       live = false;
     };
-  }, []);
+  }, [harness]);
 
   async function save() {
     if (busy) return;
@@ -204,7 +213,7 @@ function HarnessDefaults() {
     setSaved(false);
     setBusy(true);
     try {
-      await api.saveSettings({ harness: { claude: { args: args.trim() } } });
+      await api.saveSettings({ harness: { [harness]: { args: args.trim() } } });
       setSaved(true);
     } catch (e) {
       setError(errText(e));
@@ -222,7 +231,7 @@ function HarnessDefaults() {
       }}
       style={{ display: "flex", flexDirection: "column", gap: 10, padding: 14 }}
     >
-      <span className="label">Claude defaults</span>
+      <span className="label">{harness === "claude" ? "Claude" : "Codex"} defaults</span>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <input
           value={args}
@@ -231,11 +240,11 @@ function HarnessDefaults() {
             setArgs(e.target.value);
             setSaved(false);
           }}
-          placeholder="extra CLI args for every claude session, e.g. --chrome"
+          placeholder={placeholder}
           className="mono"
           style={{ flex: 1, minWidth: 240 }}
           spellCheck={false}
-          aria-label="default claude args"
+          aria-label={`default ${harness} args`}
         />
         <button type="submit" className="btn sm" disabled={busy || !loaded}>
           {busy ? "saving…" : saved ? "saved" : "save"}
@@ -283,6 +292,9 @@ function SessionRow({
         >
           {relTime(session.modified)} ago
         </span>
+        {session.harness && session.harness !== "claude" && (
+          <span className="chip mono harness-chip" title={`a ${session.harness} session`}>{session.harness}</span>
+        )}
         {session.entrypoint && <span className="chip mono">{session.entrypoint}</span>}
         <span className="mono-meta">
           {session.user_messages} msg{session.user_messages === 1 ? "" : "s"}
@@ -391,6 +403,20 @@ function RepoStrip({
       onError(errText(e));
     } finally {
       setRenameBusy(false);
+    }
+  }
+
+  const [harnessBusy, setHarnessBusy] = useState(false);
+  async function changeHarness(next: string) {
+    if (harnessBusy) return;
+    setHarnessBusy(true);
+    try {
+      await api.setRepoHarness(repo.path, (next || null) as Harness | null, node);
+      onChanged();
+    } catch (e) {
+      onError(errText(e));
+    } finally {
+      setHarnessBusy(false);
     }
   }
 
@@ -524,8 +550,22 @@ function RepoStrip({
           skip permissions
         </label>
         <span className="micro" style={{ color: "var(--text-dim)" }}>
-          runs sessions with --dangerously-skip-permissions
+          runs sessions without permission prompts
         </span>
+        <label className="micro" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }} title="the runtime new sessions here use unless the session says otherwise">
+          runtime
+          <select
+            value={repo.default_harness ?? ""}
+            disabled={harnessBusy}
+            onChange={(e) => void changeHarness(e.target.value)}
+            aria-label="default runtime"
+            style={{ width: "auto" }}
+          >
+            <option value="">claude (node default)</option>
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+          </select>
+        </label>
         <span style={{ flex: 1 }} />
         {!namingNew && (
           <button type="button" className="btn sm" onClick={() => setNamingNew(true)}>
@@ -682,6 +722,7 @@ function RepositoriesSection({
         name,
         repo,
         resume: s.session_id,
+        ...(s.harness ? { harness: s.harness } : {}),
         node: isSelf(node) ? undefined : node,
         // mcc register carry-over: name → title, args ride, skip maps to us.
         title: s.mcc_name ?? undefined,

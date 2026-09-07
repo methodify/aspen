@@ -57,8 +57,68 @@ pub fn inspect(repo: &Path) -> RepoAutorun {
             }
         }
     }
+    inspect_codex(repo, &mut r);
     r.has_autorun = !r.hooks.is_empty() || !r.mcp_servers.is_empty() || !r.plugins.is_empty();
     r
+}
+
+/// Codex's project-level surface (CODEX_RUNTIME_REFERENCE.md §1): hooks in
+/// `.codex/hooks.json` (the same shape as Claude's) or `[hooks]` in
+/// `.codex/config.toml`, MCP servers in `[mcp_servers.<name>]`, skills under
+/// `.codex/skills` and `.agents/skills`. Entries are labelled so the
+/// review says which harness would run them.
+fn inspect_codex(repo: &Path, r: &mut RepoAutorun) {
+    if let Some(v) = read_json(&repo.join(".codex/hooks.json")) {
+        let mut hooks = Vec::new();
+        collect_hooks(&v, &mut hooks);
+        r.hooks.extend(hooks.into_iter().map(|h| format!("codex · {h}")));
+    }
+    if let Ok(text) = std::fs::read_to_string(repo.join(".codex/config.toml")) {
+        // A header-aware line scan: enough to name what would run without
+        // a TOML parser; the full file is one click away in the viewer.
+        let mut section = String::new();
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            if let Some(h) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = h.trim_matches('[').trim_matches(']').trim().to_owned();
+                if let Some(name) = section.strip_prefix("mcp_servers.") {
+                    let name = name.split('.').next().unwrap_or(name).trim_matches('"');
+                    if !name.contains('.') {
+                        r.mcp_servers.push(format!("codex · {name}"));
+                    }
+                }
+                if section.starts_with("hooks") {
+                    r.hooks.push(format!("codex · [{section}]"));
+                }
+                continue;
+            }
+            if let Some(name) = section.strip_prefix("mcp_servers.") {
+                let name = name.split('.').next().unwrap_or(name).trim_matches('"');
+                if let Some(cmd) = line.strip_prefix("command").map(|x| x.trim_start().trim_start_matches('=').trim().trim_matches('"')) {
+                    if let Some(entry) = r.mcp_servers.iter_mut().find(|e| **e == format!("codex · {name}")) {
+                        *entry = format!("codex · {name}: {cmd}");
+                    }
+                }
+                if let Some(url) = line.strip_prefix("url").map(|x| x.trim_start().trim_start_matches('=').trim().trim_matches('"')) {
+                    if let Some(entry) = r.mcp_servers.iter_mut().find(|e| **e == format!("codex · {name}")) {
+                        *entry = format!("codex · {name}: {url}");
+                    }
+                }
+            }
+        }
+    }
+    for dir in [".codex/skills", ".agents/skills"] {
+        if let Ok(entries) = std::fs::read_dir(repo.join(dir)) {
+            for e in entries.flatten() {
+                if e.path().join("SKILL.md").is_file() {
+                    r.skills.push(format!("codex · {}", e.file_name().to_string_lossy()));
+                }
+            }
+        }
+    }
 }
 
 fn collect_hooks(settings: &Value, out: &mut Vec<String>) {

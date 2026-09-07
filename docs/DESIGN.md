@@ -924,3 +924,16 @@ cleaner lane for roster updates than user-message headers.
   split, copy and template spawns now carry the source agent's harness
   (a real bug found by forking a Codex session: the fork spawned on
   Claude).
+- **2026-09-07 — v0.22, the console and the gates** (PROPOSALS-HARNESSES.md
+  §8 phase 2; HARNESSES.md §7). Nothing above the seam names a harness
+  in prose: the mode select lists whatever modes the runtime reports,
+  the composer offers whatever skills it lists (`$name`, Codex's form),
+  tool cards key on the item, the trust review labels each entry with
+  the harness that would run it, and the adoption scan walks every
+  store. Two harness-specific facts had to be learned the hard way and
+  are now recorded: Codex's hook file shares Claude's shape and payload
+  (one relay serves both), and a Codex fork inherits its parent's
+  `originator`, so "ours" for Codex is what the registry knows, not
+  what the file says. Repo default runtime and per-harness defaults
+  give the operator the two knobs the proposal asked for; templates
+  carry a harness.

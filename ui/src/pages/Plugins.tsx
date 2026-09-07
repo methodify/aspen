@@ -379,6 +379,7 @@ function TemplatesSection({ catalog }: { catalog: CatalogPlugin[] }) {
             <span className="mono mk-name">{t.name}</span>
             <span className="mono-meta">
               {t.spec.repo ? `#${t.spec.repo}` : "any repo"}
+              {t.spec.harness ? ` · ${t.spec.harness}` : ""}
               {t.spec.model ? ` · ${t.spec.model}` : ""}
               {t.spec.permission === "skip" ? " · skip permissions" : ""}
               {t.spec.plugins?.length ? ` · ${t.spec.plugins.map((p) => p.plugin).join(", ")}` : ""}
@@ -490,14 +491,22 @@ function TemplateEditor({ t, catalog, boards, onClose, onSaved }: { t: Template;
       </label>
       <div className="grid cols">
         <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">Extra claude args (optional)</span>
+          <span className="label">Runtime</span>
+          <select value={spec.harness ?? ""} onChange={(e) => set({ harness: (e.target.value || undefined) as TemplateSpec["harness"] })}>
+            <option value="">repo default</option>
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Extra runtime args (optional)</span>
           <input className="mono" value={spec.extra_args ?? ""} onChange={(e) => set({ extra_args: e.target.value })} placeholder="--chrome" spellCheck={false} />
         </label>
         <label style={{ display: "grid", gap: 4 }}>
           <span className="label">Permissions</span>
           <select value={spec.permission ?? "ask"} onChange={(e) => set({ permission: e.target.value as "ask" | "skip" })}>
             <option value="ask">ask (route prompts to the console)</option>
-            <option value="skip">skip (bypassPermissions)</option>
+            <option value="skip">skip (no prompts: bypassPermissions / full access)</option>
           </select>
         </label>
       </div>

@@ -292,7 +292,7 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
                                     "uuid": id, "timestamp": ts, "usage": null, "model": model,
                                 }));
                             }
-                            "Reasoning" | "ContextCompaction" => {}
+                            "Reasoning" | "ContextCompaction" | "Extension" | "Sleep" => {}
                             _ => {
                                 // A tool-shaped item: attach to the open assistant
                                 // bubble (or open one for it).
