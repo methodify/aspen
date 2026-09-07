@@ -557,6 +557,66 @@ pub fn updates_for(data_dir: &Path, running: &[ActivePlugin]) -> Vec<Value> {
 
 // ------------------------------------------------------------ node glue
 
+/// Removing a marketplace removes everything that hung off it: its rules
+/// (tombstoned, so the removal syncs), its catalog entries, its checkout,
+/// and its cache — except versions a live session was started with,
+/// which stay until that process ends (the harness watches those dirs).
+pub fn remove_marketplace(inner: &Arc<NodeInner>, name: &str) -> Result<usize> {
+    let now = crate::store::now_epoch();
+    let mut n = 0usize;
+    for mut r in inner
+        .store
+        .plugin_rules(false)?
+        .into_iter()
+        .filter(|r| r.marketplace == name)
+    {
+        r.deleted = true;
+        r.updated_at = now;
+        if inner.store.upsert_plugin_rule(&r)? {
+            n += 1;
+        }
+    }
+    if let Some(dd) = inner.data_dir.as_deref() {
+        let mut catalog = load_catalog(dd);
+        catalog.plugins.retain(|p| p.marketplace != name);
+        catalog.synced_at.remove(name);
+        catalog
+            .errors
+            .retain(|k, _| k != name && !k.ends_with(&format!("@{name}")));
+        let _ = save_catalog(dd, &catalog);
+        let _ = std::fs::remove_dir_all(checkouts_root(dd).join(safe(name)));
+        // Cache: keep only versions in use by a live session.
+        let in_use: std::collections::HashSet<String> = inner
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|s| {
+                s.plugins
+                    .iter()
+                    .filter(|p| p.marketplace == name)
+                    .map(|p| p.path.clone())
+            })
+            .collect();
+        let root = cache_root(dd).join(safe(name));
+        if let Ok(plugins) = std::fs::read_dir(&root) {
+            for pl in plugins.flatten() {
+                if let Ok(versions) = std::fs::read_dir(pl.path()) {
+                    for v in versions.flatten() {
+                        let p = v.path().to_string_lossy().into_owned();
+                        if !in_use.contains(&p) {
+                            let _ = std::fs::remove_dir_all(v.path());
+                        }
+                    }
+                }
+                let _ = std::fs::remove_dir(pl.path()); // only if empty
+            }
+            let _ = std::fs::remove_dir(&root);
+        }
+    }
+    Ok(n)
+}
+
 /// The registry as the console and peers see it.
 pub fn registry_json(inner: &Arc<NodeInner>) -> Value {
     let markets = inner.store.marketplaces(false).unwrap_or_default();

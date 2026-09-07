@@ -815,3 +815,13 @@ cleaner lane for roster updates than user-message headers.
   board pane bars and the session header pulse while anything runs; an
   *activity ▾* drawer lists the ledger; a subagent's own transcript opens
   read-only in the session view, polled while it runs, over the mesh.
+- **2026-09-07 — Mesh-wide state stays row-LWW; no CRDT yet.** Boards,
+  marketplaces and plugin rules converge by roster digest + pull, newest
+  `updated_at` per row, tombstoned deletes (SYNC.md). Automerge was
+  weighed and declined for these tables: field-level merge and causal
+  order are not worth a dual-language dependency and a second source of
+  truth for a few hundred rows written by one operator. Next step if
+  skew ever bites: a hybrid logical clock in place of wall time. A CRDT
+  is the right tool for memory convergence (text), when that is built.
+  Also: removing a marketplace now cascades — its rules tombstone (and
+  sync), its catalog entries, checkout and unused cache go, on every node.

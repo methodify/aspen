@@ -1305,8 +1305,10 @@ async fn delete_marketplace(State(s): S, Path(name): Path<String>) -> impl IntoR
     m.updated_at = aspen_node::store::now_epoch();
     match s.node.inner.store.upsert_marketplace(&m) {
         Ok(_) => {
+            let rules =
+                aspen_node::plugins::remove_marketplace(&s.node.inner, &m.name).unwrap_or(0);
             aspen_node::federation::broadcast_roster(&s.node.inner);
-            Json(json!({ "ok": true })).into_response()
+            Json(json!({ "ok": true, "rules_removed": rules })).into_response()
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

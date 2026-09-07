@@ -2112,6 +2112,9 @@ async fn sync_plugin_registry_from(inner: &Arc<NodeInner>, peer: &str) {
         for m in &ms {
             if inner.store.upsert_marketplace(m).unwrap_or(false) {
                 changed = true;
+                if m.deleted {
+                    let _ = crate::plugins::remove_marketplace(inner, &m.name);
+                }
             }
         }
     }
