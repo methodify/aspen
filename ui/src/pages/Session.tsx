@@ -16,6 +16,7 @@ import {
   type BookmarksInfo,
   type PermissionAnswer,
   type RuntimeInfo,
+  type OpenPrompt,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -34,6 +35,7 @@ import {
   type TurnEndItem,
   type UserBubbleItem,
   settleTools,
+  addOpenPrompts,
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { Meter, presenceOf, relTime } from "./../components";
@@ -71,7 +73,8 @@ type Action =
   | { type: "local_send"; text: string; localKey: string }
   | { type: "sent"; localKey: string; uuid: string }
   | { type: "send_failed"; localKey: string }
-  | { type: "settle_tools" };
+  | { type: "settle_tools" }
+  | { type: "open_prompts"; prompts: OpenPrompt[] };
 
 function reducer(state: TranscriptState, action: Action): TranscriptState {
   switch (action.type) {
@@ -87,6 +90,8 @@ function reducer(state: TranscriptState, action: Action): TranscriptState {
       return markLocalUserMessage(state, action.localKey, { failed: true });
     case "settle_tools":
       return settleTools(state);
+    case "open_prompts":
+      return addOpenPrompts(state, action.prompts);
   }
 }
 
@@ -724,6 +729,15 @@ function SessionView({ name }: { name: string }) {
         // the agent really is busy.
         const a = agentRef.current;
         if (a && !(a.live && a.turn_state === "busy")) dispatch({ type: "settle_tools" });
+        // Prompts raised before this page connected are still waiting on
+        // the node; the socket only carries new ones.
+        try {
+          const needs = await api.needs();
+          const mine = needs.prompts.filter((p) => p.agent === name);
+          if (mine.length) dispatch({ type: "open_prompts", prompts: mine });
+        } catch {
+          // needs unavailable: prompts appear when the next one is raised
+        }
         setHistoryError(null);
       } catch (e) {
         if (disposed) return;

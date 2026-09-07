@@ -120,6 +120,35 @@ export function emptyTranscript(): TranscriptState {
  * tool chips carry no input/result (the on-disk rehydration is name+id only),
  * bus-flagged user items render as bus bubbles. Live WS events append after.
  */
+/** Prompts still open on the node, for a page that connected after they
+ *  were raised (mid-turn open): appended as unsettled permission cards,
+ *  skipping any the transcript already holds. */
+export function addOpenPrompts(
+  state: TranscriptState,
+  prompts: { request_id: string; tool_name: string; input: unknown; suggestions: unknown }[],
+): TranscriptState {
+  const have = new Set(
+    state.items.filter((it): it is PermissionCardItem => it.kind === "permission").map((it) => it.requestId),
+  );
+  const fresh = prompts.filter((p) => !have.has(p.request_id));
+  if (fresh.length === 0) return state;
+  let nextId = state.nextId;
+  const items: TranscriptItem[] = [...state.items];
+  for (const p of fresh) {
+    items.push({
+      kind: "permission",
+      id: nextId++,
+      requestId: p.request_id,
+      toolName: p.tool_name,
+      input: p.input,
+      suggestions: p.suggestions,
+      settled: false,
+      outcome: null,
+    });
+  }
+  return { ...state, items, nextId };
+}
+
 /** Every tool card marked done — for a page that learns the turn is over
  *  (or was never running) after seeding history that ended mid-call. */
 export function settleTools(state: TranscriptState): TranscriptState {
