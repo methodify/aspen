@@ -387,6 +387,7 @@ export function addLocalUserMessage(
   state: TranscriptState,
   text: string,
   localKey: string,
+  images?: HistoryImage[],
 ): TranscriptState {
   const item: UserBubbleItem = {
     kind: "user",
@@ -396,6 +397,7 @@ export function addLocalUserMessage(
     localKey,
     pending: true,
     failed: false,
+    images: images && images.length ? images : undefined,
   };
   return { ...state, items: [...state.items, item], nextId: state.nextId + 1 };
 }

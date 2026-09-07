@@ -562,6 +562,18 @@ impl SessionHandle for ClaudeSession {
         Ok(uuid)
     }
 
+    async fn send_user_content(&self, content: Value) -> Result<String> {
+        let uuid = Uuid::new_v4().to_string();
+        self.write(json!({
+            "type": "user",
+            "message": { "role": "user", "content": content },
+            "parent_tool_use_id": null,
+            "uuid": uuid,
+        }))
+        .await?;
+        Ok(uuid)
+    }
+
     async fn interrupt(&self) -> Result<()> {
         self.request(json!({ "subtype": "interrupt" }), Duration::from_secs(30))
             .await

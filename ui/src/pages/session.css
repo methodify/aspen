@@ -203,7 +203,7 @@
 }
 
 /* ── Slash-command autocomplete ─────────────────────────────────────── */
-.composer { position: relative; }
+.composer { position: relative; flex-wrap: wrap; }
 .ac-pop {
   position: absolute;
   bottom: calc(100% + 2px);
@@ -443,3 +443,11 @@
 .art-wrote { background: #2a6; color: #fff; }
 .art-edited { background: #27a; color: #fff; }
 .art-read { background: var(--line); }
+/* attachments (PROPOSALS §4) */
+.attach-row { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 6px; align-items: center; }
+.attach-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; background: var(--bg-panel, #fff); }
+.attach-chip.over { border-color: var(--sig-error, #d33); }
+.attach-chip img { width: 28px; height: 28px; object-fit: cover; border-radius: 3px; }
+.attach-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-x { border: 0; background: transparent; cursor: pointer; font-size: 14px; color: var(--text-dim); }
+.attach-x:hover { color: var(--text-hi); }

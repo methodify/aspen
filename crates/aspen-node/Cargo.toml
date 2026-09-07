@@ -9,6 +9,7 @@ aspen-core = { path = "../aspen-core" }
 aspen-claude = { path = "../aspen-claude" }
 aspen-wire = { path = "../aspen-wire" }
 mime_guess = "2"
+regex-lite = "0.1"
 tokio = { workspace = true }
 shell-words = "1"
 dunce = "1"

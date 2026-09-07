@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One file a session named in a tool call.
@@ -285,4 +285,111 @@ pub fn read_chunk(path: &Path, offset: u64, len: u64) -> Result<Vec<u8>> {
     }
     buf.truncate(got);
     Ok(buf)
+}
+
+/// One pasted attachment on an operator message: `n` matches the marker
+/// `[attachment n: name]` in the text; `data` is base64.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub n: u32,
+    pub name: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+/// Per-attachment and per-message caps (raw bytes).
+pub const ATTACHMENT_MAX: usize = 8 * 1024 * 1024;
+pub const ATTACHMENTS_MAX_TOTAL: usize = 24 * 1024 * 1024;
+
+fn safe_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() { "attachment".into() } else { cleaned }
+}
+
+/// Save attachments under `dir` and build the runtime content array:
+/// text split at markers, raster images inserted as image blocks where
+/// their marker was, other files' markers rewritten to the saved path.
+/// Returns the content and a plain-text rendering for summaries.
+pub fn compose_with_attachments(
+    dir: &Path,
+    text: &str,
+    attachments: &[Attachment],
+) -> Result<(Value, String)> {
+    std::fs::create_dir_all(dir)?;
+    let mut total = 0usize;
+    let mut saved: std::collections::HashMap<u32, (PathBuf, &Attachment, Vec<u8>)> =
+        std::collections::HashMap::new();
+    for a in attachments {
+        let bytes = aspen_wire::b64::decode(&a.data)
+            .map_err(|e| anyhow!("attachment {}: bad base64: {e}", a.n))?;
+        if bytes.len() > ATTACHMENT_MAX {
+            return Err(anyhow!("attachment {} ({}) is {} bytes; the cap is {}", a.n, a.name, bytes.len(), ATTACHMENT_MAX));
+        }
+        total += bytes.len();
+        if total > ATTACHMENTS_MAX_TOTAL {
+            return Err(anyhow!("attachments total more than {} bytes", ATTACHMENTS_MAX_TOTAL));
+        }
+        let path = dir.join(format!("{}-{}", a.n, safe_name(&a.name)));
+        std::fs::write(&path, &bytes)?;
+        saved.insert(a.n, (path, a, bytes));
+    }
+    let is_raster = |m: &str| matches!(m, "image/png" | "image/jpeg" | "image/gif" | "image/webp");
+
+    // Walk the text; at each marker emit what came before, then the block.
+    let re = regex_lite::Regex::new(r"\[attachment (\d+): [^\]]*\]").expect("marker regex");
+    let mut blocks: Vec<Value> = Vec::new();
+    let mut plain = String::new();
+    let mut buf = String::new();
+    let mut last = 0usize;
+    for m in re.find_iter(text) {
+        buf.push_str(&text[last..m.start()]);
+        let n: u32 = m.as_str()[12..].split(':').next().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+        match saved.get(&n) {
+            Some((path, a, _)) if is_raster(&a.media_type) => {
+                let note = format!("[attachment {}: {} — image below, also saved at {}]", n, a.name, path.display());
+                buf.push_str(&note);
+                plain.push_str(&buf);
+                blocks.push(serde_json::json!({ "type": "text", "text": std::mem::take(&mut buf) }));
+                blocks.push(serde_json::json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": a.media_type, "data": a.data },
+                }));
+            }
+            Some((path, a, _)) => {
+                let note = format!("[attachment {}: {} — saved at {}; read it from there]", n, a.name, path.display());
+                buf.push_str(&note);
+            }
+            None => buf.push_str(m.as_str()),
+        }
+        last = m.end();
+    }
+    buf.push_str(&text[last..]);
+    // Attachments never referenced by a marker still ride along, at the end.
+    let mut unreferenced: Vec<&(PathBuf, &Attachment, Vec<u8>)> = saved
+        .values()
+        .filter(|(_, a, _)| !re.find_iter(text).any(|m| m.as_str().starts_with(&format!("[attachment {}:", a.n))))
+        .collect();
+    unreferenced.sort_by_key(|(_, a, _)| a.n);
+    for (path, a, _) in unreferenced {
+        if is_raster(&a.media_type) {
+            buf.push_str(&format!("\n[attachment {}: {} — image below, also saved at {}]", a.n, a.name, path.display()));
+            plain.push_str(&buf);
+            blocks.push(serde_json::json!({ "type": "text", "text": std::mem::take(&mut buf) }));
+            blocks.push(serde_json::json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": a.media_type, "data": a.data },
+            }));
+        } else {
+            buf.push_str(&format!("\n[attachment {}: {} — saved at {}; read it from there]", a.n, a.name, path.display()));
+        }
+    }
+    if !buf.is_empty() || blocks.is_empty() {
+        plain.push_str(&buf);
+        blocks.push(serde_json::json!({ "type": "text", "text": buf }));
+    }
+    Ok((Value::Array(blocks), plain))
 }

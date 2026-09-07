@@ -33,6 +33,14 @@ pub trait SessionHandle: Send + Sync {
     /// delivery ack (`UserReplay`) — the bus trail's proof of ingestion.
     async fn send_user(&self, text: String) -> Result<String>;
 
+    /// Send structured user content — an array of runtime content blocks
+    /// (text and images interleaved) — for runtimes that accept it.
+    /// Default: not supported.
+    async fn send_user_content(&self, content: serde_json::Value) -> Result<String> {
+        let _ = content;
+        anyhow::bail!("this runtime does not accept structured user content")
+    }
+
     /// Abort the in-flight turn (if the runtime supports it).
     async fn interrupt(&self) -> Result<()>;
 

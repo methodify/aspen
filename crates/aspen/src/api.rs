@@ -1072,6 +1072,9 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
 #[derive(Deserialize)]
 struct MessageBody {
     text: String,
+    /// Pasted attachments (PROPOSALS §4); markers in `text` place them.
+    #[serde(default)]
+    attachments: Vec<aspen_node::artifacts::Attachment>,
 }
 
 async fn post_message(
@@ -1085,8 +1088,17 @@ async fn post_message(
         };
         // A link that is down right now shouldn't lose the operator's
         // words: queue them on the bus (store-and-forward, and the relay
-        // mailbox if there is one) and say so.
+        // mailbox if there is one) and say so. Attachments do not ride
+        // the bus yet: with any attached, a down link is an error.
+        let has_attachments = !body.attachments.is_empty();
         let queue = |why: String| {
+            if has_attachments {
+                return err(
+                    StatusCode::CONFLICT,
+                    format!("link to node '{node}' is down ({why}); a message with attachments can't be queued — try again when the link is back"),
+                )
+                .into_response();
+            }
             match aspen_node::tools::send_message(
                 &s.node.inner,
                 "operator",
@@ -1116,7 +1128,7 @@ async fn post_message(
                 &node,
                 "message",
                 &bare,
-                json!({ "text": body.text }),
+                json!({ "text": body.text, "attachments": body.attachments }),
                 REMOTE_TIMEOUT,
             )
             .await
@@ -1132,7 +1144,11 @@ async fn post_message(
             }
         };
     }
-    match s.node.send_operator_message(&name, body.text).await {
+    match s
+        .node
+        .send_operator_message_with(&name, body.text, body.attachments)
+        .await
+    {
         Ok(uuid) => Json(json!({ "uuid": uuid })).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
     }

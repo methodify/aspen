@@ -19,6 +19,8 @@ import {
   type RuntimeInfo,
   type OpenPrompt,
   type Artifact,
+  type HistoryImage,
+  type OutgoingAttachment,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -71,10 +73,19 @@ import "./session.css";
 // ---------------------------------------------------------------------------
 // Transcript reducer (thin shell over the pure module)
 
+interface PendingAttachment {
+  n: number;
+  name: string;
+  media_type: string;
+  data: string;
+  size: number;
+  preview: string | null;
+}
+
 type Action =
   | { type: "seed"; state: TranscriptState }
   | { type: "event"; ev: SessionEvent }
-  | { type: "local_send"; text: string; localKey: string }
+  | { type: "local_send"; text: string; localKey: string; images?: HistoryImage[] }
   | { type: "sent"; localKey: string; uuid: string }
   | { type: "send_failed"; localKey: string }
   | { type: "settle_tools" }
@@ -87,7 +98,7 @@ function reducer(state: TranscriptState, action: Action): TranscriptState {
     case "event":
       return applyEvent(state, action.ev);
     case "local_send":
-      return addLocalUserMessage(state, action.text, action.localKey);
+      return addLocalUserMessage(state, action.text, action.localKey, action.images);
     case "sent":
       return markLocalUserMessage(state, action.localKey, { uuid: action.uuid });
     case "send_failed":
@@ -548,6 +559,77 @@ function SessionView({ name }: { name: string }) {
   // Tool cards the operator opened or closed by hand; auto open/close
   // (the active call) applies only to untouched cards.
   const [pinnedTools, setPinnedTools] = useState<Map<number, boolean>>(() => new Map());
+  // Pasted/dropped attachments (PROPOSALS §4): each gets a marker in the
+  // text at the caret; the node places the content where the marker is.
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const attachSeq = useRef(0);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const ATTACH_MAX = 8 * 1024 * 1024;
+  const ATTACH_TOTAL = 24 * 1024 * 1024;
+  const attachTotal = attachments.reduce((n, a) => n + a.size, 0);
+  const attachOver = attachments.some((a) => a.size > ATTACH_MAX) || attachTotal > ATTACH_TOTAL;
+  async function addFiles(files: File[]) {
+    if (files.length === 0) return;
+    const added: PendingAttachment[] = [];
+    for (const f of files) {
+      const n = ++attachSeq.current;
+      const buf = new Uint8Array(await f.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      const name = f.name || (f.type.startsWith("image/") ? `pasted-${n}.${f.type.split("/")[1] ?? "png"}` : `pasted-${n}`);
+      added.push({
+        n,
+        name,
+        media_type: f.type || "application/octet-stream",
+        data: btoa(bin),
+        size: f.size,
+        preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
+      });
+    }
+    setAttachments((cur) => [...cur, ...added]);
+    // Markers at the caret, in order.
+    const el = composerRef.current;
+    const markers = added.map((a) => `[attachment ${a.n}: ${a.name}]`).join(" ");
+    const start = el?.selectionStart ?? draft.length;
+    const end = el?.selectionEnd ?? draft.length;
+    const before = draft.slice(0, start);
+    const after = draft.slice(end);
+    const sep1 = before && !/\s$/.test(before) ? " " : "";
+    const sep2 = after && !/^\s/.test(after) ? " " : "";
+    const next = `${before}${sep1}${markers}${sep2}${after}`;
+    setDraft(next);
+    requestAnimationFrame(() => {
+      if (el) {
+        const pos = (before + sep1 + markers).length;
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      }
+    });
+  }
+  function removeAttachment(n: number) {
+    setAttachments((cur) => cur.filter((a) => a.n !== n));
+    setDraft((d) => d.replace(new RegExp(`\\s?\\[attachment ${n}: [^\\]]*\\]`), ""));
+  }
+  function onComposerPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files: File[] = [];
+    for (const it of Array.from(e.clipboardData.items)) {
+      if (it.kind === "file") {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) {
+      e.preventDefault();
+      void addFiles(files);
+    }
+  }
+  function onComposerDrop(e: React.DragEvent<HTMLElement>) {
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) {
+      e.preventDefault();
+      void addFiles(files);
+    }
+  }
   const [reloading, setReloading] = useState(false);
   const [reloadNote, setReloadNote] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
@@ -835,15 +917,24 @@ function SessionView({ name }: { name: string }) {
       await branchHere(m?.[1] ?? rest, m?.[2]);
       return;
     }
+    if (attachOver) {
+      setActionError("an attachment is over the size cap (8 MB each, 24 MB per message)");
+      return;
+    }
     const localKey = crypto.randomUUID();
-    dispatch({ type: "local_send", text, localKey });
+    const outgoing: OutgoingAttachment[] = attachments.map(({ n, name: an, media_type, data }) => ({ n, name: an, media_type, data }));
+    const images: HistoryImage[] = attachments
+      .filter((a) => a.media_type.startsWith("image/"))
+      .map((a) => ({ media_type: a.media_type, data: a.data }));
+    dispatch({ type: "local_send", text, localKey, images });
     setDraft("");
+    setAttachments([]);
     setBusy(true);
     busyLocalStartRef.current = Date.now();
     setNowTick(Date.now());
     setActionError(null);
     try {
-      const res = await api.sendMessage(name, text);
+      const res = await api.sendMessage(name, text, outgoing);
       if (res.queued) {
         // Not lost: it rides the bus until the node's link returns.
         dispatch({ type: "send_failed", localKey });
@@ -1834,10 +1925,27 @@ function SessionView({ name }: { name: string }) {
             </div>
           </div>
         )}
+        {attachments.length > 0 && (
+          <div className="attach-row">
+            {attachments.map((a) => (
+              <span key={a.n} className={`attach-chip${a.size > ATTACH_MAX ? " over" : ""}`} title={`${a.name} · ${Math.round(a.size / 1024)} KB · marker [attachment ${a.n}: ${a.name}]`}>
+                {a.preview ? <img src={a.preview} alt="" /> : <span className="attach-icon">📄</span>}
+                <span className="mono attach-name">{a.n}: {a.name}</span>
+                <span className="mono-meta">{Math.round(a.size / 1024)} KB</span>
+                <button className="attach-x" onClick={() => removeAttachment(a.n)} title="remove">×</button>
+              </span>
+            ))}
+            {attachOver && <span className="error-text mono-meta">over the cap (8 MB each, 24 MB total)</span>}
+          </div>
+        )}
         <textarea
+          ref={composerRef}
           value={draft}
           onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={composerKeyDown}
+          onPaste={onComposerPaste}
+          onDrop={onComposerDrop}
+          onDragOver={(e) => e.preventDefault()}
           placeholder={
             exited
               ? "session exited"
@@ -1851,8 +1959,8 @@ function SessionView({ name }: { name: string }) {
         />
         <button
           onClick={() => void send()}
-          disabled={composerDisabled || !draft.trim()}
-          title="Enter"
+          disabled={composerDisabled || !draft.trim() || attachOver}
+          title="Enter · paste or drop files to attach"
         >
           send
         </button>

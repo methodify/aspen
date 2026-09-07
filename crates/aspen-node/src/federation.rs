@@ -1151,7 +1151,13 @@ async fn serve_api_req(
                 .get("text")
                 .and_then(|t| t.as_str())
                 .ok_or_else(|| anyhow!("missing text"))?;
-            let uuid = node.send_operator_message(agent, text.to_owned()).await?;
+            let attachments: Vec<crate::artifacts::Attachment> = body
+                .get("attachments")
+                .and_then(|a| serde_json::from_value(a.clone()).ok())
+                .unwrap_or_default();
+            let uuid = node
+                .send_operator_message_with(agent, text.to_owned(), attachments)
+                .await?;
             Ok(json!({ "uuid": uuid }))
         }
         "interrupt" => {

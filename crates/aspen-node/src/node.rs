@@ -592,10 +592,52 @@ impl Node {
     /// Operator input into a session. Pending notices ride along first — the
     /// one lane a notice may use besides another delivery.
     pub async fn send_operator_message(&self, name: &str, text: String) -> Result<String> {
+        self.send_operator_message_with(name, text, Vec::new()).await
+    }
+
+    /// An operator message with pasted attachments (PROPOSALS §4). Every
+    /// attachment is saved under the session's attachment dir (so it is
+    /// viewable and referable later). Raster images are sent as image
+    /// blocks at their marker's position in the text; other files keep
+    /// their marker, rewritten to the saved path, so the agent reads
+    /// them with its own tools.
+    pub async fn send_operator_message_with(
+        &self,
+        name: &str,
+        text: String,
+        attachments: Vec<crate::artifacts::Attachment>,
+    ) -> Result<String> {
         let sess = self
             .inner
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        if !attachments.is_empty() {
+            let sid = self
+                .agent_row(name)?
+                .session_id
+                .unwrap_or_else(|| name.to_owned());
+            let dir = self
+                .inner
+                .data_dir
+                .as_deref()
+                .map(|d| crate::artifacts::attachments_dir(d, &sid))
+                .ok_or_else(|| anyhow!("node has no data dir for attachments"))?;
+            let (content, plain) = crate::artifacts::compose_with_attachments(&dir, &text, &attachments)?;
+            delivery::flush_notices(&self.inner, &sess).await;
+            {
+                let mut s = sess.summary.lock().unwrap();
+                s.last_ask = Some(snippet(&plain, 160));
+                s.last_ask_at = Some(crate::store::now_epoch());
+                s.idle_since = None;
+            }
+            let _ = self.inner.store.record_event(
+                name,
+                "ask",
+                serde_json::json!({ "from": "operator", "text": snippet(&plain, 200), "attachments": attachments.len() }),
+            );
+            sess.mark_busy();
+            return sess.handle.send_user_content(content).await;
+        }
         delivery::flush_notices(&self.inner, &sess).await;
         {
             let mut s = sess.summary.lock().unwrap();

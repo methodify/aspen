@@ -162,6 +162,15 @@ export interface BusMessage {
 }
 
 /** A tool call chip on a rehydrated assistant item. */
+/** A pasted attachment on an outgoing message; `n` matches its marker. */
+export interface OutgoingAttachment {
+  n: number;
+  name: string;
+  media_type: string;
+  /** base64 */
+  data: string;
+}
+
 /** A file the session named in a tool call (artifacts.rs). */
 export interface Artifact {
   path: string;
@@ -753,8 +762,11 @@ export const api = {
 
   /** `queued` (HTTP 202) when the agent's node is unreachable right now:
    *  the text went on the bus and delivers when the link returns. */
-  sendMessage: (name: string, text: string) =>
-    post<{ uuid?: string; queued?: boolean; note?: string }>(`/api/agents/${enc(name)}/message`, { text }),
+  sendMessage: (name: string, text: string, attachments?: OutgoingAttachment[]) =>
+    post<{ uuid?: string; queued?: boolean; note?: string }>(`/api/agents/${enc(name)}/message`, {
+      text,
+      attachments: attachments && attachments.length ? attachments : undefined,
+    }),
   interrupt: (name: string) =>
     post<Record<string, never>>(`/api/agents/${enc(name)}/interrupt`),
   answerPermission: (name: string, requestId: string, answer: PermissionAnswer) =>
