@@ -1024,17 +1024,20 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
         if (disposed) return;
         const head = cached ? transcriptHead(cached) : null;
         if (cached) dispatch({ type: "seed", state: cached });
+        // Whatever was fetched is persisted at once — the moment we have
+        // it, not at teardown, which a hard reload may skip.
         if (cached && head) {
           const delta = await api.transcriptAfter(name, head);
           if (disposed) return;
-          dispatch({
-            type: "seed",
-            state: delta.after_found ? mergeAfter(cached, head, delta.items) : seedFromHistory(delta.items),
-          });
+          const merged = delta.after_found ? mergeAfter(cached, head, delta.items) : seedFromHistory(delta.items);
+          dispatch({ type: "seed", state: merged });
+          if (delta.items.length || !delta.after_found) persistTranscript(name, merged);
         } else {
           const history = await api.transcript(name);
           if (disposed) return;
-          dispatch({ type: "seed", state: seedFromHistory(history) });
+          const seeded = seedFromHistory(history);
+          dispatch({ type: "seed", state: seeded });
+          persistTranscript(name, seeded);
         }
         // History that ends mid-call shows the call running only while
         // the agent really is busy.

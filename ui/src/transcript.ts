@@ -826,3 +826,33 @@ export function persistTranscript(name: string, state: TranscriptState, now = fa
   }
   persistTimers.set(name, window.setTimeout(() => void write(), 250));
 }
+
+/** Drop persisted copies not saved in the last day. A session you come
+ *  back to later simply refetches. Run at app start and hourly. */
+export const TRANSCRIPT_TTL_MS = 24 * 3600 * 1000;
+export async function evictStaleTranscripts(now = Date.now()): Promise<number> {
+  const db = await openDb();
+  if (!db) return 0;
+  return new Promise((resolve) => {
+    let n = 0;
+    try {
+      const tx = db.transaction(STORE, "readwrite");
+      const req = tx.objectStore(STORE).openCursor();
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (!cur) return;
+        const v = cur.value as { savedAt?: number } | undefined;
+        if (!v?.savedAt || now - v.savedAt > TRANSCRIPT_TTL_MS) {
+          cur.delete();
+          n++;
+        }
+        cur.continue();
+      };
+      tx.oncomplete = () => resolve(n);
+      tx.onerror = () => resolve(n);
+      tx.onabort = () => resolve(n);
+    } catch {
+      resolve(n);
+    }
+  });
+}

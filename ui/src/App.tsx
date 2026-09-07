@@ -12,6 +12,7 @@ import Mesh from "./pages/Mesh";
 import History from "./pages/History";
 import Palette from "./Palette";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
+import { evictStaleTranscripts } from "./transcript";
 
 export interface AppData {
   agents: Agent[];
@@ -34,6 +35,15 @@ const AppDataContext = createContext<AppData>({
   node: null,
   refreshNode: async () => {},
 });
+
+/** Housekeeping for the browser-side transcript cache (transcript.ts). */
+function useTranscriptEviction() {
+  useEffect(() => {
+    void evictStaleTranscripts();
+    const t = window.setInterval(() => void evictStaleTranscripts(), 3600 * 1000);
+    return () => window.clearInterval(t);
+  }, []);
+}
 
 export function useAppData(): AppData {
   return useContext(AppDataContext);
@@ -363,6 +373,7 @@ export default function App() {
     refreshNode: nodePoll.refresh,
   };
 
+  useTranscriptEviction();
   return (
     <AppDataContext.Provider value={data}>
       <HotkeysProvider>
