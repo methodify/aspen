@@ -227,6 +227,7 @@ function MeshColumn() {
       <div className="nav-section label" style={{ marginTop: 12 }} title="busy / live / registered">
         Fleet · {busy} busy · {live}/{agents.length} live
       </div>
+      <div className="rail-scroll">
       {boards.length > 0 && (
         <>
           <div className="nav-section label" style={{ marginTop: 6 }}>Boards</div>
@@ -251,6 +252,7 @@ function MeshColumn() {
         </div>
       )}
       {recentRows.map((a) => row(a, false))}
+      </div>
     </nav>
   );
 }

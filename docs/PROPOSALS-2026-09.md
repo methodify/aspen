@@ -536,3 +536,151 @@ after using it.
 one". Whether `ctrl+number` collides with browser tabs (it does in most
 browsers; `alt+number` or a leader key like `g` then a digit is safer —
 the hotkey layer already has chords).
+
+---
+
+## 7. Plugins: a mesh-managed library, activated by scope (B-7)
+
+**Ask.** Let Aspen manage the plugins its sessions run with, rather than
+driving the harness's own install state: a mesh-wide registry of
+marketplaces that survives disconnects and rejoins; activate a plugin for
+the mesh, a node, a repo, or a single session; see where a plugin is
+active and what a scope has; keep marketplaces updated on a timer and on
+demand; cache versions so a running session is never changed under it,
+and nag rather than restart when a newer version is waiting.
+
+**What the harness gives us.** `--plugin-dir <path>` (repeatable) loads
+a plugin for that session only. A marketplace is a git repo (or a
+directory) with `.claude-plugin/marketplace.json`: `plugins[]` each with
+a `source` — a relative path in the marketplace repo (`./plugins/x`), or
+`{source: git-subdir|github|url, url|repo, path?, ref?}` — and sometimes
+a `version`. A plugin is a directory with `.claude-plugin/plugin.json`.
+The harness itself caches under `~/.claude/plugins/cache/<market>/<plugin>/
+<version>/`, keying an unversioned plugin by the marketplace commit. We
+do the same under our own data dir and never touch the harness's tree.
+
+### 7.1 The registry (mesh-synced)
+
+Two small tables, synced the way boards are (roster digest, last writer
+wins, tombstones): **marketplaces** `{name, source, added_at,
+updated_at}` and **rules** `{id, marketplace, plugin, scope_kind: mesh |
+node | repo | session, scope, enabled, pin?, updated_at}`. Add a
+marketplace on any console and every node has it within a roster tick.
+
+Everything else is per node and derived: the marketplace **checkout**
+(`<data>/plugins/marketplaces/<name>/`, a clone or the directory
+itself), the parsed **catalog** (`<data>/plugins/catalog.json`), and the
+**cache** (`<data>/plugins/cache/<market>/<plugin>/<version>/`). Sync
+runs at start, on a timer (`plugins.sync_minutes`, default 60), and on
+demand; it pulls each marketplace, re-reads its catalog, and
+materializes every *activated* plugin's current version — relative
+sources copied out of the checkout, git sources shallow-cloned at their
+ref — so the next spawn has it on disk.
+
+### 7.2 Scope and the effective set
+
+A rule's scope encloses a session when it is `mesh`; `node` and the
+session's node matches; `repo` and the session's repo matches by git
+origin, else by basename; `session` and the agent's name matches. The
+**effective set** is the union of enclosing rules, with the most
+specific rule for a plugin deciding (a session-level *disabled* beats a
+mesh-level *enabled*). At spawn the node resolves each plugin to its
+cached version (the rule's pin, else newest) and appends `--plugin-dir
+<path>`; the session records what it started with.
+
+This is the micro-management the harness lacks made manageable: the
+default is "every session in this repo", and the exceptions are one
+toggle each, visible from both sides.
+
+### 7.3 Surfaces
+
+- **Plugins page** (`/plugins`): marketplaces (add by GitHub `owner/repo`,
+  git URL, or local path; sync now; remove), the catalog across
+  marketplaces with search, cached versions, and for each plugin an
+  **activation matrix**: mesh · each node · each repo · each session, with
+  enable/disable toggles and a pin. From the plugin, its application.
+- **From the scopes**: the session page gets a *plugins ▾* menu listing
+  the effective set with versions and, when a newer cached version
+  exists, a **restart nag** ("a newer version of X is cached — restart
+  to pick it up"); *reload* stays for hot-reloadable parts. Node and
+  repo rows in Mesh show their plugin counts and open the same matrix
+  filtered.
+- **Updates**: the sync timer; *sync now*; and a sync before a spawn when
+  the last one is older than the timer.
+
+### 7.4 What it implies
+
+- **A mesh has one plugin library**, so a session moved or copied to
+  another node (v0.11) keeps its plugins: the rules travel with the
+  registry, the target caches what it needs at revive.
+- **Repo-scoped rules are the natural home for the trust review** (the
+  autorun surface already inventories plugins the repo would load).
+- **Private marketplaces** are just a git repo the mesh can reach; a
+  team's plugins live in one and reach every node without any node
+  installing anything by hand.
+- Later: per-plugin **usage** (which sessions invoked its skills, from
+  the transcripts), and pinning by rule for reproducibility.
+
+### 7.5 Cost
+
+Registry + sync + materialization + spawn integration: ~3 days. Page,
+matrix, session menu, nag: ~2 days. One version (v0.13).
+
+---
+
+## 8. Activity: tasks, monitors, subagents, workflows (B-8)
+
+**Ask.** The console has no signal for what a session is running *beside*
+its main turn: background shell tasks, monitors and scheduled wakeups,
+subagents, workflows. Recognize them, signal them where the session is
+shown, and let the operator see them — including a subagent's own
+transcript — the way the TUI does.
+
+**Where the facts are.** Everything is in the stream: a background task
+is a `Bash` call with `run_in_background` and its later notification; a
+subagent is an `Agent` call (or `Task`) whose work lands in a sidechain
+transcript under `<project>/<session>/subagents/agent-<id>.jsonl`; a
+workflow is a `Workflow` call with its run id; a monitor or loop is a
+scheduling call. Each has a start (the tool use), an end (the tool
+result or a task-notification line), and, for agents and workflows, a
+body of its own on disk.
+
+### 8.1 The model: activities
+
+The node derives an **activity ledger** per session from its event
+stream: `{id, kind: task | agent | workflow | monitor, label, started_at,
+ended_at?, status, detail}`. Live sessions maintain it from events;
+rehydration rebuilds it from the transcript. It rides the roster
+summary as counts (`activities: {running: n, agents: n, tasks: n}`) so
+every surface can signal without asking.
+
+### 8.2 Surfaces
+
+- **Signal everywhere**: the session row in Now, the board pane bar, and
+  the rail glyph gain a small activity chip (`2 agents · 1 task`), pulsing
+  while any is running.
+- **Activity drawer** on the session page (and in a pane): the ledger,
+  newest first — running first — each with elapsed time and its detail;
+  a background task shows its command and last output lines; a workflow
+  its phases and agents; a monitor its schedule.
+- **Subagent view**: clicking an agent activity opens its sidechain
+  transcript rendered with the same tool cards and markdown as the main
+  view, live while it runs (the file is tailed). Served over the mesh by
+  the same transcript ops with a `subagent` parameter.
+- **Dynamic boards** (§6.4) gain `has activity` as a state.
+
+### 8.3 What it implies
+
+- A **fleet-wide activity view** in Now: everything running in the
+  background across the estate, which is what "is anything still going?"
+  asks before closing a laptop; pairs with evacuate (B-5b).
+- Subagent transcripts become **artifacts** (§3): linkable, viewable,
+  carried by a move (tier B already carries the subfolder).
+- Cost estimates per activity (a subagent's spend from its transcript)
+  roll up to the session's meter.
+
+### 8.4 Cost
+
+Ledger from events and rehydration, roster counts, chips: ~2 days.
+Drawer and subagent view (live tail over the mesh): ~2 days. One version
+(v0.14).
