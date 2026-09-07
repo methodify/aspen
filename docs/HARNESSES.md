@@ -1,6 +1,6 @@
 # Harnesses: the seam as built
 
-**Status:** reference for v0.20 (2026-09-07), phase 0 of
+**Status:** reference for v0.20–v0.21 (2026-09-07), phases 0–1 of
 PROPOSALS-HARNESSES.md. Code: `crates/aspen-core/src/{harness,permission,
 store,adapter,event}.rs` (the vocabulary and traits),
 `crates/aspen-claude/src/adapter.rs` (the Claude implementation),
@@ -92,3 +92,47 @@ existing flows unchanged: spawn, message, permission prompt with allow,
 question, interrupt, revive, transcript delta, activities, usage,
 notices, boards, move — the console reading the same shapes plus the new
 fields.
+
+## 6. The Codex adapter (v0.21)
+
+`crates/aspen-codex` (CODEX_RUNTIME_REFERENCE.md is the field-verified
+wire and disk reference). Registered by the node when the `codex` binary
+resolves on PATH (`ASPEN_CODEX_BIN` overrides the name); `GET /api/node`
+lists it with its version, capabilities and modes.
+
+- **Process**: `codex app-server --listen stdio://` per session
+  (`rpc.rs`: JSON-RPC line client, request correlation, server→client
+  requests, notifications). Trust for the cwd and the `aspen` MCP server
+  go on the command line as `-c` overrides; `config.toml` is never
+  written.
+- **Session** (`session.rs`): `thread/start | resume | fork` with the
+  posture's approval policy and sandbox and the charter as
+  `developerInstructions`; `turn/start` per message (`turn/steer` when
+  a turn is running); `turn/interrupt`; model and mode changes ride on
+  the next turn; context usage from `thread/tokenUsage/updated`.
+- **Approvals**: command, file-change, permission-profile and MCP-tool
+  (elicitation) requests become neutral `PermissionRequest`s with the
+  decision set Codex offers (`accept`, `acceptForSession`, the execpolicy
+  amendment as "always", `decline`); the operator broker and the
+  kind-based policy apply unchanged. Questions — both
+  `item/tool/requestUserInput` and the async agent-message form — reach
+  the console's question card; answers go back the way Codex expects.
+- **Tools**: the bus tools reach Codex through `aspen mcp`, a stdio MCP
+  server the node registers per session; it lists from
+  `GET /api/bridge/tools` and forwards to `POST /api/bridge/call`. Tool
+  names are `mcp__aspen__<tool>`, so the by-name auto-allow holds.
+- **Store** (`store.rs`): rollouts under `$CODEX_HOME/sessions`;
+  enumeration by `session_meta.cwd`; rehydration from `item_completed`
+  lines into the console's item shape; a fork's `history_base` followed
+  recursively; usage from `token_count` lines; `files()` lists the
+  rollout and its history base.
+- **Modes**: `on-request` (ask/edits), `untrusted`, `read-only` (plan),
+  `full-access` (auto), `auto-review` (guarded).
+
+Verified on the rig (2026-09-07, codex 0.153.4): spawn with posture,
+streaming, command approval accept and decline by decision id,
+sandbox-escape prompt, MCP-tool approval, bus round trip with a Claude
+agent, async question answered from the console API, interrupt, revive
+across a daemon restart (`thread/resume`), branch (`thread/fork`) with
+the parent history rehydrated, usage, context, runtime inventory
+(models, skills), session enumeration mixed with Claude's.

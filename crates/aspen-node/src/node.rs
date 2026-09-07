@@ -538,6 +538,17 @@ impl Node {
         let (delivery_tx, delivery_rx) = mpsc::unbounded_channel::<String>();
         let mut adapters: HashMap<Harness, Arc<dyn AgentAdapter>> = HashMap::new();
         adapters.insert(Harness::Claude, Arc::new(aspen_claude::ClaudeAdapter::new()));
+        // Codex is listed when its binary resolves (HARNESSES.md: a node
+        // lists what it can run); `ASPEN_CODEX_BIN` overrides the name.
+        let mut codex = aspen_codex::CodexAdapter::new();
+        if let Ok(b) = std::env::var("ASPEN_CODEX_BIN") {
+            if !b.trim().is_empty() {
+                codex.bin = b;
+            }
+        }
+        if codex.available() {
+            adapters.insert(Harness::Codex, Arc::new(codex));
+        }
         let inner = Arc::new(NodeInner {
             store,
             adapters,
@@ -773,7 +784,7 @@ impl Node {
             tools: Some(tools),
             broker: op_broker.clone().map(|b| b as Arc<dyn aspen_core::PermissionBroker>),
             agent: name.to_owned(),
-            bridge_token: None,
+            bridge_token: self.inner.data_dir.as_deref().and_then(|d| std::fs::read_to_string(d.join("api-token")).ok()).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()),
             node_api: self.inner.data_dir.as_deref().and_then(local_api_addr),
         };
         let (handle, adapter_rx) = adapter.spawn(spec).await?;
@@ -1128,6 +1139,7 @@ impl Node {
             .map(|s| s.broker.is_some())
             .unwrap_or(true);
         let opts = SpawnOpts {
+            harness: Some(row.harness),
             charter: row.charter.clone(),
             resume: Some(from.to_owned()),
             fork: true,
@@ -1178,6 +1190,7 @@ impl Node {
             }
         }
         let opts = SpawnOpts {
+            harness: Some(row.harness),
             charter: row.charter.clone(),
             resume: Some(from.to_owned()),
             fork: true,
@@ -1508,6 +1521,7 @@ impl Node {
             .and_then(|v| v.as_bool())
             .or_else(|| spec.get("permission").and_then(|v| v.as_str()).map(|p| p == "skip"));
         let opts = SpawnOpts {
+            harness: pick_str("harness").and_then(|h| Harness::parse(&h)),
             charter: pick_str("charter"),
             model: pick_str("model"),
             extra_args: pick_str("extra_args"),
@@ -1838,6 +1852,7 @@ impl Node {
         let revived = if mode == "copy" {
             let row = self.agent_row(&report.name)?;
             let sopts = SpawnOpts {
+                harness: Some(row.harness),
                 charter: row.charter.clone(),
                 resume: Some(report.session_id.clone()),
                 fork: true,

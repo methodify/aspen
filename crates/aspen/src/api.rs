@@ -180,6 +180,8 @@ pub async fn serve(
         .route("/adoptions/scan", post(post_adoptions_scan))
         .route("/adoptions/{id}", post(post_adoption))
         .route("/hooks/session", post(post_hook_session))
+        .route("/bridge/tools", get(bridge_tools))
+        .route("/bridge/call", post(bridge_call))
         .route("/repos/trust", post(post_repo_trust))
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
@@ -3092,6 +3094,41 @@ async fn post_adoptions_scan(State(s): S) -> impl IntoResponse {
 /// Claude Code's SessionStart/SessionEnd hook, relayed by `aspen hook`.
 /// Body is the hook's own JSON (session_id, transcript_path, cwd, source /
 /// reason, hook_event_name). We only use it as a nudge.
+/// The tool bridge (HARNESSES.md §2, `aspen mcp`): a harness that reaches
+/// tools only through a stdio MCP server gets the bus tools by proxy. The
+/// bridge lists what it forwards, then forwards each call here.
+#[derive(Deserialize)]
+struct BridgeQuery {
+    agent: String,
+}
+
+async fn bridge_tools(State(s): S, Query(q): Query<BridgeQuery>) -> impl IntoResponse {
+    let tools = aspen_node::tools::build_tools(s.node.inner.clone(), q.agent);
+    let list: Vec<Value> = tools
+        .list()
+        .into_iter()
+        .map(|t| json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema }))
+        .collect();
+    Json(json!({ "tools": list }))
+}
+
+#[derive(Deserialize)]
+struct BridgeCallBody {
+    agent: String,
+    tool: String,
+    #[serde(default)]
+    args: Value,
+}
+
+async fn bridge_call(State(s): S, Json(b): Json<BridgeCallBody>) -> impl IntoResponse {
+    let tools = aspen_node::tools::build_tools(s.node.inner.clone(), b.agent);
+    let args = if b.args.is_null() { json!({}) } else { b.args };
+    match tools.call(&b.tool, args) {
+        Ok(text) => Json(json!({ "text": text, "is_error": false })),
+        Err(text) => Json(json!({ "text": text, "is_error": true })),
+    }
+}
+
 async fn post_hook_session(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
     let cwd = b
         .get("cwd")

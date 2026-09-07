@@ -907,3 +907,20 @@ cleaner lane for roster updates than user-message headers.
   shell/question prompts with decisions, interrupt, revive, transcript,
   activities, usage, notices, boards, move — unchanged shapes plus the
   new fields.
+- **2026-09-07 — v0.21, the Codex adapter** (PROPOSALS-HARNESSES.md §8
+  phase 1; HARNESSES.md §6; CODEX_RUNTIME_REFERENCE.md). The seam gets
+  its second implementation: `aspen-codex` drives `codex app-server`
+  over stdio JSON-RPC, one process per session, with the posture table
+  mapped to approval policy + sandbox, approvals (command, file change,
+  permission profile, MCP tool) brokered through the same operator
+  broker as Claude's, questions in both of Codex's forms surfaced as the
+  console's question card, and rollouts read as the session store
+  (forks follow `history_base`). The bus tools cross the process
+  boundary through `aspen mcp`, a stdio MCP bridge the node registers
+  per session; tool names keep Claude's `mcp__aspen__` shape so the
+  by-name auto-allow holds. Decision: trust and the MCP server are
+  command-line overrides, never a `config.toml` write. Nothing in the
+  node knows Codex by name except the adapter registration; branch,
+  split, copy and template spawns now carry the source agent's harness
+  (a real bug found by forking a Codex session: the fork spawned on
+  Claude).

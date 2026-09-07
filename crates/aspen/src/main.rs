@@ -125,6 +125,11 @@ enum Command {
     /// hook's JSON on stdin and nudges the local daemon. Always exits 0.
     #[command(hide = true)]
     Hook,
+    /// The tool bridge for harnesses that reach tools through a stdio MCP
+    /// server (Codex): serves the bus tools over stdin/stdout and forwards
+    /// each call to the node named by ASPEN_NODE_API (HARNESSES.md).
+    #[command(hide = true)]
+    Mcp,
     /// Claude Code hooks that let Aspen notice sessions started, resumed, or
     /// forked outside it (SessionStart/SessionEnd → the local daemon).
     Hooks {
@@ -510,6 +515,7 @@ async fn main() -> Result<()> {
             },
         ),
         Command::Hook => hook_relay(&cli.data_dir),
+        Command::Mcp => mcp_bridge(),
         Command::Hooks { command } => hooks_command(&cli.data_dir, command),
         Command::Logs { lines } => {
             for l in aspen_node::servicing::tail_log(&cli.data_dir, lines) {
@@ -922,6 +928,109 @@ fn config_command(
 /// `aspen hook`: forward Claude Code's hook payload to the daemon. Quiet and
 /// fast — this runs on the session's start path. Aspen's own sessions are
 /// skipped (their environment carries our entrypoint).
+/// A `ToolProvider` whose calls go to the node over HTTP; the bridge
+/// process is stateless and lives as long as the harness keeps it.
+struct BridgeProvider {
+    api: String,
+    token: Option<String>,
+    agent: String,
+    tools: Vec<(String, String, serde_json::Value)>,
+}
+
+impl BridgeProvider {
+    fn request(&self, method: &str, path: &str) -> ureq::Request {
+        let mut r = match method {
+            "POST" => ureq::post(&format!("{}{}", self.api, path)),
+            _ => ureq::get(&format!("{}{}", self.api, path)),
+        }
+        .timeout(std::time::Duration::from_secs(30));
+        if let Some(t) = &self.token {
+            r = r.set("x-aspen-token", t);
+        }
+        r
+    }
+    fn connect(api: String, token: Option<String>, agent: String) -> Result<Self> {
+        let mut me = Self { api, token, agent, tools: Vec::new() };
+        let v: serde_json::Value = me
+            .request("GET", &format!("/api/bridge/tools?agent={}", urlencode(&me.agent)))
+            .call()
+            .map_err(|e| anyhow::anyhow!("bridge: listing tools at {}: {e}", me.api))?
+            .into_json()?;
+        for t in v.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
+            let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_owned();
+            let desc = t.get("description").and_then(|n| n.as_str()).unwrap_or("").to_owned();
+            let schema = t.get("input_schema").cloned().unwrap_or(serde_json::json!({ "type": "object" }));
+            if !name.is_empty() {
+                me.tools.push((name, desc, schema));
+            }
+        }
+        Ok(me)
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+impl aspen_core::ToolProvider for BridgeProvider {
+    fn list(&self) -> Vec<aspen_core::ToolDef> {
+        self.tools
+            .iter()
+            .map(|(n, d, s)| aspen_core::ToolDef {
+                name: Box::leak(n.clone().into_boxed_str()),
+                description: d.clone(),
+                input_schema: s.clone(),
+            })
+            .collect()
+    }
+    fn call(&self, name: &str, args: serde_json::Value) -> std::result::Result<String, String> {
+        let resp = self
+            .request("POST", "/api/bridge/call")
+            .send_json(serde_json::json!({ "agent": self.agent, "tool": name, "args": args }))
+            .map_err(|e| format!("bridge: the node did not answer: {e}"))?;
+        let v: serde_json::Value = resp.into_json().map_err(|e| format!("bridge: bad reply: {e}"))?;
+        let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_owned();
+        if v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
+            Err(text)
+        } else {
+            Ok(text)
+        }
+    }
+}
+
+/// `aspen mcp`: newline-delimited JSON-RPC (MCP over stdio) in, replies out.
+fn mcp_bridge() -> Result<()> {
+    let api = std::env::var("ASPEN_NODE_API").map_err(|_| anyhow::anyhow!("aspen mcp: ASPEN_NODE_API is not set"))?;
+    let agent = std::env::var("ASPEN_AGENT").map_err(|_| anyhow::anyhow!("aspen mcp: ASPEN_AGENT is not set"))?;
+    let token = std::env::var("ASPEN_NODE_TOKEN").ok().filter(|t| !t.is_empty());
+    let provider = BridgeProvider::connect(api, token, agent)?;
+    let server = aspen_claude::mcp::McpServer::from_provider(std::sync::Arc::new(provider));
+    let stdin = std::io::stdin();
+    let mut out = std::io::stdout().lock();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = std::io::BufRead::read_line(&mut stdin.lock(), &mut line)?;
+        if n == 0 {
+            return Ok(());
+        }
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        if msg.get("id").is_none() {
+            continue; // a notification: nothing to send back over stdio
+        }
+        let reply = server.handle(&msg);
+        writeln!(out, "{}", serde_json::to_string(&reply)?)?;
+        out.flush()?;
+    }
+}
+
 fn hook_relay(data_dir: &std::path::Path) -> Result<()> {
     if std::env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("aspen") {
         return Ok(());
