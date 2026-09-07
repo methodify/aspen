@@ -60,10 +60,20 @@ only writes; a delete propagates as a tombstone.
   screen position. The session view's own hotkeys are inactive on the
   board route; the board's live in the `board` scope and appear in the
   palette. `alt` was chosen over `ctrl`+digit, which browsers own.
-- **Compact panes.** In a pane the session view runs at a smaller type
-  size with the header trimmed to model/mode/render and stop; charter,
-  history, artifacts, move and board menus return when the pane is
-  zoomed or opened as a page (↗ on the pane bar).
+- **Compact panes.** Vertical space is the scarce thing in a pane, so
+  the session chrome collapses to two slim rows: the pane bar carries
+  identity and state (the session header keeps only reload/branch/stop),
+  and one scrolling control row holds model, mode, render mode and the
+  charter/history/artifacts/move/board menus. Zoom or open as a page
+  (↗) for the full chrome.
+- **Cached transcripts.** A session view keeps its transcript state
+  across mounts (zoom, navigation, the same session in two boards). On
+  return it shows the cached state at once and fetches only the items
+  after its last user line (`GET …/transcript?after=<uuid>`, also over
+  the mesh); if that line is gone it refetches everything. No more
+  "no transcript yet" flash and no full re-transfer per zoom.
+- **The rail collapses** («/» at its top) to a strip of keys and dots,
+  remembered per browser.
 - **Attention.** The board polls open prompts (the needs endpoint) every
   3 s; a pane whose agent is waiting gets a red border and a *needs you*
   chip; `alt+.` cycles focus through them.

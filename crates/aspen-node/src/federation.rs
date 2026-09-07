@@ -1390,6 +1390,12 @@ async fn serve_api_req(
                 .session_id
                 .as_ref()
                 .ok_or_else(|| anyhow!("no session on record"))?;
+            if let Some(after) = body.get("after").and_then(|a| a.as_str()) {
+                let (items, found) =
+                    aspen_claude::transcript::rehydrate_after(&row.repo, sid, after)
+                        .unwrap_or_default();
+                return Ok(json!({ "items": items, "after_found": found }));
+            }
             let items = aspen_claude::transcript::rehydrate(&row.repo, sid).unwrap_or_default();
             Ok(json!(items))
         }

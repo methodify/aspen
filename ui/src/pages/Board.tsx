@@ -731,7 +731,7 @@ export function BoardsPage() {
   const channels = Array.from(new Set(agents.map((a) => a.channel))).sort();
 
   return (
-    <div className="page boards-page">
+    <div className="stage-body boards-page">
       <h1>Boards</h1>
       <p className="dim">
         Layouts of sessions across the estate. A board lives on the node and syncs across the mesh, so every console shows

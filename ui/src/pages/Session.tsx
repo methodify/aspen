@@ -42,6 +42,10 @@ import {
   type UserBubbleItem,
   settleTools,
   addOpenPrompts,
+  cachedTranscript,
+  rememberTranscript,
+  transcriptHead,
+  mergeAfter,
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { Meter, presenceOf, relTime } from "./../components";
@@ -616,6 +620,14 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
   const agent = agents.find((a) => a.name === name);
 
   const [transcript, dispatch] = useReducer(reducer, undefined, emptyTranscript);
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+  useEffect(
+    () => () => {
+      if (transcriptRef.current.items.length) rememberTranscript(name, transcriptRef.current);
+    },
+    [name],
+  );
   const [wsState, setWsState] = useState<WsState>("connecting");
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -989,9 +1001,23 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
 
     async function start() {
       try {
-        const history = await api.transcript(name);
-        if (disposed) return;
-        dispatch({ type: "seed", state: seedFromHistory(history) });
+        // A cached state shows at once; only the tail after its last user
+        // line is fetched (the whole history if that line is gone).
+        const cached = cachedTranscript(name);
+        const head = cached ? transcriptHead(cached) : null;
+        if (cached) dispatch({ type: "seed", state: cached });
+        if (cached && head) {
+          const delta = await api.transcriptAfter(name, head);
+          if (disposed) return;
+          dispatch({
+            type: "seed",
+            state: delta.after_found ? mergeAfter(cached, head, delta.items) : seedFromHistory(delta.items),
+          });
+        } else {
+          const history = await api.transcript(name);
+          if (disposed) return;
+          dispatch({ type: "seed", state: seedFromHistory(history) });
+        }
         // History that ends mid-call shows the call running only while
         // the agent really is busy.
         const a = agentRef.current;

@@ -1877,9 +1877,20 @@ async fn get_sessions(State(s): S, Query(q): Query<SessionsQuery>) -> impl IntoR
 
 /// Rehydrated history for an agent's session — what the console renders
 /// above the live stream.
-async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+struct TranscriptQuery {
+    /// Return only items after this user line (a delta); the response is
+    /// then `{items, after_found}` rather than a bare array.
+    after: Option<String>,
+}
+
+async fn get_transcript(
+    State(s): S,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<TranscriptQuery>,
+) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "transcript", &bare, json!({})).await;
+        return proxy(&s, &node, "transcript", &bare, json!({ "after": q.after })).await;
     }
     let rows = match s.node.inner.store.agents() {
         Ok(r) => r,
@@ -1891,6 +1902,14 @@ async fn get_transcript(State(s): S, Path(name): Path<String>) -> impl IntoRespo
     let Some(sid) = &agent.session_id else {
         return Json(Vec::<Value>::new()).into_response();
     };
+    if let Some(after) = q.after.as_deref() {
+        return match aspen_claude::transcript::rehydrate_after(&agent.repo, sid, after) {
+            Ok((items, found)) => {
+                Json(json!({ "items": items, "after_found": found })).into_response()
+            }
+            Err(_) => Json(json!({ "items": [], "after_found": false })).into_response(),
+        };
+    }
     match aspen_claude::transcript::rehydrate(&agent.repo, sid) {
         Ok(items) => Json(items).into_response(),
         Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet

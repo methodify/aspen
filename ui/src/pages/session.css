@@ -465,3 +465,21 @@
 .session.in-pane.compact .session-head .artifacts-wrap,
 .session.in-pane.compact .session-head .session-title-input { display: none; }
 .session.in-pane.compact .session-head h1 { font-size: 12.5px; }
+
+/* compact pane chrome: the pane bar carries identity and state, so the
+   session header collapses to its actions, and the controls fit one row */
+.session.in-pane.compact .session-head { padding: 2px 8px; min-height: 0; gap: 6px; }
+.session.in-pane.compact .session-head h1,
+.session.in-pane.compact .session-head .session-title,
+.session.in-pane.compact .session-head .session-repo,
+.session.in-pane.compact .session-head .meter { display: none; }
+.session.in-pane.compact .session-head .btn,
+.session.in-pane.compact .session-head [class^="btn-"] { font-size: 10.5px; padding: 1px 5px; }
+.session.in-pane.compact .session-controls { padding: 2px 8px; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.session.in-pane.compact .session-controls::-webkit-scrollbar { display: none; }
+.session.in-pane.compact .ctl-label { display: none; }
+.session.in-pane.compact .ctl-select { max-width: 96px; font-size: 11px; padding: 1px 2px; }
+.session.in-pane.compact .ctx-meter { display: none; }
+.session.in-pane.compact .composer textarea { min-height: 0; }
+.session.in-pane.compact .exited-banner { padding: 4px 8px; font-size: 11.5px; gap: 6px; flex-wrap: wrap; }
+.session.in-pane.compact .charter-toggle { white-space: nowrap; }

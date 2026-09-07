@@ -79,14 +79,39 @@ function saveWorkingSet(ws: WorkingSet) {
 function MeshColumn() {
   const [boards, setBoards] = useState<Board[]>([]);
   const loc = useLocation();
+  // The rail collapses to a narrow strip of keys and dots (per browser).
+  const [narrow, setNarrowState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("aspen.rail") === "narrow";
+    } catch {
+      return false;
+    }
+  });
+  const setNarrow = (f: (n: boolean) => boolean) =>
+    setNarrowState((cur) => {
+      const next = f(cur);
+      try {
+        localStorage.setItem("aspen.rail", next ? "narrow" : "wide");
+      } catch {
+        // fine
+      }
+      document.body.classList.toggle("rail-narrow", next);
+      return next;
+    });
+  useEffect(() => {
+    document.body.classList.toggle("rail-narrow", narrow);
+  }, [narrow]);
   useEffect(() => {
     let stop = false;
     const load = () => api.boards().then((b) => !stop && setBoards(b)).catch(() => {});
     void load();
     const t = window.setInterval(() => void load(), 15000);
+    const onChange = () => void load();
+    window.addEventListener("aspen:boards", onChange);
     return () => {
       stop = true;
       window.clearInterval(t);
+      window.removeEventListener("aspen:boards", onChange);
     };
     // reload when navigating (a board was just created/deleted)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -164,9 +189,17 @@ function MeshColumn() {
   };
 
   return (
-    <nav className="mesh-col" aria-label="primary">
+    <nav className={`mesh-col${narrow ? " narrow" : ""}`} aria-label="primary">
+      <button
+        className="rail-toggle"
+        onClick={() => setNarrow((n) => !n)}
+        title={narrow ? "expand the rail" : "collapse the rail to icons"}
+        aria-label={narrow ? "expand navigation" : "collapse navigation"}
+      >
+        {narrow ? "»" : "«"}
+      </button>
       {NAV.map((n) => (
-        <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
+        <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`} title={n.label}>
           <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>{n.key}</span>
           <span>{n.label}</span>
           {n.label === "Now" && needs > 0 && <span className="badge-count">{needs}</span>}

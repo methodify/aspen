@@ -821,11 +821,22 @@ export const api = {
     ),
   transcript: (name: string) =>
     request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
+  /** Items after the user line `after` (a delta), or everything when that
+   *  line is no longer there (`after_found: false`). */
+  transcriptAfter: (name: string, after: string) =>
+    request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
   boards: () => request<Board[]>("/api/boards"),
-  putBoard: (b: Board) =>
-    request<{ ok: boolean }>(`/api/boards/${enc(b.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }),
-  deleteBoard: (id: string) => request<{ ok: boolean }>(`/api/boards/${enc(id)}`, { method: "DELETE" }),
+  putBoard: async (b: Board) => {
+    const r = await request<{ ok: boolean }>(`/api/boards/${enc(b.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
+    window.dispatchEvent(new Event("aspen:boards"));
+    return r;
+  },
+  deleteBoard: async (id: string) => {
+    const r = await request<{ ok: boolean }>(`/api/boards/${enc(id)}`, { method: "DELETE" });
+    window.dispatchEvent(new Event("aspen:boards"));
+    return r;
+  },
   /** Move (or copy) a session to another node; resolves the target's report. */
   moveAgent: (name: string, body: { to: string; mode: "move" | "copy"; repo?: string; name?: string; apply_patch?: boolean }) =>
     post<MoveReport>(`/api/agents/${enc(name)}/move`, body),

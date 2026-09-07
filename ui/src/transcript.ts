@@ -698,3 +698,48 @@ function applyRaw(state: TranscriptState, ev: RawEvent): TranscriptState {
   if (text.startsWith(BUS_HEADER)) return pushBusBubble(state, text);
   return state;
 }
+
+
+// ---------------------------------------------------------------------------
+// Transcript cache: a session view keeps its state across mounts (zoom,
+// navigation, a pane in two boards) and fetches only what happened after
+// its last user line, instead of the whole history each time.
+
+const CACHE_MAX = 24;
+const cache = new Map<string, TranscriptState>();
+
+export function cachedTranscript(name: string): TranscriptState | undefined {
+  return cache.get(name);
+}
+
+export function rememberTranscript(name: string, state: TranscriptState): void {
+  cache.delete(name);
+  cache.set(name, state);
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+/** The uuid of the last user line in the state — the delta anchor. User
+ *  lines are immutable once written; anything after one may still grow. */
+export function transcriptHead(state: TranscriptState): string | null {
+  for (let i = state.items.length - 1; i >= 0; i--) {
+    const it = state.items[i]!;
+    if (it.kind === "user" && it.uuid) return it.uuid;
+  }
+  return null;
+}
+
+/** Keep everything up to and including the anchor user line; replace what
+ *  followed with the freshly fetched items. */
+export function mergeAfter(state: TranscriptState, head: string, history: HistoryItem[]): TranscriptState {
+  const idx = state.items.findIndex((it) => it.kind === "user" && it.uuid === head);
+  if (idx < 0) return seedFromHistory(history);
+  const kept = state.items.slice(0, idx + 1);
+  const fresh = seedFromHistory(history);
+  let nextId = state.nextId;
+  const renumbered = fresh.items.map((it) => ({ ...it, id: nextId++ }));
+  return { items: [...kept, ...renumbered], nextId, openBubbleId: null };
+}

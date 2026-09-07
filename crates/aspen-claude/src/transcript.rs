@@ -297,6 +297,26 @@ fn user_images(v: &Value) -> Vec<Value> {
     out
 }
 
+/// Rehydrated items after the user line `after` — a delta for a console
+/// that already holds the history up to there. `(items, found)`: when the
+/// anchor is not in the transcript any more, everything comes back and
+/// `found` is false.
+pub fn rehydrate_after(
+    project_path: &Path,
+    session_id: &str,
+    after: &str,
+) -> Result<(Vec<Value>, bool)> {
+    let items = rehydrate(project_path, session_id)?;
+    let idx = items.iter().position(|i| {
+        i.get("role").and_then(|r| r.as_str()) == Some("user")
+            && i.get("uuid").and_then(|u| u.as_str()) == Some(after)
+    });
+    match idx {
+        Some(i) => Ok((items[i + 1..].to_vec(), true)),
+        None => Ok((items, false)),
+    }
+}
+
 pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
     let path = transcript_path(project_path, session_id);
     let text = std::fs::read_to_string(&path)
