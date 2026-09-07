@@ -6,10 +6,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, type Agent, type Board, type BoardNode, type BoardPane, type OpenPrompt } from "../api";
+import { api, type Agent, type Board, type BoardNode, type BoardPane, type BusMessage, type OpenPrompt } from "../api";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
-import { ErrorBar } from "../components";
+import { ErrorBar, relTime } from "../components";
 import { SessionView } from "./Session";
 import View from "./View";
 import "./board.css";
@@ -185,6 +185,10 @@ export default function BoardPage() {
   const [focus, setFocus] = useState<string | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
   const [broadcast, setBroadcast] = useState(false);
+  // Pair mode (BOARDS.md §pairs): the pane whose ⇄ was clicked first, and
+  // per-pair mirroring of the operator's messages to the partner.
+  const [pairFrom, setPairFrom] = useState<string | null>(null);
+  const [mirror, setMirror] = useState<Record<string, boolean>>({});
   const [picker, setPicker] = useState<string | null>(null); // pane id being filled
   const [attention, setAttention] = useState<Set<string>>(new Set());
   const [narrow, setNarrow] = useState(() => window.innerWidth < 900);
@@ -331,15 +335,75 @@ export default function BoardPage() {
 
   // Broadcast: after the focused pane sends, the same text goes to every
   // other session pane.
+  const pairs: [string, string][] = useMemo(() => (board?.pairs ?? []) as [string, string][], [board?.pairs]);
+  const pairKey = (a: string, b: string) => `pair:${board?.id ?? ""}:${a}:${b}`;
+  const partnerOf = (paneId: string): { pane: BoardPane; key: string } | null => {
+    for (const [a, b] of pairs) {
+      const other = a === paneId ? b : b === paneId ? a : null;
+      if (!other) continue;
+      const pane = sessionPanes.find((p) => p.id === other);
+      if (pane) return { pane, key: pairKey(a, b) };
+    }
+    return null;
+  };
   const onSent = useCallback(
     (fromPane: string, text: string) => {
-      if (!broadcast) return;
-      for (const p of sessionPanes) {
-        if (p.id !== fromPane && p.agent) api.sendMessage(p.agent, text).catch(() => {});
+      if (broadcast) {
+        for (const p of sessionPanes) {
+          if (p.id !== fromPane && p.agent) api.sendMessage(p.agent, text).catch(() => {});
+        }
+        return;
+      }
+      // Mirror to the pair partner as operator mail on the pair's thread.
+      for (const [a, b] of pairs) {
+        const other = a === fromPane ? b : b === fromPane ? a : null;
+        const key = pairKey(a, b);
+        if (!other || !mirror[key]) continue;
+        const partner = sessionPanes.find((p) => p.id === other)?.agent;
+        if (partner) api.busSend({ to: `@${partner}`, body: text, urgency: "normal", thread: key }).catch(() => {});
       }
     },
-    [broadcast, sessionPanes],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [broadcast, sessionPanes, pairs, mirror, board?.id],
   );
+
+  async function pair(aId: string, bId: string) {
+    if (!board) return;
+    const a = sessionPanes.find((p) => p.id === aId)?.agent;
+    const b = sessionPanes.find((p) => p.id === bId)?.agent;
+    if (!a || !b || a === b) return;
+    const key = pairKey(aId, bId);
+    update((bd) => ({ ...bd, pairs: [...((bd.pairs ?? []) as [string, string][]).filter(([x, y]) => x !== aId && y !== aId && x !== bId && y !== bId), [aId, bId]] }));
+    try {
+      await api.addLink({ from: `agent:${a}`, to: `agent:${b}`, two_way: true, purpose: `paired on board "${board.name}" — coordinate directly; carry thread ${key} on bus_send so the operator sees the exchange in one place` });
+    } catch {
+      // a link may already exist
+    }
+    const note = (them: string) =>
+      `You are paired with @${them} on the operator's board "${board.name}". Coordinate with them directly using bus_send to @${them}, and pass thread="${key}" so the operator sees your exchange in one strip. Reply to this notice only if something needs the operator.`;
+    await Promise.all([
+      api.busSend({ to: `@${a}`, body: note(b), urgency: "notice", thread: key }).catch(() => {}),
+      api.busSend({ to: `@${b}`, body: note(a), urgency: "notice", thread: key }).catch(() => {}),
+    ]);
+  }
+  async function unpair(aId: string, bId: string) {
+    if (!board) return;
+    const a = sessionPanes.find((p) => p.id === aId)?.agent;
+    const b = sessionPanes.find((p) => p.id === bId)?.agent;
+    update((bd) => ({ ...bd, pairs: ((bd.pairs ?? []) as [string, string][]).filter(([x, y]) => !(x === aId && y === bId)) }));
+    setMirror((m) => ({ ...m, [pairKey(aId, bId)]: false }));
+    if (a && b) {
+      try {
+        const links = await api.links();
+        for (const l of links) {
+          const ends = [l.src, l.dst];
+          if (ends.includes(`agent:${a}`) && ends.includes(`agent:${b}`) && (l.purpose ?? "").startsWith("paired on board")) await api.deleteLink(l.id).catch(() => {});
+        }
+      } catch {
+        // links unavailable
+      }
+    }
+  }
 
   if (err && !board) return <div className="page"><ErrorBar error={err} /><Link to="/boards">← boards</Link></div>;
   if (!board || !tree) return <div className="page dim">loading board…</div>;
@@ -413,7 +477,30 @@ export default function BoardPage() {
             <span className="chip mono activity-chip" title="background work">{agent!.activities!.running} bg</span>
           )}
           {broadcast && p.kind === "session" && <span className="chip chip-busy" title="broadcast is on: messages sent in any pane go to this one too">bcast</span>}
+          {p.kind === "session" && partnerOf(p.id) && (
+            <span className="chip mono pair-chip" title="paired: the two sessions share a bus thread (strip below)">⇄ @{partnerOf(p.id)!.pane.agent?.split("@")[0]}</span>
+          )}
           <span style={{ flex: 1 }} />
+          {!dynamic && p.kind === "session" && p.agent && (
+            partnerOf(p.id) ? (
+              <button className="pane-btn" onClick={() => { const pr = pairs.find(([a, b]) => a === p.id || b === p.id); if (pr) void unpair(pr[0], pr[1]); }} title="unpair">⇄×</button>
+            ) : pairFrom === p.id ? (
+              <button className="pane-btn on" onClick={() => setPairFrom(null)} title="click ⇄ on another session pane to pair; click again to cancel">⇄…</button>
+            ) : (
+              <button
+                className="pane-btn"
+                onClick={() => {
+                  if (pairFrom && pairFrom !== p.id) {
+                    void pair(pairFrom, p.id);
+                    setPairFrom(null);
+                  } else setPairFrom(p.id);
+                }}
+                title={pairFrom ? "pair with the pane you picked" : "pair this session with another pane's (a shared bus thread + a link)"}
+              >
+                ⇄
+              </button>
+            )
+          )}
           {p.kind === "session" && p.agent && (
             <Link className="pane-btn" to={`/session/${encodeURIComponent(p.agent)}`} title="open as a page">↗</Link>
           )}
@@ -546,6 +633,27 @@ export default function BoardPage() {
         <div className="board-body">{renderPane(zoomed, panes.indexOf(zoomed))}</div>
       ) : (
         <div className="board-body">{renderNode(tree)}</div>
+      )}
+      {pairs.length > 0 && (
+        <div className="pair-strips">
+          {pairs.map(([aId, bId]) => {
+            const a = sessionPanes.find((p) => p.id === aId)?.agent;
+            const b = sessionPanes.find((p) => p.id === bId)?.agent;
+            if (!a || !b) return null;
+            const key = pairKey(aId, bId);
+            return (
+              <PairStrip
+                key={key}
+                a={a}
+                b={b}
+                thread={key}
+                mirror={!!mirror[key]}
+                onMirror={(v) => setMirror((m) => ({ ...m, [key]: v }))}
+                onUnpair={() => void unpair(aId, bId)}
+              />
+            );
+          })}
+        </div>
       )}
       {picker && (
         <Picker
@@ -808,4 +916,93 @@ export function BoardsPage() {
 function describeQuery(q: DynamicQuery): string {
   const parts = [q.state ?? "live", q.node ? `on ${q.node}` : "", q.channel ? `#${q.channel}` : "", q.name ? `~${q.name}` : ""].filter(Boolean);
   return parts.join(" · ");
+}
+
+
+/** The pair's thread (BOARDS.md §pairs): what the two agents say to each
+ *  other on the thread (or to each other at all), live, with an operator
+ *  composer that posts to both on the thread. */
+function PairStrip({ a, b, thread, mirror, onMirror, onUnpair }: { a: string; b: string; thread: string; mirror: boolean; onMirror: (v: boolean) => void; onUnpair: () => void }) {
+  const [rows, setRows] = useState<BusMessage[]>([]);
+  const [open, setOpen] = useState(true);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const load = async () => {
+      try {
+        const [t, fa, fb] = await Promise.all([api.busLog(60, { thread }), api.busLog(40, { sender: a }), api.busLog(40, { sender: b })]);
+        if (!live) return;
+        const seen = new Set<number>();
+        const all: BusMessage[] = [];
+        for (const m of [...t, ...fa, ...fb]) {
+          const between = (m.sender === a && m.recipient === b) || (m.sender === b && m.recipient === a);
+          if ((m.thread === thread || between) && !seen.has(m.id)) {
+            seen.add(m.id);
+            all.push(m);
+          }
+        }
+        all.sort((x, y) => x.created_at - y.created_at);
+        setRows(all.slice(-60));
+      } catch {
+        // node unreachable
+      }
+    };
+    void load();
+    const t = window.setInterval(() => void load(), 3000);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [a, b, thread]);
+  async function send() {
+    const body = text.trim();
+    if (!body) return;
+    setBusy(true);
+    try {
+      await Promise.all([api.busSend({ to: `@${a}`, body, urgency: "normal", thread }), api.busSend({ to: `@${b}`, body, urgency: "normal", thread })]);
+      setText("");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const short = (n: string) => n.split("@")[0];
+  return (
+    <div className={`pair-strip${open ? "" : " closed"}`}>
+      <div className="pair-head">
+        <button className="pane-btn" onClick={() => setOpen((o) => !o)} title={open ? "collapse" : "expand"}>{open ? "▾" : "▸"}</button>
+        <span className="mono">@{short(a)} ⇄ @{short(b)}</span>
+        <span className="mono-meta">{rows.length} on the thread</span>
+        <label className={`bcast-toggle${mirror ? " on" : ""}`} title="also send what you type in either paired pane to the partner, on the thread">
+          <input type="checkbox" checked={mirror} onChange={(e) => onMirror(e.target.checked)} /> mirror
+        </label>
+        <span style={{ flex: 1 }} />
+        <button className="btn ghost sm" onClick={onUnpair}>unpair</button>
+      </div>
+      {open && (
+        <>
+          <div className="pair-log">
+            {rows.length === 0 && <span className="dim">nothing yet — the agents were told to use this thread</span>}
+            {rows.map((m) => (
+              <div className="pair-row" key={m.id}>
+                <span className="mono pair-who">{short(m.sender)} → {short(m.recipient)}</span>
+                <span className="pair-body">{m.body}</span>
+                <span className="mono-meta">{relTime(m.created_at)} ago</span>
+              </div>
+            ))}
+          </div>
+          <form
+            className="pair-compose"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send();
+            }}
+          >
+            <input value={text} onChange={(e) => setText(e.target.value)} placeholder={`to both @${short(a)} and @${short(b)}, on the thread`} disabled={busy} />
+            <button className="btn sm primary" type="submit" disabled={busy || !text.trim()}>send to both</button>
+          </form>
+        </>
+      )}
+    </div>
+  );
 }

@@ -124,7 +124,27 @@ hand.
 
 ## 7. Not built
 
-Pane-to-pane text drag; pair mode (two panes' sessions on a bus thread);
-per-repo default boards; capturing per-pane render mode in the layout;
+Pane-to-pane text drag; per-repo default boards; capturing per-pane render mode in the layout;
 a Flow pane filtered to the board's agents (the artifact viewer and
 session panes are the two kinds).
+
+## 8. Pair mode (v0.19)
+
+Two panes' sessions joined on a bus thread (PROPOSALS-2026-09-B §11).
+Click ⇄ on a session pane, then ⇄ on another: the board records the
+pair (`Board.pairs: [[paneA, paneB]]`, synced with the board), a two-way
+**link** is declared between the two agents (purpose: "paired on board
+…", so `bus_status` explains it to them), and each gets a `notice` on
+the bus naming the other and the thread id `pair:<board>:<a>:<b>`, with
+the ask to carry that thread on `bus_send`. A **thread strip** appears
+under the panes for each pair: what the two say to each other (rows on
+the thread, or between the two at all), live every 3 s, with a composer
+that posts to both on the thread. A **mirror** toggle per pair also
+sends what the operator types in either paired pane to the partner as
+operator mail on the thread. Paired panes carry a ⇄ chip; *unpair*
+removes the pair, the strip and the link (the messages stay in Flow).
+
+Verified (rig, 2026-09-07): two sessions paired on a board; both
+received the notice, the link appeared in the Mesh list, and a message
+one sent to the other with the thread showed in the strip; *send to
+both* reached both; unpair removed the link.

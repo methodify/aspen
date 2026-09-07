@@ -252,6 +252,10 @@ pub struct Board {
     /// A dynamic board's fleet query (panes are computed by the console).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<serde_json::Value>,
+    /// Pair mode (BOARDS.md §pairs): `[[paneA, paneB], …]` — two panes'
+    /// sessions joined on a bus thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairs: Option<serde_json::Value>,
     pub updated_at: f64,
     #[serde(default)]
     pub deleted: bool,
@@ -428,6 +432,7 @@ impl BusStore {
             "ALTER TABLE agents ADD COLUMN moved_to TEXT",
             "ALTER TABLE agents ADD COLUMN fork_pending INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE boards ADD COLUMN query TEXT",
+            "ALTER TABLE boards ADD COLUMN pairs TEXT",
             "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
@@ -1351,7 +1356,7 @@ impl BusStore {
     pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, layout, updated_at, deleted, query FROM boards ORDER BY updated_at DESC",
+            "SELECT id, name, layout, updated_at, deleted, query, pairs FROM boards ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1364,6 +1369,9 @@ impl BusStore {
                     deleted: r.get::<_, i64>(4)? != 0,
                     query: r
                         .get::<_, Option<String>>(5)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    pairs: r
+                        .get::<_, Option<String>>(6)?
                         .and_then(|q| serde_json::from_str(&q).ok()),
                 })
             })?
@@ -1390,15 +1398,16 @@ impl BusStore {
             return Ok(false);
         }
         conn.execute(
-            "INSERT INTO boards(id, name, layout, updated_at, deleted, query) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6",
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7",
             params![
                 b.id,
                 b.name,
                 serde_json::to_string(&b.layout)?,
                 b.updated_at,
                 b.deleted as i64,
-                b.query.as_ref().map(|q| q.to_string())
+                b.query.as_ref().map(|q| q.to_string()),
+                b.pairs.as_ref().map(|q| q.to_string())
             ],
         )?;
         Ok(true)

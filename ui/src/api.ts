@@ -279,6 +279,8 @@ export interface Board {
   id: string;
   name: string;
   layout: BoardNode;
+  /** Pair mode (BOARDS.md §pairs): pane-id pairs joined on a bus thread. */
+  pairs?: [string, string][] | null;
   /** A dynamic board: panes are whatever matches. */
   query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;

@@ -310,3 +310,10 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
   control / spawn / trust and refused per mesh policy (`forbidden: …`); fleet event `remote_control`.
 - Mesh op `http {method, path, body, headers}` → `{status, content_type, body|body_b64}` for console
   peers; `sub` for `bare@node` is proxied to the home node. `/attach` in the console.
+
+
+## Pair mode (v0.19) — BOARDS.md §8
+
+- `Board.pairs: [[paneA, paneB], …]` (column `pairs`, synced with the board). Pairing declares a
+  two-way link (`POST /api/links`) and sends each agent a `notice` on thread `pair:<board>:<a>:<b>`;
+  the strip reads `GET /api/bus/log?thread=…` and posts with `POST /api/bus/send {thread}`.

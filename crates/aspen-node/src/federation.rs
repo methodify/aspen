@@ -3137,6 +3137,49 @@ fn start_relay_link(
 }
 
 #[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn ops_are_classed() {
+        assert_eq!(op_capability("transcript"), Capability::Observe);
+        assert_eq!(op_capability("http"), Capability::Observe);
+        assert_eq!(op_capability("message"), Capability::Control);
+        assert_eq!(op_capability("spawn"), Capability::Spawn);
+        assert_eq!(op_capability("adoption"), Capability::Trust);
+        assert_eq!(op_capability("something_new"), Capability::Control);
+    }
+
+    #[test]
+    fn policy_and_console_grants() {
+        let root = aspen_wire::identity::MeshRoot::create("home");
+        let mut me = NodeIdentity::create("me");
+        me.install_cert(root.certify(&me.join_request()).unwrap()).unwrap();
+        let work_root = aspen_wire::identity::MeshRoot::create("work");
+        let peer = NodeIdentity::create("w1");
+        let peer_cert = work_root.certify(&peer.join_request()).unwrap();
+        let cfg = MeshConfig { mesh: "home".into(), root_public: root.root_public.clone(), peers: vec![], relay: None, relays: vec![], policy: None };
+        let st = MeshState::new(me, cfg);
+        st.extra.write().unwrap().push(MeshConfig {
+            mesh: "work".into(),
+            root_public: work_root.root_public.clone(),
+            peers: vec![crate::mesh::PeerConfig { cert: peer_cert, url: None }],
+            relay: None,
+            relays: vec![],
+            policy: None,
+        });
+        assert_eq!(st.mesh_of_peer("w1").as_deref(), Some("work"));
+        assert_eq!(st.policy_of("work"), "observe");
+        assert!(st.allows("w1", Capability::Observe));
+        assert!(!st.allows("w1", Capability::Control));
+        st.extra.write().unwrap()[0].policy = Some("full".into());
+        assert!(st.allows("w1", Capability::Spawn));
+        assert!(st.allows("console-abc", Capability::Control));
+        assert!(!st.allows("console-abc", Capability::Spawn));
+    }
+}
+
+#[cfg(test)]
 mod hello_tests {
     #[test]
     fn sealed_envelope_is_not_a_hello() {

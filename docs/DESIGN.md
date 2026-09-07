@@ -882,3 +882,10 @@ cleaner lane for roster updates than user-message headers.
   no daemon reaches a node it cannot dial, with the relay reading
   nothing. The standalone relay does not serve the page (any node's
   console does); consoles are links, never members.
+- **2026-09-07 — v0.19, pair mode** (PROPOSALS-2026-09-B §11; BOARDS.md
+  §8). Nothing new on the wire: a pair is a board field, a declared link
+  (so topology explains it to the agents), a bus notice naming the
+  thread, and a strip that reads the thread back. The operator's
+  composer can mirror to the partner on the same thread. This closes
+  the 2026-09-07 slate (S-1..S-12); the next swath is H-1, Codex as a
+  second harness, designed before any code.

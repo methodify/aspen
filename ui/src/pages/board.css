@@ -65,3 +65,16 @@
 .boards-new { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .boards-new input, .boards-new select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
 .inline-confirm { display: inline-flex; gap: 6px; align-items: center; }
+
+/* pair mode (BOARDS.md §pairs) */
+.pair-chip { color: var(--sig-normal); border-color: var(--sig-normal); }
+.pane-btn.on { color: var(--sig-normal); }
+.pair-strips { display: flex; flex-direction: column; border-top: 1px solid var(--line); max-height: 40vh; overflow: auto; }
+.pair-strip { display: flex; flex-direction: column; border-bottom: 1px solid var(--line); }
+.pair-head { display: flex; align-items: center; gap: 10px; padding: 4px 10px; font-size: 12px; background: var(--bg-strip); }
+.pair-log { display: flex; flex-direction: column; gap: 2px; padding: 4px 10px; font-size: 12.5px; max-height: 26vh; overflow: auto; }
+.pair-row { display: flex; gap: 10px; align-items: baseline; }
+.pair-who { color: var(--text-hi); white-space: nowrap; }
+.pair-body { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+.pair-compose { display: flex; gap: 6px; padding: 4px 10px 8px; }
+.pair-compose input { flex: 1; }

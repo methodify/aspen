@@ -33,7 +33,7 @@ S-10, P-5), v0.19 (S-11).
 | ~~S-8~~ v0.17 | servicing + console | **Evacuate a node; bring it here.** Move every live session off a node before servicing; one-click pull on any session; preflight readout. (B-5b) | §8 |
 | ~~S-9~~ v0.18 | protocol | **Multi-mesh membership** for one node. (P-1, docs/proposals/multi-mesh.md) | §9 |
 | ~~S-10~~ v0.18 | protocol + console | **Console through the relay** (P-4), with WSL address detection (P-5). | §10 |
-| S-11 | console + protocol | **Pair mode on boards.** Two panes' sessions joined on a bus thread. | §11 |
+| ~~S-11~~ v0.19 | console + protocol | **Pair mode on boards.** Two panes' sessions joined on a bus thread. | §11 |
 | ~~S-12~~ v0.15 | console | **Task notifications collapsed.** A `<task-notification>` in the transcript renders as a one-line summary card (agent name, status) with click-to-expand, like tool cards; one spanned dozens of screens. | §12 |
 
 ## Next major swath — after S-12: Codex as a second harness (H-1)
