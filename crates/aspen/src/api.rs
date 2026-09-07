@@ -4249,7 +4249,7 @@ async fn post_repo_harness(State(s): S, Json(b): Json<RepoHarnessBody>) -> impl 
         None => None,
     };
     if let Some(h) = harness {
-        if s.node.inner.adapters.get(&h).is_none() {
+        if !s.node.inner.adapters.contains_key(&h) {
             return err(StatusCode::CONFLICT, format!("{h} is not available on this node")).into_response();
         }
     }
