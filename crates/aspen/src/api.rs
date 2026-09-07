@@ -70,6 +70,9 @@ pub async fn serve(
         .route("/agents/{name}", delete(delete_agent))
         .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/artifacts", get(get_artifacts))
+        .route("/agents/{name}/move", post(post_move))
+        .route("/agents/{name}/export", post(post_export))
+        .route("/sessions/import", post(post_import))
         .route("/agents/{name}/file", get(get_agent_file))
         .route("/agents/{name}/branch", post(post_branch))
         .route("/agents/{name}/bookmarks", get(get_bookmarks))
@@ -835,6 +838,7 @@ async fn get_logs(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoResponse 
 }
 
 fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
+    // (moved_to is merged below so remote/local shapes stay one.)
     let live = s.node.inner.live(&a.name);
     let (busy_since, last_tool) = live
         .as_ref()
@@ -850,6 +854,7 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         "channel": a.channel,
         "session_id": a.session_id,
         "charter": a.charter,
+        "moved_to": a.moved_to,
         "live": live.is_some(),
         "turn_state": live.as_ref().map(|m| match m.turn_state() {
             TurnState::Idle => "idle",
@@ -1201,6 +1206,138 @@ async fn post_permission(
     ) {
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::GONE, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExportBody {
+    /// Output file path on this node (a tar: `.aspen-session`).
+    out: String,
+    #[serde(default)]
+    tiers: Option<Vec<String>>,
+}
+
+async fn post_export(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(body): Json<ExportBody>,
+) -> impl IntoResponse {
+    if remote_parts(&s, &name).is_some() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "export runs on the agent's home node; run it there",
+        )
+        .into_response();
+    }
+    match s.node.session_export_file(&name, std::path::Path::new(&body.out), body.tiers).await {
+        Ok(m) => Json(json!({ "out": body.out, "files": m.files.len(), "bytes": m.files.iter().map(|f| f.size).sum::<u64>(), "session_id": m.agent.session_id })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    file: String,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    apply_patch: bool,
+}
+
+async fn post_import(State(s): S, Json(body): Json<ImportBody>) -> impl IntoResponse {
+    let opts = aspen_node::migrate::ImportOpts {
+        repo: body.repo,
+        name: body.name,
+        mode: Some("import".into()),
+        apply_patch: body.apply_patch,
+    };
+    match s
+        .node
+        .session_import_file(std::path::Path::new(&body.file), &opts)
+        .await
+    {
+        Ok(r) => Json(json!(r)).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    /// Target node name.
+    to: String,
+    /// "move" (default) | "copy"
+    #[serde(default)]
+    mode: Option<String>,
+    /// Target repo path; default: the counterpart found by origin/basename.
+    #[serde(default)]
+    repo: Option<String>,
+    /// Register under this bare name on the target.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    apply_patch: bool,
+}
+
+/// Move or copy a session to another node (PROPOSALS §5). The target
+/// node does the work (it pulls the bundle from the agent's home); this
+/// handler routes the request there.
+async fn post_move(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(body): Json<MoveBody>,
+) -> impl IntoResponse {
+    let Some(mesh) = s.node.inner.mesh() else {
+        return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+    };
+    let me = mesh.identity.node.clone();
+    let (bare, from) = match remote_parts(&s, &name) {
+        Some((b, n)) => (b, n),
+        None => (name.clone(), me.clone()),
+    };
+    if body.to == from {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("@{bare} already lives on {from}"),
+        )
+        .into_response();
+    }
+    let opts = json!({
+        "from": from,
+        "mode": body.mode.clone().unwrap_or_else(|| "move".into()),
+        "repo": body.repo,
+        "name": body.name,
+        "apply_patch": body.apply_patch,
+    });
+    if body.to == me {
+        let o: aspen_node::migrate::ImportOpts = serde_json::from_value(opts).unwrap_or_default();
+        return match s.node.pull_session(&from, &bare, &o).await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+        };
+    }
+    match mesh
+        .api_call(
+            &body.to,
+            "session_pull",
+            &bare,
+            opts,
+            std::time::Duration::from_secs(600),
+        )
+        .await
+    {
+        Ok(v) if v.get("error").is_some() => err(
+            StatusCode::BAD_GATEWAY,
+            format!("via node '{}': {}", body.to, v["error"]),
+        )
+        .into_response(),
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(
+            StatusCode::BAD_GATEWAY,
+            format!("via node '{}': {e}", body.to),
+        )
+        .into_response(),
     }
 }
 

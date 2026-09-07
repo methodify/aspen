@@ -767,3 +767,19 @@ cleaner lane for roster updates than user-message headers.
   Verified on the rig from a peer node (j1 viewing j2's agent): links,
   viewer for markdown with an embedded relative image, the artifacts
   menu, and an image+text attachment the agent described and quoted.
+- **2026-09-06 — v0.11, sessions that move** (PROPOSALS-2026-09 §5 phases
+  1–2, BACKLOG B-5; reference: MIGRATION.md). A session bundle
+  (transcript + lineage/bookmarks, its tool-result/subagent subfolder,
+  project memory, session-written artifacts, optionally a patch of
+  uncommitted work) with context-convergence's path rules ported —
+  sentinels for repo/project dir/encoded dir/home/tmp, boundary-anchored,
+  JSON leaves and keys, Windows dialects — and no git in between: the
+  target node pulls it from the source in sealed 256 KB chunks over the
+  mesh. `move` stops the source, installs and revives on the target, and
+  leaves a tombstone that redirects messages and re-addresses queued bus
+  rows; `copy` forks on the target and leaves the source running
+  (convergence's resume-then-branch, made the default). Preflight resolves
+  the target repo before the source is touched; a failure after export
+  restarts the source. File verbs `session export/import` for offline
+  nodes and archives. Verified on the rig into a different repo path: the
+  agent answered from its history with its new cwd in under 4 s.

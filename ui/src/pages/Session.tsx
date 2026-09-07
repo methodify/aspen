@@ -680,6 +680,44 @@ function SessionView({ name }: { name: string }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   // Artifacts: files this session wrote/edited/read (PROPOSALS §3).
   const [artifactsOpen, setArtifactsOpen] = useState(false);
+  // Move / copy to another node (PROPOSALS §5).
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveMode, setMoveMode] = useState<"move" | "copy">("move");
+  const [moveTo, setMoveTo] = useState("");
+  const [moveRepo, setMoveRepo] = useState("");
+  const [moveBusy, setMoveBusy] = useState(false);
+  const [moveErr, setMoveErr] = useState<string | null>(null);
+  const [nodes, setNodes] = useState<{ node: string; up: boolean; me: boolean }[]>([]);
+  async function loadNodes() {
+    try {
+      const m = await api.mesh();
+      const mine = m.node ?? "";
+      const list = [{ node: mine, up: true, me: true }, ...(m.peers ?? []).map((p) => ({ node: p.node, up: !!p.link_up, me: false }))];
+      setNodes(list);
+      const home = agent?.node ?? mine;
+      const first = list.find((n) => n.node !== home && n.up);
+      if (first) setMoveTo(first.node);
+    } catch {
+      setNodes([]);
+    }
+  }
+  async function doMove() {
+    if (!moveTo) return;
+    setMoveBusy(true);
+    setMoveErr(null);
+    try {
+      const r = await api.moveAgent(name, { to: moveTo, mode: moveMode, repo: moveRepo.trim() || undefined });
+      setMoveOpen(false);
+      const target = r.node === (nodes.find((n) => n.me)?.node ?? "") ? r.name : `${r.name}@${r.node}`;
+      setCtlNote(`${moveMode === "copy" ? "copied" : "moved"} to ${r.node} · ${r.files} files · ${Math.round(r.bytes / 1024)} KB${r.notes.length ? ` · ${r.notes.length} note(s)` : ""}`);
+      void refreshAgents();
+      nav(`/session/${encodeURIComponent(target)}`);
+    } catch (e) {
+      setMoveErr(errText(e));
+    } finally {
+      setMoveBusy(false);
+    }
+  }
   const [artifacts, setArtifacts] = useState<Artifact[] | null>(null);
   const [artifactsAt, setArtifactsAt] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   useEffect(() => {
@@ -1625,6 +1663,67 @@ function SessionView({ name }: { name: string }) {
             document.body,
           )}
         </span>
+        {!agent?.moved_to && (
+          <button
+            className="charter-toggle"
+            onClick={() => {
+              setMoveOpen(true);
+              setMoveErr(null);
+              void loadNodes();
+            }}
+            title="move this session to another node (it resumes there with its context), or copy it there as a fork"
+          >
+            move…
+          </button>
+        )}
+        {moveOpen &&
+          createPortal(
+            <div className="trust-backdrop" onClick={() => !moveBusy && setMoveOpen(false)} role="presentation">
+              <div className="trust-panel" role="dialog" aria-label="move session" onClick={(e) => e.stopPropagation()}>
+                <div className="trust-head">
+                  <span className="label">{moveMode === "copy" ? "Copy" : "Move"} @{name} to another node</span>
+                  <span style={{ flex: 1 }} />
+                  <button className="btn ghost sm" onClick={() => setMoveOpen(false)} disabled={moveBusy}>esc</button>
+                </div>
+                <p className="trust-lede">
+                  <b>Move</b>: the session stops here and resumes there with its whole context; this address becomes a
+                  pointer to the new one. <b>Copy</b>: a fork starts there (new session id, history kept, lineage
+                  recorded) and this one keeps running.
+                </p>
+                <div className="move-form">
+                  <label>
+                    <span className="mono-meta">to node</span>
+                    <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)} disabled={moveBusy}>
+                      {nodes.filter((n) => n.node !== (agent?.node ?? nodes.find((x) => x.me)?.node)).map((n) => (
+                        <option key={n.node} value={n.node} disabled={!n.up}>
+                          {n.node}{n.me ? " (this console)" : ""}{n.up ? "" : " — link down"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mono-meta">mode</span>
+                    <span className="seg">
+                      <button className={moveMode === "move" ? "on" : ""} onClick={() => setMoveMode("move")} disabled={moveBusy}>move</button>
+                      <button className={moveMode === "copy" ? "on" : ""} onClick={() => setMoveMode("copy")} disabled={moveBusy}>copy</button>
+                    </span>
+                  </label>
+                  <label>
+                    <span className="mono-meta">repo path there (blank = the counterpart by git origin, else by name)</span>
+                    <input className="mono" value={moveRepo} onChange={(e) => setMoveRepo(e.target.value)} placeholder="/path/on/that/node" disabled={moveBusy} />
+                  </label>
+                </div>
+                {moveErr && <div className="error-bar">{moveErr}</div>}
+                <div className="trust-actions">
+                  <button className="btn ghost" onClick={() => setMoveOpen(false)} disabled={moveBusy}>cancel</button>
+                  <button className="btn primary" onClick={() => void doMove()} disabled={moveBusy || !moveTo}>
+                    {moveBusy ? (moveMode === "copy" ? "copying…" : "moving…") : moveMode === "copy" ? "copy there" : "move there"}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )}
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
         {ctlError && <span className="ctl-error">{ctlError}</span>}
         <span className="spacer" />
@@ -1827,7 +1926,14 @@ function SessionView({ name }: { name: string }) {
       )}
 
       {liveGate.dialog}
-      {exited && (
+      {agent?.moved_to && (
+        <div className="exited-banner">
+          <span>
+            moved — this session now lives at <Link to={`/session/${encodeURIComponent(agent.moved_to)}`}>@{agent.moved_to}</Link>; messages to this address are refused with that pointer.
+          </span>
+        </div>
+      )}
+      {exited && !agent?.moved_to && (
         <div className="exited-banner">
           <span>
             {agent?.remote ? `not running on ${agent.node}` : "session exited"}

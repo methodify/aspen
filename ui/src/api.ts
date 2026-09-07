@@ -108,6 +108,8 @@ export interface UpdateStatus {
 export type TurnState = "idle" | "busy";
 
 export interface Agent {
+  /** Set when the session was moved elsewhere: its new full address. */
+  moved_to?: string | null;
   /** The address: `bare@repo` locally, `bare@repo@node` for a remote
    *  agent. Route key and bus address alike. */
   name: string;
@@ -162,6 +164,24 @@ export interface BusMessage {
 }
 
 /** A tool call chip on a rehydrated assistant item. */
+/** The target node's report after a move/copy (PROPOSALS §5). */
+export interface MoveReport {
+  name: string;
+  node: string;
+  repo: string;
+  session_id: string;
+  mode: string;
+  files: number;
+  bytes: number;
+  memory_conflicts: string[];
+  notes: string[];
+  residue: number;
+  revived: boolean;
+  revive_note: string | null;
+  rehomed: number;
+  harness_version: string | null;
+}
+
 /** A pasted attachment on an outgoing message; `n` matches its marker. */
 export interface OutgoingAttachment {
   n: number;
@@ -777,6 +797,9 @@ export const api = {
   transcript: (name: string) =>
     request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
+  /** Move (or copy) a session to another node; resolves the target's report. */
+  moveAgent: (name: string, body: { to: string; mode: "move" | "copy"; repo?: string; name?: string; apply_patch?: boolean }) =>
+    post<MoveReport>(`/api/agents/${enc(name)}/move`, body),
   fileStat: (name: string, path: string) =>
     request<FileStat>(`/api/agents/${enc(name)}/file?path=${enc(path)}&stat=1`),
   /** The file's text (viewer); the request carries the token header. */

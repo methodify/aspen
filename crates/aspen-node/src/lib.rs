@@ -15,6 +15,7 @@ pub mod federation;
 pub mod gitstate;
 pub mod mcc;
 pub mod mesh;
+pub mod migrate;
 pub mod node;
 pub mod pending;
 pub mod permit;

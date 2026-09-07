@@ -451,3 +451,7 @@
 .attach-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach-x { border: 0; background: transparent; cursor: pointer; font-size: 14px; color: var(--text-dim); }
 .attach-x:hover { color: var(--text-hi); }
+/* move dialog (PROPOSALS §5) */
+.move-form { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.move-form label { display: flex; flex-direction: column; gap: 4px; }
+.move-form select, .move-form input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-panel, #fff); color: var(--text-hi); }

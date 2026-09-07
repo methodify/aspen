@@ -156,6 +156,51 @@ enum Command {
         #[command(subcommand)]
         command: MeshCommand,
     },
+    /// Move a session to another node: it stops here and resumes there
+    /// with its context (PROPOSALS-2026-09 §5). `--copy` forks it there
+    /// instead and leaves this one running.
+    Move {
+        /// Agent name (`main@repo`, or `main@repo@node` for a remote one)
+        agent: String,
+        /// Target node name
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        copy: bool,
+        /// Repo path on the target (default: the counterpart by git origin, else basename)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Bare name on the target (default: the same)
+        #[arg(long)]
+        r#as: Option<String>,
+        /// Also carry uncommitted changes as a patch and apply them there
+        #[arg(long)]
+        with_changes: bool,
+    },
+    /// Session bundles as files: export one, import one.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Write a `.aspen-session` bundle (transcript, its tool results and
+    /// subagents, project memory, session-written artifacts)
+    Export {
+        agent: String,
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Install a bundle here and register its agent (not started)
+    Import {
+        file: PathBuf,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        r#as: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -469,6 +514,47 @@ async fn main() -> Result<()> {
             BusCommand::Log { lines } => bus_log(&cli.data_dir, lines),
         },
         Command::Mesh { command } => mesh_command(&cli.data_dir, command),
+        Command::Move {
+            agent,
+            to,
+            copy,
+            repo,
+            r#as,
+            with_changes,
+        } => {
+            let v = local_api_post(
+                &cli.data_dir,
+                &format!("/api/agents/{}/move", urlencoding::encode(&agent)),
+                serde_json::json!({ "to": to, "mode": if copy { "copy" } else { "move" }, "repo": repo, "name": r#as, "apply_patch": with_changes }),
+                600,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        Command::Session { command } => match command {
+            SessionCommand::Export { agent, out } => {
+                let out = std::path::absolute(&out).unwrap_or(out);
+                let v = local_api_post(
+                    &cli.data_dir,
+                    &format!("/api/agents/{}/export", urlencoding::encode(&agent)),
+                    serde_json::json!({ "out": out.to_string_lossy() }),
+                    300,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                Ok(())
+            }
+            SessionCommand::Import { file, repo, r#as } => {
+                let file = std::path::absolute(&file).unwrap_or(file);
+                let v = local_api_post(
+                    &cli.data_dir,
+                    "/api/sessions/import",
+                    serde_json::json!({ "file": file.to_string_lossy(), "repo": repo, "name": r#as }),
+                    300,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                Ok(())
+            }
+        },
     }
 }
 
@@ -775,6 +861,38 @@ fn hook_relay(data_dir: &std::path::Path) -> Result<()> {
     }
     let _ = req.send_json(body);
     Ok(())
+}
+
+/// POST to the running daemon's API (token from the data dir when the
+/// listener is beyond loopback); errors carry the daemon's message.
+fn local_api_post(
+    data_dir: &std::path::Path,
+    path: &str,
+    body: serde_json::Value,
+    timeout_secs: u64,
+) -> Result<serde_json::Value> {
+    let state = read_daemon_state(data_dir)
+        .ok_or_else(|| anyhow::anyhow!("no running daemon (start it with `aspen up -d`)"))?;
+    let listen = state["listen"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("daemon state has no listen address"))?;
+    let mut req = ureq::post(&format!("http://{}{}", dial_addr(listen), path))
+        .timeout(std::time::Duration::from_secs(timeout_secs));
+    if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
+        req = req.set("X-Aspen-Token", tok.trim());
+    }
+    match req.send_json(body) {
+        Ok(resp) => Ok(resp.into_json::<serde_json::Value>()?),
+        Err(ureq::Error::Status(code, resp)) => {
+            let text = resp.into_string().unwrap_or_default();
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .unwrap_or(text);
+            Err(anyhow::anyhow!("{code}: {msg}"))
+        }
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
 }
 
 fn claude_settings_path() -> PathBuf {

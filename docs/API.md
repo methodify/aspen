@@ -194,3 +194,21 @@ endpoint. Multiple sockets per session are fine
 
 Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 `index.html`).
+
+
+## Migration (v0.11) — MIGRATION.md
+
+- `POST /api/agents/{name}/move` body `{to, mode?: "move"|"copy", repo?, name?, apply_patch?}` — the
+  target node pulls the session's bundle from its home over the mesh, installs it, revives it (in
+  place for a move, as a fork for a copy) and, for a move, tombstones the source. Response: the
+  target's report `{name, node, repo, session_id, mode, files, bytes, memory_conflicts, notes,
+  residue, revived, revive_note, rehomed, harness_version}`. Errors: 400 (same node), 502 with the
+  target's message (a failed preflight leaves the source running; a failure after export restarts it).
+- `POST /api/agents/{name}/export` body `{out, tiers?}` — write a `.aspen-session` tar on this node
+  (the agent's home). Response `{out, files, bytes, session_id}`.
+- `POST /api/sessions/import` body `{file, repo?, name?, apply_patch?}` — install a bundle file here;
+  registers the agent, not live. Response: the import report.
+- Agents carry `moved_to` (the full new address) once moved; messages to a tombstone are refused
+  with that pointer.
+- Mesh ops: `session_spec`, `session_export`, `bundle_read`, `bundle_done`, `session_moved`,
+  `session_pull`.

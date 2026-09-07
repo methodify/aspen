@@ -592,7 +592,8 @@ impl Node {
     /// Operator input into a session. Pending notices ride along first — the
     /// one lane a notice may use besides another delivery.
     pub async fn send_operator_message(&self, name: &str, text: String) -> Result<String> {
-        self.send_operator_message_with(name, text, Vec::new()).await
+        self.send_operator_message_with(name, text, Vec::new())
+            .await
     }
 
     /// An operator message with pasted attachments (PROPOSALS §4). Every
@@ -607,6 +608,11 @@ impl Node {
         text: String,
         attachments: Vec<crate::artifacts::Attachment>,
     ) -> Result<String> {
+        if let Ok(row) = self.agent_row(name) {
+            if let Some(to) = row.moved_to {
+                return Err(anyhow!("@{name} moved — it is now @{to}"));
+            }
+        }
         let sess = self
             .inner
             .live(name)
@@ -622,7 +628,8 @@ impl Node {
                 .as_deref()
                 .map(|d| crate::artifacts::attachments_dir(d, &sid))
                 .ok_or_else(|| anyhow!("node has no data dir for attachments"))?;
-            let (content, plain) = crate::artifacts::compose_with_attachments(&dir, &text, &attachments)?;
+            let (content, plain) =
+                crate::artifacts::compose_with_attachments(&dir, &text, &attachments)?;
             delivery::flush_notices(&self.inner, &sess).await;
             {
                 let mut s = sess.summary.lock().unwrap();
@@ -1022,6 +1029,435 @@ impl Node {
             "len": bytes.len(),
             "data": aspen_wire::b64::encode(&bytes),
         }))
+    }
+
+    // ------------------------------------------------------- migration
+
+    fn my_node_name(&self) -> String {
+        self.inner
+            .mesh()
+            .map(|m| m.identity.node.clone())
+            .unwrap_or_else(|| "local".into())
+    }
+
+    /// Stage a bundle for `name` (migrate.rs). For a move, the session is
+    /// stopped first so the transcript is final; the live mark is cleared
+    /// so this node does not revive it.
+    pub async fn session_export(
+        &self,
+        name: &str,
+        opts: &crate::migrate::ExportOpts,
+    ) -> Result<(String, crate::migrate::Manifest)> {
+        let row = self.agent_row(name)?;
+        if row.moved_to.is_some() {
+            return Err(anyhow!(
+                "@{name} already moved to {}",
+                row.moved_to.unwrap()
+            ));
+        }
+        if opts.mode == "move" && self.inner.live(name).is_some() {
+            self.shutdown_agent(name).await?;
+            // Let the process close its transcript.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let data_dir = self
+            .inner
+            .data_dir
+            .clone()
+            .ok_or_else(|| anyhow!("node has no data dir"))?;
+        let node = self.my_node_name();
+        let store = self.inner.store.clone();
+        let row2 = row.clone();
+        let opts2 = opts.clone();
+        let (dir, manifest) = tokio::task::spawn_blocking(move || {
+            crate::migrate::export(&data_dir, &node, &row2, &store, &opts2)
+        })
+        .await??;
+        let _ = dir;
+        Ok((manifest.bundle_id.clone(), manifest))
+    }
+
+    /// What a target needs to preflight a move: the repo's identity.
+    pub fn session_spec(&self, name: &str) -> Result<crate::migrate::AgentSpec> {
+        let row = self.agent_row(name)?;
+        if let Some(to) = &row.moved_to {
+            return Err(anyhow!("@{name} already moved — it is now @{to}"));
+        }
+        let sid = row
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("@{name} has no session to migrate"))?;
+        Ok(crate::migrate::AgentSpec {
+            name: row.name.clone(),
+            channel: row.channel.clone(),
+            session_id: sid,
+            charter: row.charter.clone(),
+            title: row.title.clone(),
+            extra_args: row.extra_args.clone(),
+            repo_basename: row
+                .repo
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            repo_origin: crate::migrate::git_origin(&row.repo),
+        })
+    }
+
+    fn bundle_dir(&self, bundle_id: &str) -> Result<PathBuf> {
+        if bundle_id.is_empty() || bundle_id.contains(['/', '\\', '.']) {
+            return Err(anyhow!("bad bundle id"));
+        }
+        let data_dir = self
+            .inner
+            .data_dir
+            .clone()
+            .ok_or_else(|| anyhow!("node has no data dir"))?;
+        let dir = crate::migrate::staging_root(&data_dir).join(bundle_id);
+        if !dir.is_dir() {
+            return Err(anyhow!("no such bundle {bundle_id}"));
+        }
+        Ok(dir)
+    }
+
+    /// One chunk of a staged bundle file, base64.
+    pub fn bundle_read(
+        &self,
+        bundle_id: &str,
+        rel: &str,
+        offset: u64,
+        len: u64,
+    ) -> Result<serde_json::Value> {
+        let dir = self.bundle_dir(bundle_id)?;
+        if rel.contains("..") {
+            return Err(anyhow!("bad path"));
+        }
+        let bytes = crate::artifacts::read_chunk(&dir.join(rel), offset, len)?;
+        Ok(
+            serde_json::json!({ "offset": offset, "len": bytes.len(), "data": aspen_wire::b64::encode(&bytes) }),
+        )
+    }
+
+    pub fn bundle_done(&self, bundle_id: &str) -> Result<()> {
+        let dir = self.bundle_dir(bundle_id)?;
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    /// The source's last step of a move: tombstone the row, re-address
+    /// its undelivered bus rows to the new home.
+    pub fn session_moved(
+        &self,
+        name: &str,
+        to_node: &str,
+        new_name: &str,
+    ) -> Result<serde_json::Value> {
+        let row = self.agent_row(name)?;
+        let _ = row;
+        // The tombstone carries the full new address: the name may have
+        // changed with the target repo's handle.
+        let full = format!("{new_name}@{to_node}");
+        self.inner.store.set_moved_to(name, Some(&full))?;
+        let n = self
+            .inner
+            .store
+            .rehome_pending(name, &full, &format!("@{full}"))
+            .unwrap_or(0);
+        let _ = self.inner.store.record_event(
+            name,
+            "moved",
+            serde_json::json!({ "to": to_node, "as": new_name, "rehomed": n }),
+        );
+        crate::federation::broadcast_roster(&self.inner);
+        Ok(serde_json::json!({ "rehomed": n }))
+    }
+
+    /// The target side of a move/copy: fetch a bundle from `from_node`
+    /// over the mesh, install it here, revive it, and (for a move) tell
+    /// the source it is gone.
+    pub async fn pull_session(
+        &self,
+        from_node: &str,
+        agent: &str,
+        opts: &crate::migrate::ImportOpts,
+    ) -> Result<serde_json::Value> {
+        let mesh = self
+            .inner
+            .mesh()
+            .ok_or_else(|| anyhow!("this node is not in a mesh"))?;
+        let mode = opts.mode.clone().unwrap_or_else(|| "move".into());
+        let t = std::time::Duration::from_secs(120);
+        // 0. Preflight here before the source is touched: the target repo
+        // must resolve, or the operator gets the error with nothing
+        // stopped anywhere.
+        let spec_v = mesh
+            .api_call(from_node, "session_spec", agent, serde_json::json!({}), t)
+            .await
+            .map_err(|e| anyhow!("asking {from_node} about @{agent}: {e}"))?;
+        if let Some(err) = spec_v.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("on {from_node}: {err}"));
+        }
+        let spec: crate::migrate::AgentSpec = serde_json::from_value(spec_v)?;
+        let target_repo = match &opts.repo {
+            Some(r) => PathBuf::from(r),
+            None => {
+                crate::migrate::find_counterpart(&self.inner.store, &spec).ok_or_else(|| {
+                    anyhow!(
+                        "no repo on {} matches {} ({}); pass one",
+                        self.my_node_name(),
+                        spec.repo_basename,
+                        spec.repo_origin.as_deref().unwrap_or("no origin")
+                    )
+                })?
+            }
+        };
+        if !target_repo.is_dir() {
+            return Err(anyhow!(
+                "target repo does not exist on {}: {}",
+                self.my_node_name(),
+                target_repo.display()
+            ));
+        }
+        let mut opts = opts.clone();
+        opts.repo = Some(target_repo.to_string_lossy().into_owned());
+        let opts = &opts;
+        // Anything failing past this point in a move brings the source
+        // back: its session was stopped for the export.
+        let (mesh_r, mode_r, from_r, agent_r) = (
+            mesh.clone(),
+            mode.clone(),
+            from_node.to_owned(),
+            agent.to_owned(),
+        );
+        let restore = move |why: anyhow::Error| {
+            let (mesh_r, mode_r, from_r, agent_r) = (
+                mesh_r.clone(),
+                mode_r.clone(),
+                from_r.clone(),
+                agent_r.clone(),
+            );
+            async move {
+                if mode_r == "move" {
+                    let _ = mesh_r
+                        .api_call(
+                            &from_r,
+                            "revive",
+                            &agent_r,
+                            serde_json::json!({ "resume_choice": "in_place" }),
+                            t,
+                        )
+                        .await;
+                    anyhow!("{why:#} — the session was restarted on {from_r}")
+                } else {
+                    why
+                }
+            }
+        };
+        // 1. Export on the source (stops the session for a move).
+        let exported = mesh
+            .api_call(
+                from_node,
+                "session_export",
+                agent,
+                serde_json::json!({ "mode": mode }),
+                t,
+            )
+            .await
+            .map_err(|e| anyhow!("export on {from_node}: {e}"))?;
+        if let Some(err) = exported.get("error").and_then(|e| e.as_str()) {
+            return Err(anyhow!("export on {from_node}: {err}"));
+        }
+        let bundle_id = exported
+            .get("bundle_id")
+            .and_then(|b| b.as_str())
+            .ok_or_else(|| anyhow!("export returned no bundle id"))?
+            .to_owned();
+        let manifest: crate::migrate::Manifest = serde_json::from_value(
+            exported
+                .get("manifest")
+                .cloned()
+                .ok_or_else(|| anyhow!("export returned no manifest"))?,
+        )?;
+        // 2. Fetch every file, chunked, into local staging.
+        let data_dir = self
+            .inner
+            .data_dir
+            .clone()
+            .ok_or_else(|| anyhow!("node has no data dir"))?;
+        let local_dir = crate::migrate::staging_root(&data_dir).join(format!("in-{bundle_id}"));
+        std::fs::create_dir_all(&local_dir)?;
+        std::fs::write(
+            local_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )?;
+        let mut total = 0u64;
+        for f in &manifest.files {
+            let out = local_dir.join(&f.rel);
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut buf: Vec<u8> = Vec::with_capacity(f.size as usize);
+            let mut offset = 0u64;
+            while offset < f.size {
+                let chunk = match mesh
+                    .api_call(
+                        from_node,
+                        "bundle_read",
+                        agent,
+                        serde_json::json!({ "bundle_id": bundle_id, "rel": f.rel, "offset": offset, "len": crate::artifacts::READ_CHUNK }),
+                        t,
+                    )
+                    .await
+                {
+                    Ok(c) => c,
+                    Err(e) => return Err(restore(anyhow!("reading {} from {from_node}: {e}", f.rel)).await),
+                };
+                let data = chunk.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                let bytes = match aspen_wire::b64::decode(data) {
+                    Ok(b) => b,
+                    Err(e) => return Err(restore(anyhow!("bad chunk: {e}")).await),
+                };
+                if bytes.is_empty() {
+                    break;
+                }
+                offset += bytes.len() as u64;
+                buf.extend_from_slice(&bytes);
+            }
+            total += buf.len() as u64;
+            std::fs::write(&out, &buf)?;
+        }
+        let _ = mesh
+            .api_call(
+                from_node,
+                "bundle_done",
+                agent,
+                serde_json::json!({ "bundle_id": bundle_id }),
+                t,
+            )
+            .await;
+        // 3. Install.
+        let store = self.inner.store.clone();
+        let dir2 = local_dir.clone();
+        let opts2 = opts.clone();
+        let dd = data_dir.clone();
+        let report = match tokio::task::spawn_blocking(move || {
+            crate::migrate::import(&dd, &store, &dir2, &opts2)
+        })
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return Err(restore(e).await),
+            Err(e) => return Err(restore(anyhow!("{e}")).await),
+        };
+        let _ = std::fs::remove_dir_all(&local_dir);
+        // 4. Revive: in place for a move (ours now: mark live first), as a
+        // fork for a copy (the source keeps its id).
+        let revived = if mode == "copy" {
+            let row = self.agent_row(&report.name)?;
+            let sopts = SpawnOpts {
+                charter: row.charter.clone(),
+                resume: Some(report.session_id.clone()),
+                fork: true,
+                interactive: true,
+                extra_args: row.extra_args.clone(),
+                ..Default::default()
+            };
+            self.spawn_agent(&report.name, row.repo.clone(), sopts)
+                .await
+                .map(|_| true)
+        } else {
+            let _ = self.inner.store.set_agent_live(&report.name, true);
+            self.revive_agent(&report.name, true, None)
+                .await
+                .map(|_| true)
+        };
+        let revive_note = match &revived {
+            Ok(_) => None,
+            Err(e) => Some(format!("installed but not started: {e:#}")),
+        };
+        // 5. Tell the source.
+        let mut rehomed = 0u64;
+        if mode == "move" {
+            let me = self.my_node_name();
+            match mesh
+                .api_call(
+                    from_node,
+                    "session_moved",
+                    agent,
+                    serde_json::json!({ "to": me, "as": report.name }),
+                    t,
+                )
+                .await
+            {
+                Ok(v) => rehomed = v.get("rehomed").and_then(|n| n.as_u64()).unwrap_or(0),
+                Err(e) => {
+                    tracing::warn!(error = %e, "source did not acknowledge the move; its row is not tombstoned")
+                }
+            }
+        }
+        let _ = self.inner.store.record_event(
+            &report.name,
+            "migrated",
+            serde_json::json!({ "from": from_node, "mode": mode, "bytes": total }),
+        );
+        Ok(serde_json::json!({
+            "name": report.name,
+            "node": self.my_node_name(),
+            "repo": report.repo,
+            "session_id": report.session_id,
+            "mode": mode,
+            "files": report.files,
+            "bytes": total,
+            "memory_conflicts": report.memory_conflicts,
+            "notes": report.notes,
+            "residue": report.residue,
+            "revived": revived.is_ok(),
+            "revive_note": revive_note,
+            "rehomed": rehomed,
+            "harness_version": manifest.harness_version,
+        }))
+    }
+
+    /// Export to a `.aspen-session` file (tar of the bundle).
+    pub async fn session_export_file(
+        &self,
+        name: &str,
+        out: &std::path::Path,
+        tiers: Option<Vec<String>>,
+    ) -> Result<crate::migrate::Manifest> {
+        let opts = crate::migrate::ExportOpts {
+            mode: "export".into(),
+            tiers,
+        };
+        let (bundle_id, manifest) = self.session_export(name, &opts).await?;
+        let dir = self.bundle_dir(&bundle_id)?;
+        crate::migrate::pack(&dir, out)?;
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(manifest)
+    }
+
+    /// Import a `.aspen-session` file; registers the agent, not live.
+    pub async fn session_import_file(
+        &self,
+        file: &std::path::Path,
+        opts: &crate::migrate::ImportOpts,
+    ) -> Result<crate::migrate::ImportReport> {
+        let data_dir = self
+            .inner
+            .data_dir
+            .clone()
+            .ok_or_else(|| anyhow!("node has no data dir"))?;
+        let dir =
+            crate::migrate::staging_root(&data_dir).join(format!("file-{}", uuid::Uuid::new_v4()));
+        crate::migrate::unpack(file, &dir)?;
+        let store = self.inner.store.clone();
+        let dir2 = dir.clone();
+        let opts2 = opts.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            crate::migrate::import(&data_dir, &store, &dir2, &opts2)
+        })
+        .await??;
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(report)
     }
 
     pub fn runtime_info(&self, name: &str) -> Result<serde_json::Value> {

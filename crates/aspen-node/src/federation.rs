@@ -1235,6 +1235,42 @@ async fn serve_api_req(
         "reload" => node.reload_plugins(agent).await,
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
+        // Migration (migrate.rs): the source stages a bundle and serves
+        // it in chunks; the target pulls, installs, and reports back.
+        "session_spec" => Ok(json!(node.session_spec(agent)?)),
+        "session_export" => {
+            let opts: crate::migrate::ExportOpts =
+                serde_json::from_value(body.clone()).unwrap_or_default();
+            let (bundle_id, manifest) = node.session_export(agent, &opts).await?;
+            Ok(json!({ "bundle_id": bundle_id, "manifest": manifest }))
+        }
+        "bundle_read" => node.bundle_read(
+            body.get("bundle_id").and_then(|b| b.as_str()).unwrap_or(""),
+            body.get("rel").and_then(|r| r.as_str()).unwrap_or(""),
+            body.get("offset").and_then(|o| o.as_u64()).unwrap_or(0),
+            body.get("len")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(crate::artifacts::READ_CHUNK),
+        ),
+        "bundle_done" => {
+            node.bundle_done(body.get("bundle_id").and_then(|b| b.as_str()).unwrap_or(""))?;
+            Ok(json!({}))
+        }
+        "session_moved" => node.session_moved(
+            agent,
+            body.get("to").and_then(|t| t.as_str()).unwrap_or(""),
+            body.get("as").and_then(|t| t.as_str()).unwrap_or(agent),
+        ),
+        "session_pull" => {
+            let from = body
+                .get("from")
+                .and_then(|f| f.as_str())
+                .ok_or_else(|| anyhow!("missing from"))?
+                .to_owned();
+            let opts: crate::migrate::ImportOpts =
+                serde_json::from_value(body.clone()).unwrap_or_default();
+            node.pull_session(&from, agent, &opts).await
+        }
         "file_stat" => node.file_stat(
             agent,
             body.get("path").and_then(|p| p.as_str()).unwrap_or(""),

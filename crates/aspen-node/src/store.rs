@@ -246,6 +246,9 @@ pub struct AgentRow {
     /// How and when the process last exited (None = never / clean daemon stop).
     pub last_exit_code: Option<i64>,
     pub last_exit_at: Option<f64>,
+    /// Set when the session was moved to another node (a tombstone): the
+    /// node name. Messages to this name are redirected there.
+    pub moved_to: Option<String>,
 }
 
 #[derive(Clone)]
@@ -281,6 +284,7 @@ impl BusStore {
             "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE repos ADD COLUMN handle TEXT",
             "ALTER TABLE agents ADD COLUMN last_exit_code INTEGER",
+            "ALTER TABLE agents ADD COLUMN moved_to TEXT",
             "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
@@ -472,7 +476,7 @@ impl BusStore {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at FROM agents ORDER BY name",
+            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to FROM agents ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -486,6 +490,7 @@ impl BusStore {
                     extra_args: r.get(6)?,
                     last_exit_code: r.get(7)?,
                     last_exit_at: r.get(8)?,
+                    moved_to: r.get(9)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -963,6 +968,27 @@ impl BusStore {
             cur = parent;
         }
         Ok(out)
+    }
+
+    /// Tombstone (or clear) an agent moved to another node.
+    pub fn set_moved_to(&self, name: &str, node: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET moved_to=?2, live=0 WHERE name=?1",
+            params![name, node],
+        )?;
+        Ok(())
+    }
+
+    /// Re-address undelivered bus rows from one recipient to another (a
+    /// moved agent's new home).
+    pub fn rehome_pending(&self, from: &str, to: &str, to_display: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE messages SET recipient=?2, to_display=?3 WHERE recipient=?1 AND delivered_at IS NULL",
+            params![from, to, to_display],
+        )?;
+        Ok(n)
     }
 
     pub fn set_agent_title(&self, name: &str, title: Option<&str>) -> Result<()> {
