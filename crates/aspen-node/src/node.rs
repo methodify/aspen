@@ -1049,11 +1049,8 @@ impl Node {
         opts: &crate::migrate::ExportOpts,
     ) -> Result<(String, crate::migrate::Manifest)> {
         let row = self.agent_row(name)?;
-        if row.moved_to.is_some() {
-            return Err(anyhow!(
-                "@{name} already moved to {}",
-                row.moved_to.unwrap()
-            ));
+        if let Some(to) = &row.moved_to {
+            return Err(anyhow!("@{name} already moved — it is now @{to}"));
         }
         if opts.mode == "move" && self.inner.live(name).is_some() {
             self.shutdown_agent(name).await?;
