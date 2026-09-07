@@ -748,3 +748,22 @@ cleaner lane for roster updates than user-message headers.
   host advertises; a hostname is advertised only if it resolves to the
   node itself. Found by auditing the live mesh, where a WSL node's shared
   Windows hostname sent every peer to the wrong box. RELAY.md §9.
+- **2026-09-06 — v0.10, the console round** (PROPOSALS-2026-09 §1–§4,
+  BACKLOG B-1..B-4). Composer drafts persist per agent in the browser.
+  Tool calls show live while running and collapse to a summary line with
+  a result hint when the agent moves on; clicks pin; inputs render per
+  tool (command+output, diff, path+lines, pattern); rehydrated history
+  carries capped inputs/results and pasted images; a page opened mid-turn
+  starts busy with the in-flight call open and any pending permission
+  prompt seeded from the node. Paths the agent writes become links to a
+  viewer served from the agent's home node — locally or assembled from
+  sealed 256 KB `file_read` chunks over the mesh — under a serving rule
+  (repo, the harness's data for the project, temp, the session's
+  attachments, and any file a successful tool call named); a per-session
+  artifacts menu lists those files. Attachments paste or drop into the
+  composer with a marker at the caret; the node saves them under the
+  session's attachment dir, sends raster images as image blocks at the
+  marker, and points the agent at the saved path for anything else.
+  Verified on the rig from a peer node (j1 viewing j2's agent): links,
+  viewer for markdown with an embedded relative image, the artifacts
+  menu, and an image+text attachment the agent described and quoted.

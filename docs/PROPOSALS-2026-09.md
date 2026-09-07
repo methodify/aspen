@@ -1,7 +1,7 @@
 # Proposals — September 2026 feature dump
 
-**Status:** design proposals for review (2026-09-06). Backlog ids in
-BACKLOG.md. Each section says what is asked, what exists today, the
+**Status:** §1–§4 shipped as v0.10 (2026-09-06); §5 is the design for
+v0.11. Backlog ids in BACKLOG.md. Each section says what is asked, what exists today, the
 design, what it implies beyond the ask, the cost, and open questions.
 Nothing here is built.
 
