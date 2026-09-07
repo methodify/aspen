@@ -162,6 +162,25 @@ export interface BusMessage {
 }
 
 /** A tool call chip on a rehydrated assistant item. */
+/** A file the session named in a tool call (artifacts.rs). */
+export interface Artifact {
+  path: string;
+  kind: "wrote" | "edited" | "read" | string;
+  at: string | null;
+  tool: string;
+}
+
+/** Stat of a served file (GET …/file?stat=1). */
+export interface FileStat {
+  exists: boolean;
+  path: string;
+  is_dir?: boolean;
+  size?: number;
+  mtime?: number | null;
+  media_type?: string;
+  name?: string;
+}
+
 export interface HistoryToolChip {
   id: string;
   name: string;
@@ -745,6 +764,23 @@ export const api = {
     ),
   transcript: (name: string) =>
     request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
+  artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
+  fileStat: (name: string, path: string) =>
+    request<FileStat>(`/api/agents/${enc(name)}/file?path=${enc(path)}&stat=1`),
+  /** The file's text (viewer); the request carries the token header. */
+  fileText: async (name: string, path: string): Promise<string> => {
+    const token = nodeToken();
+    const headers = new Headers();
+    if (token) headers.set("X-Aspen-Token", token);
+    const res = await fetch(`/api/agents/${enc(name)}/file?path=${enc(path)}`, { headers });
+    if (!res.ok) throw new ApiError(res.status, (await res.text()) || res.statusText);
+    return res.text();
+  },
+  /** A URL for <img>/<iframe>/<a>: carries the token as a query param. */
+  fileUrl: (name: string, path: string, opts?: { download?: boolean }): string => {
+    const token = nodeToken();
+    return `/api/agents/${enc(name)}/file?path=${enc(path)}${opts?.download ? "&download=1" : ""}${token ? `&token=${enc(token)}` : ""}`;
+  },
   reloadAgent: (name: string) =>
     post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
   sessions: (repo: string, node?: string) =>

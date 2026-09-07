@@ -8,6 +8,7 @@ license.workspace = true
 aspen-core = { path = "../aspen-core" }
 aspen-claude = { path = "../aspen-claude" }
 aspen-wire = { path = "../aspen-wire" }
+mime_guess = "2"
 tokio = { workspace = true }
 shell-words = "1"
 dunce = "1"

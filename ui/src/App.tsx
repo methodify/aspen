@@ -6,6 +6,7 @@ import { Meter, presenceOf, useTheme } from "./components";
 import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
+import View from "./pages/View";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
 import Palette from "./Palette";
@@ -308,6 +309,7 @@ export default function App() {
               <Route path="/flow" element={<Conversations />} />
               <Route path="/flow/:channel" element={<Conversations />} />
               <Route path="/session/:name" element={<Session />} />
+              <Route path="/view/:name" element={<View />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />
               {/* old surfaces → their new homes */}

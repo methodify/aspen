@@ -4,7 +4,19 @@
 // hint the way the claude TUI's collapsed line does.
 
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { ToolCardItem } from "./transcript";
+import { viewHref } from "./pathLinks";
+
+/** A path in a tool card links to the viewer for this agent. */
+function PathLink({ path, agent }: { path: string; agent?: string }) {
+  if (!agent || !path) return <>{path}</>;
+  return (
+    <Link className="tool-path" to={viewHref(agent, path)} title="open in the viewer">
+      {path}
+    </Link>
+  );
+}
 
 function rec(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -75,7 +87,7 @@ function Collapsible({ text, limit = 40, className }: { text: string; limit?: nu
 }
 
 /** The card body: what the tool was asked, then what came back. */
-export function ToolBody({ item }: { item: ToolCardItem }): ReactNode {
+export function ToolBody({ item, agent }: { item: ToolCardItem; agent?: string }): ReactNode {
   const input = rec(item.input);
   const result = item.result;
   const resultBlock =
@@ -107,7 +119,7 @@ export function ToolBody({ item }: { item: ToolCardItem }): ReactNode {
       return (
         <>
           <div className="mono">
-            {path}
+            <PathLink path={path} agent={agent} />
             {typeof off === "number" || typeof lim === "number" ? (
               <span className="mono-meta">{` · from line ${typeof off === "number" ? off : 1}${typeof lim === "number" ? `, ${lim} lines` : ""}`}</span>
             ) : null}
@@ -121,7 +133,7 @@ export function ToolBody({ item }: { item: ToolCardItem }): ReactNode {
       return (
         <>
           <div className="mono">
-            {path}
+            <PathLink path={path} agent={agent} />
             {input?.["replace_all"] ? <span className="mono-meta"> · replace all</span> : null}
           </div>
           <DiffView oldText={str(input?.["old_string"]) ?? ""} newText={str(input?.["new_string"]) ?? ""} />
@@ -135,7 +147,7 @@ export function ToolBody({ item }: { item: ToolCardItem }): ReactNode {
       return (
         <>
           <div className="mono">
-            {path}
+            <PathLink path={path} agent={agent} />
             <span className="mono-meta">{` · ${lineCount(content)} lines`}</span>
           </div>
           <Collapsible text={content} />

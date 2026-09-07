@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -17,6 +18,7 @@ import {
   type PermissionAnswer,
   type RuntimeInfo,
   type OpenPrompt,
+  type Artifact,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -42,6 +44,8 @@ import { Meter, presenceOf, relTime } from "./../components";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
 import { ToolBody, resultHint } from "./../toolViews";
+import { linkifyPaths } from "./../pathLinks";
+import "./view.css";
 import {
   buildQuestionUpdatedInput,
   filterSlashCommands,
@@ -118,10 +122,29 @@ const PERMISSION_MODES = [
 // ---------------------------------------------------------------------------
 // Item renderers
 
-const Md = memo(function Md({ text }: { text: string }) {
+/** Internal links (the viewer) route in-app; everything else opens a tab. */
+function MdLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+  if (href && href.startsWith("/view/")) {
+    return (
+      <Link to={href} className="path-link" title="open in the viewer">
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  );
+}
+
+const Md = memo(function Md({ text, agent }: { text: string; agent?: string }) {
+  const src = agent ? linkifyPaths(text, agent) : text;
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MdLink }}>
+        {src}
+      </ReactMarkdown>
     </div>
   );
 });
@@ -131,12 +154,14 @@ const Md = memo(function Md({ text }: { text: string }) {
  * One monospace size throughout; structure carried by weight, color, and
  * character prefixes (• bullets, │ quotes, ─ rules), never by font size.
  */
-const TuiMd = memo(function TuiMd({ text }: { text: string }) {
+const TuiMd = memo(function TuiMd({ text, agent }: { text: string; agent?: string }) {
+  const src = agent ? linkifyPaths(text, agent) : text;
   return (
     <div className="tui-md">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          a: MdLink,
           h1: ({ children }) => <div className="tui-h tui-h1">{children}</div>,
           h2: ({ children }) => <div className="tui-h tui-h2">{children}</div>,
           h3: ({ children }) => <div className="tui-h">{children}</div>,
@@ -146,13 +171,13 @@ const TuiMd = memo(function TuiMd({ text }: { text: string }) {
           hr: () => <div className="tui-hr" aria-hidden />,
         }}
       >
-        {text}
+        {src}
       </ReactMarkdown>
     </div>
   );
 });
 
-const AssistantBubble = memo(function AssistantBubble({ item, source }: { item: AssistantBubbleItem; source?: boolean }) {
+const AssistantBubble = memo(function AssistantBubble({ item, source, agent }: { item: AssistantBubbleItem; source?: boolean; agent?: string }) {
   return (
     <div className="bubble bubble-assistant">
       {item.thinking && (
@@ -165,7 +190,7 @@ const AssistantBubble = memo(function AssistantBubble({ item, source }: { item: 
         source ? (
           <pre className="src-body">{item.text}</pre>
         ) : (
-          <Md text={item.text} />
+          <Md text={item.text} agent={agent} />
         )
       ) : (
         item.open && <span className="dim">…</span>
@@ -197,14 +222,14 @@ const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) 
   );
 });
 
-const BusBubble = memo(function BusBubble({ item, source }: { item: BusBubbleItem; source?: boolean }) {
+const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBubbleItem; source?: boolean; agent?: string }) {
   const nl = item.text.indexOf("\n");
   const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
   const body = nl >= 0 ? item.text.slice(nl + 1) : "";
   return (
     <div className="bubble bubble-bus">
       <div className="bus-header mono">{header}</div>
-      {body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} />)}
+      {body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} agent={agent} />)}
     </div>
   );
 });
@@ -218,12 +243,14 @@ const ToolCard = memo(function ToolCard({
   onToggle,
   now,
   tui,
+  agent,
 }: {
   item: ToolCardItem;
   open: boolean;
   onToggle: (open: boolean) => void;
   now: number;
   tui?: boolean;
+  agent?: string;
 }) {
   const expandable = item.input !== null || item.result !== null;
   const summary = toolSummary(item.input);
@@ -261,7 +288,7 @@ const ToolCard = memo(function ToolCard({
         )}
       </summary>
       <div className="tool-detail">
-        <ToolBody item={item} />
+        <ToolBody item={item} agent={agent} />
       </div>
     </details>
   );
@@ -569,6 +596,34 @@ function SessionView({ name }: { name: string }) {
   // Branching: the agent name points at a head; branch-here leaves a
   // bookmark and forks; the history drawer lists lineage + bookmarks.
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Artifacts: files this session wrote/edited/read (PROPOSALS §3).
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [artifacts, setArtifacts] = useState<Artifact[] | null>(null);
+  const [artifactsAt, setArtifactsAt] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  useEffect(() => {
+    if (!artifactsOpen) return;
+    const close = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest(".artifacts-menu, .artifacts-wrap")) return;
+      setArtifactsOpen(false);
+    };
+    const esc = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setArtifactsOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [artifactsOpen]);
+  async function loadArtifacts() {
+    try {
+      setArtifacts(await api.artifacts(name));
+    } catch {
+      setArtifacts([]);
+    }
+  }
   const [history, setHistory] = useState<BookmarksInfo | null>(null);
   const [branching, setBranching] = useState(false);
   const [branchLabel, setBranchLabel] = useState<string | null>(null);
@@ -1071,7 +1126,7 @@ function SessionView({ name }: { name: string }) {
         if (!item.text && !item.open) return null;
         return (
           <div key={item.id} className="cline cline-assistant">
-            {item.text ? <TuiMd text={item.text} /> : "…"}
+            {item.text ? <TuiMd text={item.text} agent={name} /> : "…"}
             {item.open && item.text && <span className="caret" aria-hidden="true" />}
           </div>
         );
@@ -1091,7 +1146,7 @@ function SessionView({ name }: { name: string }) {
         return (
           <div key={item.id} className="cline cline-bus">
             <div>{header}</div>
-            {body && <TuiMd text={body} />}
+            {body && <TuiMd text={body} agent={name} />}
           </div>
         );
       }
@@ -1169,6 +1224,7 @@ function SessionView({ name }: { name: string }) {
         open={open}
         now={nowTick}
         tui={tui}
+        agent={name}
         onToggle={(o) => setPinnedTools((m) => new Map(m).set(item.id, o))}
       />
     );
@@ -1179,11 +1235,11 @@ function SessionView({ name }: { name: string }) {
     const source = renderMode === "source";
     switch (item.kind) {
       case "assistant":
-        return <AssistantBubble key={item.id} item={item} source={source} />;
+        return <AssistantBubble key={item.id} item={item} source={source} agent={name} />;
       case "user":
         return <UserBubble key={item.id} item={item} />;
       case "bus":
-        return <BusBubble key={item.id} item={item} source={source} />;
+        return <BusBubble key={item.id} item={item} source={source} agent={name} />;
       case "tool":
         return toolCard(item, false);
       case "permission":
@@ -1441,6 +1497,43 @@ function SessionView({ name }: { name: string }) {
         >
           history {historyOpen ? "▴" : "▾"}
         </button>
+        <span className="artifacts-wrap">
+          <button
+            className="charter-toggle"
+            aria-expanded={artifactsOpen}
+            onClick={(e) => {
+              const next = !artifactsOpen;
+              const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+              // Keep the menu on screen: it is up to 640px wide.
+              setArtifactsAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 656)) });
+              setArtifactsOpen(next);
+              if (next) void loadArtifacts();
+            }}
+            title="files this session wrote, edited, or read — open any in the viewer"
+          >
+            artifacts {artifactsOpen ? "▴" : "▾"}
+          </button>
+          {artifactsOpen && createPortal(
+            <div className="artifacts-menu" role="menu" style={{ position: "fixed", top: artifactsAt.top, left: artifactsAt.left, right: "auto" }}>
+              {artifacts === null ? (
+                <div className="row dim">loading…</div>
+              ) : artifacts.length === 0 ? (
+                <div className="row dim">nothing named by a tool call yet</div>
+              ) : (
+                artifacts.map((a) => (
+                  <div className="row" key={a.path}>
+                    <span className={`chip mono art-${a.kind}`}>{a.kind}</span>
+                    <Link className="mono" to={`/view/${encodeURIComponent(name)}?path=${encodeURIComponent(a.path)}`} onClick={() => setArtifactsOpen(false)} title={a.path}>
+                      {a.path}
+                    </Link>
+                    {a.at && <span className="mono-meta">{relTime(Date.parse(a.at) / 1000)} ago</span>}
+                  </div>
+                ))
+              )}
+            </div>,
+            document.body,
+          )}
+        </span>
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
         {ctlError && <span className="ctl-error">{ctlError}</span>}
         <span className="spacer" />

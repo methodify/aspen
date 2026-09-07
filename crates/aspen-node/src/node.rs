@@ -929,6 +929,59 @@ impl Node {
     /// The runtime's own view of a session: handshake (commands, models,
     /// output style, account) plus the `system/init` inventory (tools,
     /// skills, MCP servers, plugins as loaded). Never parsed from disk.
+    fn agent_row(&self, name: &str) -> Result<crate::store::AgentRow> {
+        self.inner
+            .store
+            .agents()?
+            .into_iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named @{name} on record"))
+    }
+
+    /// Files this agent's session named in tool calls, newest first.
+    pub fn artifacts(&self, name: &str) -> Result<Vec<crate::artifacts::Artifact>> {
+        let row = self.agent_row(name)?;
+        Ok(row
+            .session_id
+            .as_deref()
+            .map(|sid| crate::artifacts::touched_paths(&row.repo, sid))
+            .unwrap_or_default())
+    }
+
+    /// Resolve a path the operator wants to see for this agent, under the
+    /// serving rule (artifacts.rs).
+    pub fn agent_file(&self, name: &str, path: &str) -> Result<std::path::PathBuf> {
+        let row = self.agent_row(name)?;
+        crate::artifacts::resolve(
+            self.inner.data_dir.as_deref(),
+            &row.repo,
+            row.session_id.as_deref(),
+            path,
+        )
+    }
+
+    pub fn file_stat(&self, name: &str, path: &str) -> Result<serde_json::Value> {
+        let p = self.agent_file(name, path)?;
+        Ok(crate::artifacts::stat(&p))
+    }
+
+    /// One chunk of a served file, base64 on the wire.
+    pub fn file_read(
+        &self,
+        name: &str,
+        path: &str,
+        offset: u64,
+        len: u64,
+    ) -> Result<serde_json::Value> {
+        let p = self.agent_file(name, path)?;
+        let bytes = crate::artifacts::read_chunk(&p, offset, len)?;
+        Ok(serde_json::json!({
+            "offset": offset,
+            "len": bytes.len(),
+            "data": aspen_wire::b64::encode(&bytes),
+        }))
+    }
+
     pub fn runtime_info(&self, name: &str) -> Result<serde_json::Value> {
         let sess = self
             .inner

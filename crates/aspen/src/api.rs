@@ -69,6 +69,8 @@ pub async fn serve(
         )
         .route("/agents/{name}", delete(delete_agent))
         .route("/agents/{name}/revive", post(post_revive))
+        .route("/agents/{name}/artifacts", get(get_artifacts))
+        .route("/agents/{name}/file", get(get_agent_file))
         .route("/agents/{name}/branch", post(post_branch))
         .route("/agents/{name}/bookmarks", get(get_bookmarks))
         .route(
@@ -1184,6 +1186,164 @@ async fn post_permission(
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::GONE, e).into_response(),
     }
+}
+
+async fn get_artifacts(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "artifacts", &bare, json!({})).await;
+    }
+    match s.node.artifacts(&name) {
+        Ok(v) => Json(json!(v)).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    path: String,
+    /// `1` → JSON stat only (exists, size, mtime, media type).
+    #[serde(default)]
+    stat: Option<String>,
+    /// `1` → Content-Disposition: attachment.
+    #[serde(default)]
+    download: Option<String>,
+}
+
+/// A file the agent pointed at, served from its home node (PROPOSALS §3):
+/// locally straight from disk; for a remote agent assembled from
+/// `file_read` chunks over the mesh, sealed end to end, direct or relayed.
+async fn get_agent_file(
+    State(s): S,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<FileQuery>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let want_stat = q.stat.as_deref() == Some("1");
+    let remote = remote_parts(&s, &name);
+
+    // Stat first, local or remote.
+    let st: Value = match &remote {
+        Some((bare, node)) => {
+            let Some(mesh) = s.node.inner.mesh() else {
+                return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+            };
+            match mesh
+                .api_call(
+                    node,
+                    "file_stat",
+                    bare,
+                    json!({ "path": q.path }),
+                    REMOTE_TIMEOUT,
+                )
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return err(StatusCode::FORBIDDEN, format!("via node '{node}': {e}"))
+                        .into_response()
+                }
+            }
+        }
+        None => match s.node.file_stat(&name, &q.path) {
+            Ok(v) => v,
+            Err(e) => return err(StatusCode::FORBIDDEN, format!("{e:#}")).into_response(),
+        },
+    };
+    if want_stat {
+        return Json(st).into_response();
+    }
+    if st.get("exists").and_then(|b| b.as_bool()) != Some(true) {
+        return err(
+            StatusCode::NOT_FOUND,
+            format!("no such file on the agent's node: {}", q.path),
+        )
+        .into_response();
+    }
+    if st.get("is_dir").and_then(|b| b.as_bool()) == Some(true) {
+        return err(StatusCode::BAD_REQUEST, "that path is a directory").into_response();
+    }
+    let size = st.get("size").and_then(|n| n.as_u64()).unwrap_or(0);
+    if size > aspen_node::artifacts::VIEW_CAP && q.download.as_deref() != Some("1") {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "{} bytes: larger than the viewer serves; add download=1",
+                size
+            ),
+        )
+        .into_response();
+    }
+    let media = st
+        .get("media_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let fname = st
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("file")
+        .to_owned();
+
+    // Body: whole file, in chunks over the mesh when remote.
+    let body: Vec<u8> = match &remote {
+        Some((bare, node)) => {
+            let mesh = s.node.inner.mesh().unwrap();
+            let mut out = Vec::with_capacity(size as usize);
+            let mut offset = 0u64;
+            while offset < size {
+                let chunk = match mesh
+                    .api_call(
+                        node,
+                        "file_read",
+                        bare,
+                        json!({ "path": q.path, "offset": offset, "len": aspen_node::artifacts::READ_CHUNK }),
+                        REMOTE_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
+                };
+                let data = chunk.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                let bytes = match aspen_wire::b64::decode(data) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return err(StatusCode::BAD_GATEWAY, format!("bad chunk: {e}"))
+                            .into_response()
+                    }
+                };
+                if bytes.is_empty() {
+                    break;
+                }
+                offset += bytes.len() as u64;
+                out.extend_from_slice(&bytes);
+            }
+            out
+        }
+        None => {
+            let path = match s.node.agent_file(&name, &q.path) {
+                Ok(p) => p,
+                Err(e) => return err(StatusCode::FORBIDDEN, format!("{e:#}")).into_response(),
+            };
+            match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(e) => return err(StatusCode::NOT_FOUND, format!("{e}")).into_response(),
+            }
+        }
+    };
+    let mut resp = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, media)
+        .header(header::CACHE_CONTROL, "private, max-age=30");
+    if q.download.as_deref() == Some("1") {
+        resp = resp.header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", fname.replace('"', "")),
+        );
+    }
+    resp.body(axum::body::Body::from(body)).unwrap_or_else(|_| {
+        err(StatusCode::INTERNAL_SERVER_ERROR, "response build failed").into_response()
+    })
 }
 
 #[derive(Deserialize, Default)]

@@ -429,9 +429,9 @@
 
 /* Tool cards: live-then-summary (PROPOSALS §2) */
 .tool-hint { margin-left: 6px; }
-.tool-cmd { background: var(--bg-deep, #111); color: var(--text-hi); padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; }
+.tool-cmd { background: var(--line); color: var(--text-hi); padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; }
 .tool-err { color: var(--sig-error, #d33); }
-.tool-diff { padding: 6px 8px; border-radius: 4px; background: var(--bg-deep, #111); white-space: pre-wrap; }
+.tool-diff { padding: 6px 8px; border-radius: 4px; background: var(--line); white-space: pre-wrap; }
 .diff-del { color: #d66; }
 .diff-add { color: #6c6; }
 .tool-pattern { font-weight: 600; }
@@ -439,3 +439,7 @@
 .tool-card-tui > summary { font-family: var(--mono); }
 .user-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .user-images img { max-width: 360px; max-height: 280px; border-radius: 4px; border: 1px solid var(--line); }
+.path-link, .tool-path { color: var(--accent, #b5651d); text-decoration: underline dotted; }
+.art-wrote { background: #2a6; color: #fff; }
+.art-edited { background: #27a; color: #fff; }
+.art-read { background: var(--line); }

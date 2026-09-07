@@ -1228,6 +1228,19 @@ async fn serve_api_req(
         }
         "reload" => node.reload_plugins(agent).await,
         "runtime" => node.runtime_info(agent),
+        "artifacts" => Ok(json!(node.artifacts(agent)?)),
+        "file_stat" => node.file_stat(
+            agent,
+            body.get("path").and_then(|p| p.as_str()).unwrap_or(""),
+        ),
+        "file_read" => node.file_read(
+            agent,
+            body.get("path").and_then(|p| p.as_str()).unwrap_or(""),
+            body.get("offset").and_then(|o| o.as_u64()).unwrap_or(0),
+            body.get("len")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(crate::artifacts::READ_CHUNK),
+        ),
         "context" => node.context_usage(agent).await,
         "set_model" => {
             node.set_model(agent, body.get("model").and_then(|m| m.as_str()))
