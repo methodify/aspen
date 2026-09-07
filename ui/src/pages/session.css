@@ -483,3 +483,4 @@
 .session.in-pane.compact .composer textarea { min-height: 0; }
 .session.in-pane.compact .exited-banner { padding: 4px 8px; font-size: 11.5px; gap: 6px; flex-wrap: wrap; }
 .session.in-pane.compact .charter-toggle { white-space: nowrap; }
+.earlier-bar { display: flex; gap: 8px; justify-content: center; padding: 8px 0 12px; }

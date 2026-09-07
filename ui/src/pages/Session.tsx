@@ -81,6 +81,10 @@ import "./session.css";
 // ---------------------------------------------------------------------------
 // Transcript reducer (thin shell over the pure module)
 
+/** Items rendered on open; the rest are one click away. */
+const RECENT_WINDOW = 150;
+const EARLIER_STEP = 300;
+
 interface PendingAttachment {
   n: number;
   name: string;
@@ -1463,6 +1467,14 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
     );
   }
 
+  // A long transcript renders its tail first (markdown for thousands of
+  // items takes seconds); earlier items come in on request. The window
+  // is counted from the end so new items never push it.
+  const [showEarlier, setShowEarlier] = useState(0);
+  const windowSize = RECENT_WINDOW + showEarlier;
+  const hiddenEarlier = Math.max(0, transcript.items.length - windowSize);
+  const visibleItems = hiddenEarlier > 0 ? transcript.items.slice(hiddenEarlier) : transcript.items;
+
   // The active call: the newest unfinished tool while the turn is busy
   // (a permission prompt or status line may sit after it; the harness
   // reports the result only when the call ends).
@@ -2097,7 +2109,17 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
         {transcript.items.length === 0 && (
           <div className="empty">no transcript yet — say something below.</div>
         )}
-        {transcript.items.map(renderItem)}
+        {hiddenEarlier > 0 && (
+          <div className="earlier-bar">
+            <button className="btn sm" onClick={() => setShowEarlier((n) => n + EARLIER_STEP)}>
+              show {Math.min(EARLIER_STEP, hiddenEarlier)} earlier
+            </button>
+            <button className="btn ghost sm" onClick={() => setShowEarlier(Infinity)}>
+              show all {hiddenEarlier} earlier
+            </button>
+          </div>
+        )}
+        {visibleItems.map(renderItem)}
       </div>
 
       <div className="status-line">

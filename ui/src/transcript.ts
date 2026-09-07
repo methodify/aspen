@@ -750,7 +750,10 @@ export function mergeAfter(state: TranscriptState, head: string, history: Histor
 
 const DB_NAME = "aspen";
 const STORE = "transcripts";
-const PERSIST_MAX_BYTES = 8 * 1024 * 1024; // per agent; larger states are not persisted
+// No size cap: the browser's storage quota is the only real limit, and it
+// reports itself as a failed write. On that, the copy is retried without
+// image data (images refetch with the tail); if even that fails, the
+// in-memory copy still serves the page.
 
 function openDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
@@ -792,14 +795,28 @@ export function persistTranscript(name: string, state: TranscriptState, now = fa
     persistTimers.delete(name);
     const db = await openDb();
     if (!db) return;
-    try {
-      const size = JSON.stringify(state).length;
-      if (size > PERSIST_MAX_BYTES) return;
-      const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({ state, savedAt: Date.now() }, name);
-    } catch {
-      // storage full or unavailable: the in-memory copy still serves
-    }
+    const put = (toSave: TranscriptState) =>
+      new Promise<boolean>((resolve) => {
+        try {
+          const tx = db.transaction(STORE, "readwrite");
+          const req = tx.objectStore(STORE).put({ state: toSave, savedAt: Date.now() }, name);
+          req.onsuccess = () => resolve(true);
+          req.onerror = () => resolve(false);
+          tx.onabort = () => resolve(false);
+        } catch {
+          resolve(false);
+        }
+      });
+    if (await put(state)) return;
+    const stripped: TranscriptState = {
+      ...state,
+      items: state.items.map((it) =>
+        it.kind === "user" && it.images
+          ? { ...it, images: it.images.map((im) => ({ media_type: im.media_type, omitted_bytes: im.data?.length ?? im.omitted_bytes ?? 0 })) }
+          : it,
+      ),
+    };
+    await put(stripped);
   };
   const t = persistTimers.get(name);
   if (t) window.clearTimeout(t);
