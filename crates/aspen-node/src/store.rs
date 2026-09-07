@@ -390,6 +390,9 @@ pub struct AgentRow {
     /// When the current (or last) process was started; activities from
     /// before it cannot still be running.
     pub last_spawned_at: Option<f64>,
+    /// Which harness runs this agent (HARNESSES.md); rows from before
+    /// v0.20 are claude.
+    pub harness: aspen_core::Harness,
 }
 
 #[derive(Clone)]
@@ -399,6 +402,34 @@ pub struct BusStore {
     /// issued or merged, so "last writer wins" on mesh-wide rows means
     /// causally last, not whose wall clock runs fast.
     clock: Arc<Mutex<f64>>,
+}
+
+/// Columns added after a store was first created. New stores already have
+/// them via SCHEMA; the duplicate-column error on those is expected and
+/// ignored.
+fn additive_columns(conn: &Connection) -> Result<()> {
+    for stmt in [
+        "ALTER TABLE messages ADD COLUMN post TEXT",
+        "ALTER TABLE agents ADD COLUMN title TEXT",
+        "ALTER TABLE agents ADD COLUMN extra_args TEXT",
+        "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE repos ADD COLUMN handle TEXT",
+        "ALTER TABLE agents ADD COLUMN last_exit_code INTEGER",
+        "ALTER TABLE agents ADD COLUMN moved_to TEXT",
+        "ALTER TABLE agents ADD COLUMN fork_pending INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE boards ADD COLUMN query TEXT",
+        "ALTER TABLE boards ADD COLUMN pairs TEXT",
+        "ALTER TABLE agents ADD COLUMN harness TEXT",
+        "ALTER TABLE repos ADD COLUMN default_harness TEXT",
+        "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
+    ] {
+        if let Err(e) = conn.execute(stmt, []) {
+            if !e.to_string().contains("duplicate column") {
+                return Err(e.into());
+            }
+        }
+    }
+    Ok(())
 }
 
 impl BusStore {
@@ -419,28 +450,7 @@ impl BusStore {
             );
         }
         conn.execute_batch(SCHEMA)?;
-        // Additive column for stores created before `post` existed. New
-        // stores already have it via SCHEMA; the duplicate-column error on
-        // those is expected and ignored.
-        for stmt in [
-            "ALTER TABLE messages ADD COLUMN post TEXT",
-            "ALTER TABLE agents ADD COLUMN title TEXT",
-            "ALTER TABLE agents ADD COLUMN extra_args TEXT",
-            "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE repos ADD COLUMN handle TEXT",
-            "ALTER TABLE agents ADD COLUMN last_exit_code INTEGER",
-            "ALTER TABLE agents ADD COLUMN moved_to TEXT",
-            "ALTER TABLE agents ADD COLUMN fork_pending INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE boards ADD COLUMN query TEXT",
-            "ALTER TABLE boards ADD COLUMN pairs TEXT",
-            "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
-        ] {
-            if let Err(e) = conn.execute(stmt, []) {
-                if !e.to_string().contains("duplicate column") {
-                    return Err(e.into());
-                }
-            }
-        }
+        additive_columns(&conn)?;
         conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_handle ON repos(handle)")?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Self::normalize_stored_paths(&conn)?;
@@ -622,6 +632,7 @@ impl BusStore {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        additive_columns(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             clock: Arc::new(Mutex::new(0.0)),
@@ -639,14 +650,15 @@ impl BusStore {
         session_id: &str,
         charter: Option<&str>,
         extra_args: Option<&str>,
+        harness: aspen_core::Harness,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO agents(name,repo,channel,session_id,charter,extra_args,created_at,last_spawned_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?7)
+            "INSERT INTO agents(name,repo,channel,session_id,charter,extra_args,created_at,last_spawned_at,harness)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8)
              ON CONFLICT(name) DO UPDATE SET repo=?2, channel=?3, session_id=?4,
                charter=COALESCE(?5, agents.charter),
-               extra_args=COALESCE(?6, agents.extra_args), last_spawned_at=?7",
+               extra_args=COALESCE(?6, agents.extra_args), last_spawned_at=?7, harness=?8",
             params![
                 name,
                 repo.to_string_lossy(),
@@ -654,8 +666,31 @@ impl BusStore {
                 session_id,
                 charter,
                 extra_args,
-                now_epoch()
+                now_epoch(),
+                harness.as_str()
             ],
+        )?;
+        Ok(())
+    }
+
+    /// A repo's default harness for new sessions (None: claude).
+    pub fn repo_default_harness(&self, path: &Path) -> Option<aspen_core::Harness> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT default_harness FROM repos WHERE path=?1",
+            params![path.to_string_lossy()],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .and_then(|h| aspen_core::Harness::parse(&h))
+    }
+
+    pub fn set_repo_default_harness(&self, path: &Path, harness: Option<aspen_core::Harness>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE repos SET default_harness=?2 WHERE path=?1",
+            params![path.to_string_lossy(), harness.map(|h| h.as_str().to_owned())],
         )?;
         Ok(())
     }
@@ -663,7 +698,7 @@ impl BusStore {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to, fork_pending, last_spawned_at FROM agents ORDER BY name",
+            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to, fork_pending, last_spawned_at, harness FROM agents ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -680,6 +715,10 @@ impl BusStore {
                     moved_to: r.get(9)?,
                     fork_pending: r.get::<_, i64>(10)? != 0,
                     last_spawned_at: r.get(11)?,
+                    harness: r
+                        .get::<_, Option<String>>(12)?
+                        .and_then(|h| aspen_core::Harness::parse(&h))
+                        .unwrap_or_default(),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2389,11 +2428,11 @@ mod tests {
     #[test]
     fn channel_membership_via_agent_registry() {
         let s = BusStore::open_in_memory().unwrap();
-        s.register_agent("a", Path::new("/r/proj"), "proj", "sid-a", None, None)
+        s.register_agent("a", Path::new("/r/proj"), "proj", "sid-a", None, None, aspen_core::Harness::Claude)
             .unwrap();
-        s.register_agent("b", Path::new("/r/proj"), "proj", "sid-b", None, None)
+        s.register_agent("b", Path::new("/r/proj"), "proj", "sid-b", None, None, aspen_core::Harness::Claude)
             .unwrap();
-        s.register_agent("c", Path::new("/r/other"), "other", "sid-c", None, None)
+        s.register_agent("c", Path::new("/r/other"), "other", "sid-c", None, None, aspen_core::Harness::Claude)
             .unwrap();
         assert_eq!(s.channel_members("proj").unwrap(), vec!["a", "b"]);
     }

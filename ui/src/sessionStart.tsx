@@ -1,7 +1,7 @@
 // The new-session panel: name + repo + charter/model/args/skip, through
 // the trust gate. Shared by Now and the Mesh list.
 import { useEffect, useState } from "react";
-import { api, type StartAgentRequest, type Template } from "./api";
+import { api, type Harness, type HarnessInfo, type StartAgentRequest, type Template } from "./api";
 import { type TrustedStart } from "./trust";
 import { ErrorBar } from "./components";
 
@@ -33,9 +33,12 @@ export function NewSessionPanel({
   const [busy, setBusy] = useState(false);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [template, setTemplate] = useState<string>("");
+  const [harnesses, setHarnesses] = useState<HarnessInfo[]>([]);
+  const [harness, setHarness] = useState<Harness | "">("");
 
   useEffect(() => {
     api.templates().then(setTemplates).catch(() => setTemplates([]));
+    api.node().then((n) => setHarnesses(n.harnesses ?? [])).catch(() => setHarnesses([]));
   }, []);
   // Choosing a template fills the form (everything stays editable); the
   // spawn itself goes through the template so plugins and board placement
@@ -80,6 +83,7 @@ export function NewSessionPanel({
     if (model.trim()) req.model = model.trim();
     if (extraArgs.trim()) req.extra_args = extraArgs.trim();
     if (skip) req.skip_permissions = true;
+    if (harness) req.harness = harness;
     try {
       const agent = await startFn(req);
       if (agent === null) {
@@ -170,6 +174,21 @@ export function NewSessionPanel({
           aria-label="charter"
         />
       </label>
+
+      {harnesses.length > 1 && (
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Runtime</span>
+          <select value={harness} onChange={(e) => setHarness(e.target.value as Harness | "")} aria-label="runtime">
+            <option value="">— repo default —</option>
+            {harnesses.map((h) => (
+              <option key={h.name} value={h.name}>
+                {h.name}
+                {h.version ? ` ${h.version}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <div className="grid cols">
         <label style={{ display: "grid", gap: 4 }}>

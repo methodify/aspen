@@ -43,6 +43,9 @@ pub struct RemoteAgent {
     /// Running-activity counts (ACTIVITY.md), live sessions only.
     #[serde(default)]
     pub activities: Option<Value>,
+    /// Which runtime the session runs on (HARNESSES.md).
+    #[serde(default)]
+    pub harness: aspen_core::Harness,
 }
 
 pub struct MeshState {
@@ -703,7 +706,8 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                     TurnState::Busy => "busy",
                 }),
                 "summary": live.as_ref().map(|s| crate::node::summary_json(s)),
-                "activities": live.as_ref().map(|_| crate::node::activity_counts(&a.repo, a.session_id.as_deref(), a.last_spawned_at)),
+                "activities": live.as_ref().map(|_| crate::node::activity_counts(inner, a.harness, &a.repo, a.session_id.as_deref(), a.last_spawned_at)),
+                "harness": a.harness,
             })
         })
         .collect();
@@ -1715,8 +1719,7 @@ async fn serve_api_req(
                 .session_id
                 .as_deref()
                 .ok_or_else(|| anyhow!("no session on record"))?;
-            let mut acts =
-                aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at);
+            let mut acts = node.inner.store_for(row.harness).activities(&row.repo, sid, row.last_spawned_at);
             acts.reverse();
             Ok(json!(acts))
         }
@@ -1737,10 +1740,7 @@ async fn serve_api_req(
             if id.contains(['/', '\\', '.']) {
                 return Err(anyhow!("bad agent id"));
             }
-            let path = aspen_claude::activity::subagent_transcript(&row.repo, sid, id);
-            Ok(json!(
-                aspen_claude::transcript::rehydrate_file(&path).unwrap_or_default()
-            ))
+            Ok(json!(node.inner.store_for(row.harness).subagent(&row.repo, sid, id).unwrap_or_default()))
         }
         "boards" => Ok(json!(node.inner.store.boards(true)?)),
         "plugin_registry" => Ok(json!({
@@ -1868,6 +1868,8 @@ async fn serve_api_req(
                         "tool_name": p.tool_name, "input": p.input,
                         "suggestions": p.suggestions, "asked_at": p.asked_at,
                         "is_question": p.is_question,
+                        "prompt_kind": p.prompt_kind, "tool_kind": p.tool_kind,
+                        "decisions": p.decisions, "questions": p.questions,
                     })
                 })
                 .collect();
@@ -1930,13 +1932,12 @@ async fn serve_api_req(
                 .session_id
                 .as_ref()
                 .ok_or_else(|| anyhow!("no session on record"))?;
+            let st = node.inner.store_for(row.harness);
             if let Some(after) = body.get("after").and_then(|a| a.as_str()) {
-                let (items, found) =
-                    aspen_claude::transcript::rehydrate_after(&row.repo, sid, after)
-                        .unwrap_or_default();
+                let (items, found) = st.rehydrate_after(&row.repo, sid, after).unwrap_or_default();
                 return Ok(json!({ "items": items, "after_found": found }));
             }
-            let items = aspen_claude::transcript::rehydrate(&row.repo, sid).unwrap_or_default();
+            let items = st.rehydrate(&row.repo, sid).unwrap_or_default();
             Ok(json!(items))
         }
         // -------------------------------------------------- node-scoped ops
@@ -1950,8 +1951,10 @@ async fn serve_api_req(
             Ok(json!(repos
                 .iter()
                 .map(|r| {
-                    let sessions = aspen_claude::transcript::enumerate_sessions(&r.path)
-                        .map_or(0, |v| v.iter().filter(|si| si.user_messages > 0).count());
+                    let sessions = crate::node::enumerate_all(&node.inner, &r.path)
+                        .iter()
+                        .filter(|si| si.user_messages > 0)
+                        .count();
                     let live = agents
                         .iter()
                         .filter(|a| a.repo == r.path && node.inner.live(&a.name).is_some())
@@ -2073,7 +2076,7 @@ async fn serve_api_req(
                 .ok_or_else(|| anyhow!("missing repo"))?;
             let path = std::path::Path::new(repo);
             let mcc = crate::mcc::read(path);
-            let rows = aspen_claude::transcript::enumerate_sessions(path)?;
+            let rows = crate::node::enumerate_all(&node.inner, path);
             Ok(json!(rows
                 .iter()
                 .map(|si| {
@@ -2084,6 +2087,7 @@ async fn serve_api_req(
                         "entrypoint": si.entrypoint,
                         "modified": si.modified_epoch,
                         "user_messages": si.user_messages,
+                        "harness": si.harness,
                         "mcc_name": m.map(|m| m.name.clone()),
                         "mcc_args": m.and_then(|m| m.args.clone()),
                         "mcc_skip": m.map(|m| m.skip_permissions),
@@ -2130,6 +2134,8 @@ async fn serve_api_req(
                     .get("resume_choice")
                     .and_then(|a| a.as_str())
                     .map(str::to_owned),
+                harness: body.get("harness").and_then(|h| h.as_str()).and_then(aspen_core::Harness::parse),
+                posture: body.get("posture").and_then(|h| h.as_str()).and_then(aspen_core::Posture::parse),
                 ..Default::default()
             };
             let ack = body.get("acknowledge_trust").and_then(|a| a.as_bool()) == Some(true);

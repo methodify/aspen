@@ -379,6 +379,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
   color: var(--text-mid);
 }
 .chip.op { color: var(--sig-normal); border-color: var(--sig-normal); }
+.chip.harness-chip { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mid); }
 .chip .rm { cursor: pointer; color: var(--text-dim); }
 .chip .rm:hover { color: var(--sig-gate); }
 

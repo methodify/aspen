@@ -10,9 +10,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot};
 
-use aspen_claude::broker::{BrokerDecision, DecidedBy, PermissionBroker, PermissionRequest};
-use aspen_claude::session::{policy_opinion, PermissionPolicy};
-use aspen_core::SessionEvent;
+use aspen_core::permission::{policy_opinion, BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest};
+use aspen_core::{DecisionOption, PromptKind, SessionEvent, ToolKind};
 
 /// How long a prompt stays open before an honest deny. Generous: an operator
 /// console can sit unattended, and the agent is told exactly what happened.
@@ -23,6 +22,10 @@ struct PendingPrompt {
     original_input: Value,
     suggestions: Value,
     asked_at_epoch: f64,
+    prompt: PromptKind,
+    kind: ToolKind,
+    decisions: Vec<DecisionOption>,
+    questions: Value,
     answer: oneshot::Sender<BrokerDecision>,
 }
 
@@ -34,8 +37,13 @@ pub struct OpenPrompt {
     pub input: Value,
     pub suggestions: Value,
     pub asked_at: f64,
-    /// AskUserQuestion prompts are questions, not approvals.
+    /// Question prompts are questions, not approvals.
     pub is_question: bool,
+    pub prompt_kind: PromptKind,
+    pub tool_kind: ToolKind,
+    /// The answers the harness offered (HARNESSES.md).
+    pub decisions: Vec<DecisionOption>,
+    pub questions: Value,
 }
 
 pub struct OperatorBroker {
@@ -70,19 +78,42 @@ impl OperatorBroker {
         updated_input: Option<Value>,
         updated_permissions: Option<Value>,
     ) -> bool {
+        self.answer_with(request_id, allow, message, updated_input, updated_permissions, None)
+    }
+
+    /// Answer by one of the offered decisions (`decision_id`), or by the
+    /// plain allow/deny with optional edits and grants.
+    pub fn answer_with(
+        &self,
+        request_id: &str,
+        allow: bool,
+        message: Option<String>,
+        updated_input: Option<Value>,
+        updated_permissions: Option<Value>,
+        decision_id: Option<String>,
+    ) -> bool {
         let Some(p) = self.pending.lock().unwrap().remove(request_id) else {
             return false;
         };
+        let chosen = decision_id
+            .as_deref()
+            .and_then(|id| p.decisions.iter().find(|d| d.id == id).cloned());
+        let allow = chosen.as_ref().map(|d| d.allow).unwrap_or(allow);
+        let grants = updated_permissions
+            .filter(|v| !v.is_null())
+            .or_else(|| chosen.as_ref().and_then(|d| d.payload.clone()));
         let decision = if allow {
             BrokerDecision::Allow {
                 updated_input: updated_input.unwrap_or(p.original_input),
-                updated_permissions: updated_permissions.filter(|v| !v.is_null()),
+                updated_permissions: grants,
+                decision_id: decision_id.clone(),
             }
         } else {
             BrokerDecision::Deny {
                 message: message
                     .filter(|m| !m.trim().is_empty())
                     .unwrap_or_else(|| "The operator declined this action.".into()),
+                decision_id,
             }
         };
         p.answer.send(decision).is_ok()
@@ -99,8 +130,11 @@ impl OperatorBroker {
                 input: p.original_input.clone(),
                 suggestions: p.suggestions.clone(),
                 asked_at: p.asked_at_epoch,
-                is_question: p.tool_name == "AskUserQuestion"
-                    || p.original_input.get("questions").is_some(),
+                is_question: p.prompt == PromptKind::Question,
+                prompt_kind: p.prompt,
+                tool_kind: p.kind,
+                decisions: p.decisions.clone(),
+                questions: p.questions.clone(),
             })
             .collect();
         out.sort_by(|a, b| a.asked_at.total_cmp(&b.asked_at));
@@ -119,17 +153,14 @@ impl PermissionBroker for OperatorBroker {
     async fn decide(&self, req: PermissionRequest) -> (BrokerDecision, DecidedBy) {
         // Questions always reach the operator — a silently "allowed"
         // question is a question nobody answered (reference §7.6).
-        let is_question = req.tool_name == "AskUserQuestion"
-            || req
-                .raw
-                .get("input")
-                .and_then(|i| i.get("questions"))
-                .is_some();
-        if !is_question && policy_opinion(self.policy, &req.tool_name, &req.raw) == Some(true) {
+        let is_question = req.prompt == PromptKind::Question;
+        let bus_tool = req.tool_name.starts_with("mcp__aspen__") || req.tool_name.starts_with("bus_");
+        if !is_question && (bus_tool || policy_opinion(self.policy, req.kind, req.prompt) == Some(true)) {
             return (
                 BrokerDecision::Allow {
                     updated_input: req.input,
                     updated_permissions: None,
+                    decision_id: None,
                 },
                 DecidedBy::Policy,
             );
@@ -143,6 +174,10 @@ impl PermissionBroker for OperatorBroker {
                 original_input: req.input.clone(),
                 suggestions: req.suggestions.clone(),
                 asked_at_epoch: crate::store::now_epoch(),
+                prompt: req.prompt,
+                kind: req.kind,
+                decisions: req.decisions.clone(),
+                questions: req.questions.clone(),
                 answer: tx,
             },
         );
@@ -151,6 +186,10 @@ impl PermissionBroker for OperatorBroker {
             tool_name: req.tool_name.clone(),
             input: req.input,
             suggestions: req.suggestions,
+            prompt_kind: req.prompt,
+            tool_kind: Some(req.kind),
+            decisions: req.decisions,
+            questions: req.questions,
         });
 
         match tokio::time::timeout(OPERATOR_TIMEOUT, rx).await {
@@ -164,6 +203,7 @@ impl PermissionBroker for OperatorBroker {
                              Proceed without it, or message @operator on the bus.",
                             req.tool_name
                         ),
+                        decision_id: None,
                     },
                     DecidedBy::Operator,
                 )
@@ -177,6 +217,7 @@ impl PermissionBroker for OperatorBroker {
             // finishes. The response we send is discarded upstream.
             let _ = p.answer.send(BrokerDecision::Deny {
                 message: "cancelled by the runtime".into(),
+                decision_id: None,
             });
         }
     }

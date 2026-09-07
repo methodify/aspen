@@ -454,7 +454,7 @@ pub fn export(
     if tiers.iter().any(|t| t == "D") {
         let repo_c = std::fs::canonicalize(&repo).unwrap_or(repo.clone());
         let mut n = 0usize;
-        for a in crate::artifacts::touched_paths(&repo, &sid) {
+        for a in crate::artifacts::touched_paths(&aspen_claude::transcript::transcript_path(&repo, &sid)) {
             if a.kind != "wrote" && a.kind != "edited" {
                 continue;
             }
@@ -867,6 +867,7 @@ pub fn import(
         &sid,
         manifest.agent.charter.as_deref(),
         manifest.agent.extra_args.as_deref(),
+        aspen_core::Harness::Claude,
     )?;
     if let Some(t) = &manifest.agent.title {
         let _ = store.set_agent_title(&full, Some(t));

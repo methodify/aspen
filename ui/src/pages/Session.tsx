@@ -1947,6 +1947,11 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <h1>
           <span className="mono">@{name}</span>
         </h1>
+        {agent?.harness && (
+          <span className="chip mono harness-chip" title={`this session runs on ${agent.harness}`}>
+            {agent.harness}
+          </span>
+        )}
         {titleEditing ? (
           <input
             autoFocus

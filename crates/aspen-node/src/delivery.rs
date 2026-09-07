@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use aspen_core::SessionHandle;
 use tokio::sync::mpsc;
 
 use crate::node::{ManagedSession, NodeInner, TurnState};

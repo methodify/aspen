@@ -101,8 +101,14 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
 
   const canAlways = Array.isArray(prompt.suggestions) && prompt.suggestions.length > 0;
   const summary = summarizeInput(prompt.input);
+  // The harness's own decision set (HARNESSES.md §1); when present it is
+  // the buttons, and the chosen id goes back verbatim.
+  const decisions = prompt.decisions ?? [];
+  const allowDecisions = decisions.filter((d) => d.allow);
+  const denyDecision = decisions.find((d) => !d.allow);
+  const [denyId, setDenyId] = useState<string | undefined>(undefined);
 
-  async function answer(a: { allow: boolean; message?: string; updated_permissions?: unknown }) {
+  async function answer(a: { allow: boolean; message?: string; updated_permissions?: unknown; decision_id?: string }) {
     setBusy(true);
     setErr(null);
     try {
@@ -121,6 +127,9 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
         <span className="mono" style={{ fontWeight: 600 }}>@{prompt.agent}</span>
         <NodeChip node={prompt.node} />
         <span className="mono" style={{ fontSize: 12 }}>{prompt.tool_name}</span>
+        {prompt.tool_kind && prompt.tool_kind !== "other" && (
+          <span className="chip mono" title="what this tool does">{prompt.tool_kind.replace("_", " ")}</span>
+        )}
         <span style={{ flex: 1 }} />
         <span className="mono-meta">asked {relTime(prompt.asked_at)} ago</span>
       </div>
@@ -150,15 +159,45 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
                 placeholder="why not — shown to the model"
                 value={denyMsg}
                 onChange={(e) => setDenyMsg(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void answer({ allow: false, message: denyMsg.trim() || undefined })}
+                onKeyDown={(e) => e.key === "Enter" && void answer({ allow: false, message: denyMsg.trim() || undefined, decision_id: denyId })}
               />
               <button className="btn ghost sm" disabled={busy} onClick={() => setDenying(false)}>cancel</button>
               <button
                 className="btn danger sm"
                 disabled={busy}
-                onClick={() => answer({ allow: false, message: denyMsg.trim() || undefined })}
+                onClick={() => answer({ allow: false, message: denyMsg.trim() || undefined, decision_id: denyId })}
               >
-                deny
+                {denyDecision?.label ?? "deny"}
+              </button>
+            </>
+          ) : allowDecisions.length > 0 ? (
+            <>
+              {allowDecisions.map((d, i) => (
+                <button
+                  key={d.id}
+                  className={i === 0 ? "btn primary sm" : "btn sm"}
+                  disabled={busy}
+                  title={d.scope && d.scope !== "once" ? `applies for the ${d.scope}` : undefined}
+                  onClick={() =>
+                    answer({
+                      allow: true,
+                      decision_id: d.id,
+                      ...(d.scope === "always" && canAlways ? { updated_permissions: prompt.suggestions } : {}),
+                    })
+                  }
+                >
+                  {d.label}
+                </button>
+              ))}
+              <button
+                className="btn ghost sm"
+                disabled={busy}
+                onClick={() => {
+                  setDenyId(denyDecision?.id);
+                  setDenying(true);
+                }}
+              >
+                {denyDecision?.label ?? "deny"}…
               </button>
             </>
           ) : (

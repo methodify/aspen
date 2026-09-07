@@ -889,3 +889,21 @@ cleaner lane for roster updates than user-message headers.
   composer can mirror to the partner on the same thread. This closes
   the 2026-09-07 slate (S-1..S-12); the next swath is H-1, Codex as a
   second harness, designed before any code.
+- **2026-09-07 — v0.20, the harness seam** (PROPOSALS-HARNESSES.md §3,
+  §8 phase 0; HARNESSES.md). Aspen learns to say "harness" without
+  meaning Claude: a session has one, a repo has a default, a node lists
+  what it can run. The vocabulary (`ToolKind`, `PromptKind`,
+  `DecisionOption`, `Posture`, `HarnessCapabilities`) and the traits
+  (`AgentAdapter`, `SessionHandle` with capability-gated methods,
+  `SessionStore`, `PermissionBroker`, `ToolProvider`) live in aspen-core;
+  aspen-claude implements them; the node, API and federation read
+  transcripts, activity, usage and lineage through `store_for(harness)`
+  and never through a Claude path directly. The silent policy reasons on
+  tool *kinds*; prompts carry the harness's own decision set and the
+  console renders those as the buttons (the chosen id goes back). An
+  explicit posture on a spawn now wins over a repo's stored
+  skip-permissions default (before, the stored default won silently).
+  Verified on the rig with claude as the only adapter: spawn, message,
+  shell/question prompts with decisions, interrupt, revive, transcript,
+  activities, usage, notices, boards, move — unchanged shapes plus the
+  new fields.

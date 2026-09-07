@@ -30,9 +30,8 @@ pub struct Artifact {
 
 /// Files named by a session's tool calls, newest first, deduplicated to
 /// the strongest kind seen (wrote > edited > read).
-pub fn touched_paths(repo: &Path, session_id: &str) -> Vec<Artifact> {
-    let path = aspen_claude::transcript::transcript_path(repo, session_id);
-    let Ok(text) = std::fs::read_to_string(&path) else {
+pub fn touched_paths(path: &Path) -> Vec<Artifact> {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     // Calls the harness refused or that failed named nothing real.
@@ -209,7 +208,7 @@ pub fn resolve(
         return Ok(target);
     }
     if let Some(sid) = session_id {
-        let touched = touched_paths(repo, sid);
+        let touched = touched_paths(&aspen_claude::transcript::transcript_path(repo, sid));
         if touched
             .iter()
             .any(|a| canon(&expand_home(&a.path)) == target)

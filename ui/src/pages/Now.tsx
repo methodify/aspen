@@ -132,6 +132,9 @@ function WorkCard({
         <span className="mono-meta">#{a.channel}</span>
         {a.node && a.remote && <NodeChip node={a.node} />}
         {a.mesh && <span className="chip mono" title="reached through this mesh">{a.mesh}</span>}
+        {a.harness && a.harness !== "claude" && (
+          <span className="chip mono harness-chip" title={`runs on ${a.harness}`}>{a.harness}</span>
+        )}
         <span style={{ flex: 1 }} />
         <span className={`wc-state ${p}`}>{state}</span>
         {(a.activities?.running ?? 0) > 0 && (

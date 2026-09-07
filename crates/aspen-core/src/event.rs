@@ -1,6 +1,8 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::harness::{DecisionOption, PromptKind, ToolKind};
+
 /// The normalized event vocabulary every adapter translates into.
 ///
 /// Deliberately conservative: strong fields only where the hub layer *acts*
@@ -25,12 +27,20 @@ pub enum SessionEvent {
         message_id: Option<String>,
         raw: Value,
     },
-    /// The model invoked a tool.
+    /// The model invoked a tool. `kind` is what it does (harness-neutral);
+    /// `summary`, `path` and `command` are the adapter's one-line reading.
     ToolUse {
         tool_use_id: String,
         tool_name: String,
         input: Value,
         parent_tool_use_id: Option<String>,
+        tool_kind: ToolKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
     },
     /// A tool's result came back.
     ToolResult {
@@ -46,6 +56,14 @@ pub enum SessionEvent {
         tool_name: String,
         input: Value,
         suggestions: Value,
+        #[serde(default)]
+        prompt_kind: PromptKind,
+        #[serde(default)]
+        tool_kind: Option<ToolKind>,
+        #[serde(default)]
+        decisions: Vec<DecisionOption>,
+        #[serde(default)]
+        questions: Value,
     },
     /// How a permission request settled (by policy or operator).
     PermissionSettled {
@@ -61,6 +79,10 @@ pub enum SessionEvent {
         total_cost_usd: Option<f64>,
         result_text: Option<String>,
         raw: Value,
+        /// Token usage for the turn (or cumulative, per the harness), in a
+        /// neutral shape: `{input, output, cache_read, cache_create, cumulative}`.
+        #[serde(default)]
+        usage: Value,
     },
     /// Runtime status traffic worth mirroring (mode changes, compaction…).
     Status { raw: Value },

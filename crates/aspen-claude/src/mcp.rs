@@ -49,6 +49,22 @@ impl McpServer {
         self.tools.insert(tool.name, Arc::new(tool));
     }
 
+    /// Mount a harness-neutral tool provider (the node's bus tools).
+    pub fn from_provider(p: Arc<dyn aspen_core::ToolProvider>) -> Self {
+        let mut server = Self::new();
+        for def in p.list() {
+            let p2 = p.clone();
+            let name: &'static str = def.name;
+            server.register(Tool {
+                name,
+                description: def.description,
+                input_schema: def.input_schema,
+                handler: Box::new(move |args| p2.call(name, args)),
+            });
+        }
+        server
+    }
+
     /// Handle one JSON-RPC message arriving over `mcp_message`. Always
     /// returns *something* to send back as `mcp_response` — never None,
     /// because the transport awaits a reply even for notifications.

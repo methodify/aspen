@@ -157,7 +157,7 @@ async fn tick(inner: &Arc<NodeInner>) -> Result<()> {
         let Some(sid) = row.session_id.clone() else {
             continue;
         };
-        let files = session_files(&row.repo, &sid);
+        let files = inner.store_for(row.harness).files(&row.repo, &sid);
         if files.is_empty() {
             continue;
         }
@@ -363,6 +363,10 @@ pub struct Replica {
     pub files: usize,
     pub updated_at: f64,
     pub ctx: Value,
+    /// The harness whose files these are (HARNESSES.md); claude until the
+    /// source says otherwise.
+    #[serde(default)]
+    pub harness: aspen_core::Harness,
     /// The main transcript file, when held.
     #[serde(skip)]
     pub main: Option<PathBuf>,
@@ -389,6 +393,7 @@ pub fn list(inner: &Arc<NodeInner>) -> Vec<Replica> {
             files: 0,
             updated_at: 0.0,
             ctx: r.ctx.clone(),
+            harness: aspen_core::Harness::default(),
             main: None,
             dir: dir.clone(),
         });
@@ -595,6 +600,7 @@ mod tests {
             files: 1,
             updated_at: 0.0,
             ctx: serde_json::to_value(&ctx).unwrap(),
+            harness: aspen_core::Harness::Claude,
             main: Some(rdir.join("sid1.jsonl")),
             dir: rdir.clone(),
         };

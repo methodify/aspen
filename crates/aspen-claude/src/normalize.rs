@@ -71,11 +71,19 @@ fn normalize_assistant(frame: Value) -> Vec<SessionEvent> {
     {
         for b in blocks {
             if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let tool_name = s(b, "name").unwrap_or_default();
+                let input = b.get("input").cloned().unwrap_or(Value::Null);
+                let tool_kind = crate::adapter::classify(&tool_name, &input);
+                let (summary, path, command) = crate::adapter::describe(&tool_name, &input);
                 out.push(SessionEvent::ToolUse {
                     tool_use_id: s(b, "id").unwrap_or_default(),
-                    tool_name: s(b, "name").unwrap_or_default(),
-                    input: b.get("input").cloned().unwrap_or(Value::Null),
+                    tool_name,
+                    input,
                     parent_tool_use_id: parent.clone(),
+                    tool_kind,
+                    summary,
+                    path,
+                    command,
                 });
             }
         }
@@ -123,6 +131,7 @@ fn normalize_result(frame: Value) -> SessionEvent {
         // (the $0.58-for-92-tokens museum entry).
         total_cost_usd: frame.get("total_cost_usd").and_then(|d| d.as_f64()),
         result_text: s(&frame, "result"),
+        usage: crate::adapter::turn_usage(&frame),
         raw: frame,
     }
 }

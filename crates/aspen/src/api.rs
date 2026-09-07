@@ -681,6 +681,11 @@ async fn get_node(State(s): S) -> Json<Value> {
         "built": env!("ASPEN_BUILD_DATE"),
         "listen": listen,
         "loopback_only": loopback_only,
+        // The harnesses this node can run (HARNESSES.md), with versions.
+        "harnesses": s.node.inner.adapters.values().map(|a| json!({
+            "name": a.harness(), "binary": a.binary(), "version": a.version(),
+            "capabilities": a.capabilities(), "modes": a.permission_modes(),
+        })).collect::<Vec<_>>(),
         "hostname": hostname(),
         // Servicing summary for the badge; GET /api/update has the rest.
         "update_available": newer.as_ref().map(|r| r.version.clone()),
@@ -948,7 +953,9 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         "plugins": live.as_ref().map(|m| m.plugins.clone()).unwrap_or_default(),
         // Background work beside the main turn (activity.rs); counts only
         // while live — a stopped session's ledger is history.
-        "activities": live.as_ref().map(|_| aspen_node::node::activity_counts(&a.repo, a.session_id.as_deref(), a.last_spawned_at)),
+        "activities": live.as_ref().map(|_| aspen_node::node::activity_counts(&s.node.inner, a.harness, &a.repo, a.session_id.as_deref(), a.last_spawned_at)),
+        "harness": a.harness,
+        "capabilities": live.as_ref().map(|m| m.handle.capabilities()),
         "plugin_updates": match (live.as_ref(), s.node.inner.data_dir.as_deref()) {
             (Some(m), Some(dd)) => aspen_node::plugins::updates_for(dd, &m.plugins),
             _ => Vec::new(),
@@ -988,6 +995,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "node": node,
                             "remote": true,
                             "mesh": mesh.mesh_of_peer(node),
+                            "harness": a.harness,
                         }));
                     }
                 }
@@ -1002,6 +1010,10 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
 struct SpawnBody {
     name: String,
     repo: String,
+    /// Which harness runs it: claude | codex (default: the repo's, else claude).
+    harness: Option<String>,
+    /// Aspen's posture: ask | edits | plan | auto | guarded (HARNESSES.md).
+    posture: Option<String>,
     charter: Option<String>,
     model: Option<String>,
     resume: Option<String>,
@@ -1055,6 +1067,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             "skip_permissions": body.skip_permissions,
             "acknowledge_trust": body.acknowledge_trust,
             "resume_choice": body.resume_choice,
+            "harness": body.harness, "posture": body.posture,
             "title": body.title, "extra_args": body.extra_args,
         });
         return match mesh.api_call(node, "spawn", "", req, REMOTE_TIMEOUT).await {
@@ -1123,6 +1136,8 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
         skip_permissions: body.skip_permissions,
         extra_args: body.extra_args.filter(|a| !a.trim().is_empty()),
         resume_choice: body.resume_choice,
+        harness: body.harness.as_deref().and_then(aspen_core::Harness::parse),
+        posture: body.posture.as_deref().and_then(aspen_core::Posture::parse),
         ..Default::default()
     };
     match s
@@ -1269,6 +1284,9 @@ struct PermissionBody {
     updated_input: Option<Value>,
     /// "Always allow" rules — echo the prompt's `suggestions` back verbatim.
     updated_permissions: Option<Value>,
+    /// One of the prompt's offered `decisions` (HARNESSES.md); its payload
+    /// is the grant.
+    decision_id: Option<String>,
 }
 
 async fn post_permission(
@@ -1289,13 +1307,14 @@ async fn post_permission(
         )
         .await;
     }
-    match s.node.answer_permission(
+    match s.node.answer_permission_with(
         &name,
         &request_id,
         body.allow,
         body.message,
         body.updated_input,
         body.updated_permissions,
+        body.decision_id,
     ) {
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::GONE, e).into_response(),
@@ -1691,7 +1710,7 @@ async fn get_activities(State(s): S, Path(name): Path<String>) -> impl IntoRespo
     let Some(sid) = row.session_id.as_deref() else {
         return Json(json!([])).into_response();
     };
-    let mut acts = aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at);
+    let mut acts = s.node.inner.store_for(row.harness).activities(&row.repo, sid, row.last_spawned_at);
     acts.reverse();
     Json(json!(acts)).into_response()
 }
@@ -1924,8 +1943,7 @@ async fn get_subagent(State(s): S, Path((name, id)): Path<(String, String)>) -> 
     if id.contains(['/', '\\', '.']) {
         return err(StatusCode::BAD_REQUEST, "bad agent id").into_response();
     }
-    let path = aspen_claude::activity::subagent_transcript(&row.repo, sid, &id);
-    match aspen_claude::transcript::rehydrate_file(&path) {
+    match s.node.inner.store_for(row.harness).subagent(&row.repo, sid, &id) {
         Ok(items) => Json(items).into_response(),
         Err(_) => err(StatusCode::NOT_FOUND, "no transcript for that agent (yet)").into_response(),
     }
@@ -2395,27 +2413,26 @@ async fn get_sessions(State(s): S, Query(q): Query<SessionsQuery>) -> impl IntoR
     // mcc's register, when the repo has one: names win over derived titles,
     // and configured args ride along for the resume flow.
     let mcc = aspen_node::mcc::read(repo);
-    match aspen_claude::transcript::enumerate_sessions(repo) {
-        Ok(rows) => Json(
-            rows.iter()
-                .map(|s| {
-                    let m = mcc.get(&s.session_id);
-                    json!({
-                        "session_id": s.session_id,
-                        "title": s.title,
-                        "entrypoint": s.entrypoint,
-                        "modified": s.modified_epoch,
-                        "user_messages": s.user_messages,
-                        "mcc_name": m.map(|m| m.name.clone()),
-                        "mcc_args": m.and_then(|m| m.args.clone()),
-                        "mcc_skip": m.map(|m| m.skip_permissions),
-                    })
+    let rows = aspen_node::node::enumerate_all(&s.node.inner, repo);
+    Json(
+        rows.iter()
+            .map(|si| {
+                let m = mcc.get(&si.session_id);
+                json!({
+                    "session_id": si.session_id,
+                    "title": si.title,
+                    "entrypoint": si.entrypoint,
+                    "modified": si.modified_epoch,
+                    "user_messages": si.user_messages,
+                    "harness": si.harness,
+                    "mcc_name": m.map(|m| m.name.clone()),
+                    "mcc_args": m.and_then(|m| m.args.clone()),
+                    "mcc_skip": m.map(|m| m.skip_permissions),
                 })
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
+            })
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
 }
 
 /// Rehydrated history for an agent's session — what the console renders
@@ -2440,15 +2457,16 @@ async fn get_transcript(
         if !up {
             if let Some(r) = aspen_node::replicate::find(&s.node.inner, &node, &bare) {
                 if let Some(main) = r.main.as_deref() {
+                    let st = s.node.inner.store_for(r.harness);
                     if let Some(after) = q.after.as_deref() {
-                        let items = aspen_claude::transcript::rehydrate_file(main).unwrap_or_default();
+                        let items = st.rehydrate_file(main).unwrap_or_default();
                         let idx = items.iter().position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(after));
                         return match idx {
                             Some(i) => Json(json!({ "items": items[i + 1..], "after_found": true })).into_response(),
                             None => Json(json!({ "items": items, "after_found": false })).into_response(),
                         };
                     }
-                    return Json(aspen_claude::transcript::rehydrate_file(main).unwrap_or_default()).into_response();
+                    return Json(st.rehydrate_file(main).unwrap_or_default()).into_response();
                 }
             }
         }
@@ -2464,15 +2482,16 @@ async fn get_transcript(
     let Some(sid) = &agent.session_id else {
         return Json(Vec::<Value>::new()).into_response();
     };
+    let st = s.node.inner.store_for(agent.harness);
     if let Some(after) = q.after.as_deref() {
-        return match aspen_claude::transcript::rehydrate_after(&agent.repo, sid, after) {
+        return match st.rehydrate_after(&agent.repo, sid, after) {
             Ok((items, found)) => {
                 Json(json!({ "items": items, "after_found": found })).into_response()
             }
             Err(_) => Json(json!({ "items": [], "after_found": false })).into_response(),
         };
     }
-    match aspen_claude::transcript::rehydrate(&agent.repo, sid) {
+    match st.rehydrate(&agent.repo, sid) {
         Ok(items) => Json(items).into_response(),
         Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet
     }
@@ -2665,6 +2684,8 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
                 "tool_name": p.tool_name, "input": p.input,
                 "suggestions": p.suggestions, "asked_at": p.asked_at,
                 "is_question": p.is_question,
+                "prompt_kind": p.prompt_kind, "tool_kind": p.tool_kind,
+                "decisions": p.decisions, "questions": p.questions,
             })
         })
         .collect();
@@ -3698,6 +3719,7 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
                     "turn_state": if reachable { json!(ra.turn_state) } else { Value::Null },
                     "pending": s.node.inner.store.pending_count(&format!("{}@{}", ra.name, node)).unwrap_or(0),
                     "remote": true,
+                    "harness": ra.harness,
                 }));
             }
         }
@@ -4078,8 +4100,10 @@ async fn get_mesh_repos(State(s): S) -> impl IntoResponse {
 
 fn repo_json(s: &AppState, r: &aspen_node::store::RepoRow) -> Value {
     // How many discovered sessions and how many live agents this repo has.
-    let sessions = aspen_claude::transcript::enumerate_sessions(&r.path)
-        .map_or(0, |v| v.iter().filter(|si| si.user_messages > 0).count());
+    let sessions = aspen_node::node::enumerate_all(&s.node.inner, &r.path)
+        .iter()
+        .filter(|si| si.user_messages > 0)
+        .count();
     let live = s
         .node
         .inner

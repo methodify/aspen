@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc};
 
-use aspen_claude::{ClaudeConfig, ClaudeSession, PermissionPolicy};
-use aspen_core::{SessionEvent, SessionHandle};
+use aspen_core::{AgentAdapter, Harness, PermissionPolicy, Posture, SessionEvent, SessionHandle, SessionStore};
 
 use crate::delivery;
 use crate::store::BusStore;
@@ -49,7 +48,9 @@ pub struct ManagedSession {
     pub name: String,
     pub repo: PathBuf,
     pub channel: String,
-    pub handle: Arc<ClaudeSession>,
+    pub handle: Arc<dyn SessionHandle>,
+    /// Which harness this process is (HARNESSES.md).
+    pub harness: Harness,
     pub turn_state: Mutex<TurnState>,
     /// Fan-out to any number of observers (UI connections, dev harness).
     pub events: broadcast::Sender<SessionEvent>,
@@ -107,6 +108,8 @@ impl ManagedSession {
 
 pub struct NodeInner {
     pub store: BusStore,
+    /// The harnesses this node can run (HARNESSES.md), by name.
+    pub adapters: HashMap<Harness, Arc<dyn AgentAdapter>>,
     pub sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
     pub delivery_tx: mpsc::UnboundedSender<String>,
     /// Present when this node has joined a mesh (identity + cert on disk).
@@ -140,6 +143,33 @@ pub type HttpGateway = Arc<
 >;
 
 impl NodeInner {
+    /// The adapter for a harness (claude always; codex when built in).
+    pub fn adapter(&self, harness: Harness) -> Option<Arc<dyn AgentAdapter>> {
+        self.adapters.get(&harness).cloned()
+    }
+
+    /// The session store for a harness; claude's when the harness is
+    /// unknown here (rows from before v0.20, a harness not built in).
+    pub fn store_for(&self, harness: Harness) -> Arc<dyn SessionStore> {
+        self.adapters
+            .get(&harness)
+            .or_else(|| self.adapters.get(&Harness::Claude))
+            .map(|a| a.store())
+            .expect("the claude adapter is always registered")
+    }
+
+    /// Which harness an agent (by local key) runs on.
+    pub fn harness_of(&self, agent: &str) -> Harness {
+        if let Some(s) = self.live(agent) {
+            return s.harness;
+        }
+        self.store
+            .agents()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|a| a.name == agent).map(|a| a.harness))
+            .unwrap_or_default()
+    }
+
     /// The mesh, if this node is in one (cheap Arc clone; may change at
     /// runtime via Node::reload_mesh).
     pub fn mesh(&self) -> Option<Arc<crate::federation::MeshState>> {
@@ -163,6 +193,10 @@ pub struct Node {
 
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOpts {
+    /// Which harness to run (None: the row's, else the repo's default, else claude).
+    pub harness: Option<Harness>,
+    /// Aspen's posture (HARNESSES.md §3.3); `permission_mode` overrides it.
+    pub posture: Option<Posture>,
     pub charter: Option<String>,
     pub model: Option<String>,
     pub resume: Option<String>,
@@ -271,11 +305,10 @@ pub fn fleet_activities(inner: &Arc<NodeInner>) -> Vec<serde_json::Value> {
         let Some(sid) = row.session_id.as_deref() else {
             continue;
         };
-        for a in aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at) {
-            if a.status != "running" {
+        for mut v in inner.store_for(row.harness).activities(&row.repo, sid, row.last_spawned_at) {
+            if v.get("status").and_then(|s| s.as_str()) != Some("running") {
                 continue;
             }
-            let mut v = serde_json::to_value(&a).unwrap_or(serde_json::Value::Null);
             v["agent"] = serde_json::json!(row.name);
             out.push(v);
         }
@@ -301,7 +334,7 @@ pub fn usage_rows(inner: &Arc<NodeInner>, from: f64, to: f64, agent: Option<&str
         let Some(sid) = row.session_id.as_deref() else {
             continue;
         };
-        let u = aspen_claude::usage::session_usage(&row.repo, sid);
+        let u = inner.store_for(row.harness).usage(&row.repo, sid);
         let (win_cost, win_turns) = observed
             .iter()
             .find(|(a, _, _)| a == &row.name)
@@ -315,7 +348,8 @@ pub fn usage_rows(inner: &Arc<NodeInner>, from: f64, to: f64, agent: Option<&str
             "title": row.title,
             "session_id": sid,
             "live": live.is_some(),
-            "usage": *u,
+            "harness": row.harness,
+            "usage": u,
             "window": { "cost_usd": win_cost, "turns": win_turns },
         }));
     }
@@ -325,18 +359,36 @@ pub fn usage_rows(inner: &Arc<NodeInner>, from: f64, to: f64, agent: Option<&str
 /// Running-activity counts for a live session (activity.rs), from the
 /// transcript on disk; cached by the file's size and mtime.
 pub fn activity_counts(
+    inner: &Arc<NodeInner>,
+    harness: Harness,
     repo: &Path,
     session_id: Option<&str>,
     process_started: Option<f64>,
-) -> aspen_claude::activity::ActivityCounts {
-    match session_id {
-        Some(sid) => aspen_claude::activity::counts(&aspen_claude::activity::activities_for(
-            repo,
-            sid,
-            process_started,
-        )),
-        None => aspen_claude::activity::ActivityCounts::default(),
+) -> serde_json::Value {
+    inner.store_for(harness).activity_counts(repo, session_id, process_started)
+}
+
+/// Every session on disk for a repo, across every harness this node runs,
+/// newest first; each row says its harness.
+pub fn enumerate_all(inner: &Arc<NodeInner>, repo: &Path) -> Vec<aspen_core::SessionInfo> {
+    let mut out = Vec::new();
+    for a in inner.adapters.values() {
+        if let Ok(rows) = a.store().enumerate(repo) {
+            out.extend(rows);
+        }
     }
+    out.sort_by(|a, b| b.modified_epoch.total_cmp(&a.modified_epoch));
+    out
+}
+
+/// The daemon's local API address, for the tool bridge (`daemon.json`).
+fn local_api_addr(data_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(data_dir.join("daemon.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let listen = v.get("listen")?.as_str()?;
+    let addr: std::net::SocketAddr = listen.parse().ok()?;
+    let host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { addr.ip().to_string() };
+    Some(format!("http://{host}:{}", addr.port()))
 }
 
 pub fn summary_json(s: &ManagedSession) -> serde_json::Value {
@@ -484,8 +536,11 @@ impl Node {
         data_dir: Option<PathBuf>,
     ) -> Self {
         let (delivery_tx, delivery_rx) = mpsc::unbounded_channel::<String>();
+        let mut adapters: HashMap<Harness, Arc<dyn AgentAdapter>> = HashMap::new();
+        adapters.insert(Harness::Claude, Arc::new(aspen_claude::ClaudeAdapter::new()));
         let inner = Arc::new(NodeInner {
             store,
+            adapters,
             sessions: Mutex::new(HashMap::new()),
             delivery_tx,
             mesh: std::sync::RwLock::new(mesh),
@@ -553,6 +608,18 @@ impl Node {
                 .unwrap_or(false)
         });
 
+        // Which harness: the caller's, else what this agent ran on before,
+        // else the repo's default, else claude (HARNESSES.md).
+        let harness = opts.harness.unwrap_or_else(|| {
+            self.inner
+                .store
+                .agents()
+                .ok()
+                .and_then(|rows| rows.into_iter().find(|a| a.name == name).map(|a| a.harness))
+                .or_else(|| self.inner.store.repo_default_harness(&repo))
+                .unwrap_or_default()
+        });
+
         // Resuming in place a session that is being written right now by
         // a process we don't manage (a terminal, the desktop app, another
         // node) would put two writers on one transcript. Never decide that
@@ -579,11 +646,7 @@ impl Node {
                     a.session_id.as_deref() == Some(sid)
                         && (self.inner.live(&a.name).is_some() || marked_live.contains(&a.name))
                 });
-            let mtime = std::fs::metadata(aspen_claude::transcript::transcript_path(&repo, sid))
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs_f64());
+            let mtime = self.inner.store_for(harness).modified(&repo, sid);
             let ago = mtime.map(|t| crate::store::now_epoch() - t);
             let recent = ago.is_some_and(|a| a < LIVE_ELSEWHERE_SECS);
             if recent && !ours {
@@ -613,21 +676,27 @@ impl Node {
         }
         let opts = opts;
 
-        let mut cfg = ClaudeConfig::new(repo.clone());
-        cfg.model = opts.model.clone();
-        cfg.resume = opts.resume.clone();
-        cfg.fork = opts.fork;
-        cfg.resume_at = opts.resume_at.clone();
-        // bypassPermissions makes the CLI skip can_use_tool entirely; an
-        // explicit permission_mode still overrides it if given.
-        cfg.permission_mode = opts
-            .permission_mode
-            .clone()
-            .or_else(|| skip.then(|| "bypassPermissions".to_string()));
-        cfg.policy = if opts.allow_all {
+        let adapter = self
+            .inner
+            .adapter(harness)
+            .ok_or_else(|| anyhow!("harness {harness} is not available on this node"))?;
+        let caps = adapter.capabilities();
+        let policy = if opts.allow_all {
             PermissionPolicy::AllowAll
         } else {
             PermissionPolicy::ReadOnlyAuto
+        };
+        // Posture: an explicit "skip permissions" on this request is the auto
+        // posture; else the caller's posture; else the repo's stored skip
+        // default (auto) or nothing (the adapter's default, ask).
+        let posture = if opts.skip_permissions == Some(true) {
+            Some(Posture::Auto)
+        } else if opts.posture.is_some() {
+            opts.posture
+        } else if skip {
+            Some(Posture::Auto)
+        } else {
+            None
         };
         let node_name = self
             .inner
@@ -643,7 +712,6 @@ impl Node {
             );
             charter.push_str(&guidance);
         }
-        cfg.charter = Some(charter);
         // Harness defaults (settings.json, read live) + this session's args.
         let defaults = self
             .inner
@@ -652,17 +720,17 @@ impl Node {
             .map(crate::settings::load)
             .unwrap_or_default()
             .harness
-            .get("claude")
+            .get(harness.as_str())
             .map(|h| h.args.clone())
             .unwrap_or_default();
-        cfg.extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
+        let extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
         // Plugins by scope (plugins.rs): every enclosing rule's plugin, at
-        // its cached version, as --plugin-dir.
+        // its cached version, as plugin dirs — for harnesses that take them.
         let (active_plugins, missing_plugins) = match (
             self.inner.data_dir.as_deref(),
             self.inner.store.plugin_rules(false),
         ) {
-            (Some(dd), Ok(rules)) if !rules.is_empty() => {
+            (Some(dd), Ok(rules)) if !rules.is_empty() && caps.plugin_dirs => {
                 let node = self
                     .inner
                     .mesh()
@@ -672,10 +740,7 @@ impl Node {
             }
             _ => (Vec::new(), Vec::new()),
         };
-        for a in &active_plugins {
-            cfg.extra_args.push("--plugin-dir".into());
-            cfg.extra_args.push(a.path.clone());
-        }
+        let plugin_dirs: Vec<String> = active_plugins.iter().map(|a| a.path.clone()).collect();
         if !missing_plugins.is_empty() {
             let note = format!(
                 "plugins not cached yet, started without: {}",
@@ -687,24 +752,38 @@ impl Node {
             });
         }
 
-        let mcp = crate::tools::build_mcp(self.inner.clone(), name.to_owned());
+        let tools = crate::tools::build_tools(self.inner.clone(), name.to_owned());
         let op_broker = opts
             .interactive
-            .then(|| Arc::new(crate::permit::OperatorBroker::new(cfg.policy)));
-        let (handle, adapter_rx) = match &op_broker {
-            Some(b) => {
-                let b: Arc<dyn aspen_claude::broker::PermissionBroker> = b.clone();
-                ClaudeSession::spawn_with_broker(cfg.clone(), mcp, b).await?
-            }
-            None => ClaudeSession::spawn(cfg.clone(), mcp).await?,
+            .then(|| Arc::new(crate::permit::OperatorBroker::new(policy)));
+        let session_id = aspen_core::SessionId::new();
+        let spec = aspen_core::SpawnSpec {
+            repo: repo.clone(),
+            session_id,
+            resume: opts.resume.clone(),
+            fork: opts.fork,
+            resume_at: opts.resume_at.clone(),
+            model: opts.model.clone(),
+            mode: opts.permission_mode.clone(),
+            posture,
+            policy,
+            charter: Some(charter),
+            extra_args,
+            plugin_dirs,
+            tools: Some(tools),
+            broker: op_broker.clone().map(|b| b as Arc<dyn aspen_core::PermissionBroker>),
+            agent: name.to_owned(),
+            bridge_token: None,
+            node_api: self.inner.data_dir.as_deref().and_then(local_api_addr),
         };
+        let (handle, adapter_rx) = adapter.spawn(spec).await?;
 
         // On resume the runtime keeps the resumed session's id — register
-        // that, not the fresh uuid the config generated and never used.
+        // that, not the fresh id Aspen generated and never used.
         let effective_session_id = opts
             .resume
             .clone()
-            .unwrap_or_else(|| cfg.session_id.to_string());
+            .unwrap_or_else(|| session_id.to_string());
         self.inner.store.register_agent(
             name,
             &repo,
@@ -712,6 +791,7 @@ impl Node {
             &effective_session_id,
             opts.charter.as_deref(),
             opts.extra_args.as_deref(),
+            harness,
         )?;
         let _ = self.inner.store.set_agent_live(name, true);
         // A fork's own id arrives with the runtime's first turn; until
@@ -742,6 +822,7 @@ impl Node {
         }
         let managed = Arc::new(ManagedSession {
             plugins: active_plugins,
+            harness,
             running_acts: Mutex::new(HashMap::new()),
             spawned_at: crate::store::now_epoch(),
             name: name.to_owned(),
@@ -913,8 +994,9 @@ impl Node {
         let resume = row
             .session_id
             .clone()
-            .filter(|sid| aspen_claude::transcript::transcript_path(&row.repo, sid).is_file());
+            .filter(|sid| self.inner.store_for(row.harness).exists(&row.repo, sid));
         let opts = SpawnOpts {
+            harness: Some(row.harness),
             charter: row.charter.clone(),
             resume,
             // A fork that never announced its id is forked again from the
@@ -952,7 +1034,7 @@ impl Node {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("{name} has no session to branch from"))?;
-        if !aspen_claude::transcript::transcript_path(&row.repo, &head).is_file() {
+        if !self.inner.store_for(row.harness).exists(&row.repo, &head) {
             return Err(anyhow!(
                 "{name}'s session has no transcript yet — nothing to branch from"
             ));
@@ -1119,13 +1201,20 @@ impl Node {
             .map(|r| r.path)
             .collect();
         let mut out = Vec::new();
-        for found in aspen_claude::transcript::discover_repos() {
-            let path = normalize_repo(&found.path);
-            let added = !known.contains(&path);
-            if added {
-                self.inner.store.add_repo(&path, None)?;
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let adapters: Vec<Arc<dyn AgentAdapter>> = self.inner.adapters.values().cloned().collect();
+        for adapter in adapters {
+            for (found, sessions) in adapter.store().discover_repos() {
+                let path = normalize_repo(&found);
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                let added = !known.contains(&path);
+                if added {
+                    self.inner.store.add_repo(&path, None)?;
+                }
+                out.push((path, sessions, added));
             }
-            out.push((path, found.sessions, added));
         }
         Ok(out)
     }
@@ -1188,7 +1277,7 @@ impl Node {
         Ok(row
             .session_id
             .as_deref()
-            .map(|sid| crate::artifacts::touched_paths(&row.repo, sid))
+            .map(|sid| crate::artifacts::touched_paths(&self.inner.store_for(row.harness).main_path(&row.repo, sid)))
             .unwrap_or_default())
     }
 
@@ -1250,7 +1339,7 @@ impl Node {
         // Nothing to carry yet (a session that has not produced a
         // transcript): refuse before stopping anything.
         if let Some(sid) = row.session_id.as_deref() {
-            if !aspen_claude::transcript::transcript_path(&row.repo, sid).is_file() {
+            if !self.inner.store_for(row.harness).exists(&row.repo, sid) {
                 return Err(anyhow!(
                     "@{name} has no transcript yet (session {sid}); give it a first prompt or stop it instead"
                 ));
@@ -1446,7 +1535,7 @@ impl Node {
         let spec = self.session_spec(name)?;
         let row = self.agent_row(name)?;
         let sid = spec.session_id.clone();
-        let files = crate::replicate::session_files(&row.repo, &sid);
+        let files = self.inner.store_for(row.harness).files(&row.repo, &sid);
         let mut a = 0u64;
         let mut b = 0u64;
         for (rel, p) in &files {
@@ -1860,8 +1949,13 @@ impl Node {
             .inner
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let info = sess.handle.runtime_info();
         Ok(serde_json::json!({
-            "handshake": sess.handle.handshake.get(),
+            "handshake": info.raw,
+            "runtime": info,
+            "harness": sess.harness,
+            "capabilities": sess.handle.capabilities(),
+            "modes": self.inner.adapter(sess.harness).map(|a| a.permission_modes()).unwrap_or_default(),
             "inventory": sess.inventory.lock().unwrap().clone(),
         }))
     }
@@ -1872,7 +1966,7 @@ impl Node {
             .inner
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
-        sess.handle.get_context_usage().await
+        sess.handle.context_usage().await
     }
 
     /// Switch a session's model (takes effect next turn).
@@ -1881,7 +1975,7 @@ impl Node {
             .inner
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
-        sess.handle.set_model(model).await.map(|_| ())
+        sess.handle.set_model(model).await
     }
 
     /// Live-switch a session's permission mode.
@@ -1890,7 +1984,7 @@ impl Node {
             .inner
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
-        sess.handle.set_permission_mode(mode).await.map(|_| ())
+        sess.handle.set_mode(mode).await
     }
 
     /// Every permission prompt / question currently held open on THIS node,
@@ -1922,7 +2016,7 @@ impl Node {
             .inner
             .live(name)
             .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
-        sess.handle.reload_plugins().await
+        sess.handle.reload().await
     }
 
     /// Reload every live session running in a given repo (after a skill edit).
@@ -1938,7 +2032,7 @@ impl Node {
             .collect();
         let mut n = 0;
         for s in targets {
-            if s.handle.reload_plugins().await.is_ok() {
+            if s.handle.reload().await.is_ok() {
                 n += 1;
             }
         }
@@ -1956,6 +2050,20 @@ impl Node {
         updated_input: Option<serde_json::Value>,
         updated_permissions: Option<serde_json::Value>,
     ) -> Result<()> {
+        self.answer_permission_with(name, request_id, allow, message, updated_input, updated_permissions, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn answer_permission_with(
+        &self,
+        name: &str,
+        request_id: &str,
+        allow: bool,
+        message: Option<String>,
+        updated_input: Option<serde_json::Value>,
+        updated_permissions: Option<serde_json::Value>,
+        decision_id: Option<String>,
+    ) -> Result<()> {
         let sess = self
             .inner
             .live(name)
@@ -1964,12 +2072,13 @@ impl Node {
             .broker
             .as_ref()
             .ok_or_else(|| anyhow!("@{name} was not spawned interactively"))?;
-        if broker.answer(
+        if broker.answer_with(
             request_id,
             allow,
             message,
             updated_input,
             updated_permissions,
+            decision_id,
         ) {
             Ok(())
         } else {

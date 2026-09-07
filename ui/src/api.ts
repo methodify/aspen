@@ -21,6 +21,56 @@ export interface NodeInfo {
   service_state?: "ready" | "draining" | "updating" | "evacuating";
   service_detail?: string | null;
   started_at?: number;
+  /** The harnesses this node can run sessions on (HARNESSES.md). */
+  harnesses?: HarnessInfo[];
+}
+
+export type Harness = "claude" | "codex";
+
+/** What a harness can do; every flag gates a control (HARNESSES.md §1). */
+export interface HarnessCapabilities {
+  streaming: boolean;
+  interrupt: boolean;
+  mid_turn_inject: boolean;
+  permission_callback: boolean;
+  in_process_mcp: boolean;
+  resume: boolean;
+  fork?: boolean;
+  set_model?: boolean;
+  set_mode?: boolean;
+  context_usage?: boolean;
+  reload?: boolean;
+  slash_commands?: boolean;
+  skill_mentions?: boolean;
+  subagents?: boolean;
+  plugin_dirs?: boolean;
+  replay_ack?: boolean;
+  question_prompts?: boolean;
+  always_allow?: boolean;
+  transcript_on_disk?: boolean;
+  cost_from_harness?: boolean;
+}
+
+export interface HarnessInfo {
+  name: Harness;
+  binary: string | null;
+  version: string | null;
+  capabilities: HarnessCapabilities;
+  modes: { id: string; label: string; hint?: string; posture?: Posture | null }[];
+}
+
+/** Aspen's operator-facing posture, one vocabulary across harnesses. */
+export type Posture = "ask" | "edits" | "plan" | "auto" | "guarded";
+export type ToolKind = "shell" | "file_write" | "file_edit" | "file_read" | "search" | "web" | "mcp" | "agent" | "question" | "other";
+export type PromptKind = "permission" | "question" | "elicitation";
+
+/** One answer a prompt accepts, as the harness offers it; `id` goes back verbatim. */
+export interface DecisionOption {
+  id: string;
+  label: string;
+  allow: boolean;
+  scope?: "once" | "session" | "always";
+  payload?: unknown;
 }
 
 /** The self-update policy (settings.update; docs/SERVICING.md §2). */
@@ -115,6 +165,10 @@ export interface Agent {
   plugin_updates?: PluginUpdate[];
   /** Set when the session was moved elsewhere: its new full address. */
   moved_to?: string | null;
+  /** Which runtime the session runs on (HARNESSES.md). */
+  harness?: Harness;
+  /** What that runtime can do — present while live. */
+  capabilities?: HarnessCapabilities | null;
   /** The address: `bare@repo` locally, `bare@repo@node` for a remote
    *  agent. Route key and bus address alike. */
   name: string;
@@ -494,6 +548,10 @@ export interface StartAgentRequest {
   title?: string;
   /** Per-session harness CLI args, appended after the harness defaults. */
   extra_args?: string;
+  /** Which runtime; omit for the repo's default (then the node's). */
+  harness?: Harness;
+  /** Aspen's posture; the adapter maps it to its own mode. */
+  posture?: Posture;
   /** Target node; omit or self name = local, a peer name spawns remotely. */
   node?: string;
 }
@@ -672,6 +730,8 @@ export interface PermissionAnswer {
   updated_input?: unknown;
   /** "Always allow": echo the prompt's `suggestions` verbatim. */
   updated_permissions?: unknown;
+  /** Which of the prompt's `decisions` this is. */
+  decision_id?: string;
 }
 
 /** A channel the operator can address (GET /api/channels). */
@@ -734,6 +794,12 @@ export interface OpenPrompt {
   suggestions: unknown;
   asked_at: number;
   is_question: boolean;
+  prompt_kind?: PromptKind;
+  tool_kind?: ToolKind;
+  /** The bounded answers this prompt takes, in order; empty = allow/deny only. */
+  decisions?: DecisionOption[];
+  /** For question prompts: the harness's question payload. */
+  questions?: unknown;
 }
 
 /** A session that happened to an agent outside Aspen (adoption.rs): a

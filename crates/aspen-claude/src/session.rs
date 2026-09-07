@@ -12,32 +12,12 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use aspen_core::{AdapterCapabilities, SessionEvent, SessionHandle, SessionId};
+use aspen_core::{AdapterCapabilities, Harness, PromptKind, RuntimeInfo, SessionEvent, SessionHandle, SessionId};
+pub use aspen_core::permission::PermissionPolicy;
 
 use crate::mcp::McpServer;
 use crate::normalize::normalize;
 use crate::process::{self, SpawnSpec};
-
-/// How hub decides `can_use_tool` when no operator is attached.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionPolicy {
-    /// Mirror the interactive CLI's own tier (reference §7.3): read-only
-    /// inspection allowed silently; everything that writes, executes, or
-    /// leaves the machine is denied with an honest message. The right
-    /// default until the operator UI can prompt.
-    ReadOnlyAuto,
-    /// Allow everything (echoing input). Dev/smoke use only.
-    AllowAll,
-}
-
-const READ_ONLY_TOOLS: &[&str] = &[
-    "Read",
-    "Glob",
-    "Grep",
-    "TaskOutput",
-    "NotebookRead",
-    "WebSearch",
-];
 
 #[derive(Debug, Clone)]
 pub struct ClaudeConfig {
@@ -340,18 +320,31 @@ impl ClaudeSession {
                 let events_tx = events_tx.clone();
                 let broker = broker.clone();
                 tokio::spawn(async move {
+                    let tool_name = request
+                        .get("tool_name")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_owned();
+                    let input = request.get("input").cloned().unwrap_or(json!({}));
+                    let suggestions = request
+                        .get("permission_suggestions")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    let kind = crate::adapter::classify(&tool_name, &input);
+                    let prompt = if kind == aspen_core::ToolKind::Question {
+                        PromptKind::Question
+                    } else {
+                        PromptKind::Permission
+                    };
                     let req = crate::broker::PermissionRequest {
                         request_id: request_id.clone(),
-                        tool_name: request
-                            .get("tool_name")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("")
-                            .to_owned(),
-                        input: request.get("input").cloned().unwrap_or(json!({})),
-                        suggestions: request
-                            .get("permission_suggestions")
-                            .cloned()
-                            .unwrap_or(Value::Null),
+                        tool_name,
+                        kind,
+                        prompt,
+                        decisions: crate::adapter::decisions_for(prompt, &suggestions),
+                        questions: if prompt == PromptKind::Question { input.get("questions").cloned().unwrap_or(Value::Null) } else { Value::Null },
+                        input,
+                        suggestions,
                         raw: request,
                     };
                     let tool_name = req.tool_name.clone();
@@ -369,6 +362,7 @@ impl ClaudeSession {
                         crate::broker::BrokerDecision::Allow {
                             updated_input,
                             updated_permissions,
+                            ..
                         } => {
                             // updatedInput is REQUIRED on allow; envelope is
                             // snake_case but this payload is camelCase
@@ -380,7 +374,7 @@ impl ClaudeSession {
                             }
                             session.respond_success(&request_id, payload).await;
                         }
-                        crate::broker::BrokerDecision::Deny { message } => {
+                        crate::broker::BrokerDecision::Deny { message, .. } => {
                             session
                                 .respond_success(
                                     &request_id,
@@ -472,64 +466,28 @@ impl ClaudeSession {
     }
 }
 
-/// The silent tier: what a policy decides without anyone being asked.
-/// Returns None when the policy has no opinion (prompt-worthy).
+/// The silent tier for Claude tool names: the neutral policy on the tool's
+/// kind, plus Aspen's own bus tools (safe by construction — an agent that
+/// cannot speak is stranded) and questions (allow-with-echo is honest when
+/// nobody can answer).
 pub fn policy_opinion(policy: PermissionPolicy, tool_name: &str, request: &Value) -> Option<bool> {
-    match policy {
-        PermissionPolicy::AllowAll => Some(true),
-        PermissionPolicy::ReadOnlyAuto => {
-            let auto = READ_ONLY_TOOLS.contains(&tool_name)
-                // Aspen's own tools are bus comms and roster reads — safe by
-                // construction, and an agent that cannot speak is stranded.
-                || tool_name.starts_with("mcp__aspen__")
-                // AskUserQuestion arrives as can_use_tool; answers ride
-                // updatedInput (reference §7.6). With no operator surface,
-                // allow-with-echo is honest: the model is told "the user
-                // did not answer" and proceeds.
-                || tool_name == "AskUserQuestion"
-                || request
-                    .get("input")
-                    .and_then(|i| i.get("questions"))
-                    .is_some();
-            if auto {
-                Some(true)
-            } else {
-                Some(false) // this policy has no prompt channel: deny
-            }
-        }
+    if policy == PermissionPolicy::ReadOnlyAuto && tool_name.starts_with("mcp__aspen__") {
+        return Some(true);
     }
+    let input = request.get("input").cloned().unwrap_or(Value::Null);
+    let kind = crate::adapter::classify(tool_name, &input);
+    let prompt = if kind == aspen_core::ToolKind::Question {
+        PromptKind::Question
+    } else {
+        PromptKind::Permission
+    };
+    aspen_core::permission::policy_opinion(policy, kind, prompt)
 }
 
-pub fn policy_deny_message(tool_name: &str) -> String {
-    format!(
-        "aspen policy: {tool_name} is not auto-allowed and no operator surface is attached \
-         to approve it. Proceed without this tool, or tell the operator what you need."
-    )
-}
+pub use aspen_core::permission::policy_deny_message;
 
 /// Broker that answers purely from policy — the dev/headless default.
-pub struct PolicyBroker(pub PermissionPolicy);
-
-#[async_trait]
-impl crate::broker::PermissionBroker for PolicyBroker {
-    async fn decide(
-        &self,
-        req: crate::broker::PermissionRequest,
-    ) -> (crate::broker::BrokerDecision, crate::broker::DecidedBy) {
-        let allow = policy_opinion(self.0, &req.tool_name, &req.raw).unwrap_or(false);
-        let d = if allow {
-            crate::broker::BrokerDecision::Allow {
-                updated_input: req.input,
-                updated_permissions: None,
-            }
-        } else {
-            crate::broker::BrokerDecision::Deny {
-                message: policy_deny_message(&req.tool_name),
-            }
-        };
-        (d, crate::broker::DecidedBy::Policy)
-    }
-}
+pub use aspen_core::permission::PolicyBroker;
 
 #[async_trait]
 impl SessionHandle for ClaudeSession {
@@ -537,15 +495,41 @@ impl SessionHandle for ClaudeSession {
         self.id
     }
 
+    fn harness(&self) -> Harness {
+        Harness::Claude
+    }
+
     fn capabilities(&self) -> AdapterCapabilities {
-        AdapterCapabilities {
-            streaming: true,
-            interrupt: true,
-            mid_turn_inject: true,
-            permission_callback: true,
-            in_process_mcp: true,
-            resume: true,
+        crate::adapter::capabilities()
+    }
+
+    fn runtime_info(&self) -> RuntimeInfo {
+        let hs = self.handshake.get().unwrap_or(Value::Null);
+        RuntimeInfo {
+            model: None,
+            mode: None,
+            models: hs.get("models").and_then(|m| m.as_array()).cloned().unwrap_or_default(),
+            commands: hs.get("commands").and_then(|m| m.as_array()).cloned().unwrap_or_default(),
+            skills: Vec::new(),
+            context_window: None,
+            raw: hs,
         }
+    }
+
+    async fn set_model(&self, model: Option<&str>) -> Result<()> {
+        ClaudeSession::set_model(self, model).await.map(|_| ())
+    }
+
+    async fn set_mode(&self, mode: &str) -> Result<()> {
+        self.set_permission_mode(mode).await.map(|_| ())
+    }
+
+    async fn context_usage(&self) -> Result<Value> {
+        self.get_context_usage().await
+    }
+
+    async fn reload(&self) -> Result<Value> {
+        self.reload_plugins().await
     }
 
     async fn send_user(&self, text: String) -> Result<String> {

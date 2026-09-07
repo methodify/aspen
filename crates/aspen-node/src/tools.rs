@@ -9,20 +9,10 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use aspen_claude::mcp::{McpServer, Tool};
 
 use crate::node::{NodeInner, TurnState};
 
-pub fn build_mcp(inner: Arc<NodeInner>, me: String) -> McpServer {
-    let mut server = McpServer::new();
-
-    // ------------------------------------------------------------- bus_send
-    {
-        let inner = inner.clone();
-        let me = me.clone();
-        server.register(Tool {
-            name: "bus_send",
-            description: "Send a message to a peer agent, a repo channel, or the human operator \
+const BUS_SEND_DESC: &str = "Send a message to a peer agent, a repo channel, or the human operator \
 on the aspen bus. `to` is '@name' (a peer in your repo), '@name@repo' (a peer in another repo; \
 add '@node' only if that repo exists on several nodes), '#channel', or '@operator'. `urgency` is delivery timing, \
 nothing else: 'gating' interrupts the recipient mid-turn; 'normal' (default) is delivered now \
@@ -30,9 +20,18 @@ if they are idle (waking them) or at their turn boundary if they are busy; 'noti
 ambient fact that never wakes or interrupts anyone. A peer who is not running receives at \
 their next session start. Delivery always carries everything pending in send order. There is \
 no subject line; put everything in body. Silence from a peer never means your message was \
-lost — check bus_status before concluding anything from silence."
-                .into(),
-            input_schema: json!({
+lost — check bus_status before concluding anything from silence.";
+const BUS_STATUS_DESC: &str = "Who is on this bus: every agent, their repo channel, whether their \
+session is running, whether they are mid-turn or idle, and how many messages are pending for \
+them. Check here when a peer seems unresponsive before concluding a message was lost — \
+silence usually means mid-turn or not running; it never means the bus dropped something.";
+const BUS_INBOX_DESC: &str = "Read messages addressed to you that have not been delivered yet. You \
+rarely need this: gating messages interrupt you and everything else arrives at your turn \
+boundaries. Reach for it to drain deliberately — e.g. before reporting status, so you are not \
+reporting against a ruling you have not read.";
+
+fn bus_send_schema() -> Value {
+    json!({
                 "type": "object",
                 "properties": {
                     "to": { "type": "string", "description": "'@agent', '#channel', or '@operator'. bus_status lists who exists." },
@@ -42,45 +41,51 @@ lost — check bus_status before concluding anything from silence."
                     "record": { "type": "string", "description": "Durable record this is about (issue id, doc path), if any — the message is the notification; the record is where it lives." }
                 },
                 "required": ["to", "body"]
-            }),
-            handler: Box::new(move |args| bus_send(&inner, &me, args)),
-        });
-    }
-
-    // ----------------------------------------------------------- bus_status
-    {
-        let inner = inner.clone();
-        let me = me.clone();
-        server.register(Tool {
-            name: "bus_status",
-            description: "Who is on this bus: every agent, their repo channel, whether their \
-session is running, whether they are mid-turn or idle, and how many messages are pending for \
-them. Check here when a peer seems unresponsive before concluding a message was lost — \
-silence usually means mid-turn or not running; it never means the bus dropped something."
-                .into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-            handler: Box::new(move |_args| bus_status(&inner, &me)),
-        });
-    }
-
-    // ------------------------------------------------------------ bus_inbox
-    {
-        let inner = inner.clone();
-        let me = me.clone();
-        server.register(Tool {
-            name: "bus_inbox",
-            description: "Read messages addressed to you that have not been delivered yet. You \
-rarely need this: gating messages interrupt you and everything else arrives at your turn \
-boundaries. Reach for it to drain deliberately — e.g. before reporting status, so you are not \
-reporting against a ruling you have not read."
-                .into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-            handler: Box::new(move |_args| bus_inbox(&inner, &me)),
-        });
-    }
-
-    server
+            })
 }
+
+/// The bus tools as a harness-neutral provider (aspen-core `ToolProvider`):
+/// Claude mounts it as an in-process MCP server, Codex reaches it through
+/// the `aspen mcp` stdio bridge.
+pub struct BusTools {
+    inner: Arc<NodeInner>,
+    me: String,
+}
+
+pub fn build_tools(inner: Arc<NodeInner>, me: String) -> Arc<dyn aspen_core::ToolProvider> {
+    Arc::new(BusTools { inner, me })
+}
+
+impl aspen_core::ToolProvider for BusTools {
+    fn list(&self) -> Vec<aspen_core::ToolDef> {
+        vec![
+            aspen_core::ToolDef {
+                name: "bus_send",
+                description: BUS_SEND_DESC.into(),
+                input_schema: bus_send_schema(),
+            },
+            aspen_core::ToolDef {
+                name: "bus_status",
+                description: BUS_STATUS_DESC.into(),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            aspen_core::ToolDef {
+                name: "bus_inbox",
+                description: BUS_INBOX_DESC.into(),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+        ]
+    }
+    fn call(&self, name: &str, args: Value) -> std::result::Result<String, String> {
+        match name {
+            "bus_send" => bus_send(&self.inner, &self.me, args),
+            "bus_status" => bus_status(&self.inner, &self.me),
+            "bus_inbox" => bus_inbox(&self.inner, &self.me),
+            other => Err(format!("unknown tool {other:?}")),
+        }
+    }
+}
+
 
 fn bus_send(inner: &Arc<NodeInner>, me: &str, args: Value) -> Result<String, String> {
     let to = args
@@ -429,6 +434,7 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
                                 summary: None,
                                 title: None,
                                 activities: None,
+                                harness: Default::default(),
                             }),
                         ))
                     }

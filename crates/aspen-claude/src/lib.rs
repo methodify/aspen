@@ -17,6 +17,7 @@
 //! - `--permission-prompt-tool stdio` or the permission surface is dead code.
 
 pub mod activity;
+pub mod adapter;
 pub mod broker;
 pub mod mcp;
 pub mod normalize;
@@ -25,5 +26,6 @@ pub mod session;
 pub mod transcript;
 pub mod usage;
 
-pub use broker::{BrokerDecision, DecidedBy, PermissionBroker, PermissionRequest};
-pub use session::{ClaudeConfig, ClaudeSession, PermissionPolicy, PolicyBroker};
+pub use adapter::{ClaudeAdapter, ClaudeStore};
+pub use broker::{BrokerDecision, DecidedBy, PermissionBroker, PermissionRequest, PolicyBroker};
+pub use session::{ClaudeConfig, ClaudeSession, PermissionPolicy};
