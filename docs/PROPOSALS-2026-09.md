@@ -396,3 +396,143 @@ Two versions, not one:
   over the mesh) and are all visible every day. About a week and a half.
 - **v0.11 — sessions that move**: §5 phases 1 and 2. Phases 3 and 4 as
   the version after, once move has been used for real.
+
+---
+
+## 6. Boards: layouts of sessions across the estate (B-6)
+
+**Ask.** The terminal habit: two sessions side by side, or one over two;
+arbitrary grids. In Aspen, let the operator define layouts of sessions
+from any node, keep several, and put a session in as many as they like.
+
+**Today.** One session per page. Now shows the fleet as rows; switching
+sessions is navigation. Nothing holds two conversations on screen.
+
+### 6.1 The object: a board
+
+A **board** is a named arrangement of **panes**. Its shape is a split
+tree, the model tmux and tiling window managers converge on because it
+composes: a node is either a split (horizontal or vertical, with sizes)
+or a pane. `1|2` is one split; `1|2/3` is a split whose right child is a
+split; a 2×2 grid is a split of two splits. Any layout the operator can
+draw with a divider is representable, and dividers are how it is edited.
+
+```
+Board { id, name, updated_at, root }
+root  = Split { dir: "row"|"col", sizes: [..], children: [node, ...] }
+      | Pane  { kind: "session", agent }            // @main@hub@anindor-wsl
+      | Pane  { kind: "view",    agent, path }      // an artifact, live
+      | Pane  { kind: "dynamic", query }            // §6.4
+```
+
+A pane holds a **reference** to a session, not the session. The same
+session may sit in any number of boards, and twice in one board if
+someone wants that; each pane opens its own event stream and the
+transcript reducer is already per-mount. Sessions on other nodes work
+as they do on the session page today: the console's node proxies the
+stream over the mesh.
+
+Boards are the operator's, not a browser's. They are stored on the node
+(`boards` table) and **ride the mesh**: the roster carries a digest of a
+node's boards, a peer whose digest differs pulls them (`boards` op), and
+last-writer-wins by `updated_at`. Open any console on any node and the
+same boards are there — the estate has one set of desks. A board's URL
+is `/board/<id>`; boards export and import as JSON.
+
+### 6.2 Presets and editing
+
+- **Presets** on the new-board menu: `1|2`, `1/2`, `1|2/3`, `2×2`,
+  `main + stack` (a 60% main pane with a column of smaller ones). Pick
+  one, then drop sessions into the empty panes from a picker that lists
+  the fleet across nodes with their state.
+- **Dividers drag.** Sizes persist. Double-click a divider to equalize.
+- **Split this pane** right or down; **close** a pane; **swap** two
+  panes by dragging a pane's header onto another; **zoom** a pane to
+  fill the board and back (tmux's `prefix z`), which is how a two-up
+  becomes a focused view without leaving the board.
+- **Add to board** from any session page: a menu of boards, "split
+  right" or "split down" of the focused pane.
+- On a narrow screen a board degrades to tabs across the top, one pane
+  visible; the layout is kept for wide screens.
+
+### 6.3 Working in a board
+
+- **Focus.** One pane has focus; its border says so; its composer takes
+  the keyboard. Click, or `ctrl+1…9` by pane order, or `ctrl+arrows`
+  to move focus spatially. The session page's hotkeys become pane-scoped
+  (the escape-to-page-keys behavior already exists and generalizes).
+- **Compact panes.** Below a width threshold a pane drops to a compact
+  header (name, node, state dot, working timer) and summary-only tool
+  cards; the transcript stays readable at two or three columns.
+- **Attention.** A pane whose agent raised a permission or a question
+  gets a marked border; `ctrl+.` jumps focus to the next pane needing
+  attention. This is what a two-up is *for*: watch one, answer the
+  other.
+- **Broadcast** (tmux's synchronize-panes): a toggle on the board that
+  sends the focused composer's message to every session pane on it,
+  with each pane's header showing a broadcast badge while it is on. For
+  driving parallel agents: "run the tests", "report status", "stop".
+  Off by default; confirm on first use per board.
+- **Drafts** are per pane (the composer draft key gains the board and
+  pane id), so two panes of one session keep separate drafts.
+- **Pane kinds beyond sessions**: an artifact viewer pane (a log or
+  report the agent keeps updating, next to the session writing it — the
+  viewer re-fetches on the session's turn end); a Flow pane filtered to
+  the agents on the board (their bus traffic beside them); a Now pane.
+  Each is the existing page in a frame, so they cost little.
+
+### 6.4 Dynamic boards
+
+A board whose panes are a **query** rather than a list: every session
+matching a filter, laid out automatically (grid by count, or main +
+stack with the busiest as main). Filters: node, channel/repo, state
+(`busy`, `needs attention`), name pattern, tag. Examples the estate
+would use at once:
+
+- *everything busy right now* — the operator's overview during a push;
+- *#hub on any node* — one repo's agents wherever they run;
+- *needs attention* — a board that is empty when all is well;
+- *macbook* — everything on the laptop before it leaves (a natural place
+  for "evacuate", B-5b).
+
+A dynamic board refreshes from the roster (the same poll Now uses);
+panes come and go without the operator arranging them. Pinning a
+dynamic board's current membership turns it into an ordinary one.
+
+### 6.5 What it implies
+
+- **Boards are the natural home for cross-node work** shipped in v0.11:
+  a session and its cross-machine fork side by side, or a session before
+  and after a move (the tombstone pane shows the pointer).
+- **Per-repo default board**: opening a repo's channel from Flow could
+  open its board rather than a list.
+- **Recording a board** as a template ("my review desk") to instantiate
+  with different sessions — the presets are just templates with empty
+  panes.
+- Later: pane-to-pane drag of text (a result from one agent into
+  another's composer), and a "pair" mode where two panes' sessions are
+  put on a bus thread together with the operator watching both — the
+  duo command as a board.
+
+### 6.6 Cost and phasing
+
+1. **Session as a pane.** Refactor the session page's view into a
+   component that can be mounted several times: pane-scoped hotkeys,
+   focus, compact mode, per-pane drafts. The transcript/event plumbing
+   is already per-mount. ~2 days.
+2. **Board model, renderer, persistence.** Split tree, dividers, presets,
+   split/close/swap/zoom, the picker, `boards` API and table, `/board/:id`,
+   sidebar switcher, add-to-board from a session. ~2–3 days.
+3. **Mesh sync** of boards via roster digest + `boards` op. ~1 day.
+4. **Attention, broadcast, tabs on narrow screens, view/Flow panes.**
+   ~1–2 days.
+5. **Dynamic boards.** ~1 day.
+
+About a week and a half; phases 1–3 are the version, 4–5 the polish
+after using it.
+
+**Open.** Whether a board should also capture per-pane render mode
+(chat/console/source) — probably yes, it is part of "how I look at this
+one". Whether `ctrl+number` collides with browser tabs (it does in most
+browsers; `alt+number` or a leader key like `g` then a digit is safer —
+the hotkey layer already has chords).
