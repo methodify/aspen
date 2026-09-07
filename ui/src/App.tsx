@@ -8,6 +8,7 @@ import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
 import View from "./pages/View";
 import BoardPage, { BoardsPage } from "./pages/Board";
+import Plugins from "./pages/Plugins";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
 import Palette from "./Palette";
@@ -55,6 +56,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean }[] = [
   { to: "/mesh", key: "M", label: "Mesh" },
   { to: "/history", key: "H", label: "History" },
   { to: "/boards", key: "B", label: "Boards" },
+  { to: "/plugins", key: "P", label: "Plugins" },
 ];
 
 // ── working set: pinned + recently opened sessions (per browser) ──────────
@@ -393,6 +395,7 @@ export default function App() {
               <Route path="/session/:name" element={<Session />} />
               <Route path="/view/:name" element={<View />} />
               <Route path="/boards" element={<BoardsPage />} />
+              <Route path="/plugins" element={<Plugins />} />
               <Route path="/board/:id" element={<BoardPage />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />

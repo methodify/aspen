@@ -19,6 +19,7 @@ pub mod migrate;
 pub mod node;
 pub mod pending;
 pub mod permit;
+pub mod plugins;
 pub mod release;
 pub mod servicing;
 pub mod settings;

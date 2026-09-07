@@ -69,6 +69,9 @@ pub struct ManagedSession {
     /// Something the operator should know about how this process started
     /// (e.g. "forked: the session was live elsewhere").
     pub spawn_note: Mutex<Option<String>>,
+    /// The plugins this process was started with (plugins.rs), so a newer
+    /// cached version can be offered as a restart, never a surprise.
+    pub plugins: Vec<crate::plugins::ActivePlugin>,
 }
 
 /// A transcript written this recently, by a process this node doesn't
@@ -501,6 +504,36 @@ impl Node {
             .map(|h| h.args.clone())
             .unwrap_or_default();
         cfg.extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
+        // Plugins by scope (plugins.rs): every enclosing rule's plugin, at
+        // its cached version, as --plugin-dir.
+        let (active_plugins, missing_plugins) = match (
+            self.inner.data_dir.as_deref(),
+            self.inner.store.plugin_rules(false),
+        ) {
+            (Some(dd), Ok(rules)) if !rules.is_empty() => {
+                let node = self
+                    .inner
+                    .mesh()
+                    .map(|m| m.identity.node.clone())
+                    .unwrap_or_else(|| "local".into());
+                crate::plugins::resolve(dd, &rules, &node, &repo, name)
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+        for a in &active_plugins {
+            cfg.extra_args.push("--plugin-dir".into());
+            cfg.extra_args.push(a.path.clone());
+        }
+        if !missing_plugins.is_empty() {
+            let note = format!(
+                "plugins not cached yet, started without: {}",
+                missing_plugins.join(", ")
+            );
+            spawn_note = Some(match spawn_note {
+                Some(prev) => format!("{prev}; {note}"),
+                None => note,
+            });
+        }
 
         let mcp = crate::tools::build_mcp(self.inner.clone(), name.to_owned());
         let op_broker = opts
@@ -556,6 +589,7 @@ impl Node {
             b.attach_events(events_tx.clone());
         }
         let managed = Arc::new(ManagedSession {
+            plugins: active_plugins,
             name: name.to_owned(),
             repo,
             channel,

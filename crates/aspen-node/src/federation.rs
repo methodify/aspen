@@ -583,6 +583,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         "has_root": has_root,
         "advertised": advertised(inner),
         "boards_digest": inner.store.boards_digest(),
+        "plugins_digest": inner.store.plugin_registry_digest(),
     })
 }
 
@@ -980,6 +981,15 @@ async fn link_loop(
                             });
                         }
                     }
+                    if let Some(d) = payload.get("plugins_digest").and_then(|d| d.as_str()) {
+                        if d != inner.store.plugin_registry_digest() {
+                            let inner2 = inner.clone();
+                            let peer2 = peer.to_owned();
+                            tokio::spawn(async move {
+                                sync_plugin_registry_from(&inner2, &peer2).await;
+                            });
+                        }
+                    }
                     mesh.note(peer, |h| {
                         h.last_roster = Some(crate::store::now_epoch());
                         if has_root.is_some() {
@@ -1248,6 +1258,48 @@ async fn serve_api_req(
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
         "boards" => Ok(json!(node.inner.store.boards(true)?)),
+        "plugin_registry" => Ok(json!({
+            "marketplaces": node.inner.store.marketplaces(true)?,
+            "rules": node.inner.store.plugin_rules(true)?,
+        })),
+        "plugins_sync" => {
+            let c = crate::plugins::spawn_sync(
+                node.inner.clone(),
+                body.get("marketplace")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_owned),
+            )
+            .await?;
+            Ok(json!(c))
+        }
+        "plugins_registry_view" => Ok(crate::plugins::registry_json(&node.inner)),
+        "plugins_effective" => {
+            let dd = node
+                .inner
+                .data_dir
+                .clone()
+                .ok_or_else(|| anyhow!("no data dir"))?;
+            let rows = node.inner.store.agents()?;
+            let row = rows
+                .iter()
+                .find(|a| a.name == agent)
+                .ok_or_else(|| anyhow!("no agent named @{agent}"))?;
+            let rules = node.inner.store.plugin_rules(false)?;
+            let me = node
+                .inner
+                .mesh()
+                .map(|m| m.identity.node.clone())
+                .unwrap_or_else(|| "local".into());
+            let (active, missing) = crate::plugins::resolve(&dd, &rules, &me, &row.repo, &row.name);
+            let running = node
+                .inner
+                .live(&row.name)
+                .map(|m| m.plugins.clone())
+                .unwrap_or_default();
+            Ok(
+                json!({ "would_start_with": active, "missing": missing, "running": running, "updates": crate::plugins::updates_for(&dd, &running) }),
+            )
+        }
         // Migration (migrate.rs): the source stages a bundle and serves
         // it in chunks; the target pulls, installs, and reports back.
         "session_spec" => Ok(json!(node.session_spec(agent)?)),
@@ -1994,6 +2046,52 @@ async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
     if changed {
         tracing::info!(peer, n = boards.len(), "boards synced from peer");
         broadcast_roster(inner);
+    }
+}
+
+/// Pull a peer's plugin registry and merge (newer wins per row). A change
+/// re-broadcasts our digest and triggers a sync so activated plugins get
+/// cached here.
+async fn sync_plugin_registry_from(inner: &Arc<NodeInner>, peer: &str) {
+    let Some(mesh) = inner.mesh() else { return };
+    let Ok(v) = mesh
+        .api_call(
+            peer,
+            "plugin_registry",
+            "",
+            json!({}),
+            std::time::Duration::from_secs(20),
+        )
+        .await
+    else {
+        return;
+    };
+    let mut changed = false;
+    if let Some(ms) = v
+        .get("marketplaces")
+        .and_then(|m| serde_json::from_value::<Vec<crate::plugins::Marketplace>>(m.clone()).ok())
+    {
+        for m in &ms {
+            if inner.store.upsert_marketplace(m).unwrap_or(false) {
+                changed = true;
+            }
+        }
+    }
+    if let Some(rs) = v
+        .get("rules")
+        .and_then(|r| serde_json::from_value::<Vec<crate::plugins::Rule>>(r.clone()).ok())
+    {
+        for r in &rs {
+            if inner.store.upsert_plugin_rule(r).unwrap_or(false) {
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        tracing::info!(peer, "plugin registry synced from peer");
+        broadcast_roster(inner);
+        // spawn_blocking runs at once; the handle is not awaited here.
+        drop(crate::plugins::spawn_sync(inner.clone(), None));
     }
 }
 

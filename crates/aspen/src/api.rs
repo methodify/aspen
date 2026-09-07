@@ -71,6 +71,17 @@ pub async fn serve(
         .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/artifacts", get(get_artifacts))
         .route("/agents/{name}/move", post(post_move))
+        .route("/plugins", get(get_plugins))
+        .route("/plugins/sync", post(post_plugins_sync))
+        .route(
+            "/plugins/marketplaces/{name}",
+            axum::routing::put(put_marketplace).delete(delete_marketplace),
+        )
+        .route(
+            "/plugins/rules/{id}",
+            axum::routing::put(put_plugin_rule).delete(delete_plugin_rule),
+        )
+        .route("/plugins/effective", get(get_plugins_effective))
         .route("/boards", get(get_boards))
         .route(
             "/boards/{id}",
@@ -867,6 +878,11 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         }),
         "pending": s.node.inner.store.pending_count(&a.name).unwrap_or(0),
         "spawn_note": live.as_ref().and_then(|m| m.spawn_note.lock().unwrap().clone()),
+        "plugins": live.as_ref().map(|m| m.plugins.clone()).unwrap_or_default(),
+        "plugin_updates": match (live.as_ref(), s.node.inner.data_dir.as_deref()) {
+            (Some(m), Some(dd)) => aspen_node::plugins::updates_for(dd, &m.plugins),
+            _ => Vec::new(),
+        },
         "summary": live.as_ref().map(|m| aspen_node::node::summary_json(m)),
         "git": aspen_node::gitstate::get(&a.repo),
         "last_exit_code": a.last_exit_code,
@@ -1212,6 +1228,188 @@ async fn post_permission(
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::GONE, e).into_response(),
     }
+}
+
+// ---- plugins (PROPOSALS §7): the registry is mesh-synced; the catalog and
+// cache are this node's. Writes broadcast the roster so peers pull.
+
+async fn get_plugins(State(s): S) -> impl IntoResponse {
+    Json(aspen_node::plugins::registry_json(&s.node.inner))
+}
+
+#[derive(Deserialize, Default)]
+struct SyncQuery {
+    marketplace: Option<String>,
+}
+
+async fn post_plugins_sync(
+    State(s): S,
+    axum::extract::Query(q): axum::extract::Query<SyncQuery>,
+) -> impl IntoResponse {
+    match aspen_node::plugins::spawn_sync(s.node.inner.clone(), q.marketplace).await {
+        Ok(c) => Json(json!(c)).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MarketBody {
+    source: aspen_node::plugins::MarketSource,
+}
+
+async fn put_marketplace(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<MarketBody>,
+) -> impl IntoResponse {
+    let now = aspen_node::store::now_epoch();
+    let m = aspen_node::plugins::Marketplace {
+        name,
+        source: b.source,
+        added_at: now,
+        updated_at: now,
+        deleted: false,
+    };
+    match s.node.inner.store.upsert_marketplace(&m) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            let inner = s.node.inner.clone();
+            let only = m.name.clone();
+            tokio::spawn(async move {
+                let _ = aspen_node::plugins::spawn_sync(inner, Some(only)).await;
+            });
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn delete_marketplace(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    let cur = s
+        .node
+        .inner
+        .store
+        .marketplaces(true)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|m| m.name == name);
+    let Some(mut m) = cur else {
+        return err(StatusCode::NOT_FOUND, "no such marketplace").into_response();
+    };
+    m.deleted = true;
+    m.updated_at = aspen_node::store::now_epoch();
+    match s.node.inner.store.upsert_marketplace(&m) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn put_plugin_rule(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(mut r): Json<aspen_node::plugins::Rule>,
+) -> impl IntoResponse {
+    r.id = id;
+    r.deleted = false;
+    r.updated_at = aspen_node::store::now_epoch();
+    if !matches!(r.scope_kind.as_str(), "mesh" | "node" | "repo" | "session") {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "scope_kind must be mesh | node | repo | session",
+        )
+        .into_response();
+    }
+    match s.node.inner.store.upsert_plugin_rule(&r) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            // Cache what was just activated so the next spawn has it.
+            if r.enabled {
+                let inner = s.node.inner.clone();
+                let only = r.marketplace.clone();
+                tokio::spawn(async move {
+                    let _ = aspen_node::plugins::spawn_sync(inner, Some(only)).await;
+                });
+            }
+            Json(json!({ "ok": true, "rule": r })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn delete_plugin_rule(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
+    let cur = s
+        .node
+        .inner
+        .store
+        .plugin_rules(true)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|r| r.id == id);
+    let Some(mut r) = cur else {
+        return err(StatusCode::NOT_FOUND, "no such rule").into_response();
+    };
+    r.deleted = true;
+    r.updated_at = aspen_node::store::now_epoch();
+    match s.node.inner.store.upsert_plugin_rule(&r) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct EffectiveQuery {
+    /// Agent name (local `bare@repo`, or `bare@repo@node` for a remote one).
+    agent: String,
+}
+
+/// The plugins a session would start with now, per the rules.
+async fn get_plugins_effective(
+    State(s): S,
+    axum::extract::Query(q): axum::extract::Query<EffectiveQuery>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &q.agent) {
+        let _ = bare;
+        // A remote agent's effective set is its home node's business; ask it.
+        return proxy(&s, &node, "plugins_effective", &q.agent, json!({})).await;
+    }
+    let Some(dd) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::NOT_FOUND, "no data dir").into_response();
+    };
+    let rows = s.node.inner.store.agents().unwrap_or_default();
+    let Some(row) = rows.iter().find(|a| a.name == q.agent) else {
+        return err(
+            StatusCode::NOT_FOUND,
+            format!("no agent named @{}", q.agent),
+        )
+        .into_response();
+    };
+    let rules = s.node.inner.store.plugin_rules(false).unwrap_or_default();
+    let node = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| "local".into());
+    let (active, missing) = aspen_node::plugins::resolve(dd, &rules, &node, &row.repo, &row.name);
+    let running = s
+        .node
+        .inner
+        .live(&row.name)
+        .map(|m| m.plugins.clone())
+        .unwrap_or_default();
+    Json(json!({
+        "would_start_with": active,
+        "missing": missing,
+        "running": running,
+        "updates": aspen_node::plugins::updates_for(dd, &running),
+    }))
+    .into_response()
 }
 
 // ---- boards (PROPOSALS §6): stored here, synced across the mesh by

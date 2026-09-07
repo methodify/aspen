@@ -47,6 +47,7 @@ export function scopeForPath(pathname: string): string {
   if (pathname.startsWith("/flow")) return "flow";
   if (pathname.startsWith("/session/")) return "session";
   if (pathname.startsWith("/board")) return "board";
+  if (pathname.startsWith("/plugins")) return "plugins";
   if (pathname.startsWith("/mesh")) return "mesh";
   if (pathname.startsWith("/history")) return "history";
   return "global";
@@ -231,6 +232,7 @@ export function GlobalHotkeys() {
     { key: "m", description: "go to Mesh", handler: () => nav("/mesh") },
     { key: "h", description: "go to History", handler: () => nav("/history") },
     { key: "b", description: "go to Boards", handler: () => nav("/boards") },
+    { key: "p", description: "go to Plugins", handler: () => nav("/plugins") },
     { key: "[", description: "collapse / expand the rail", handler: () => window.dispatchEvent(new Event("aspen:rail")) },
     { key: "⌘K", description: "command palette" },
     { key: "?", description: "this help" },

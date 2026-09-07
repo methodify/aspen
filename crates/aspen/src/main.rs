@@ -408,6 +408,7 @@ async fn main() -> Result<()> {
             }
             if !no_resume {
                 auto_revive(&cli.data_dir, node.clone());
+                aspen_node::plugins::spawn_sync_timer(node.inner.clone());
             }
             // Servicing: report the last updater's outcome, learn the
             // harness version, start the release check + drain loops.

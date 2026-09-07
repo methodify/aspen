@@ -1,0 +1,19 @@
+.plugins-page h2 { margin-top: 22px; font-size: 14px; }
+.mk-list { display: flex; flex-direction: column; gap: 4px; }
+.mk-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; flex-wrap: wrap; }
+.mk-name { color: var(--text-hi); font-weight: 600; }
+.mk-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.mk-add input, .mk-add select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
+.plg-search { width: 100%; max-width: 520px; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; margin-bottom: 8px; }
+.plg-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.plg-table th { text-align: left; font-weight: 500; color: var(--text-dim); padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.plg-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.plg-table tr.open td { background: var(--bg-strip); }
+.plg-desc { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.matrix { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-panel, #fff); }
+.mx-group { margin: 10px 0 4px; }
+.mx-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+.mx-kind { width: 56px; }
+.mx-scope { min-width: 240px; }
+.plugins-menu .row { display: flex; gap: 8px; align-items: baseline; padding: 4px 10px; }
+.plugin-nag { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--sig-gate-dim, #fff4e0); border-bottom: 1px solid var(--line); font-size: 12px; }

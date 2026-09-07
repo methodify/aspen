@@ -111,6 +111,24 @@ CREATE TABLE IF NOT EXISTS boards(
   deleted    INTEGER NOT NULL DEFAULT 0,
   query      TEXT
 );
+CREATE TABLE IF NOT EXISTS marketplaces(
+  name       TEXT PRIMARY KEY,
+  source     TEXT NOT NULL,
+  added_at   REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  deleted    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS plugin_rules(
+  id          TEXT PRIMARY KEY,
+  marketplace TEXT NOT NULL,
+  plugin      TEXT NOT NULL,
+  scope_kind  TEXT NOT NULL,
+  scope       TEXT NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  pin         TEXT,
+  updated_at  REAL NOT NULL,
+  deleted     INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS seen_sessions(
   repo       TEXT NOT NULL,
   session_id TEXT NOT NULL,
@@ -1002,6 +1020,139 @@ impl BusStore {
                 for b in id.as_bytes().iter().chain(format!("{t:.3}").as_bytes()) {
                     acc ^= *b as u64;
                     acc = acc.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        format!("{acc:016x}")
+    }
+
+    // ----------------------------------------------------- plugin registry
+
+    pub fn marketplaces(&self, with_deleted: bool) -> Result<Vec<crate::plugins::Marketplace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, source, added_at, updated_at, deleted FROM marketplaces ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, f64>(2)?,
+                    r.get::<_, f64>(3)?,
+                    r.get::<_, i64>(4)? != 0,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(name, source, added_at, updated_at, deleted)| {
+                let source = serde_json::from_str(&source).ok()?;
+                (with_deleted || !deleted).then_some(crate::plugins::Marketplace {
+                    name,
+                    source,
+                    added_at,
+                    updated_at,
+                    deleted,
+                })
+            })
+            .collect())
+    }
+
+    pub fn upsert_marketplace(&self, m: &crate::plugins::Marketplace) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<f64> = conn
+            .query_row(
+                "SELECT updated_at FROM marketplaces WHERE name=?1",
+                params![m.name],
+                |r| r.get(0),
+            )
+            .ok();
+        if cur.is_some_and(|t| t >= m.updated_at) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO marketplaces(name, source, added_at, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET source=?2, updated_at=?4, deleted=?5",
+            params![m.name, serde_json::to_string(&m.source)?, m.added_at, m.updated_at, m.deleted as i64],
+        )?;
+        Ok(true)
+    }
+
+    pub fn plugin_rules(&self, with_deleted: bool) -> Result<Vec<crate::plugins::Rule>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, marketplace, plugin, scope_kind, scope, enabled, pin, updated_at, deleted FROM plugin_rules ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::plugins::Rule {
+                    id: r.get(0)?,
+                    marketplace: r.get(1)?,
+                    plugin: r.get(2)?,
+                    scope_kind: r.get(3)?,
+                    scope: r.get(4)?,
+                    enabled: r.get::<_, i64>(5)? != 0,
+                    pin: r.get(6)?,
+                    updated_at: r.get(7)?,
+                    deleted: r.get::<_, i64>(8)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| with_deleted || !r.deleted)
+            .collect())
+    }
+
+    pub fn upsert_plugin_rule(&self, r: &crate::plugins::Rule) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<f64> = conn
+            .query_row(
+                "SELECT updated_at FROM plugin_rules WHERE id=?1",
+                params![r.id],
+                |x| x.get(0),
+            )
+            .ok();
+        if cur.is_some_and(|t| t >= r.updated_at) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO plugin_rules(id, marketplace, plugin, scope_kind, scope, enabled, pin, updated_at, deleted)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET marketplace=?2, plugin=?3, scope_kind=?4, scope=?5, enabled=?6, pin=?7, updated_at=?8, deleted=?9",
+            params![r.id, r.marketplace, r.plugin, r.scope_kind, r.scope, r.enabled as i64, r.pin, r.updated_at, r.deleted as i64],
+        )?;
+        Ok(true)
+    }
+
+    /// Digest over both registry tables (tombstones included); rides the
+    /// roster so peers know when to pull.
+    pub fn plugin_registry_digest(&self) -> String {
+        let conn = self.conn.lock().unwrap();
+        let mut acc: u64 = 0xcbf29ce484222325;
+        let mut feed = |s: &str| {
+            for b in s.as_bytes() {
+                acc ^= *b as u64;
+                acc = acc.wrapping_mul(0x100000001b3);
+            }
+        };
+        if let Ok(mut st) = conn.prepare("SELECT name, updated_at FROM marketplaces ORDER BY name")
+        {
+            if let Ok(rows) =
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            {
+                for (n, t) in rows.flatten() {
+                    feed(&format!("m{n}{t:.3}"));
+                }
+            }
+        }
+        if let Ok(mut st) = conn.prepare("SELECT id, updated_at FROM plugin_rules ORDER BY id") {
+            if let Ok(rows) =
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            {
+                for (n, t) in rows.flatten() {
+                    feed(&format!("r{n}{t:.3}"));
                 }
             }
         }

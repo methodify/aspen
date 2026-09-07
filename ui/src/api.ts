@@ -108,6 +108,9 @@ export interface UpdateStatus {
 export type TurnState = "idle" | "busy";
 
 export interface Agent {
+  /** Plugins the running process started with, and newer cached versions (PROPOSALS §7). */
+  plugins?: ActivePlugin[];
+  plugin_updates?: PluginUpdate[];
   /** Set when the session was moved elsewhere: its new full address. */
   moved_to?: string | null;
   /** The address: `bare@repo` locally, `bare@repo@node` for a remote
@@ -164,6 +167,60 @@ export interface BusMessage {
 }
 
 /** A tool call chip on a rehydrated assistant item. */
+/** Plugins (PROPOSALS §7). */
+export type MarketSource = { source: "github"; repo: string } | { source: "git"; url: string } | { source: "directory"; path: string };
+export interface Marketplace {
+  name: string;
+  source: MarketSource;
+  added_at: number;
+  updated_at: number;
+}
+export interface PluginRule {
+  id: string;
+  marketplace: string;
+  plugin: string;
+  scope_kind: "mesh" | "node" | "repo" | "session" | string;
+  scope: string;
+  enabled: boolean;
+  pin?: string | null;
+  updated_at: number;
+  deleted?: boolean;
+}
+export interface CatalogPlugin {
+  marketplace: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  version?: string | null;
+  current: string;
+  source: unknown;
+  cached: string[];
+}
+export interface PluginCatalog {
+  synced_at: Record<string, number>;
+  errors: Record<string, string>;
+  plugins: CatalogPlugin[];
+}
+export interface PluginRegistry {
+  marketplaces: Marketplace[];
+  rules: PluginRule[];
+  catalog: PluginCatalog;
+  node: string | null;
+}
+export interface ActivePlugin {
+  marketplace: string;
+  plugin: string;
+  version: string;
+  path: string;
+  via: string;
+}
+export interface PluginUpdate {
+  plugin: string;
+  marketplace: string;
+  running: string;
+  available: string;
+}
+
 /** Boards (PROPOSALS §6): a split tree of panes. */
 export interface BoardPane {
   kind: "session" | "view" | "empty";
@@ -826,6 +883,17 @@ export const api = {
   transcriptAfter: (name: string, after: string) =>
     request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
+  plugins: () => request<PluginRegistry>("/api/plugins"),
+  pluginsSync: (marketplace?: string) =>
+    request<PluginCatalog>(`/api/plugins/sync${marketplace ? `?marketplace=${enc(marketplace)}` : ""}`, { method: "POST" }),
+  putMarketplace: (name: string, source: MarketSource) =>
+    request<{ ok: boolean }>(`/api/plugins/marketplaces/${enc(name)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source }) }),
+  deleteMarketplace: (name: string) => request<{ ok: boolean }>(`/api/plugins/marketplaces/${enc(name)}`, { method: "DELETE" }),
+  putPluginRule: (r: PluginRule) =>
+    request<{ ok: boolean }>(`/api/plugins/rules/${enc(r.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(r) }),
+  deletePluginRule: (id: string) => request<{ ok: boolean }>(`/api/plugins/rules/${enc(id)}`, { method: "DELETE" }),
+  pluginsEffective: (agent: string) =>
+    request<{ would_start_with: ActivePlugin[]; missing: string[]; running: ActivePlugin[]; updates: PluginUpdate[] }>(`/api/plugins/effective?agent=${enc(agent)}`),
   boards: () => request<Board[]>("/api/boards"),
   putBoard: async (b: Board) => {
     const r = await request<{ ok: boolean }>(`/api/boards/${enc(b.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });

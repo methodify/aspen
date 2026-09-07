@@ -23,6 +23,8 @@ import {
   type OutgoingAttachment,
   type Board,
   type BoardNode,
+  type ActivePlugin,
+  type PluginUpdate,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -532,6 +534,64 @@ const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem 
 
 // ---------------------------------------------------------------------------
 // The page
+
+/** "plugins ▾": what this session runs with (PROPOSALS §7), what it
+ *  would start with now, and a link to the matrix. */
+function PluginsMenu({ agent, running, updates }: { agent: string; running: ActivePlugin[]; updates: PluginUpdate[] }) {
+  const [open, setOpen] = useState(false);
+  const [eff, setEff] = useState<{ would_start_with: ActivePlugin[]; missing: string[] } | null>(null);
+  const [at, setAt] = useState({ top: 0, left: 0 });
+  return (
+    <span className="artifacts-wrap">
+      <button
+        className="charter-toggle"
+        onClick={(e) => {
+          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 460)) });
+          setOpen((o) => !o);
+          if (!open) api.pluginsEffective(agent).then(setEff).catch(() => setEff({ would_start_with: [], missing: [] }));
+        }}
+        title="plugins this session runs with, by rule"
+      >
+        plugins{running.length ? ` ${running.length}` : ""}{updates.length ? " ↑" : ""} ▾
+      </button>
+      {open &&
+        createPortal(
+          <div className="artifacts-menu plugins-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 440 }} role="menu" onMouseLeave={() => setOpen(false)}>
+            <div className="row"><span className="label">running with</span></div>
+            {running.length === 0 && <div className="row dim">no plugins (by rule, or not running)</div>}
+            {running.map((p) => {
+              const u = updates.find((x) => x.plugin === p.plugin && x.marketplace === p.marketplace);
+              return (
+                <div className="row" key={`${p.plugin}@${p.marketplace}`}>
+                  <span className="mono">{p.plugin}</span>
+                  <span className="mono-meta">@{p.marketplace} · {p.version} · via {p.via}</span>
+                  {u && <span className="chip chip-busy" title="a newer version is cached; restart to pick it up">{u.available} cached</span>}
+                </div>
+              );
+            })}
+            {eff && (eff.would_start_with.some((w) => !running.some((r) => r.plugin === w.plugin && r.marketplace === w.marketplace)) || running.some((r) => !eff.would_start_with.some((w) => w.plugin === r.plugin && w.marketplace === r.marketplace))) && (
+              <>
+                <div className="row"><span className="label">would start with now</span></div>
+                {eff.would_start_with.map((p) => (
+                  <div className="row" key={`w-${p.plugin}@${p.marketplace}`}>
+                    <span className="mono">{p.plugin}</span>
+                    <span className="mono-meta">@{p.marketplace} · {p.version} · via {p.via}</span>
+                  </div>
+                ))}
+                {eff.would_start_with.length === 0 && <div className="row dim">nothing</div>}
+              </>
+            )}
+            {eff && eff.missing.length > 0 && <div className="row error-text mono-meta">not cached yet: {eff.missing.join(", ")}</div>}
+            <div className="row">
+              <Link to={`/plugins`} className="mono-meta" onClick={() => setOpen(false)}>manage plugins…</Link>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
+}
 
 /** "add to board": put this session in a board's first empty pane, or
  *  split its last pane. */
@@ -1225,6 +1285,23 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
     }
   }
 
+  const [restarting, setRestarting] = useState(false);
+  /** Stop and revive in place: same session id, new process, new plugin set. */
+  async function restartForPlugins() {
+    setRestarting(true);
+    setActionError(null);
+    try {
+      await api.deleteAgent(name);
+      await new Promise((r) => window.setTimeout(r, 800));
+      await api.revive(name, "in_place");
+      void refreshAgents();
+    } catch (e) {
+      setActionError(`restart: ${errText(e)}`);
+    } finally {
+      setRestarting(false);
+    }
+  }
+
   async function reviveSession() {
     setReviving(true);
     setActionError(null);
@@ -1825,6 +1902,7 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
           </button>
         )}
         <AddToBoard agent={name} />
+        <PluginsMenu agent={name} running={agent?.plugins ?? []} updates={agent?.plugin_updates ?? []} />
         {moveOpen &&
           createPortal(
             <div className="trust-backdrop" onClick={() => !moveBusy && setMoveOpen(false)} role="presentation">
@@ -2075,6 +2153,17 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
       )}
 
       {liveGate.dialog}
+      {(agent?.plugin_updates?.length ?? 0) > 0 && !exited && (
+        <div className="plugin-nag">
+          <span>
+            newer plugin version{agent!.plugin_updates!.length === 1 ? "" : "s"} cached:{" "}
+            {agent!.plugin_updates!.map((u) => `${u.plugin} ${u.running} → ${u.available}`).join(", ")} — this session keeps what it started with until it restarts.
+          </span>
+          <button className="btn sm primary" disabled={busy || restarting} onClick={() => void restartForPlugins()}>
+            {restarting ? "restarting…" : "restart to pick them up"}
+          </button>
+        </div>
+      )}
       {agent?.moved_to && (
         <div className="exited-banner">
           <span>

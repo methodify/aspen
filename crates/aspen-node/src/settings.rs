@@ -25,6 +25,9 @@ pub struct Settings {
     /// Self-update policy (docs/SERVICING.md §2).
     #[serde(default)]
     pub update: UpdateSettings,
+    /// Plugin library (docs/PLUGINS.md).
+    #[serde(default)]
+    pub plugins: PluginSettings,
     /// Extra federation dial URLs this node advertises to peers (a tailnet
     /// name, a port-forward…), comma-separated. Rides the roster.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -259,4 +262,11 @@ mod tests {
         p.mode = Some("yolo".into());
         assert!(p.validate().is_err());
     }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PluginSettings {
+    /// Minutes between marketplace syncs (default 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_minutes: Option<u64>,
 }

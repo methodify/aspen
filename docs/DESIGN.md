@@ -794,3 +794,14 @@ cleaner lane for roster updates than user-message headers.
   computed from a fleet query. Found on the way: a forked session revived
   before its first turn resumed the parent in place — rows now carry
   `fork_pending` so the revive forks again.
+- **2026-09-07 — v0.13, plugins** (PROPOSALS-2026-09 §7, BACKLOG B-7;
+  reference: PLUGINS.md). Aspen keeps its own plugin library rather than
+  driving the harness's install state: a mesh-synced registry of
+  marketplaces and activation rules (mesh / node / repo / session, most
+  specific wins), a per-node checkout + catalog + versioned cache, and
+  sessions spawned with `--plugin-dir` for every enclosing rule. Sync at
+  start, on a timer, on demand, and when something is activated. A
+  running session keeps the version it started with; a newer cached
+  version is offered as a restart in the session view, never applied
+  under it. Verified on the rig end to end, including the model listing
+  the plugin's skills and a restart moving it to the new version.

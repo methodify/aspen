@@ -223,3 +223,19 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - Roster field `boards_digest`; mesh op `boards` returns every row including tombstones.
 - Agents carry `fork_pending` internally (not in the API): a forking spawn sets it, the runtime's
   announced id clears it, and a revive while set forks again.
+
+
+## Plugins (v0.13) — PLUGINS.md
+
+- `GET /api/plugins` — `{marketplaces, rules, catalog, node}`.
+- `PUT /api/plugins/marketplaces/{name}` body `{source: {source:"github", repo} | {source:"git", url} |
+  {source:"directory", path}}`; `DELETE` tombstones. Both broadcast the roster; a put starts a sync.
+- `PUT /api/plugins/rules/{id}` body `Rule {marketplace, plugin, scope_kind, scope, enabled, pin?}`;
+  `DELETE` tombstones. Enabling starts a sync of that marketplace.
+- `POST /api/plugins/sync[?marketplace=name]` — returns the catalog.
+- `GET /api/plugins/effective?agent=name` — `{would_start_with, missing, running, updates}` (proxied to
+  the home node for a remote agent).
+- Agents carry `plugins` (what the process started with) and `plugin_updates`.
+- Roster field `plugins_digest`; mesh ops `plugin_registry`, `plugins_sync`, `plugins_registry_view`,
+  `plugins_effective`.
+- Settings: `plugins.sync_minutes` (default 60).
