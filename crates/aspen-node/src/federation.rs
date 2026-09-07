@@ -560,6 +560,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
                     TurnState::Busy => "busy",
                 }),
                 "summary": live.as_ref().map(|s| crate::node::summary_json(s)),
+                "activities": live.as_ref().map(|_| crate::node::activity_counts(&a.repo, a.session_id.as_deref(), a.last_spawned_at)),
             })
         })
         .collect();
@@ -1257,6 +1258,43 @@ async fn serve_api_req(
         "reload" => node.reload_plugins(agent).await,
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
+        "activities" => {
+            let rows = node.inner.store.agents()?;
+            let row = rows
+                .iter()
+                .find(|a| a.name == agent)
+                .ok_or_else(|| anyhow!("no agent named @{agent}"))?;
+            let sid = row
+                .session_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("no session on record"))?;
+            let mut acts =
+                aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at);
+            acts.reverse();
+            Ok(json!(acts))
+        }
+        "subagent" => {
+            let rows = node.inner.store.agents()?;
+            let row = rows
+                .iter()
+                .find(|a| a.name == agent)
+                .ok_or_else(|| anyhow!("no agent named @{agent}"))?;
+            let sid = row
+                .session_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("no session on record"))?;
+            let id = body
+                .get("id")
+                .and_then(|i| i.as_str())
+                .ok_or_else(|| anyhow!("missing id"))?;
+            if id.contains(['/', '\\', '.']) {
+                return Err(anyhow!("bad agent id"));
+            }
+            let path = aspen_claude::activity::subagent_transcript(&row.repo, sid, id);
+            Ok(json!(
+                aspen_claude::transcript::rehydrate_file(&path).unwrap_or_default()
+            ))
+        }
         "boards" => Ok(json!(node.inner.store.boards(true)?)),
         "plugin_registry" => Ok(json!({
             "marketplaces": node.inner.store.marketplaces(true)?,

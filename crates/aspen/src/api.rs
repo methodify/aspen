@@ -70,6 +70,8 @@ pub async fn serve(
         .route("/agents/{name}", delete(delete_agent))
         .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/artifacts", get(get_artifacts))
+        .route("/agents/{name}/activities", get(get_activities))
+        .route("/agents/{name}/subagent/{id}", get(get_subagent))
         .route("/agents/{name}/move", post(post_move))
         .route("/plugins", get(get_plugins))
         .route("/plugins/sync", post(post_plugins_sync))
@@ -879,6 +881,9 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         "pending": s.node.inner.store.pending_count(&a.name).unwrap_or(0),
         "spawn_note": live.as_ref().and_then(|m| m.spawn_note.lock().unwrap().clone()),
         "plugins": live.as_ref().map(|m| m.plugins.clone()).unwrap_or_default(),
+        // Background work beside the main turn (activity.rs); counts only
+        // while live — a stopped session's ledger is history.
+        "activities": live.as_ref().map(|_| aspen_node::node::activity_counts(&a.repo, a.session_id.as_deref(), a.last_spawned_at)),
         "plugin_updates": match (live.as_ref(), s.node.inner.data_dir.as_deref()) {
             (Some(m), Some(dd)) => aspen_node::plugins::updates_for(dd, &m.plugins),
             _ => Vec::new(),
@@ -1583,6 +1588,45 @@ async fn post_move(
             format!("via node '{}': {e}", body.to),
         )
         .into_response(),
+    }
+}
+
+/// The session's activity ledger (PROPOSALS §8), newest first.
+async fn get_activities(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "activities", &bare, json!({})).await;
+    }
+    let rows = s.node.inner.store.agents().unwrap_or_default();
+    let Some(row) = rows.iter().find(|a| a.name == name) else {
+        return err(StatusCode::NOT_FOUND, format!("no agent named @{name}")).into_response();
+    };
+    let Some(sid) = row.session_id.as_deref() else {
+        return Json(json!([])).into_response();
+    };
+    let mut acts = aspen_claude::activity::activities_for(&row.repo, sid, row.last_spawned_at);
+    acts.reverse();
+    Json(json!(acts)).into_response()
+}
+
+/// A subagent's own transcript, rehydrated like the session's.
+async fn get_subagent(State(s): S, Path((name, id)): Path<(String, String)>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "subagent", &bare, json!({ "id": id })).await;
+    }
+    let rows = s.node.inner.store.agents().unwrap_or_default();
+    let Some(row) = rows.iter().find(|a| a.name == name) else {
+        return err(StatusCode::NOT_FOUND, format!("no agent named @{name}")).into_response();
+    };
+    let Some(sid) = row.session_id.as_deref() else {
+        return Json(json!([])).into_response();
+    };
+    if id.contains(['/', '\\', '.']) {
+        return err(StatusCode::BAD_REQUEST, "bad agent id").into_response();
+    }
+    let path = aspen_claude::activity::subagent_transcript(&row.repo, sid, &id);
+    match aspen_claude::transcript::rehydrate_file(&path) {
+        Ok(items) => Json(items).into_response(),
+        Err(_) => err(StatusCode::NOT_FOUND, "no transcript for that agent (yet)").into_response(),
     }
 }
 

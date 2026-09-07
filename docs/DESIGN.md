@@ -805,3 +805,13 @@ cleaner lane for roster updates than user-message headers.
   version is offered as a restart in the session view, never applied
   under it. Verified on the rig end to end, including the model listing
   the plugin's skills and a restart moving it to the new version.
+- **2026-09-07 — v0.14, activity** (PROPOSALS-2026-09 §8, BACKLOG B-8;
+  reference: ACTIVITY.md). A per-session ledger of background tasks,
+  subagents, workflows and monitors derived from the transcript itself
+  (start = the tool_use, id = what the harness answered, end = its
+  `<task-notification>`), cached by the file's size and mtime, with a
+  stale rule: anything still "running" from before the current process
+  is `unknown`. Counts ride the agent JSON and the roster; chips in Now,
+  board pane bars and the session header pulse while anything runs; an
+  *activity ▾* drawer lists the ledger; a subagent's own transcript opens
+  read-only in the session view, polled while it runs, over the mesh.

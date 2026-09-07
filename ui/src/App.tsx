@@ -393,6 +393,7 @@ export default function App() {
               <Route path="/flow" element={<Conversations />} />
               <Route path="/flow/:channel" element={<Conversations />} />
               <Route path="/session/:name" element={<Session />} />
+              <Route path="/session/:name/agent/:agentId" element={<Session />} />
               <Route path="/view/:name" element={<View />} />
               <Route path="/boards" element={<BoardsPage />} />
               <Route path="/plugins" element={<Plugins />} />

@@ -165,9 +165,15 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
 }
 
 fn is_real_user_line(v: &Value) -> bool {
+    is_real_user_line_in(v, false)
+}
+
+/// `sidechain_file`: the file itself is a subagent's, whose every line is
+/// a sidechain — those are its real lines.
+fn is_real_user_line_in(v: &Value, sidechain_file: bool) -> bool {
     if v.get("isMeta").and_then(|b| b.as_bool()) == Some(true)
         || v.get("isCompactSummary").and_then(|b| b.as_bool()) == Some(true)
-        || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true)
+        || (!sidechain_file && v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true))
     {
         return false;
     }
@@ -318,12 +324,23 @@ pub fn rehydrate_after(
 }
 
 pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
-    let path = transcript_path(project_path, session_id);
-    let text = std::fs::read_to_string(&path)
+    rehydrate_file(&transcript_path(project_path, session_id))
+}
+
+/// Rehydrate any transcript file — the session's, or a subagent's
+/// sidechain (activity.rs), which has the same line shapes.
+pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
+    let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading transcript {}", path.display()))?;
     let mut items: Vec<Value> = Vec::new();
     let mut last_assistant_id: Option<String> = None;
 
+    // A subagent's file is all sidechain lines; only skip sidechains in a
+    // main transcript (where they are the odd stray).
+    let sidechain_file = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n == "subagents");
     // Pass 1: tool results, keyed by tool_use_id. They ride user lines that
     // follow the assistant's call; the card wants them attached to the call.
     let mut results: std::collections::HashMap<String, (String, bool)> =
@@ -333,7 +350,7 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
             continue;
         };
         if v.get("type").and_then(|t| t.as_str()) != Some("user")
-            || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true)
+            || (!sidechain_file && v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true))
         {
             continue;
         }
@@ -361,7 +378,7 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true)
+        if (!sidechain_file && v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true))
             || v.get("isMeta").and_then(|b| b.as_bool()) == Some(true)
             || v.get("isCompactSummary").and_then(|b| b.as_bool()) == Some(true)
         {
@@ -372,7 +389,7 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
         let uuid = str_field(&v, "uuid");
         match ty {
             "user" => {
-                if !is_real_user_line(&v) {
+                if !is_real_user_line_in(&v, sidechain_file) {
                     continue;
                 }
                 let Some(text) = extract_text(&v) else {

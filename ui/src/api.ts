@@ -108,6 +108,8 @@ export interface UpdateStatus {
 export type TurnState = "idle" | "busy";
 
 export interface Agent {
+  /** Running-activity counts (live sessions only). */
+  activities?: ActivityCounts | null;
   /** Plugins the running process started with, and newer cached versions (PROPOSALS §7). */
   plugins?: ActivePlugin[];
   plugin_updates?: PluginUpdate[];
@@ -167,6 +169,26 @@ export interface BusMessage {
 }
 
 /** A tool call chip on a rehydrated assistant item. */
+/** Activity (PROPOSALS §8): background work beside the main turn. */
+export interface Activity {
+  id: string;
+  kind: "task" | "agent" | "workflow" | "monitor" | string;
+  label: string;
+  tool_use_id: string;
+  started_at: string | null;
+  ended_at: string | null;
+  status: "running" | "completed" | "stopped" | "failed" | "done" | "unknown" | string;
+  detail: Record<string, unknown>;
+  has_transcript?: boolean;
+}
+export interface ActivityCounts {
+  running: number;
+  agents: number;
+  tasks: number;
+  workflows: number;
+  monitors: number;
+}
+
 /** Plugins (PROPOSALS §7). */
 export type MarketSource = { source: "github"; repo: string } | { source: "git"; url: string } | { source: "directory"; path: string };
 export interface Marketplace {
@@ -241,7 +263,7 @@ export interface Board {
   name: string;
   layout: BoardNode;
   /** A dynamic board: panes are whatever matches. */
-  query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "any"; name?: string; style?: "grid" | "main" };
+  query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;
   deleted?: boolean;
 }
@@ -883,6 +905,8 @@ export const api = {
   transcriptAfter: (name: string, after: string) =>
     request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
+  activities: (name: string) => request<Activity[]>(`/api/agents/${enc(name)}/activities`),
+  subagent: (name: string, id: string) => request<HistoryItem[]>(`/api/agents/${enc(name)}/subagent/${enc(id)}`),
   plugins: () => request<PluginRegistry>("/api/plugins"),
   pluginsSync: (marketplace?: string) =>
     request<PluginCatalog>(`/api/plugins/sync${marketplace ? `?marketplace=${enc(marketplace)}` : ""}`, { method: "POST" }),

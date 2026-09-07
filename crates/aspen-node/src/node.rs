@@ -195,6 +195,23 @@ pub fn normalize_repo(p: &Path) -> PathBuf {
 
 /// The work summary as the API/roster carries it (files as a count + a
 /// short list; busy_since/last_tool folded in).
+/// Running-activity counts for a live session (activity.rs), from the
+/// transcript on disk; cached by the file's size and mtime.
+pub fn activity_counts(
+    repo: &Path,
+    session_id: Option<&str>,
+    process_started: Option<f64>,
+) -> aspen_claude::activity::ActivityCounts {
+    match session_id {
+        Some(sid) => aspen_claude::activity::counts(&aspen_claude::activity::activities_for(
+            repo,
+            sid,
+            process_started,
+        )),
+        None => aspen_claude::activity::ActivityCounts::default(),
+    }
+}
+
 pub fn summary_json(s: &ManagedSession) -> serde_json::Value {
     let w = s.summary.lock().unwrap().clone();
     let (busy_since, last_tool) = s.presence_detail();

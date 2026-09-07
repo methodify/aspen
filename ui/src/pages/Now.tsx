@@ -125,6 +125,11 @@ function WorkCard({
         {a.node && a.remote && <NodeChip node={a.node} />}
         <span style={{ flex: 1 }} />
         <span className={`wc-state ${p}`}>{state}</span>
+        {(a.activities?.running ?? 0) > 0 && (
+          <span className="chip mono activity-chip" title="background work beside the main turn">
+            {[a.activities!.agents ? `${a.activities!.agents} agent${a.activities!.agents === 1 ? "" : "s"}` : "", a.activities!.tasks ? `${a.activities!.tasks} task${a.activities!.tasks === 1 ? "" : "s"}` : "", a.activities!.workflows ? `${a.activities!.workflows} wf` : "", a.activities!.monitors ? `${a.activities!.monitors} mon` : ""].filter(Boolean).join(" · ")}
+          </span>
+        )}
         {a.pending > 0 && (
           <span className="chip mono" style={{ color: "var(--sig-gate)" }}>
             {a.pending} pending

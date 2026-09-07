@@ -293,6 +293,9 @@ pub struct AgentRow {
     /// has not announced yet (that comes with the first turn). A revive
     /// before then must fork again, or it resumes the parent in place.
     pub fork_pending: bool,
+    /// When the current (or last) process was started; activities from
+    /// before it cannot still be running.
+    pub last_spawned_at: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -522,7 +525,7 @@ impl BusStore {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to, fork_pending FROM agents ORDER BY name",
+            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to, fork_pending, last_spawned_at FROM agents ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -538,6 +541,7 @@ impl BusStore {
                     last_exit_at: r.get(8)?,
                     moved_to: r.get(9)?,
                     fork_pending: r.get::<_, i64>(10)? != 0,
+                    last_spawned_at: r.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

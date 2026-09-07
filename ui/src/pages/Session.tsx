@@ -25,6 +25,8 @@ import {
   type BoardNode,
   type ActivePlugin,
   type PluginUpdate,
+  type Activity,
+  type ActivityCounts,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -535,6 +537,93 @@ const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem 
 // ---------------------------------------------------------------------------
 // The page
 
+function fmtElapsed(startIso: string | null, endIso: string | null): string {
+  if (!startIso) return "";
+  const a = Date.parse(startIso);
+  const b = endIso ? Date.parse(endIso) : Date.now();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return "";
+  const s = Math.max(0, Math.round((b - a) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** "activity ▾": the session's ledger (PROPOSALS §8) — background tasks,
+ *  subagents, workflows, monitors — running first; agents open their own
+ *  transcript. */
+function ActivityMenu({ agent, counts }: { agent: string; counts: ActivityCounts | null }) {
+  const [open, setOpen] = useState(false);
+  const [acts, setActs] = useState<Activity[] | null>(null);
+  const [at, setAt] = useState({ top: 0, left: 0 });
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const load = () => api.activities(agent).then(setActs).catch(() => setActs([]));
+    void load();
+    const t = window.setInterval(() => {
+      void load();
+      setTick((n) => n + 1);
+    }, 3000);
+    return () => window.clearInterval(t);
+  }, [open, agent]);
+  const running = counts?.running ?? 0;
+  const label = counts
+    ? [counts.agents ? `${counts.agents} agent${counts.agents === 1 ? "" : "s"}` : "", counts.tasks ? `${counts.tasks} task${counts.tasks === 1 ? "" : "s"}` : "", counts.workflows ? `${counts.workflows} wf` : "", counts.monitors ? `${counts.monitors} mon` : ""].filter(Boolean).join(" · ")
+    : "";
+  const sorted = (acts ?? []).slice().sort((x, y) => Number(y.status === "running") - Number(x.status === "running"));
+  return (
+    <span className="artifacts-wrap">
+      <button
+        className={`charter-toggle${running ? " activity-live" : ""}`}
+        onClick={(e) => {
+          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 560)) });
+          setOpen((o) => !o);
+        }}
+        title="background tasks, subagents, workflows and monitors of this session"
+      >
+        activity{running ? ` ${label}` : ""} ▾
+      </button>
+      {open &&
+        createPortal(
+          <div className="artifacts-menu activity-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 540 }} role="menu" onMouseLeave={() => setOpen(false)}>
+            {acts === null ? (
+              <div className="row dim">loading…</div>
+            ) : sorted.length === 0 ? (
+              <div className="row dim">nothing beside the main turn — no background tasks, subagents, workflows or monitors yet</div>
+            ) : (
+              sorted.map((a) => (
+                <div className={`row act-row act-${a.status}`} key={`${a.kind}:${a.id}:${a.tool_use_id}`}>
+                  <span className={`chip mono act-kind act-${a.kind}`}>{a.kind}</span>
+                  <span className="act-body">
+                    <span className="act-label">
+                      {a.kind === "agent" && a.has_transcript ? (
+                        <Link to={`/session/${encodeURIComponent(agent)}/agent/${encodeURIComponent(a.id)}`} onClick={() => setOpen(false)} title="open this agent's transcript">
+                          {a.label}
+                        </Link>
+                      ) : (
+                        a.label
+                      )}
+                    </span>
+                    <span className="mono-meta act-detail">
+                      {a.kind === "task" && typeof a.detail["command"] === "string" ? `$ ${String(a.detail["command"]).slice(0, 120)}` : ""}
+                      {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
+                      {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 120) : ""}
+                      {a.kind === "monitor" && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
+                      {typeof a.detail["summary"] === "string" ? ` — ${a.detail["summary"]}` : ""}
+                    </span>
+                  </span>
+                  <span className={`mono-meta act-status ${a.status === "running" ? "live" : ""}`}>
+                    {a.status === "running" ? `running ${fmtElapsed(a.started_at, null)}` : `${a.status}${a.ended_at ? ` · ${fmtElapsed(a.started_at, a.ended_at)}` : ""}`}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
+}
+
 /** "plugins ▾": what this session runs with (PROPOSALS §7), what it
  *  would start with now, and a link to the matrix. */
 function PluginsMenu({ agent, running, updates }: { agent: string; running: ActivePlugin[]; updates: PluginUpdate[] }) {
@@ -679,13 +768,14 @@ export interface PaneMode {
   onSent?: (text: string) => void;
 }
 
-export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
+export function SessionView({ name, pane, subagent }: { name: string; pane?: PaneMode; subagent?: string }) {
   const liveGate = useLiveGate();
   const nav = useNavigate();
   const { agents, agentsLoaded, refreshAgents } = useAppData();
   const agent = agents.find((a) => a.name === name);
 
   const [transcript, dispatch] = useReducer(reducer, undefined, emptyTranscript);
+  const subPollRef = useRef<number | null>(null);
   const transcriptRef = useRef(transcript);
   transcriptRef.current = transcript;
   useEffect(() => {
@@ -1077,6 +1167,23 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
     }
 
     async function start() {
+      if (subagent) {
+        // Read-only view of a subagent's transcript: no socket, no cache;
+        // re-read every 3s while the page is open (the file grows while
+        // the agent runs). connect() is never reached.
+        const poll = async () => {
+          try {
+            const items = await api.subagent(name, subagent);
+            if (disposed) return;
+            dispatch({ type: "seed", state: settleTools(seedFromHistory(items)) });
+          } catch (e) {
+            if (!disposed) setActionError(`subagent: ${errText(e)}`);
+          }
+        };
+        await poll();
+        if (!disposed) subPollRef.current = window.setInterval(() => void poll(), 3000);
+        return;
+      }
       try {
         // A cached state shows at once; only the tail after its last user
         // line is fetched (the whole history if that line is gone).
@@ -1123,6 +1230,7 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
     void start();
     return () => {
       disposed = true;
+      if (subPollRef.current) window.clearInterval(subPollRef.current);
       if (timer !== undefined) window.clearTimeout(timer);
       ws?.close();
     };
@@ -1782,7 +1890,7 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
             className={wsState === "open" ? "dot dot-idle" : "dot dot-down"}
             aria-hidden="true"
           />
-          {exited ? "not running" : wsState === "open" ? "live" : wsState}
+          {subagent ? "read-only" : exited ? "not running" : wsState === "open" ? "live" : wsState}
         </span>
       </header>
 
@@ -1903,6 +2011,7 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
         )}
         <AddToBoard agent={name} />
         <PluginsMenu agent={name} running={agent?.plugins ?? []} updates={agent?.plugin_updates ?? []} />
+        <ActivityMenu agent={name} counts={agent?.activities ?? null} />
         {moveOpen &&
           createPortal(
             <div className="trust-backdrop" onClick={() => !moveBusy && setMoveOpen(false)} role="presentation">
@@ -2153,7 +2262,14 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
       )}
 
       {liveGate.dialog}
-      {(agent?.plugin_updates?.length ?? 0) > 0 && !exited && (
+      {subagent && (
+        <div className="exited-banner">
+          <span>
+            subagent <span className="mono">{subagent}</span> of <Link to={`/session/${encodeURIComponent(name)}`}>@{name}</Link> — read-only, re-read every 3s while it runs
+          </span>
+        </div>
+      )}
+      {(agent?.plugin_updates?.length ?? 0) > 0 && !exited && !subagent && (
         <div className="plugin-nag">
           <span>
             newer plugin version{agent!.plugin_updates!.length === 1 ? "" : "s"} cached:{" "}
@@ -2247,7 +2363,7 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
         </span>
       </div>
 
-      <div className="composer">
+      {!subagent && <div className="composer">
         {acOpen && (
           <div className="ac-pop" role="listbox" aria-label="slash commands">
             <div className="ac-list">
@@ -2318,14 +2434,14 @@ export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
         >
           send
         </button>
-      </div>
+      </div>}
     </div>
   );
 }
 
 export default function Session() {
-  const { name } = useParams<{ name: string }>();
+  const { name, agentId } = useParams<{ name: string; agentId?: string }>();
   if (!name) return <div className="page">no session name.</div>;
   // Keyed so switching agents fully resets transcript + socket state.
-  return <SessionView key={name} name={name} />;
+  return <SessionView key={`${name}:${agentId ?? ""}`} name={name} subagent={agentId} />;
 }

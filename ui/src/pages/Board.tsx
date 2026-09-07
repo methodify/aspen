@@ -151,7 +151,7 @@ function autoLayout(panes: BoardPane[], style: "grid" | "main"): BoardNode {
 export interface DynamicQuery {
   node?: string;
   channel?: string;
-  state?: "busy" | "live" | "attention" | "any";
+  state?: "busy" | "live" | "attention" | "activity" | "any";
   name?: string;
   style?: "grid" | "main";
 }
@@ -167,6 +167,8 @@ function matchQuery(a: Agent, q: DynamicQuery, attention: Set<string>): boolean 
       return a.live;
     case "attention":
       return attention.has(a.name);
+    case "activity":
+      return (a.activities?.running ?? 0) > 0;
     default:
       return true;
   }
@@ -407,6 +409,9 @@ export default function BoardPage() {
             <span className={`dot ${agent.live ? (agent.turn_state === "busy" ? "dot-busy" : "dot-idle") : "dot-down"}`} />
           )}
           {needs && <span className="chip chip-error">needs you</span>}
+          {(agent?.activities?.running ?? 0) > 0 && (
+            <span className="chip mono activity-chip" title="background work">{agent!.activities!.running} bg</span>
+          )}
           {broadcast && p.kind === "session" && <span className="chip chip-busy" title="broadcast is on: messages sent in any pane go to this one too">bcast</span>}
           <span style={{ flex: 1 }} />
           {p.kind === "session" && p.agent && (
@@ -776,6 +781,7 @@ export function BoardsPage() {
           <option value="busy">busy now</option>
           <option value="live">live</option>
           <option value="attention">needs attention</option>
+          <option value="activity">has background activity</option>
           <option value="any">any (incl. stopped)</option>
         </select>
         <select value={dyn.node ?? ""} onChange={(e) => setDyn({ ...dyn, node: e.target.value || undefined })}>

@@ -239,3 +239,12 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - Roster field `plugins_digest`; mesh ops `plugin_registry`, `plugins_sync`, `plugins_registry_view`,
   `plugins_effective`.
 - Settings: `plugins.sync_minutes` (default 60).
+
+
+## Activity (v0.14) — ACTIVITY.md
+
+- `GET /api/agents/{name}/activities` — the ledger, newest first: `Activity {id, kind, label,
+  tool_use_id, started_at, ended_at, status, detail, has_transcript}`.
+- `GET /api/agents/{name}/subagent/{id}` — a subagent's transcript rehydrated like the session's.
+- Agents (and roster entries) carry `activities: {running, agents, tasks, workflows, monitors}` while live.
+- Mesh ops `activities`, `subagent`.

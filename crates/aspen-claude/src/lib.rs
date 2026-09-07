@@ -16,6 +16,7 @@
 //! - `result` is the only end-of-turn signal.
 //! - `--permission-prompt-tool stdio` or the permission surface is dead code.
 
+pub mod activity;
 pub mod broker;
 pub mod mcp;
 pub mod normalize;

@@ -484,3 +484,16 @@
 .session.in-pane.compact .exited-banner { padding: 4px 8px; font-size: 11.5px; gap: 6px; flex-wrap: wrap; }
 .session.in-pane.compact .charter-toggle { white-space: nowrap; }
 .earlier-bar { display: flex; gap: 8px; justify-content: center; padding: 8px 0 12px; }
+/* activity (PROPOSALS §8) */
+.activity-chip { color: var(--live); border-color: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+.charter-toggle.activity-live { color: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.activity-menu .act-row { align-items: flex-start; }
+.act-kind { min-width: 52px; text-align: center; }
+.act-body { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px; }
+.act-label { color: var(--text-hi); }
+.act-label a { color: var(--accent, #b5651d); text-decoration: underline dotted; }
+.act-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-status { white-space: nowrap; }
+.act-status.live { color: var(--live); }
+.act-row.act-unknown { opacity: 0.55; }
