@@ -2,7 +2,7 @@
 
 **Status:** §1–§4 shipped as v0.10, §5 phases 1–2 as v0.11 (2026-09-06;
 MIGRATION.md), §6 as v0.12, §7 as v0.13, §8 as v0.14 (2026-09-07; BOARDS.md,
-PLUGINS.md, ACTIVITY.md). §5 phases 3–4 are open (BACKLOG B-5b). Backlog ids in BACKLOG.md. Each section says what is asked, what exists today, the
+PLUGINS.md, ACTIVITY.md). §5 phases 3–4 shipped as S-1, S-5, S-8 (v0.16–v0.17). Backlog ids in BACKLOG.md. Each section says what is asked, what exists today, the
 design, what it implies beyond the ask, the cost, and open questions.
 Nothing here is built.
 

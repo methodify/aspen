@@ -2,66 +2,69 @@
 
 Feature requests and design candidates, tagged and dated. Each entry names
 the ask as the operator put it, the swath it belongs to, and where its
-design lives once one exists. Shipped items move to the decisions log in
-DESIGN.md §14b with the tag they carried here.
+design lives once one exists. Shipped items are summarized here with the
+tag they carried and detailed in the decisions log, DESIGN.md §14b.
 
 Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
-(the claude process and its transcript), `servicing`, `docs`.
+(a harness process and its store), `servicing`, `docs`.
 
-## Shipped — v0.10, v0.11 (2026-09-06), v0.12, v0.13, v0.14 (2026-09-07)
-
-B-1 composer drafts, B-2 tool calls live-then-summary, B-3 artifact links
-over the mesh, B-4 inline attachments (v0.10); B-5 session migration,
-phases 1–2: move/copy over the mesh, export/import files (v0.11,
-MIGRATION.md); B-6 boards (v0.12, BOARDS.md); B-7 plugins (v0.13, PLUGINS.md); B-8 activity (v0.14, ACTIVITY.md). See DESIGN.md §14b.
-
-## Open — 2026-09-07 slate (three tiers, all approved)
-
-Design: [PROPOSALS-2026-09-B.md](PROPOSALS-2026-09-B.md). Rounds: v0.15
-(S-2, S-3, S-4, S-12), v0.16 (S-6, S-1, S-5), v0.17 (S-7, S-8), v0.18 (S-9,
-S-10, P-5), v0.19 (S-11).
-
-| id | tag | ask | design |
-|---|---|---|---|
-| ~~S-1~~ v0.16 | protocol + sessions | **Transcript replication, opt-in.** A session's transcript tail streams to a designated node so move is near-instant, History is mesh-wide, and a dead node's sessions stay readable. Off by default; enabled per mesh, node, or repo. (B-5b phase 4) | §1 |
-| ~~S-2~~ v0.15 | console | **Fleet-wide activity in Now.** One list of everything running across the estate, with the v0.14 chips. | §2 |
-| ~~S-3~~ v0.15 | console + protocol | **Notifications.** Turn end, question, permission prompt, activity settled: browser push from the console, plus an optional outbound hook. | §3 |
-| ~~S-4~~ v0.15 | console + sessions | **Cost and usage roll-up.** Per session, repo, node; subagents folded in; from transcript usage fields. | §4 |
-| ~~S-5~~ v0.16 | protocol + sessions | **Memory convergence** with a stored base and 3-way merge over the bus. (B-5b phase 3) | §5 |
-| ~~S-6~~ v0.16 | protocol | **Hybrid logical clock** for mesh-wide rows (boards, marketplaces, rules). | §6 |
-| ~~S-7~~ v0.17 | sessions + console | **Session templates.** Named recipe: repo, plugins, model, prompt additions, board placement; one click or CLI. | §7 |
-| ~~S-8~~ v0.17 | servicing + console | **Evacuate a node; bring it here.** Move every live session off a node before servicing; one-click pull on any session; preflight readout. (B-5b) | §8 |
-| ~~S-9~~ v0.18 | protocol | **Multi-mesh membership** for one node. (P-1, docs/proposals/multi-mesh.md) | §9 |
-| ~~S-10~~ v0.18 | protocol + console | **Console through the relay** (P-4), with WSL address detection (P-5). | §10 |
-| ~~S-11~~ v0.19 | console + protocol | **Pair mode on boards.** Two panes' sessions joined on a bus thread. | §11 |
-| ~~S-12~~ v0.15 | console | **Task notifications collapsed.** A `<task-notification>` in the transcript renders as a one-line summary card (agent name, status) with click-to-expand, like tool cards; one spanned dozens of screens. | §12 |
-
-## Next major swath — after S-12: Codex as a second harness (H-1)
-
-| id | tag | ask | design |
-|---|---|---|---|
-| H-1 | sessions + protocol + console | **Multi-harness: OpenAI Codex.** Codex is open source (clone at `~/src/codex`), so its protocol is read, not reverse-engineered. Before any code: a full design of how Aspen becomes multi-harness and stays coherent — what is cross-harness (bus, mesh, boards, activity, notices, usage, migration, plugins?) and what is per-harness (transcript shape, events, permissions, tools, memory, plugin dirs), what the adapter seam (DESIGN.md §5) really needs, what the product affords per harness, and how nothing regresses for claude. Then methodical implementation. | [PROPOSALS-HARNESSES.md](PROPOSALS-HARNESSES.md) — phases 0–3 as v0.20–v0.23. **shipped 2026-09-07 as v0.20 (seam), v0.21 (aspen-codex), v0.22 (console/gates), v0.23 (mesh features)**. Backlog after: shared per-node app-server, Codex memory convergence, Codex plugins in the library, turn/steer control, third-party MCP elicitations |
-
-
-
-| id | tag | ask | design |
-|---|---|---|---|
-| ~~B-1~~ v0.10 | console | **Composer drafts persist.** Text typed in a session's composer survives navigating to another view and back (a message was lost flipping to another agent's view). | [PROPOSALS-2026-09.md §1](PROPOSALS-2026-09.md#1-composer-drafts) |
-| ~~B-2~~ v0.10 | console | **Tool calls: live while running, summary after, click to expand.** Like the claude TUI: a running tool shows its contents; when the agent moves on it collapses to the summary line; any collapsed call can be clicked open. Keep our summary style. | [PROPOSALS-2026-09.md §2](PROPOSALS-2026-09.md#2-tool-calls-live-then-summary) |
-| ~~B-3~~ v0.10 | console + protocol | **Open what the agent points at, from any node.** Paths the agent writes in its output (a doc it wrote, a screenshot it took) become links that open in a viewer in the console — images, markdown, text, PDFs — served from the agent's home node over the mesh, direct link or not. | [PROPOSALS-2026-09.md §3](PROPOSALS-2026-09.md#3-artifact-links-over-the-mesh) |
-| ~~B-4~~ v0.10 | console + sessions | **Paste attachments inline.** Paste an image or document into the composer (the TUI's alt+v); it rides the message as an attachment with a marker in the text at the point of paste, so the agent sees both the content and where it fell in the conversation. | [PROPOSALS-2026-09.md §4](PROPOSALS-2026-09.md#4-inline-attachments) |
-| ~~B-5~~ v0.11 (phases 1–2) | protocol + sessions | **Session migration over the mesh.** Move a session to another node so it resumes there with full context, on a new home, with asymmetric paths between the nodes — the context-convergence idea, done over the mesh protocol rather than through git. Explore what else this implies. | [PROPOSALS-2026-09.md §5](PROPOSALS-2026-09.md#5-session-migration-and-what-it-implies) |
-| ~~B-6~~ v0.12 | console | **Boards: layouts of sessions across the estate.** Terminal-style split layouts (1\|2, 1\|2/3, grids) of sessions from any node; several boards; a session in any number of them; boards stored on the node and synced across the mesh; dynamic boards from a query. | [PROPOSALS-2026-09.md §6](PROPOSALS-2026-09.md#6-boards-layouts-of-sessions-across-the-estate-b-6) |
-| ~~B-7~~ v0.13 | protocol + sessions + console | **Plugins: a mesh-managed library, activated by scope.** Marketplaces registered once for the mesh; plugins activated for mesh / node / repo / session; sessions spawned with `--plugin-dir` from a per-node versioned cache; timer + on-demand sync; restart nag when a newer version is cached; activation matrix from the plugin and rosters from each scope. | [PROPOSALS-2026-09.md §7](PROPOSALS-2026-09.md#7-plugins-a-mesh-managed-library-activated-by-scope-b-7) |
-| ~~B-8~~ v0.14 | sessions + console | **Activity: tasks, monitors, subagents, workflows.** Derive a per-session activity ledger from the event stream; signal counts everywhere; a drawer with details; subagent transcripts viewable live over the mesh. | [PROPOSALS-2026-09.md §8](PROPOSALS-2026-09.md#8-activity-tasks-monitors-subagents-workflows-b-8) |
-
-## Open — earlier
+## Open
 
 | id | tag | ask | notes |
 |---|---|---|---|
-| ~~P-1~~ v0.18 | protocol | Multi-mesh membership for one node (personal + work). | MESHES.md |
+| H-2 | sessions | **Shared per-node app-server for Codex.** One `codex app-server` hosting every Codex thread on the node instead of one process per session; same adapter, fewer idle processes. Needs a liveness/revive model that does not equate a session with a process. | PROPOSALS-HARNESSES.md §6.1 |
+| H-3 | sessions + protocol | **Codex memory convergence.** Codex memory is global (`$CODEX_HOME/memories_*.sqlite`), not per project; decide whether and how it takes part in memory sync (MEMORY.md), or is declared out of scope. | HARNESSES.md §6 |
+| H-4 | sessions + console | **Codex plugins and skills in the library.** `$CODEX_HOME/plugins` and skills roots as library scopes beside Claude's marketplaces; activation per mesh / node / repo / session like PLUGINS.md. | PLUGINS.md |
+| H-5 | sessions + console | **`turn/steer` as a first-class control.** Today a mid-turn message steers by default; expose "queue for next turn" vs "steer now" in the composer, for both harnesses where they can. | CODEX_RUNTIME_REFERENCE.md §4 |
+| H-6 | sessions + console | **Third-party MCP elicitations.** Codex forwards a server's own form/url elicitations; Aspen declines them today. Surface as a prompt kind (`elicitation`) with a generic form card. | HARNESSES.md §1 (`PromptKind`) |
+| H-7 | sessions | **Deny message to Codex.** The console's deny text is not delivered to Codex (the approval reply has no channel for it); consider a follow-up user message carrying it, or drop the field for Codex prompts. | CODEX_RUNTIME_REFERENCE.md §6.1 |
+| H-8 | sessions + console | **Codex activity ledger.** `collabAgentToolCall` / `subAgentActivity` items show as tool cards; fold them into the activity ledger (ACTIVITY.md) with counts and a drawer, and read the agent threads' rollouts. | HARNESSES.md §6 |
+| H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
-| ~~P-4~~ v0.18 | protocol | Console-through-relay (the relay routes node↔node only). | RELAY.md §11 |
-| B-5b | protocol + sessions | Migration phases 3–4: memory convergence over the bus with 3-way merge; transcript replication (instant move, mesh-wide History); evacuate-a-node; bring-it-here one-click; dialog preflight readout. | [PROPOSALS-2026-09.md §5.4](PROPOSALS-2026-09.md#54-what-it-implies--the-product-ideas) |
-| ~~P-5~~ v0.18 | protocol | WSL nodes advertise only NAT-internal addresses; a forwarded port needs `aspen config advertise` by hand. Could detect the WSL case and say so in the console. | RELAY.md §11 (`hint: wsl-nat`) |
+
+## Shipped — 2026-09-07: Codex as a second harness (H-1, v0.20–v0.23)
+
+Design first ([PROPOSALS-HARNESSES.md](PROPOSALS-HARNESSES.md)), then
+four rounds, each verified on the rig with the Claude flows re-run:
+v0.20 the seam (HARNESSES.md §1–5), v0.21 the Codex adapter
+(`aspen-codex`, `aspen mcp`; HARNESSES.md §6, CODEX_RUNTIME_REFERENCE.md),
+v0.22 the console and the gates (HARNESSES.md §7), v0.23 the mesh
+features (HARNESSES.md §8, MIGRATION.md "Harnesses"). H-2..H-9 above are
+what it left open.
+
+## Shipped — 2026-09-07 slate (S-1..S-12, v0.15–v0.19)
+
+Design: [PROPOSALS-2026-09-B.md](PROPOSALS-2026-09-B.md).
+
+| id | tag | ask | round |
+|---|---|---|---|
+| S-1 | protocol + sessions | Transcript replication, opt-in (REPLICATION.md). | v0.16 |
+| S-2 | console | Fleet-wide activity in Now. | v0.15 |
+| S-3 | console + protocol | Notifications: toasts, bell, webhook and command hook (NOTIFICATIONS.md). | v0.15 |
+| S-4 | console + sessions | Cost and usage roll-up (USAGE.md). | v0.15 |
+| S-5 | protocol + sessions | Memory convergence with a stored base and 3-way merge (MEMORY.md). | v0.16 |
+| S-6 | protocol | Hybrid logical clock for mesh-wide rows (SYNC.md §3). | v0.16 |
+| S-7 | sessions + console | Session templates (PLUGINS.md §templates). | v0.17 |
+| S-8 | servicing + console | Evacuate a node, bring it here, preflight readout (MIGRATION.md). | v0.17 |
+| S-9 | protocol | Multi-mesh membership for one node (MESHES.md). Closes P-1. | v0.18 |
+| S-10 | protocol + console | Console through the relay (RELAY.md §11). Closes P-4 and P-5 (`hint: wsl-nat`). | v0.18 |
+| S-11 | console + protocol | Pair mode on boards (BOARDS.md §8). | v0.19 |
+| S-12 | console | Task notifications collapsed to summary cards. | v0.15 |
+
+S-1, S-5 and S-8 together close B-5b (migration phases 3–4).
+
+## Shipped — 2026-09-06/07: the console round (B-1..B-8, v0.10–v0.14)
+
+Design: [PROPOSALS-2026-09.md](PROPOSALS-2026-09.md).
+
+| id | tag | ask | round |
+|---|---|---|---|
+| B-1 | console | Composer drafts persist. | v0.10 |
+| B-2 | console | Tool calls live while running, summary after, click to expand. | v0.10 |
+| B-3 | console + protocol | Open what the agent points at, from any node (the viewer). | v0.10 |
+| B-4 | console + sessions | Paste attachments inline. | v0.10 |
+| B-5 | protocol + sessions | Session migration over the mesh, phases 1–2 (MIGRATION.md). | v0.11 |
+| B-6 | console | Boards (BOARDS.md). | v0.12 |
+| B-7 | protocol + sessions + console | Plugins: a mesh-managed library, activated by scope (PLUGINS.md). | v0.13 |
+| B-8 | sessions + console | Activity: tasks, monitors, subagents, workflows (ACTIVITY.md). | v0.14 |
