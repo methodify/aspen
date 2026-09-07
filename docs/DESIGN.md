@@ -783,3 +783,14 @@ cleaner lane for roster updates than user-message headers.
   restarts the source. File verbs `session export/import` for offline
   nodes and archives. Verified on the rig into a different repo path: the
   agent answered from its history with its new cwd in under 4 s.
+- **2026-09-07 — v0.12, boards** (PROPOSALS-2026-09 §6, BACKLOG B-6;
+  reference: BOARDS.md). A board is a named split tree of panes —
+  sessions from any node, artifact viewers — stored on the node and
+  synced across the mesh by a roster digest with last-writer-wins per
+  board. Presets, draggable dividers, split/close/swap/zoom, a fleet
+  picker, add-to-board from any session, focus by click or `alt`+digit/
+  arrows, compact panes, attention borders with `alt+.`, broadcast to
+  every pane, per-pane drafts, tabs on narrow screens, and dynamic boards
+  computed from a fleet query. Found on the way: a forked session revived
+  before its first turn resumed the parent in place — rows now carry
+  `fork_pending` so the revive forks again.

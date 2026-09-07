@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS lineage(
   agent          TEXT NOT NULL,
   created_at     REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS boards(
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  layout     TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  deleted    INTEGER NOT NULL DEFAULT 0,
+  query      TEXT
+);
 CREATE TABLE IF NOT EXISTS seen_sessions(
   repo       TEXT NOT NULL,
   session_id TEXT NOT NULL,
@@ -173,6 +181,20 @@ pub struct RepoRow {
     /// The repo's handle: its address segment and channel name. Defaults
     /// to the directory basename, unique per node, operator-renamable.
     pub handle: String,
+}
+
+/// A board: a named split-tree layout of panes (PROPOSALS-2026-09 §6).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Board {
+    pub id: String,
+    pub name: String,
+    pub layout: serde_json::Value,
+    /// A dynamic board's fleet query (panes are computed by the console).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<serde_json::Value>,
+    pub updated_at: f64,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// One entry in the fleet event log.
@@ -249,6 +271,10 @@ pub struct AgentRow {
     /// Set when the session was moved to another node (a tombstone): the
     /// node name. Messages to this name are redirected there.
     pub moved_to: Option<String>,
+    /// The agent was spawned as a fork whose new session id the runtime
+    /// has not announced yet (that comes with the first turn). A revive
+    /// before then must fork again, or it resumes the parent in place.
+    pub fork_pending: bool,
 }
 
 #[derive(Clone)]
@@ -285,6 +311,8 @@ impl BusStore {
             "ALTER TABLE repos ADD COLUMN handle TEXT",
             "ALTER TABLE agents ADD COLUMN last_exit_code INTEGER",
             "ALTER TABLE agents ADD COLUMN moved_to TEXT",
+            "ALTER TABLE agents ADD COLUMN fork_pending INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE boards ADD COLUMN query TEXT",
             "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
@@ -476,7 +504,7 @@ impl BusStore {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to FROM agents ORDER BY name",
+            "SELECT name, repo, channel, session_id, charter, title, extra_args, last_exit_code, last_exit_at, moved_to, fork_pending FROM agents ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -491,6 +519,7 @@ impl BusStore {
                     last_exit_code: r.get(7)?,
                     last_exit_at: r.get(8)?,
                     moved_to: r.get(9)?,
+                    fork_pending: r.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -534,8 +563,17 @@ impl BusStore {
     pub fn set_agent_session(&self, name: &str, session_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE agents SET session_id=?2 WHERE name=?1",
+            "UPDATE agents SET session_id=?2, fork_pending=0 WHERE name=?1",
             params![name, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_fork_pending(&self, name: &str, pending: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET fork_pending=?2 WHERE name=?1",
+            params![name, pending as i64],
         )?;
         Ok(())
     }
@@ -879,6 +917,95 @@ impl BusStore {
             )
             .optional()?
             .flatten())
+    }
+
+    // ------------------------------------------------------------ boards
+
+    /// Every board, tombstones included when `with_deleted` (sync needs
+    /// them; the console does not).
+    pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, layout, updated_at, deleted, query FROM boards ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Board {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    layout: serde_json::from_str(&r.get::<_, String>(2)?)
+                        .unwrap_or(serde_json::Value::Null),
+                    updated_at: r.get(3)?,
+                    deleted: r.get::<_, i64>(4)? != 0,
+                    query: r
+                        .get::<_, Option<String>>(5)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|b| with_deleted || !b.deleted)
+            .collect())
+    }
+
+    /// Write a board if it is newer than what we hold (last writer wins
+    /// by `updated_at`); returns whether anything changed.
+    pub fn upsert_board(&self, b: &Board) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<f64> = conn
+            .query_row(
+                "SELECT updated_at FROM boards WHERE id=?1",
+                params![b.id],
+                |r| r.get(0),
+            )
+            .ok();
+        if cur.is_some_and(|t| t >= b.updated_at) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6",
+            params![
+                b.id,
+                b.name,
+                serde_json::to_string(&b.layout)?,
+                b.updated_at,
+                b.deleted as i64,
+                b.query.as_ref().map(|q| q.to_string())
+            ],
+        )?;
+        Ok(true)
+    }
+
+    pub fn delete_board(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE boards SET deleted=1, updated_at=?2 WHERE id=?1",
+            params![id, now_epoch()],
+        )?;
+        Ok(())
+    }
+
+    /// A digest of (id, updated_at) over every board including tombstones;
+    /// rides the roster so peers know when to pull.
+    pub fn boards_digest(&self) -> String {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare("SELECT id, updated_at FROM boards ORDER BY id") {
+            Ok(s) => s,
+            Err(_) => return String::new(),
+        };
+        let mut acc: u64 = 0xcbf29ce484222325;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)));
+        if let Ok(rows) = rows {
+            for (id, t) in rows.flatten() {
+                for b in id.as_bytes().iter().chain(format!("{t:.3}").as_bytes()) {
+                    acc ^= *b as u64;
+                    acc = acc.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        format!("{acc:016x}")
     }
 
     // ------------------------------------------------------ bookmarks/lineage

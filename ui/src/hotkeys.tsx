@@ -46,6 +46,7 @@ export function scopeForPath(pathname: string): string {
   if (pathname === "/") return "now";
   if (pathname.startsWith("/flow")) return "flow";
   if (pathname.startsWith("/session/")) return "session";
+  if (pathname.startsWith("/board")) return "board";
   if (pathname.startsWith("/mesh")) return "mesh";
   if (pathname.startsWith("/history")) return "history";
   return "global";

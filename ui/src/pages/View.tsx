@@ -31,10 +31,12 @@ function kindOf(media: string, name: string): "image" | "markdown" | "pdf" | "js
   return "binary";
 }
 
-export default function View() {
-  const { name = "" } = useParams<{ name: string }>();
+export default function View(props: { agent?: string; path?: string; embedded?: boolean } = {}) {
+  const { name: routeName = "" } = useParams<{ name: string }>();
   const [params] = useSearchParams();
-  const path = params.get("path") ?? "";
+  const name = props.agent ?? routeName;
+  const path = props.path ?? params.get("path") ?? "";
+  const embedded = !!props.embedded;
   const [stat, setStat] = useState<FileStat | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -147,11 +149,13 @@ export default function View() {
   })();
 
   return (
-    <div className="view-page">
+    <div className={embedded ? "view-page view-embedded" : "view-page"}>
       <div className="view-head">
-        <Link className="mono-meta" to={`/session/${encodeURIComponent(name)}`}>
-          ← @{name}
-        </Link>
+        {!embedded && (
+          <Link className="mono-meta" to={`/session/${encodeURIComponent(name)}`}>
+            ← @{name}
+          </Link>
+        )}
         <span className="mono view-path" title={path}>
           {path}
         </span>

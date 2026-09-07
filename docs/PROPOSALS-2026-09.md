@@ -1,8 +1,8 @@
 # Proposals — September 2026 feature dump
 
-**Status:** §1–§4 shipped as v0.10, §5 phases 1–2 as v0.11 (both
-2026-09-06; built form in MIGRATION.md). Phases 3–4 are open (BACKLOG
-B-5b). Backlog ids in BACKLOG.md. Each section says what is asked, what exists today, the
+**Status:** §1–§4 shipped as v0.10, §5 phases 1–2 as v0.11 (2026-09-06;
+MIGRATION.md), §6 as v0.12 (2026-09-07; BOARDS.md). §5 phases 3–4 are
+open (BACKLOG B-5b). Backlog ids in BACKLOG.md. Each section says what is asked, what exists today, the
 design, what it implies beyond the ask, the cost, and open questions.
 Nothing here is built.
 

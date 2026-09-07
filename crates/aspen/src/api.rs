@@ -71,6 +71,11 @@ pub async fn serve(
         .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/artifacts", get(get_artifacts))
         .route("/agents/{name}/move", post(post_move))
+        .route("/boards", get(get_boards))
+        .route(
+            "/boards/{id}",
+            axum::routing::put(put_board).delete(delete_board),
+        )
         .route("/agents/{name}/export", post(post_export))
         .route("/sessions/import", post(post_import))
         .route("/agents/{name}/file", get(get_agent_file))
@@ -1206,6 +1211,48 @@ async fn post_permission(
     ) {
         Ok(()) => Json(json!({})).into_response(),
         Err(e) => err(StatusCode::GONE, e).into_response(),
+    }
+}
+
+// ---- boards (PROPOSALS §6): stored here, synced across the mesh by
+// roster digest; the console reads and writes the local node only.
+
+async fn get_boards(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.boards(false) {
+        Ok(b) => Json(json!(b)).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn put_board(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(mut b): Json<aspen_node::store::Board>,
+) -> impl IntoResponse {
+    b.id = id;
+    b.deleted = false;
+    if b.updated_at <= 0.0 {
+        b.updated_at = aspen_node::store::now_epoch();
+    }
+    match s.node.inner.store.upsert_board(&b) {
+        Ok(changed) => {
+            if changed {
+                aspen_node::federation::broadcast_roster(&s.node.inner);
+            }
+            Json(json!({ "ok": true, "changed": changed, "updated_at": b.updated_at }))
+                .into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn delete_board(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
+    match s.node.inner.store.delete_board(&id) {
+        Ok(()) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 

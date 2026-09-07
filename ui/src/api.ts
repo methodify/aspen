@@ -164,6 +164,31 @@ export interface BusMessage {
 }
 
 /** A tool call chip on a rehydrated assistant item. */
+/** Boards (PROPOSALS §6): a split tree of panes. */
+export interface BoardPane {
+  kind: "session" | "view" | "empty";
+  id: string;
+  agent?: string;
+  path?: string;
+}
+export interface BoardSplit {
+  kind: "split";
+  id: string;
+  dir: "row" | "col";
+  sizes: number[];
+  children: BoardNode[];
+}
+export type BoardNode = BoardSplit | BoardPane;
+export interface Board {
+  id: string;
+  name: string;
+  layout: BoardNode;
+  /** A dynamic board: panes are whatever matches. */
+  query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "any"; name?: string; style?: "grid" | "main" };
+  updated_at: number;
+  deleted?: boolean;
+}
+
 /** The target node's report after a move/copy (PROPOSALS §5). */
 export interface MoveReport {
   name: string;
@@ -797,6 +822,10 @@ export const api = {
   transcript: (name: string) =>
     request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
+  boards: () => request<Board[]>("/api/boards"),
+  putBoard: (b: Board) =>
+    request<{ ok: boolean }>(`/api/boards/${enc(b.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }),
+  deleteBoard: (id: string) => request<{ ok: boolean }>(`/api/boards/${enc(id)}`, { method: "DELETE" }),
   /** Move (or copy) a session to another node; resolves the target's report. */
   moveAgent: (name: string, body: { to: string; mode: "move" | "copy"; repo?: string; name?: string; apply_patch?: boolean }) =>
     post<MoveReport>(`/api/agents/${enc(name)}/move`, body),

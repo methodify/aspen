@@ -582,6 +582,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         "servicing": inner.servicing.roster_json(mode),
         "has_root": has_root,
         "advertised": advertised(inner),
+        "boards_digest": inner.store.boards_digest(),
     })
 }
 
@@ -968,6 +969,17 @@ async fn link_loop(
                             }
                         }
                     }
+                    // Boards ride the mesh: a peer whose digest differs
+                    // from ours is pulled (last writer wins per board).
+                    if let Some(d) = payload.get("boards_digest").and_then(|d| d.as_str()) {
+                        if d != inner.store.boards_digest() {
+                            let inner2 = inner.clone();
+                            let peer2 = peer.to_owned();
+                            tokio::spawn(async move {
+                                sync_boards_from(&inner2, &peer2).await;
+                            });
+                        }
+                    }
                     mesh.note(peer, |h| {
                         h.last_roster = Some(crate::store::now_epoch());
                         if has_root.is_some() {
@@ -1235,6 +1247,7 @@ async fn serve_api_req(
         "reload" => node.reload_plugins(agent).await,
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
+        "boards" => Ok(json!(node.inner.store.boards(true)?)),
         // Migration (migrate.rs): the source stages a bundle and serves
         // it in chunks; the target pulls, installs, and reports back.
         "session_spec" => Ok(json!(node.session_spec(agent)?)),
@@ -1944,6 +1957,38 @@ fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
             }
         }
     });
+}
+
+/// Pull a peer's boards and merge them (newer wins per id, tombstones
+/// included). If anything changed, our digest changes and the next roster
+/// lets everyone else pull from us.
+async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
+    let Some(mesh) = inner.mesh() else { return };
+    let Ok(v) = mesh
+        .api_call(
+            peer,
+            "boards",
+            "",
+            json!({}),
+            std::time::Duration::from_secs(20),
+        )
+        .await
+    else {
+        return;
+    };
+    let Ok(boards) = serde_json::from_value::<Vec<crate::store::Board>>(v) else {
+        return;
+    };
+    let mut changed = false;
+    for b in &boards {
+        if inner.store.upsert_board(b).unwrap_or(false) {
+            changed = true;
+        }
+    }
+    if changed {
+        tracing::info!(peer, n = boards.len(), "boards synced from peer");
+        broadcast_roster(inner);
+    }
 }
 
 /// Every URL we know for the relay at `relay_url`: itself, then the other

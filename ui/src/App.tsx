@@ -1,12 +1,13 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, type Agent, type BusMessage, type NodeInfo } from "./api";
+import { api, type Agent, type Board, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
 import { Meter, presenceOf, useTheme } from "./components";
 import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
 import View from "./pages/View";
+import BoardPage, { BoardsPage } from "./pages/Board";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
 import Palette from "./Palette";
@@ -43,6 +44,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean }[] = [
   { to: "/flow", key: "F", label: "Flow" },
   { to: "/mesh", key: "M", label: "Mesh" },
   { to: "/history", key: "H", label: "History" },
+  { to: "/boards", key: "B", label: "Boards" },
 ];
 
 // ── working set: pinned + recently opened sessions (per browser) ──────────
@@ -75,6 +77,20 @@ function saveWorkingSet(ws: WorkingSet) {
  *  pinned sessions, the last few opened, and the fleet pulse. The whole
  *  roster lives in Now. */
 function MeshColumn() {
+  const [boards, setBoards] = useState<Board[]>([]);
+  const loc = useLocation();
+  useEffect(() => {
+    let stop = false;
+    const load = () => api.boards().then((b) => !stop && setBoards(b)).catch(() => {});
+    void load();
+    const t = window.setInterval(() => void load(), 15000);
+    return () => {
+      stop = true;
+      window.clearInterval(t);
+    };
+    // reload when navigating (a board was just created/deleted)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc.pathname.startsWith("/board")]);
   const { agents, inbox } = useAppData();
   const location = useLocation();
   const [ws, setWs] = useState<WorkingSet>(loadWorkingSet);
@@ -159,6 +175,17 @@ function MeshColumn() {
       <div className="nav-section label" style={{ marginTop: 12 }} title="busy / live / registered">
         Fleet · {busy} busy · {live}/{agents.length} live
       </div>
+      {boards.length > 0 && (
+        <>
+          <div className="nav-section label" style={{ marginTop: 6 }}>Boards</div>
+          {boards.map((b) => (
+            <NavLink key={b.id} to={`/board/${b.id}`} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`} title={b.name}>
+              <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>▦</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+            </NavLink>
+          ))}
+        </>
+      )}
       {pinnedRows.length > 0 && (
         <>
           <div className="nav-section label" style={{ marginTop: 6 }}>Pinned</div>
@@ -310,6 +337,8 @@ export default function App() {
               <Route path="/flow/:channel" element={<Conversations />} />
               <Route path="/session/:name" element={<Session />} />
               <Route path="/view/:name" element={<View />} />
+              <Route path="/boards" element={<BoardsPage />} />
+              <Route path="/board/:id" element={<BoardPage />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />
               {/* old surfaces → their new homes */}

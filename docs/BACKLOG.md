@@ -8,12 +8,12 @@ DESIGN.md §14b with the tag they carried here.
 Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 (the claude process and its transcript), `servicing`, `docs`.
 
-## Shipped — v0.10 and v0.11 (2026-09-06)
+## Shipped — v0.10, v0.11 (2026-09-06), v0.12 (2026-09-07)
 
 B-1 composer drafts, B-2 tool calls live-then-summary, B-3 artifact links
 over the mesh, B-4 inline attachments (v0.10); B-5 session migration,
 phases 1–2: move/copy over the mesh, export/import files (v0.11,
-MIGRATION.md). See DESIGN.md §14b, 2026-09-06.
+MIGRATION.md); B-6 boards (v0.12, BOARDS.md). See DESIGN.md §14b.
 
 ## Open — 2026-09-06 feature dump
 
@@ -24,7 +24,7 @@ MIGRATION.md). See DESIGN.md §14b, 2026-09-06.
 | ~~B-3~~ v0.10 | console + protocol | **Open what the agent points at, from any node.** Paths the agent writes in its output (a doc it wrote, a screenshot it took) become links that open in a viewer in the console — images, markdown, text, PDFs — served from the agent's home node over the mesh, direct link or not. | [PROPOSALS-2026-09.md §3](PROPOSALS-2026-09.md#3-artifact-links-over-the-mesh) |
 | ~~B-4~~ v0.10 | console + sessions | **Paste attachments inline.** Paste an image or document into the composer (the TUI's alt+v); it rides the message as an attachment with a marker in the text at the point of paste, so the agent sees both the content and where it fell in the conversation. | [PROPOSALS-2026-09.md §4](PROPOSALS-2026-09.md#4-inline-attachments) |
 | ~~B-5~~ v0.11 (phases 1–2) | protocol + sessions | **Session migration over the mesh.** Move a session to another node so it resumes there with full context, on a new home, with asymmetric paths between the nodes — the context-convergence idea, done over the mesh protocol rather than through git. Explore what else this implies. | [PROPOSALS-2026-09.md §5](PROPOSALS-2026-09.md#5-session-migration-and-what-it-implies) |
-| **B-6** | console | **Boards: layouts of sessions across the estate.** Terminal-style split layouts (1\|2, 1\|2/3, grids) of sessions from any node; several boards; a session in any number of them; boards stored on the node and synced across the mesh; dynamic boards from a query. | [PROPOSALS-2026-09.md §6](PROPOSALS-2026-09.md#6-boards-layouts-of-sessions-across-the-estate-b-6) |
+| ~~B-6~~ v0.12 | console | **Boards: layouts of sessions across the estate.** Terminal-style split layouts (1\|2, 1\|2/3, grids) of sessions from any node; several boards; a session in any number of them; boards stored on the node and synced across the mesh; dynamic boards from a query. | [PROPOSALS-2026-09.md §6](PROPOSALS-2026-09.md#6-boards-layouts-of-sessions-across-the-estate-b-6) |
 
 ## Open — earlier
 

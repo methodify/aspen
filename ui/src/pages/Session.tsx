@@ -21,6 +21,8 @@ import {
   type Artifact,
   type HistoryImage,
   type OutgoingAttachment,
+  type Board,
+  type BoardNode,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -521,7 +523,93 @@ const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem 
 // ---------------------------------------------------------------------------
 // The page
 
-function SessionView({ name }: { name: string }) {
+/** "add to board": put this session in a board's first empty pane, or
+ *  split its last pane. */
+function AddToBoard({ agent }: { agent: string }) {
+  const [open, setOpen] = useState(false);
+  const [boards, setBoards] = useState<Board[] | null>(null);
+  const [at, setAt] = useState({ top: 0, left: 0 });
+  const nav = useNavigate();
+  async function add(b: Board, how: "fill" | "right" | "down") {
+    const fill = (n: BoardNode): [BoardNode, boolean] => {
+      if (n.kind === "split") {
+        let done = false;
+        const children = n.children.map((c) => {
+          if (done) return c;
+          const [r, d] = fill(c);
+          done = d;
+          return r;
+        });
+        return [{ ...n, children }, done];
+      }
+      if (n.kind === "empty") return [{ kind: "session", id: n.id, agent }, true];
+      return [n, false];
+    };
+    let layout: BoardNode = b.layout;
+    let placed = false;
+    if (how === "fill") [layout, placed] = fill(layout);
+    if (!placed) {
+      const dir = how === "down" ? "col" : "row";
+      const pane: BoardNode = { kind: "session", id: `${Date.now().toString(36)}`, agent };
+      layout = { kind: "split", id: `${Date.now().toString(36)}s`, dir, sizes: [50, 50], children: [layout, pane] };
+    }
+    await api.putBoard({ ...b, layout, updated_at: Date.now() / 1000 }).catch(() => {});
+    setOpen(false);
+    nav(`/board/${b.id}`);
+  }
+  return (
+    <span className="artifacts-wrap">
+      <button
+        className="charter-toggle"
+        onClick={(e) => {
+          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 400)) });
+          setOpen((o) => !o);
+          if (!open) api.boards().then(setBoards).catch(() => setBoards([]));
+        }}
+        title="put this session in a board"
+      >
+        board ▾
+      </button>
+      {open &&
+        createPortal(
+          <div className="artifacts-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 380 }} role="menu" onMouseLeave={() => setOpen(false)}>
+            {boards === null ? (
+              <div className="row dim">loading…</div>
+            ) : (
+              <>
+                {boards.filter((b) => !b.query).map((b) => (
+                  <div className="row" key={b.id}>
+                    <span className="mono" style={{ flex: 1 }}>{b.name}</span>
+                    <button className="btn sm" onClick={() => void add(b, "fill")} title="into the first empty pane, else split right">add</button>
+                    <button className="btn sm" onClick={() => void add(b, "right")} title="split the board right">⫿</button>
+                    <button className="btn sm" onClick={() => void add(b, "down")} title="split the board down">⫽</button>
+                  </div>
+                ))}
+                <div className="row">
+                  <Link to="/boards" className="mono-meta" onClick={() => setOpen(false)}>new board…</Link>
+                </div>
+              </>
+            )}
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
+}
+
+/** How a session view behaves inside a board pane (PROPOSALS §6):
+ *  pane-scoped draft, focus-driven autofocus, compact chrome, and a
+ *  hook after each send for broadcast. */
+export interface PaneMode {
+  id: string;
+  focused: boolean;
+  compact?: boolean;
+  onFocus?: () => void;
+  onSent?: (text: string) => void;
+}
+
+export function SessionView({ name, pane }: { name: string; pane?: PaneMode }) {
   const liveGate = useLiveGate();
   const nav = useNavigate();
   const { agents, agentsLoaded, refreshAgents } = useAppData();
@@ -537,7 +625,7 @@ function SessionView({ name }: { name: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   // The composer draft survives leaving the view (PROPOSALS §1): per
   // agent, per browser, cleared on send.
-  const draftKey = `aspen.draft.${name}`;
+  const draftKey = pane ? `aspen.draft.${name}.${pane.id}` : `aspen.draft.${name}`;
   const [draft, setDraft] = useState(() => {
     try {
       return localStorage.getItem(draftKey) ?? "";
@@ -556,6 +644,10 @@ function SessionView({ name }: { name: string }) {
     }, 300);
     return () => window.clearTimeout(t);
   }, [draft, draftKey]);
+  useEffect(() => {
+    if (pane?.focused) composerRef.current?.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane?.focused]);
   // Tool cards the operator opened or closed by hand; auto open/close
   // (the active call) applies only to untouched cards.
   const [pinnedTools, setPinnedTools] = useState<Map<number, boolean>>(() => new Map());
@@ -982,6 +1074,7 @@ function SessionView({ name }: { name: string }) {
         return;
       }
       dispatch({ type: "sent", localKey, uuid: res.uuid ?? localKey });
+      pane?.onSent?.(text);
     } catch (e) {
       dispatch({ type: "send_failed", localKey });
       setBusy(false);
@@ -1434,7 +1527,7 @@ function SessionView({ name }: { name: string }) {
   const ctxPct = ctx?.percent !== null && ctx?.percent !== undefined ? Math.round(ctx.percent) : null;
 
   return (
-    <div className="session">
+    <div className={pane ? `session in-pane${pane.compact ? " compact" : ""}` : "session"} onMouseDownCapture={pane?.onFocus}>
       <header className="session-head">
         {agent && <Meter presence={presenceOf(agent.live, agent.turn_state)} />}
         <h1>
@@ -1676,6 +1769,7 @@ function SessionView({ name }: { name: string }) {
             move…
           </button>
         )}
+        <AddToBoard agent={name} />
         {moveOpen &&
           createPortal(
             <div className="trust-backdrop" onClick={() => !moveBusy && setMoveOpen(false)} role="presentation">
@@ -2061,7 +2155,7 @@ function SessionView({ name }: { name: string }) {
           }
           disabled={composerDisabled}
           rows={2}
-          autoFocus
+          autoFocus={!pane || pane.focused}
         />
         <button
           onClick={() => void send()}

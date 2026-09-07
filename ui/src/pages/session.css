@@ -455,3 +455,13 @@
 .move-form { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
 .move-form label { display: flex; flex-direction: column; gap: 4px; }
 .move-form select, .move-form input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-panel, #fff); color: var(--text-hi); }
+/* session inside a board pane */
+.session.in-pane { height: 100%; min-height: 0; }
+.session.in-pane.compact .session-head h1 { font-size: 13px; }
+.view-embedded .view-head { padding: 4px 8px; }
+
+/* compact pane: the header keeps model/mode/render and stop; the rest waits for zoom or the page */
+.session.in-pane.compact .session-head .charter-toggle,
+.session.in-pane.compact .session-head .artifacts-wrap,
+.session.in-pane.compact .session-head .session-title-input { display: none; }
+.session.in-pane.compact .session-head h1 { font-size: 12.5px; }

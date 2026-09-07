@@ -212,3 +212,14 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
   with that pointer.
 - Mesh ops: `session_spec`, `session_export`, `bundle_read`, `bundle_done`, `session_moved`,
   `session_pull`.
+
+
+## Boards (v0.12) — BOARDS.md
+
+- `GET /api/boards` — this node's boards (tombstones excluded), newest first.
+- `PUT /api/boards/{id}` body `Board {id, name, layout, query?, updated_at}` — write if newer than what
+  the node holds (last writer wins); broadcasts the roster so peers pull. Response `{ok, changed}`.
+- `DELETE /api/boards/{id}` — tombstone (propagates across the mesh).
+- Roster field `boards_digest`; mesh op `boards` returns every row including tombstones.
+- Agents carry `fork_pending` internally (not in the API): a forking spawn sets it, the runtime's
+  announced id clears it, and a revive while set forks again.

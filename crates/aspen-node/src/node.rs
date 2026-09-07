@@ -529,6 +529,9 @@ impl Node {
             opts.extra_args.as_deref(),
         )?;
         let _ = self.inner.store.set_agent_live(name, true);
+        // A fork's own id arrives with the runtime's first turn; until
+        // then the row points at the parent, and a revive must fork again.
+        let _ = self.inner.store.set_fork_pending(name, opts.fork);
         let _ = self.inner.store.record_event(
             name,
             if opts.fork {
@@ -726,6 +729,10 @@ impl Node {
         let opts = SpawnOpts {
             charter: row.charter.clone(),
             resume,
+            // A fork that never announced its id is forked again from the
+            // parent (nothing of its own exists yet); resuming in place
+            // would put it on the parent's transcript.
+            fork: row.fork_pending,
             interactive,
             extra_args: row.extra_args.clone(),
             resume_choice,
