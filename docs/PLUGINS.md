@@ -105,6 +105,25 @@ and the model listed the plugin's skills and MCP tools; bumping the
 marketplace's version to 0.9.0 and syncing cached it, the running session
 reported the update, the nag showed, and restart brought it up on 0.9.0.
 
+## 7b. Session templates (v0.17)
+
+A **template** is a named recipe stored mesh-wide like boards
+(`templates` table, `templates_digest` on the roster, LWW per row):
+`{name?, repo?, model?, permission: ask|skip, charter?, extra_args?,
+plugins: [{marketplace, plugin, pin?}], board?: {id, mode}}`. The repo
+is a handle, a basename, an origin URL, or a path, resolved on the node
+that spawns; blank means the panel asks.
+
+Spawning from one (`POST /api/templates/{id}/spawn` with overrides;
+`aspen session new --template <name> [--name] [--repo] [--node]`; the
+palette's *new session from template …*; Now's panel with its template
+select; *start…* on the Plugins page) writes **session-scope plugin
+rules** for the new address first, so the process starts with its
+`--plugin-dir`s, then spawns with the template's model / charter / args
+/ permission (overrides win), and the console places it on the
+template's board (first empty pane, or a split). The trust gate applies
+as for any spawn. Templates are edited on the Plugins page.
+
 ## 8. Not built
 
 Per-plugin usage from transcripts; marketplace auth (private git over

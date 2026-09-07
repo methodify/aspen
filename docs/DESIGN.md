@@ -853,3 +853,15 @@ cleaner lane for roster updates than user-message headers.
   deletions, and conflicts kept beside the file with keep-mine /
   take-theirs in Now. Both settings are per node and off by default, as
   the operator asked: replication is a choice, not the mode of operation.
+- **2026-09-07 — v0.17, templates, evacuate, bring-it-here, preflight**
+  (PROPOSALS-2026-09-B §7 §8; references: PLUGINS.md §7b, SERVICING.md
+  §13b, MIGRATION.md §4b). A session template is a mesh-wide row like a
+  board; spawning from one writes session-scope plugin rules first so
+  the process starts with its plugin dirs, then the console places it on
+  a board. Evacuate is a fourth servicing state that applies the
+  existing move to every live session on a node, skipping and naming
+  what cannot move; it composes with update (evacuate, then update).
+  Preflight asks both ends before a move and shows the answer in the
+  dialog; a session with no transcript is now refused before it is
+  stopped. Bring-it-here is the move dialog aimed at the console's own
+  node, one click from any remote session.

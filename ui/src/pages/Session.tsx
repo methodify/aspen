@@ -7,7 +7,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +28,7 @@ import {
   type Activity,
   type UsageRow,
   type ReplicaInfo,
+  type MovePreflight,
   serverNow,
   type ActivityCounts,
 } from "./../api";
@@ -1070,19 +1071,52 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [moveBusy, setMoveBusy] = useState(false);
   const [moveErr, setMoveErr] = useState<string | null>(null);
   const [nodes, setNodes] = useState<{ node: string; up: boolean; me: boolean }[]>([]);
-  async function loadNodes() {
+  async function loadNodes(preferMe = false) {
     try {
       const m = await api.mesh();
       const mine = m.node ?? "";
       const list = [{ node: mine, up: true, me: true }, ...(m.peers ?? []).map((p) => ({ node: p.node, up: !!p.link_up, me: false }))];
       setNodes(list);
-      const home = agent?.node ?? mine;
+      const home = agent?.node ?? name.split("@")[2] ?? mine;
+      if (preferMe && home !== mine) {
+        setMoveTo(mine);
+        return;
+      }
       const first = list.find((n) => n.node !== home && n.up);
       if (first) setMoveTo(first.node);
     } catch {
       setNodes([]);
     }
   }
+  // Preflight (MIGRATION.md): what the move would carry and whether the
+  // target can take it, fetched whenever the dialog's target changes.
+  const [preflight, setPreflight] = useState<MovePreflight | null>(null);
+  useEffect(() => {
+    if (!moveOpen || !moveTo) {
+      setPreflight(null);
+      return;
+    }
+    let live = true;
+    setPreflight(null);
+    api
+      .movePreflight(name, moveTo)
+      .then((p) => live && setPreflight(p))
+      .catch((e) => live && setPreflight({ source_up: true, blockers: [e instanceof Error ? e.message : "preflight failed"] }));
+    return () => {
+      live = false;
+    };
+  }, [moveOpen, moveTo, name]);
+  // "bring here" from Now (or a link) opens the dialog aimed at this node.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get("bring") === null || subagent) return;
+    setMoveMode("move");
+    setMoveErr(null);
+    setMoveOpen(true);
+    void loadNodes(true);
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, subagent]);
   // A replica held here of a remote session whose home is down
   // (REPLICATION.md): the transcript endpoint serves it; this tells the
   // page to say so and to offer starting from it.
@@ -2151,6 +2185,20 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             move…
           </button>
         )}
+        {!agent?.moved_to && name.split("@").length >= 3 && (
+          <button
+            className="charter-toggle"
+            onClick={() => {
+              setMoveMode("move");
+              setMoveErr(null);
+              setMoveOpen(true);
+              void loadNodes(true);
+            }}
+            title="move this session to this console's node, with the counterpart repo"
+          >
+            bring here
+          </button>
+        )}
         <AddToBoard agent={name} />
         <PluginsMenu agent={name} running={agent?.plugins ?? []} updates={agent?.plugin_updates ?? []} />
         <ActivityMenu agent={name} counts={agent?.activities ?? null} />
@@ -2191,6 +2239,32 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                     <input className="mono" value={moveRepo} onChange={(e) => setMoveRepo(e.target.value)} placeholder="/path/on/that/node" disabled={moveBusy} />
                   </label>
                 </div>
+                {moveTo && (
+                  <div className="preflight">
+                    {preflight === null ? (
+                      <span className="mono-meta">checking…</span>
+                    ) : (
+                      <>
+                        {preflight.source && (
+                          <span className="mono-meta">
+                            carries {Math.round((preflight.source.tiers.A + preflight.source.tiers.B) / 1024)} KB of transcript
+                            {preflight.source.tiers.C > 0 ? ` · ${Math.round(preflight.source.tiers.C / 1024)} KB memory` : ""} · {preflight.source.files} files
+                            {preflight.source.branch ? ` · ${preflight.source.branch}` : ""}
+                            {preflight.source.harness ? ` · claude ${preflight.source.harness}` : ""}
+                            {preflight.target?.harness ? ` → ${preflight.target.harness}` : ""}
+                            {preflight.target?.counterpart ? ` · repo there: ${preflight.target.counterpart}` : ""}
+                          </span>
+                        )}
+                        {(preflight.warnings ?? []).map((w) => (
+                          <span key={w} className="mono-meta" style={{ color: "var(--sig-normal)" }}>{w}</span>
+                        ))}
+                        {preflight.blockers.map((b) => (
+                          <span key={b} className="mono-meta error-text">{b}</span>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                )}
                 {replicaShown && (
                   <p className="trust-lede">
                     The home node is down: the copy will start from the replica held on {replica?.replica?.held_on} (as of {relTime(replica?.replica?.as_of ?? 0)} ago). The original may still be running there; when it returns, keep one.
@@ -2199,7 +2273,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                 {moveErr && <div className="error-bar">{moveErr}</div>}
                 <div className="trust-actions">
                   <button className="btn ghost" onClick={() => setMoveOpen(false)} disabled={moveBusy}>cancel</button>
-                  <button className="btn primary" onClick={() => void doMove()} disabled={moveBusy || !moveTo}>
+                  <button className="btn primary" onClick={() => void doMove()} disabled={moveBusy || !moveTo || (preflight !== null && preflight.blockers.length > 0 && !moveRepo.trim())}>
                     {moveBusy ? (moveMode === "copy" ? "copying…" : "moving…") : moveMode === "copy" ? "copy there" : "move there"}
                   </button>
                 </div>

@@ -35,6 +35,32 @@ interface PendingLive {
  * Resolves the started Agent, or null when the operator declines. */
 export type TrustedStart = (req: StartAgentRequest) => Promise<Agent | null>;
 
+/** A plain spawn, or a template spawn when the request names one; the
+ *  latter answers with the new address, shaped enough like an Agent for
+ *  the callers (they navigate by name). */
+async function startRequest(req: StartAgentRequest): Promise<Agent> {
+  if (!req.template) return api.startAgent(req);
+  const r = await api.templateSpawn(req.template, {
+    name: req.name || undefined,
+    repo: req.repo || undefined,
+    charter: req.charter,
+    model: req.model,
+    extra_args: req.extra_args,
+    skip_permissions: req.skip_permissions,
+    title: req.title,
+    acknowledge_trust: req.acknowledge_trust,
+  });
+  if (r.board?.id) {
+    try {
+      const { placeOnBoardId } = await import("./boardOps");
+      await placeOnBoardId(r.board.id, r.name, r.board.mode ?? "fill");
+    } catch {
+      // the session started; the board placement is best effort
+    }
+  }
+  return { name: r.name, bare: r.bare, node: r.node, repo: null, channel: "", session_id: "", charter: null, live: true, turn_state: "idle", pending: 0 } as Agent;
+}
+
 export function useTrustedStart(): {
   start: (req: StartAgentRequest) => Promise<Agent | null>;
   dialog: ReactNode;
@@ -47,7 +73,7 @@ export function useTrustedStart(): {
 
   async function start(req: StartAgentRequest): Promise<Agent | null> {
     try {
-      return await api.startAgent(req);
+      return await startRequest(req);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.body && e.body["live_elsewhere"]) {
         const le = e.body["live_elsewhere"] as { session?: string; written_ago_secs?: number };
@@ -95,7 +121,7 @@ export function useTrustedStart(): {
       setLive(null);
       let agent: Agent | null;
       try {
-        agent = await api.startAgent(req);
+        agent = await startRequest(req);
       } catch (e) {
         if (e instanceof ApiError && e.status === 428) {
           setConfirming(false);
@@ -117,7 +143,7 @@ export function useTrustedStart(): {
     setConfirming(true);
     setErr(null);
     try {
-      const agent = await api.startAgent({ ...pending.req, acknowledge_trust: true });
+      const agent = await startRequest({ ...pending.req, acknowledge_trust: true });
       settle(agent);
     } catch (e) {
       setConfirming(false);

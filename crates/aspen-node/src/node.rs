@@ -1185,6 +1185,17 @@ impl Node {
         if let Some(to) = &row.moved_to {
             return Err(anyhow!("@{name} already moved — it is now @{to}"));
         }
+        // Nothing to carry yet (a session that has not produced a
+        // transcript): refuse before stopping anything.
+        if let Some(sid) = row.session_id.as_deref() {
+            if !aspen_claude::transcript::transcript_path(&row.repo, sid).is_file() {
+                return Err(anyhow!(
+                    "@{name} has no transcript yet (session {sid}); give it a first prompt or stop it instead"
+                ));
+            }
+        } else {
+            return Err(anyhow!("@{name} has no session to migrate"));
+        }
         if opts.mode == "move" && self.inner.live(name).is_some() {
             self.shutdown_agent(name).await?;
             // Let the process close its transcript.
@@ -1271,6 +1282,132 @@ impl Node {
             "notes": report.notes,
             "revived": ok,
             "revive_note": note,
+        }))
+    }
+
+    /// Start a session from a template (PLUGINS.md §templates), with
+    /// overrides from the caller (`name`, `repo`, `charter`, `model`,
+    /// `extra_args`, `skip_permissions`, `title`). The trust gate is the
+    /// API layer's, as for any spawn. Session-scope
+    /// plugin rules are written for the new name first, so the process
+    /// starts with its `--plugin-dir`s. Board placement is the console's.
+    pub async fn spawn_from_template(&self, id: &str, overrides: &serde_json::Value) -> Result<serde_json::Value> {
+        let t = self
+            .inner
+            .store
+            .templates(false)?
+            .into_iter()
+            .find(|t| t.id == id || t.name == id)
+            .ok_or_else(|| anyhow!("no template {id:?}"))?;
+        let spec = &t.spec;
+        let ov = |k: &str| overrides.get(k).filter(|v| !v.is_null());
+        let name = ov("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| spec.get("name").and_then(|v| v.as_str()).map(str::to_owned))
+            .ok_or_else(|| anyhow!("a name is required (the template names none)"))?;
+        // Repo: an override path, else the template's repo (a handle, a
+        // basename, or an origin URL) resolved against this node's repos.
+        let repo_ref = ov("repo")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| spec.get("repo").and_then(|v| v.as_str()).map(str::to_owned))
+            .ok_or_else(|| anyhow!("a repo is required (the template names none)"))?;
+        let repo = if Path::new(&repo_ref).is_absolute() {
+            PathBuf::from(&repo_ref)
+        } else {
+            let repos = self.inner.store.repos()?;
+            repos
+                .iter()
+                .find(|r| r.handle == repo_ref)
+                .or_else(|| repos.iter().find(|r| r.path.file_name().map(|n| n.to_string_lossy() == repo_ref).unwrap_or(false)))
+                .or_else(|| repos.iter().find(|r| crate::migrate::git_origin(&r.path).as_deref() == Some(repo_ref.as_str())))
+                .map(|r| r.path.clone())
+                .ok_or_else(|| anyhow!("no repo on this node matches {repo_ref:?} (handle, basename or origin); give a path"))?
+        };
+        let handle = self.inner.store.ensure_handle(&repo)?;
+        let key = format!("{name}@{handle}");
+        // Plugins: session-scope rules for the new address.
+        if let Some(plugins) = spec.get("plugins").and_then(|p| p.as_array()) {
+            let now = self.inner.store.hlc_now();
+            for pl in plugins {
+                let (Some(m), Some(pn)) = (
+                    pl.get("marketplace").and_then(|v| v.as_str()),
+                    pl.get("plugin").and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                let rule = crate::plugins::Rule {
+                    id: format!("tpl-{}-{}-{}", t.id, pn, key).replace(['@', '/'], "_"),
+                    marketplace: m.to_owned(),
+                    plugin: pn.to_owned(),
+                    scope_kind: "session".into(),
+                    scope: key.clone(),
+                    enabled: true,
+                    pin: pl.get("pin").and_then(|v| v.as_str()).map(str::to_owned),
+                    updated_at: now,
+                    deleted: false,
+                };
+                let _ = self.inner.store.upsert_plugin_rule(&rule);
+            }
+            crate::plugins::spawn_sync(self.inner.clone(), None);
+        }
+        let pick_str = |k: &str| ov(k).and_then(|v| v.as_str()).map(str::to_owned).or_else(|| spec.get(k).and_then(|v| v.as_str()).map(str::to_owned));
+        let skip = ov("skip_permissions")
+            .and_then(|v| v.as_bool())
+            .or_else(|| spec.get("permission").and_then(|v| v.as_str()).map(|p| p == "skip"));
+        let opts = SpawnOpts {
+            charter: pick_str("charter"),
+            model: pick_str("model"),
+            extra_args: pick_str("extra_args"),
+            skip_permissions: skip,
+            interactive: true,
+            ..Default::default()
+        };
+        let sess = self.spawn_agent(&name, repo, opts).await?;
+        if let Some(title) = pick_str("title") {
+            let _ = self.inner.store.set_agent_title(&sess.name, Some(&title));
+        }
+        let _ = self.inner.store.record_event(&sess.name, "template", serde_json::json!({ "template": t.name, "id": t.id }));
+        Ok(serde_json::json!({
+            "name": sess.name,
+            "bare": crate::addr::bare(&sess.name),
+            "template": t.name,
+            "board": spec.get("board").cloned().unwrap_or(serde_json::Value::Null),
+        }))
+    }
+
+    /// What a move would carry (MIGRATION.md preflight): tier sizes, the
+    /// harness version here, whether the tree is dirty, whether the
+    /// session is busy.
+    pub fn session_preflight(&self, name: &str) -> Result<serde_json::Value> {
+        let spec = self.session_spec(name)?;
+        let row = self.agent_row(name)?;
+        let sid = spec.session_id.clone();
+        let files = crate::replicate::session_files(&row.repo, &sid);
+        let mut a = 0u64;
+        let mut b = 0u64;
+        for (rel, p) in &files {
+            let n = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            if rel == &format!("{sid}.jsonl") {
+                a += n;
+            } else {
+                b += n;
+            }
+        }
+        let mem = crate::memory::memory_dir(&row.repo);
+        let c: u64 = crate::memory::read_dir_files(&mem).values().map(|(_, t)| t.len() as u64).sum();
+        let git = crate::gitstate::get(&row.repo);
+        let live = self.inner.live(name);
+        Ok(serde_json::json!({
+            "agent": spec,
+            "tiers": { "A": a, "B": b, "C": c },
+            "files": files.len(),
+            "harness": self.inner.servicing.inventory.json()["claude_version"],
+            "dirty": git.as_ref().map(|g| g.dirty).unwrap_or(0),
+            "branch": git.as_ref().and_then(|g| g.branch.clone()),
+            "busy": live.as_ref().map(|m| matches!(m.turn_state(), TurnState::Busy)).unwrap_or(false),
+            "live": live.is_some(),
         }))
     }
 

@@ -76,6 +76,11 @@ pub async fn serve(
         .route("/usage", get(get_usage))
         .route("/replicas", get(get_replicas))
         .route("/memory/resolve", post(post_memory_resolve))
+        .route("/mesh/{node}/evacuate", post(post_evacuate))
+        .route("/templates", get(get_templates))
+        .route("/templates/{id}", put(put_template).delete(delete_template))
+        .route("/templates/{id}/spawn", post(post_template_spawn))
+        .route("/agents/{name}/move/preflight", get(get_move_preflight))
         .route("/agents/{name}/replica", get(get_agent_replica))
         .route("/agents/{name}/usage", get(get_agent_usage))
         .route("/agents/{name}/subagent/{id}", get(get_subagent))
@@ -2701,6 +2706,227 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
         }
     }
     Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions, "memory": memory })).into_response()
+}
+
+// ---- session templates (PLUGINS.md §templates): stored here, synced
+// across the mesh by roster digest like boards.
+
+async fn get_templates(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.templates(false) {
+        Ok(t) => Json(json!(t)).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct TemplateBody {
+    name: String,
+    spec: Value,
+}
+
+async fn put_template(State(s): S, Path(id): Path<String>, Json(b): Json<TemplateBody>) -> impl IntoResponse {
+    let t = aspen_node::store::Template {
+        id,
+        name: b.name.trim().to_owned(),
+        spec: b.spec,
+        updated_at: s.node.inner.store.hlc_now(),
+        deleted: false,
+    };
+    if t.name.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "a template needs a name").into_response();
+    }
+    match s.node.inner.store.upsert_template(&t) {
+        Ok(changed) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true, "changed": changed, "template": t })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn delete_template(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
+    match s.node.inner.store.delete_template(&id) {
+        Ok(()) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct TemplateSpawnBody {
+    /// Start it on this node (default: here).
+    node: Option<String>,
+    name: Option<String>,
+    repo: Option<String>,
+    charter: Option<String>,
+    model: Option<String>,
+    extra_args: Option<String>,
+    skip_permissions: Option<bool>,
+    title: Option<String>,
+    #[serde(default)]
+    acknowledge_trust: bool,
+}
+
+/// Start a session from a template, here or on a peer. The trust gate
+/// applies as for any spawn (428 with the autorun surface).
+async fn post_template_spawn(State(s): S, Path(id): Path<String>, body: Option<Json<TemplateSpawnBody>>) -> impl IntoResponse {
+    let b = body.map(|b| b.0).unwrap_or_default();
+    let overrides = json!({
+        "name": b.name, "repo": b.repo, "charter": b.charter, "model": b.model,
+        "extra_args": b.extra_args, "skip_permissions": b.skip_permissions, "title": b.title,
+    });
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        let Some(mesh) = s.node.inner.mesh() else {
+            return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+        };
+        return match mesh
+            .api_call(node, "template_spawn", "", json!({ "id": id, "overrides": overrides }), REMOTE_TIMEOUT)
+            .await
+        {
+            Ok(mut v) => {
+                if let Some(key) = v.get("name").and_then(|n| n.as_str()).map(str::to_owned) {
+                    v["name"] = json!(format!("{key}@{node}"));
+                }
+                v["node"] = json!(node);
+                Json(v).into_response()
+            }
+            Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
+        };
+    }
+    // Trust gate: resolve the repo the way the node will, then check it.
+    let repo_ref = b.repo.clone().or_else(|| {
+        s.node.inner.store.templates(false).ok()?.into_iter().find(|t| t.id == id || t.name == id)?.spec.get("repo")?.as_str().map(str::to_owned)
+    });
+    if let Some(r) = repo_ref.as_deref() {
+        let path = if std::path::Path::new(r).is_absolute() {
+            Some(PathBuf::from(r))
+        } else {
+            s.node.inner.store.repos().ok().and_then(|rs| {
+                rs.iter().find(|x| x.handle == r).or_else(|| rs.iter().find(|x| x.path.file_name().map(|n| n.to_string_lossy() == r).unwrap_or(false))).map(|x| x.path.clone())
+            })
+        };
+        if let Some(p) = path {
+            let repo_path = aspen_node::node::normalize_repo(&p);
+            let (autorun, trusted) = s.node.trust_state(&repo_path);
+            if b.acknowledge_trust {
+                let _ = s.node.record_trust(&repo_path);
+            } else if !trusted && autorun.has_autorun {
+                return (
+                    StatusCode::PRECONDITION_REQUIRED,
+                    Json(json!({
+                        "error": "untrusted repo: review what it auto-runs, then retry with acknowledge_trust",
+                        "autorun": autorun,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    match s.node.spawn_from_template(&id, &overrides).await {
+        Ok(mut v) => {
+            v["node"] = json!(s.node_name);
+            Json(v).into_response()
+        }
+        Err(e) if e.to_string().contains("already running") => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct EvacuateBody {
+    to: String,
+}
+
+/// Evacuate a node (SERVICING.md): every live session there moves to `to`.
+async fn post_evacuate(State(s): S, Path(node): Path<String>, Json(b): Json<EvacuateBody>) -> impl IntoResponse {
+    let by = format!("operator@{}", s.node_name);
+    if !is_self_node(&s, &node) {
+        return proxy(&s, &node, "node_evacuate", "", json!({ "to": b.to, "by": by })).await;
+    }
+    match aspen_node::servicing::evacuate(&s.node.inner, &b.to, &by) {
+        Ok(st) => Json(serde_json::to_value(st).unwrap_or_default()).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PreflightQuery {
+    to: String,
+}
+
+/// What a move of `name` to `to` would involve, before anything happens:
+/// sizes and state from the source, counterpart and readiness from the
+/// target, and whether a replica is held on the target.
+async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Query<PreflightQuery>) -> impl IntoResponse {
+    let source: Value = match remote_parts(&s, &name) {
+        Some((bare, node)) => {
+            if let Some(mesh) = s.node.inner.mesh() {
+                if !mesh.link_up(&node) {
+                    let replica = aspen_node::replicate::find(&s.node.inner, &node, &bare)
+                        .map(|r| aspen_node::replicate::replica_json(&r, &s.node_name));
+                    return Json(json!({ "source_up": false, "replica": replica, "blockers": if replica.is_some() { Vec::<String>::new() } else { vec![format!("node {node} is unreachable and no replica is held here")] } })).into_response();
+                }
+                match mesh.api_call(&node, "session_preflight", &bare, json!({}), LIST_TIMEOUT).await {
+                    Ok(v) => v,
+                    Err(e) => return err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+                }
+            } else {
+                return err(StatusCode::NOT_FOUND, "not in a mesh").into_response();
+            }
+        }
+        None => match s.node.session_preflight(&name) {
+            Ok(v) => v,
+            Err(e) => return err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        },
+    };
+    let spec = source.get("agent").cloned().unwrap_or(Value::Null);
+    let target: Value = if is_self_node(&s, &q.to) {
+        let sp: Option<aspen_node::migrate::AgentSpec> = serde_json::from_value(spec.clone()).ok();
+        let counterpart = sp.as_ref().and_then(|sp| aspen_node::migrate::find_counterpart(&s.node.inner.store, sp));
+        json!({
+            "counterpart": counterpart.map(|p| p.to_string_lossy().into_owned()),
+            "harness": s.node.inner.servicing.inventory.json()["claude_version"],
+            "state": s.node.inner.servicing.state().name(),
+            "accepting": s.node.inner.servicing.accepting_spawns(),
+        })
+    } else if let Some(mesh) = s.node.inner.mesh() {
+        match mesh.api_call(&q.to, "node_preflight_target", "", json!({ "spec": spec }), LIST_TIMEOUT).await {
+            Ok(v) => v,
+            Err(e) => json!({ "error": e.to_string(), "accepting": false }),
+        }
+    } else {
+        Value::Null
+    };
+    let mut blockers: Vec<String> = Vec::new();
+    if target.get("accepting").and_then(|a| a.as_bool()) == Some(false) {
+        blockers.push(format!("{} is {}", q.to, target.get("state").and_then(|x| x.as_str()).unwrap_or("not accepting sessions")));
+    }
+    if let Some(e) = target.get("error").and_then(|e| e.as_str()) {
+        blockers.push(format!("{}: {e}", q.to));
+    }
+    let warnings: Vec<String> = {
+        let mut w = Vec::new();
+        if target.get("counterpart").map(|c| c.is_null()).unwrap_or(true) {
+            w.push("no counterpart repo found on the target — give a repo path".into());
+        }
+        let hs = source.get("harness").and_then(|h| h.as_str());
+        let ht = target.get("harness").and_then(|h| h.as_str());
+        if let (Some(a), Some(b)) = (hs, ht) {
+            if a != b {
+                w.push(format!("harness versions differ: {a} here, {b} there"));
+            }
+        }
+        if source.get("dirty").and_then(|d| d.as_u64()).unwrap_or(0) > 0 {
+            w.push(format!("{} uncommitted change(s) stay behind unless carried as a patch", source["dirty"]));
+        }
+        if source.get("busy").and_then(|b| b.as_bool()) == Some(true) {
+            w.push("the session is mid-turn; the move waits for the boundary".into());
+        }
+        w
+    };
+    Json(json!({ "source_up": true, "source": source, "target": target, "blockers": blockers, "warnings": warnings })).into_response()
 }
 
 #[derive(Deserialize)]

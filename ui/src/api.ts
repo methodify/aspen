@@ -18,7 +18,7 @@ export interface NodeInfo {
   update_available?: string | null;
   update_skipped?: boolean;
   withdrawn?: boolean;
-  service_state?: "ready" | "draining" | "updating";
+  service_state?: "ready" | "draining" | "updating" | "evacuating";
   service_detail?: string | null;
   started_at?: number;
 }
@@ -471,6 +471,8 @@ export interface Repo {
 export interface StartAgentRequest {
   name: string;
   repo: string;
+  /** Start from this template (id or name); the other fields override it. */
+  template?: string;
   charter?: string;
   model?: string;
   allow_all?: boolean;
@@ -523,6 +525,51 @@ export interface Settings {
   notify?: NotifySettings;
   replication?: ReplicationSettings;
   memory?: MemorySettings;
+}
+
+/** A session template (PLUGINS.md §templates): a named recipe, mesh-wide. */
+export interface TemplateSpec {
+  name?: string;
+  repo?: string;
+  model?: string;
+  permission?: "ask" | "skip";
+  charter?: string;
+  extra_args?: string;
+  plugins?: { marketplace: string; plugin: string; pin?: string | null }[];
+  board?: { id: string; mode: "fill" | "right" | "down" } | null;
+  title?: string;
+}
+export interface Template {
+  id: string;
+  name: string;
+  spec: TemplateSpec;
+  updated_at: number;
+  deleted?: boolean;
+}
+export interface TemplateSpawnResult {
+  name: string;
+  bare: string;
+  node: string;
+  template: string;
+  board: { id: string; mode: "fill" | "right" | "down" } | null;
+}
+
+/** What a move would involve (MIGRATION.md preflight). */
+export interface MovePreflight {
+  source_up: boolean;
+  replica?: ReplicaInfo | null;
+  source?: {
+    tiers: { A: number; B: number; C: number };
+    files: number;
+    harness: string | null;
+    dirty: number;
+    branch: string | null;
+    busy: boolean;
+    live: boolean;
+  };
+  target?: { counterpart: string | null; harness: string | null; state: string; accepting: boolean; error?: string };
+  blockers: string[];
+  warnings?: string[];
 }
 
 /** A replica of a peer's session held on this node (REPLICATION.md). */
@@ -742,7 +789,7 @@ export interface PeerHealth {
   fingerprint: string | null;
   /** Servicing, from the peer's roster. */
   update_available?: string | null;
-  service_state?: "ready" | "draining" | "updating" | null;
+  service_state?: "ready" | "draining" | "updating" | "evacuating" | null;
   service_detail?: string | null;
   policy?: string | null;
   inventory?: Inventory | null;
@@ -1058,6 +1105,14 @@ export const api = {
   },
   /** Move (or copy) a session to another node; resolves the target's report. */
   replicas: () => request<ReplicaInfo[]>("/api/replicas"),
+  templates: () => request<Template[]>("/api/templates"),
+  putTemplate: (id: string, name: string, spec: TemplateSpec) =>
+    request<{ ok: boolean; template: Template }>(`/api/templates/${enc(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, spec }) }),
+  deleteTemplate: (id: string) => request<{ ok: boolean }>(`/api/templates/${enc(id)}`, { method: "DELETE" }),
+  templateSpawn: (id: string, body: { node?: string; name?: string; repo?: string; charter?: string; model?: string; extra_args?: string; skip_permissions?: boolean; title?: string; acknowledge_trust?: boolean }) =>
+    post<TemplateSpawnResult>(`/api/templates/${enc(id)}/spawn`, body),
+  evacuate: (node: string, to: string) => post<unknown>(`/api/mesh/${enc(node)}/evacuate`, { to }),
+  movePreflight: (name: string, to: string) => request<MovePreflight>(`/api/agents/${enc(name)}/move/preflight?to=${enc(to)}`),
   resolveMemory: (c: MemoryConflict, choice: "mine" | "theirs") =>
     post<{ ok: boolean }>("/api/memory/resolve", { node: c.node, repo: c.repo, rel: c.rel, copy: c.copy, choice }),
   agentReplica: (name: string) => request<{ replica: ReplicaInfo | null; home_up: boolean }>(`/api/agents/${enc(name)}/replica`),

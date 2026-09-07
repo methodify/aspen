@@ -13,7 +13,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "./api";
-import type { Channel, Repo } from "./api";
+import type { Channel, Repo, Template } from "./api";
 import { useAppData } from "./App";
 import { presenceOf } from "./components";
 import type { Presence } from "./components";
@@ -78,6 +78,7 @@ export default function Palette() {
   const [sel, setSel] = useState(0);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [status, setStatus] = useState<{ text: string; err: boolean } | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -115,6 +116,7 @@ export default function Palette() {
       inputRef.current?.focus();
       void api.channels().then(setChannels).catch(() => setChannels([]));
       void api.repos().then(setRepos).catch(() => setRepos([]));
+      api.templates().then(setTemplates).catch(() => setTemplates([]));
     } else {
       if (closeTimer.current !== null) {
         window.clearTimeout(closeTimer.current);
@@ -370,6 +372,27 @@ export default function Palette() {
     const ranked: { s: number; order: number; item: Item }[] = [];
     let order = 0;
 
+    for (const tp of templates) {
+      const label = `new session from template ${tp.name}`;
+      const s = score(t, label);
+      if (s < 0) continue;
+      ranked.push({
+        s,
+        order: order++,
+        item: {
+          key: `tpl:${tp.id}`,
+          section: "Start",
+          node: (
+            <>
+              <span>new session from template</span>
+              <span className="pal-mono">{tp.name}</span>
+              {tp.spec.repo && <span className="pal-sub">#{tp.spec.repo}</span>}
+            </>
+          ),
+          run: () => goto(`/?new=${encodeURIComponent(tp.id)}`),
+        },
+      });
+    }
     for (const n of NAV_TARGETS) {
       const s = score(t, n.label);
       if (s < 0) continue;

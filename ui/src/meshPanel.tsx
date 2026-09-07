@@ -115,7 +115,46 @@ function pathsTitle(p: MeshPeer): string {
   return lines.join("\n");
 }
 
-function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: string; onRemove?: () => void }) {
+/** "evacuate…": move every live session off `node` to a chosen peer
+ *  (SERVICING.md). Two steps; the readout comes back through the roster. */
+function EvacuateButton({ node, targets, agents }: { node: string; targets: string[]; agents: number }) {
+  const [ask, setAsk] = useState(false);
+  const [to, setTo] = useState(targets[0] ?? "");
+  const [note, setNote] = useState<string | null>(null);
+  if (targets.length === 0) return null;
+  if (!ask) {
+    return (
+      <>
+        {note && <span className="mono-meta">{note}</span>}
+        <button className="btn ghost sm" onClick={() => setAsk(true)} title="move every live session off this node to a peer, then it is free to service; spawns are refused meanwhile" disabled={agents === 0}>
+          evacuate…
+        </button>
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="mono-meta">move {node}'s sessions to</span>
+      <select value={to} onChange={(e) => setTo(e.target.value)}>
+        {targets.map((t) => (
+          <option key={t} value={t}>{t}</option>
+        ))}
+      </select>
+      <button
+        className="btn danger sm"
+        onClick={() => {
+          setAsk(false);
+          api.evacuate(node, to).then(() => setNote(`evacuating to ${to}`)).catch((e) => setNote(e instanceof Error ? e.message : "failed"));
+        }}
+      >
+        evacuate
+      </button>
+      <button className="btn ghost sm" onClick={() => setAsk(false)}>cancel</button>
+    </>
+  );
+}
+
+function PeerRow({ p, selfVersion, onRemove, evacuateTargets }: { p: MeshPeer; selfVersion?: string; onRemove?: () => void; evacuateTargets?: string[] }) {
   const h = p.health;
   const skew = h?.version && selfVersion && h.version !== selfVersion;
   const [confirm, setConfirm] = useState(false);
@@ -159,7 +198,13 @@ function PeerRow({ p, selfVersion, onRemove }: { p: MeshPeer; selfVersion?: stri
           console ↗
         </a>
       )}
+      {h?.service_state && h.service_state !== "ready" && (
+        <span className="chip mono" title={h.service_detail ?? undefined} style={{ color: "var(--sig-normal)" }}>
+          {h.service_state}{h.service_detail ? ` · ${h.service_detail}` : ""}
+        </span>
+      )}
       <span style={{ flex: 1 }} />
+      {p.link_up && evacuateTargets && <EvacuateButton node={p.node} targets={evacuateTargets.filter((t) => t !== p.node)} agents={p.agents} />}
       {h?.last_error && !p.link_up && (
         <span className="mono-meta" style={{ color: "var(--sig-gate)" }} title={h.last_error}>
           {h.last_error.length > 90 ? `${h.last_error.slice(0, 90)}…` : h.last_error}
@@ -481,12 +526,13 @@ export function MeshPanel() {
                 )}
                 <ReplicatePicker peers={peers} />
                 <MemorySyncToggle />
+                <EvacuateButton node={me.node} targets={peers.filter((x) => x.link_up).map((x) => x.node)} agents={1} />
                 <span style={{ flex: 1 }} />
                 {me.cert_blob && <Copy text={me.cert_blob} label="copy my cert blob" />}
                 {mesh.root_public && <Copy text={mesh.root_public} label="copy root public key" />}
               </div>
               {peers.map((p) => (
-                <PeerRow key={p.node} p={p} selfVersion={me.version} onRemove={() => void propose("peers_remove", { node: p.node })} />
+                <PeerRow key={p.node} p={p} selfVersion={me.version} onRemove={() => void propose("peers_remove", { node: p.node })} evacuateTargets={[me.node, ...peers.filter((x) => x.link_up).map((x) => x.node)]} />
               ))}
               {peers.length === 0 && <span className="mono-meta">no other nodes yet — add one below.</span>}
               {stage === "root" && me.root_key_path && (

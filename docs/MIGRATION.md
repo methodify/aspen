@@ -110,6 +110,27 @@ writes the bundle as a tar (system `tar`); `aspen session import file
 started (revive from the console or `resume`). Same code, no mesh; for an
 offline node, an archive, or handing a session to someone.
 
+## 4b. Preflight and bring-it-here (v0.17)
+
+`GET /api/agents/{name}/move/preflight?to=<node>` answers before
+anything happens: from the source (`session_preflight` op) the tier
+sizes (A transcript, B session folder, C memory), file count, branch,
+dirty count, harness version, busy/live; from the target
+(`node_preflight_target` op) the counterpart repo it would pick, its
+harness version, and whether it accepts sessions; plus `blockers`
+(target not accepting, unreachable) and `warnings` (no counterpart —
+give a path; harness versions differ; uncommitted changes stay behind;
+mid-turn). When the source is down, the answer says so and names a
+replica held here if any (REPLICATION.md). The move dialog fetches it
+whenever the target changes and shows the readout; a blocker disables
+the button unless a repo path is given.
+
+**Bring it here**: every remote session's header and Now card carry
+*bring here* — the move dialog aimed at this console's node in move
+mode (`/session/<name>?bring=1` opens it too), so pulling work to the
+machine in front of you is one click and one confirm. A node's *evacuate*
+(SERVICING.md §13b) is the same move applied to every session there.
+
 ## 5. What was verified (rig, 2026-09-06)
 
 - Move over the mesh, j2 → j1, into a **different repo path**: 4 files,
@@ -125,12 +146,20 @@ offline node, an archive, or handing a session to someone.
 - The console dialog: node picker (links down disabled), move/copy, repo
   path; on success the page navigates to the new address.
 
+## 5b. Verified (rig, 2026-09-07)
+
+Preflight for a live session on a peer reported 612 KB of transcript,
+matching harness versions and the counterpart repo on the target;
+evacuating a node with three live sessions moved one, skipped one whose
+name was taken on the target and one with no transcript yet (which a
+precheck now refuses before stopping it), and returned the node to ready.
+
 ## 6. Not built (phases 3 and 4 of the proposal)
 
-Memory convergence as a standing bus stream with 3-way merge; transcript
-replication (append-only tails to a designated node, making move nearly
-instant and History mesh-wide); "evacuate a node" as a servicing verb;
-"bring it here" as a one-click on every session (the dialog is two
-clicks); a preflight readout in the dialog (sizes, harness skew, dirty
+Built since: memory convergence (MEMORY.md, v0.16), transcript
+replication (REPLICATION.md, v0.16), evacuate (SERVICING.md §13b),
+bring-it-here and the preflight readout (§4b, v0.17). Still open: a
+patch-carry default for dirty trees; History's session lists for a down
+node (the sizes, harness skew, dirty
 state) before confirming; deleting the source's transcript files after a
 move (they stay on disk beside the tombstone).

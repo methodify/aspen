@@ -279,3 +279,19 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
   `memory_resolve {repo, rel, copy, choice}`. `GET /api/needs` gains `memory: [{node, repo, handle,
   rel, from, copy, at}]`; `POST /api/memory/resolve {node?, repo, rel, copy, choice: mine|theirs}`.
 - Every mesh-wide row's `updated_at` now comes from the store's hybrid logical clock.
+
+
+## Templates, evacuate, preflight (v0.17) — PLUGINS.md §7b, SERVICING.md §13b, MIGRATION.md §4b
+
+- `GET /api/templates`; `PUT /api/templates/{id}` body `{name, spec}`; `DELETE` tombstones. Roster
+  field `templates_digest`; mesh op `templates`.
+- `POST /api/templates/{id}/spawn` body `{node?, name?, repo?, charter?, model?, extra_args?,
+  skip_permissions?, title?, acknowledge_trust?}` → `{name, bare, node, template, board}`; 428 through
+  the trust gate. Mesh op `template_spawn {id, overrides}`. CLI `aspen session new --template`.
+- `POST /api/mesh/{node}/evacuate {to}` → the node's servicing state (`evacuating` with `done`,
+  `skipped`, `pending`). `DELETE /api/update` cancels. Mesh op `node_evacuate {to, by}`. CLI
+  `aspen evacuate [node] --to <peer>`. `service_state` gains `evacuating`.
+- `GET /api/agents/{name}/move/preflight?to=` → `{source_up, source, target, blockers, warnings,
+  replica?}`. Mesh ops `session_preflight`, `node_preflight_target {spec}`.
+- `/session/<name>?bring=1` opens the move dialog aimed at this node; `/?new=<template>` opens the
+  new-session panel with a template.

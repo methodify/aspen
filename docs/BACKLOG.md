@@ -29,8 +29,8 @@ S-10, P-5), v0.19 (S-11).
 | ~~S-4~~ v0.15 | console + sessions | **Cost and usage roll-up.** Per session, repo, node; subagents folded in; from transcript usage fields. | §4 |
 | ~~S-5~~ v0.16 | protocol + sessions | **Memory convergence** with a stored base and 3-way merge over the bus. (B-5b phase 3) | §5 |
 | ~~S-6~~ v0.16 | protocol | **Hybrid logical clock** for mesh-wide rows (boards, marketplaces, rules). | §6 |
-| S-7 | sessions + console | **Session templates.** Named recipe: repo, plugins, model, prompt additions, board placement; one click or CLI. | §7 |
-| S-8 | servicing + console | **Evacuate a node; bring it here.** Move every live session off a node before servicing; one-click pull on any session; preflight readout. (B-5b) | §8 |
+| ~~S-7~~ v0.17 | sessions + console | **Session templates.** Named recipe: repo, plugins, model, prompt additions, board placement; one click or CLI. | §7 |
+| ~~S-8~~ v0.17 | servicing + console | **Evacuate a node; bring it here.** Move every live session off a node before servicing; one-click pull on any session; preflight readout. (B-5b) | §8 |
 | S-9 | protocol | **Multi-mesh membership** for one node. (P-1, docs/proposals/multi-mesh.md) | §9 |
 | S-10 | protocol + console | **Console through the relay** (P-4), with WSL address detection (P-5). | §10 |
 | S-11 | console + protocol | **Pair mode on boards.** Two panes' sessions joined on a bus thread. | §11 |

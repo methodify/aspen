@@ -177,6 +177,14 @@ enum Command {
         #[arg(long)]
         with_changes: bool,
     },
+    /// Move every live session off a node (before servicing it)
+    Evacuate {
+        /// The node to empty (default: this one)
+        node: Option<String>,
+        /// Where its sessions go
+        #[arg(long)]
+        to: String,
+    },
     /// Session bundles as files: export one, import one.
     Session {
         #[command(subcommand)]
@@ -200,6 +208,24 @@ enum SessionCommand {
         repo: Option<String>,
         #[arg(long)]
         r#as: Option<String>,
+    },
+    /// Start a session from a template (PLUGINS.md §templates)
+    New {
+        /// Template name or id
+        #[arg(long)]
+        template: String,
+        /// Bare name for the new agent (default: the template's)
+        #[arg(long)]
+        name: Option<String>,
+        /// Repo path, handle, or basename (default: the template's)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Start it on this peer instead of here
+        #[arg(long)]
+        node: Option<String>,
+        /// The repo's autorun surface has been reviewed
+        #[arg(long)]
+        trust: bool,
     },
 }
 
@@ -533,6 +559,24 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
+        Command::Evacuate { node, to } => {
+            let node = match node {
+                Some(n) => n,
+                None => {
+                    let files = aspen_node::mesh::MeshFiles { data_dir: cli.data_dir.clone() };
+                    files.load_identity().ok().flatten().map(|i| i.node).unwrap_or_else(|| "local".into())
+                }
+            };
+            let v = local_api_post(
+                &cli.data_dir,
+                &format!("/api/mesh/{}/evacuate", urlencoding::encode(&node)),
+                serde_json::json!({ "to": to }),
+                60,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            println!("watch progress with `aspen status` or the Mesh panel; cancel with the update cancel (DELETE /api/update).");
+            Ok(())
+        }
         Command::Session { command } => match command {
             SessionCommand::Export { agent, out } => {
                 let out = std::path::absolute(&out).unwrap_or(out);
@@ -541,6 +585,16 @@ async fn main() -> Result<()> {
                     &format!("/api/agents/{}/export", urlencoding::encode(&agent)),
                     serde_json::json!({ "out": out.to_string_lossy() }),
                     300,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                Ok(())
+            }
+            SessionCommand::New { template, name, repo, node, trust } => {
+                let v = local_api_post(
+                    &cli.data_dir,
+                    &format!("/api/templates/{}/spawn", urlencoding::encode(&template)),
+                    serde_json::json!({ "name": name, "repo": repo, "node": node, "acknowledge_trust": trust }),
+                    120,
                 )?;
                 println!("{}", serde_json::to_string_pretty(&v)?);
                 Ok(())

@@ -17,7 +17,7 @@
 // This replaces Command, Sessions, and the rail's fleet list.
 
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   api,
   serverNow,
@@ -95,12 +95,14 @@ function WorkCard({
   onOpen,
   onInterrupt,
   onStop,
+  onBring,
 }: {
   a: Agent;
   now: number;
   onOpen: () => void;
   onInterrupt: () => void;
   onStop: () => void;
+  onBring: () => void;
 }) {
   const p = presenceOf(a.live, a.turn_state);
   const s = a.summary;
@@ -185,6 +187,18 @@ function WorkCard({
             interrupt
           </button>
         )}
+        {a.remote && (
+          <button
+            className="btn ghost sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onBring();
+            }}
+            title="move this session to this console's node (MIGRATION.md)"
+          >
+            bring here
+          </button>
+        )}
         <button
           className="btn ghost sm"
           onClick={(e) => {
@@ -207,7 +221,12 @@ export default function Now() {
   const fleetActs = usePoll<FleetActivityItem[]>(api.fleetActivities, 3000);
   const trust = useTrustedStart();
   const liveGate = useLiveGate();
+  const [params, setParams] = useSearchParams();
+  const newFrom = params.get("new");
   const [panelOpen, setPanelOpen] = useState(false);
+  useEffect(() => {
+    if (newFrom !== null) setPanelOpen(true);
+  }, [newFrom]);
   const [query, setQuery] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -337,9 +356,14 @@ export default function Now() {
             startFn={trust.start}
             repoPaths={[]}
             existing={agents.map((a) => a.name)}
-            onClose={() => setPanelOpen(false)}
+            initialTemplate={newFrom || undefined}
+            onClose={() => {
+              setPanelOpen(false);
+              if (newFrom !== null) setParams({});
+            }}
             onStarted={async (name) => {
               setPanelOpen(false);
+              if (newFrom !== null) setParams({});
               await refreshAgents();
               nav(`/session/${encodeURIComponent(name)}`);
             }}
@@ -460,6 +484,7 @@ export default function Now() {
                   onOpen={() => nav(`/session/${encodeURIComponent(a.name)}`)}
                   onInterrupt={() => void act("interrupt", () => api.interrupt(a.name))}
                   onStop={() => void act("stop", () => api.deleteAgent(a.name))}
+                  onBring={() => nav(`/session/${encodeURIComponent(a.name)}?bring=1`)}
                 />
               ))}
             </div>

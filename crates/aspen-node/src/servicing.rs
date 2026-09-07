@@ -63,6 +63,17 @@ pub enum NodeState {
         by: String,
         target: String,
     },
+    /// Every live session is being moved to `to` (SERVICING.md §evacuate):
+    /// spawns are refused until the list is empty or the operator cancels.
+    Evacuating {
+        since: f64,
+        by: String,
+        to: String,
+        done: Vec<String>,
+        /// (agent, why) — not retried in this evacuation.
+        skipped: Vec<(String, String)>,
+        pending: Vec<String>,
+    },
 }
 
 impl NodeState {
@@ -71,6 +82,7 @@ impl NodeState {
             NodeState::Ready => "ready",
             NodeState::Draining { .. } => "draining",
             NodeState::Updating { .. } => "updating",
+            NodeState::Evacuating { .. } => "evacuating",
         }
     }
     /// One line for rosters and status readouts.
@@ -92,6 +104,12 @@ impl NodeState {
                 )
             }),
             NodeState::Updating { since, .. } => Some(format!("updater running since {since:.0}")),
+            NodeState::Evacuating { to, done, pending, skipped, .. } => Some(format!(
+                "evacuating to {to}: {} moved, {} pending{}",
+                done.len(),
+                pending.len(),
+                if skipped.is_empty() { String::new() } else { format!(", {} skipped", skipped.len()) }
+            )),
         }
     }
 }
@@ -386,6 +404,9 @@ pub fn request(inner: &Arc<NodeInner>, when: &str, by: &str) -> Result<NodeState
     let mut st = s.state.lock().unwrap();
     match &*st {
         NodeState::Updating { .. } => return Err(anyhow!("an update is already running")),
+        NodeState::Evacuating { to, .. } => {
+            return Err(anyhow!("the node is evacuating to {to}; cancel that first"))
+        }
         NodeState::Draining { .. } if when != "now" => {
             // Already draining; a second "quiet" request is a no-op.
             return Ok(st.clone());
@@ -429,7 +450,133 @@ pub fn cancel(inner: &Arc<NodeInner>, by: &str) -> Result<bool> {
         NodeState::Updating { .. } => Err(anyhow!(
             "the updater is already running; too late to cancel"
         )),
+        NodeState::Evacuating { to, done, .. } => {
+            let (to, n) = (to.clone(), done.len());
+            *st = NodeState::Ready;
+            drop(st);
+            let _ = inner.store.record_event(
+                NODE_AGENT,
+                "evacuate_cancelled",
+                json!({ "to": to, "moved": n, "by": by }),
+            );
+            Ok(true)
+        }
         NodeState::Ready => Ok(false),
+    }
+}
+
+/// Evacuate: move every live session here to `to`, one at a time, then
+/// return to ready. Busy sessions wait for their turn boundary; a session
+/// that fails to move is skipped and named. Spawns are refused meanwhile.
+pub fn evacuate(inner: &Arc<NodeInner>, to: &str, by: &str) -> Result<NodeState> {
+    let s = &inner.servicing;
+    let mesh = inner.mesh().ok_or_else(|| anyhow!("this node is not in a mesh"))?;
+    if to == mesh.identity.node {
+        return Err(anyhow!("cannot evacuate a node to itself"));
+    }
+    if !mesh.link_up(to) {
+        return Err(anyhow!("no live link to node {to:?}"));
+    }
+    {
+        let mut st = s.state.lock().unwrap();
+        match &*st {
+            NodeState::Ready => {}
+            other => return Err(anyhow!("node is {}; cancel that first", other.name())),
+        }
+        let pending: Vec<String> = inner
+            .sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        *st = NodeState::Evacuating {
+            since: now_epoch(),
+            by: by.to_owned(),
+            to: to.to_owned(),
+            done: Vec::new(),
+            skipped: Vec::new(),
+            pending,
+        };
+    }
+    let _ = inner.store.record_event(NODE_AGENT, "evacuate_requested", json!({ "to": to, "by": by }));
+    let inner2 = inner.clone();
+    let to2 = to.to_owned();
+    tokio::spawn(async move { run_evacuation(inner2, to2).await });
+    Ok(s.state())
+}
+
+async fn run_evacuation(inner: Arc<NodeInner>, to: String) {
+    let s = &inner.servicing;
+    let started = now_epoch();
+    let me = inner.mesh().map(|m| m.identity.node.clone()).unwrap_or_default();
+    loop {
+        // Still evacuating? (cancel puts us back to ready)
+        let (done, skipped) = match s.state() {
+            NodeState::Evacuating { done, skipped, .. } => (done, skipped),
+            _ => return,
+        };
+        if now_epoch() - started > 3600.0 {
+            let _ = inner.store.record_event(NODE_AGENT, "evacuate_timeout", json!({ "to": to, "moved": done.len() }));
+            *s.state.lock().unwrap() = NodeState::Ready;
+            return;
+        }
+        let candidates: Vec<(String, bool)> = {
+            let sessions = inner.sessions.lock().unwrap();
+            sessions
+                .values()
+                .filter(|m| !done.contains(&m.name) && !skipped.iter().any(|(a, _)| a == &m.name))
+                .map(|m| (m.name.clone(), matches!(m.turn_state(), crate::node::TurnState::Idle)))
+                .collect()
+        };
+        {
+            let mut st = s.state.lock().unwrap();
+            if let NodeState::Evacuating { pending, .. } = &mut *st {
+                *pending = candidates.iter().map(|(n, _)| n.clone()).collect();
+            }
+        }
+        if candidates.is_empty() {
+            let _ = inner.store.record_event(
+                NODE_AGENT,
+                "evacuated",
+                json!({ "to": to, "moved": done, "skipped": skipped }),
+            );
+            let mut st = s.state.lock().unwrap();
+            if matches!(*st, NodeState::Evacuating { .. }) {
+                *st = NodeState::Ready;
+            }
+            return;
+        }
+        let next = candidates.iter().find(|(_, idle)| *idle).map(|(n, _)| n.clone());
+        let Some(name) = next else {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        };
+        let Some(mesh) = inner.mesh() else { return };
+        let result = mesh
+            .api_call(
+                &to,
+                "session_pull",
+                &name,
+                json!({ "from": me, "mode": "move" }),
+                std::time::Duration::from_secs(600),
+            )
+            .await;
+        let outcome: Result<(), String> = match result {
+            Ok(v) if v.get("error").is_none() => Ok(()),
+            Ok(v) => Err(v["error"].to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        {
+            let mut st = s.state.lock().unwrap();
+            if let NodeState::Evacuating { done, skipped, .. } = &mut *st {
+                match outcome {
+                    Ok(()) => done.push(name.clone()),
+                    Err(e) => skipped.push((name.clone(), e)),
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
 

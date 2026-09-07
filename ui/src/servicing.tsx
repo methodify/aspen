@@ -28,7 +28,7 @@ export interface NodeRow {
   link_up: boolean;
   version: string | null;
   available: string | null;
-  state: "ready" | "draining" | "updating" | null;
+  state: "ready" | "draining" | "updating" | "evacuating" | null;
   detail: string | null;
   policy: string | null;
   inventory: Inventory | null;

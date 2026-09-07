@@ -593,6 +593,7 @@ pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
         "advertised": advertised(inner),
         "boards_digest": inner.store.boards_digest(),
         "plugins_digest": inner.store.plugin_registry_digest(),
+        "templates_digest": inner.store.templates_digest(),
         "memory": crate::memory::roster_digests(inner),
     })
 }
@@ -991,6 +992,15 @@ async fn link_loop(
                             });
                         }
                     }
+                    if let Some(d) = payload.get("templates_digest").and_then(|d| d.as_str()) {
+                        if d != inner.store.templates_digest() {
+                            let inner2 = inner.clone();
+                            let peer2 = peer.to_owned();
+                            tokio::spawn(async move {
+                                sync_templates_from(&inner2, &peer2).await;
+                            });
+                        }
+                    }
                     if let Some(m) = payload.get("memory").and_then(|m| m.as_object()) {
                         if let Some(mine) = crate::memory::roster_digests(inner) {
                             for (key, d) in m {
@@ -1283,6 +1293,12 @@ async fn serve_api_req(
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
         "fleet_activities" => Ok(json!(crate::node::fleet_activities(&node.inner))),
+        "templates" => Ok(json!(node.inner.store.templates(true)?)),
+        "template_spawn" => {
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let overrides = body.get("overrides").cloned().unwrap_or(Value::Null);
+            node.spawn_from_template(&id, &overrides).await
+        }
         "replica_offsets" => crate::replicate::offsets(&node.inner, peer, agent),
         "memory_files" => {
             let key = body.get("key").and_then(|k| k.as_str()).unwrap_or("").to_owned();
@@ -1790,6 +1806,24 @@ async fn serve_api_req(
         // from the release channel this machine verifies itself). Own-mesh
         // peers only — the `service` capability once the capability layer
         // exists (DESIGN §8.1).
+        "node_evacuate" => {
+            let to = body.get("to").and_then(|t| t.as_str()).unwrap_or("");
+            let by = body.get("by").and_then(|b| b.as_str()).unwrap_or("peer");
+            let st = crate::servicing::evacuate(inner, to, by)?;
+            Ok(serde_json::to_value(st)?)
+        }
+        "session_preflight" => node.session_preflight(agent),
+        "node_preflight_target" => {
+            // Can this node receive the session described by `spec`?
+            let spec: crate::migrate::AgentSpec = serde_json::from_value(body.get("spec").cloned().unwrap_or(Value::Null))?;
+            let counterpart = crate::migrate::find_counterpart(&inner.store, &spec);
+            Ok(json!({
+                "counterpart": counterpart.map(|p| p.to_string_lossy().into_owned()),
+                "harness": inner.servicing.inventory.json()["claude_version"],
+                "state": inner.servicing.state().name(),
+                "accepting": inner.servicing.accepting_spawns(),
+            }))
+        }
         "node_update" => {
             let when = body.get("when").and_then(|w| w.as_str()).unwrap_or("quiet");
             let by = body
@@ -2147,6 +2181,29 @@ async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
     }
     if changed {
         tracing::info!(peer, n = boards.len(), "boards synced from peer");
+        broadcast_roster(inner);
+    }
+}
+
+async fn sync_templates_from(inner: &Arc<NodeInner>, peer: &str) {
+    let Some(mesh) = inner.mesh() else { return };
+    let Ok(v) = mesh
+        .api_call(peer, "templates", "", json!({}), std::time::Duration::from_secs(20))
+        .await
+    else {
+        return;
+    };
+    let Ok(rows) = serde_json::from_value::<Vec<crate::store::Template>>(v) else {
+        return;
+    };
+    let mut changed = false;
+    for t in &rows {
+        if inner.store.upsert_template(t).unwrap_or(false) {
+            changed = true;
+        }
+    }
+    if changed {
+        tracing::info!(peer, n = rows.len(), "templates synced from peer");
         broadcast_roster(inner);
     }
 }

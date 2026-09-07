@@ -4,7 +4,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, type MarketSource, type PluginRegistry, type PluginRule, type CatalogPlugin, type MeshInfo } from "../api";
+import { useNavigate } from "react-router-dom";
+import { api, type MarketSource, type PluginRegistry, type PluginRule, type CatalogPlugin, type MeshInfo, type Template, type TemplateSpec, type Board } from "../api";
 import { useAppData } from "../App";
 import { ErrorBar, relTime } from "../components";
 import "./plugins.css";
@@ -172,6 +173,8 @@ export default function Plugins() {
         <button className="btn sm" disabled={syncing} onClick={() => void sync()}>{syncing ? "syncing…" : "sync all"}</button>
       </div>
 
+      <TemplatesSection catalog={catalog} />
+
       <h2>Catalog</h2>
       <input className="plg-search" placeholder="filter plugins by name, description, marketplace" value={q} onChange={(e) => setQ(e.target.value)} />
       <table className="plg-table">
@@ -335,5 +338,204 @@ function Matrix({
         </div>
       ))}
     </div>
+  );
+}
+
+
+/** Session templates (PLUGINS.md §templates): named recipes, synced
+ *  mesh-wide, spawned from Now's panel, the palette, or the CLI. */
+function TemplatesSection({ catalog }: { catalog: CatalogPlugin[] }) {
+  const nav = useNavigate();
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [boards, setBoards] = useState<Board[]>([]);
+  const [editing, setEditing] = useState<Template | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [removeAsk, setRemoveAsk] = useState<string | null>(null);
+  async function load() {
+    try {
+      const [t, b] = await Promise.all([api.templates(), api.boards().catch(() => [] as Board[])]);
+      setTemplates(t);
+      setBoards(b.filter((x) => !x.query));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed to load templates");
+    }
+  }
+  useEffect(() => {
+    void load();
+    const t = window.setInterval(() => void load(), 15000);
+    return () => window.clearInterval(t);
+  }, []);
+  const blank = (): Template => ({ id: `t-${Date.now().toString(36)}`, name: "", spec: { permission: "ask", plugins: [] }, updated_at: 0 });
+  return (
+    <>
+      <h2>Session templates</h2>
+      <p className="dim">
+        A named recipe — repo, model, permission mode, charter, extra args, plugins, a board to land on — started in one click from Now's new-session panel, the palette, or <code>aspen session new --template</code>. Synced across the mesh like boards.
+      </p>
+      <ErrorBar error={err} />
+      <div className="mk-list">
+        {templates.map((t) => (
+          <div className="mk-row" key={t.id}>
+            <span className="mono mk-name">{t.name}</span>
+            <span className="mono-meta">
+              {t.spec.repo ? `#${t.spec.repo}` : "any repo"}
+              {t.spec.model ? ` · ${t.spec.model}` : ""}
+              {t.spec.permission === "skip" ? " · skip permissions" : ""}
+              {t.spec.plugins?.length ? ` · ${t.spec.plugins.map((p) => p.plugin).join(", ")}` : ""}
+              {t.spec.board ? ` · board ${boards.find((b) => b.id === t.spec.board?.id)?.name ?? t.spec.board.id}` : ""}
+            </span>
+            <span style={{ flex: 1 }} />
+            <button className="btn primary sm" onClick={() => nav(`/?new=${encodeURIComponent(t.id)}`)} title="open the new-session panel with this template filled in">start…</button>
+            <button className="btn sm" onClick={() => setEditing(t)}>edit</button>
+            {removeAsk === t.id ? (
+              <span className="inline-confirm">
+                <span className="mono-meta">remove {t.name}?</span>
+                <button className="btn sm" onClick={async () => { await api.deleteTemplate(t.id).catch(() => {}); setRemoveAsk(null); await load(); }}>yes</button>
+                <button className="btn sm" onClick={() => setRemoveAsk(null)}>no</button>
+              </span>
+            ) : (
+              <button className="btn ghost sm" onClick={() => setRemoveAsk(t.id)}>remove</button>
+            )}
+          </div>
+        ))}
+        {templates.length === 0 && <div className="dim">no templates yet</div>}
+      </div>
+      {editing ? (
+        <TemplateEditor
+          t={editing}
+          catalog={catalog}
+          boards={boards}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            setEditing(null);
+            await load();
+          }}
+        />
+      ) : (
+        <div className="mk-add">
+          <button className="btn sm" onClick={() => setEditing(blank())}>new template</button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function TemplateEditor({ t, catalog, boards, onClose, onSaved }: { t: Template; catalog: CatalogPlugin[]; boards: Board[]; onClose: () => void; onSaved: () => void | Promise<void> }) {
+  const [name, setName] = useState(t.name);
+  const [spec, setSpec] = useState<TemplateSpec>({ ...t.spec, plugins: t.spec.plugins ?? [] });
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const set = (patch: Partial<TemplateSpec>) => setSpec((s) => ({ ...s, ...patch }));
+  const has = (p: CatalogPlugin) => (spec.plugins ?? []).some((x) => x.marketplace === p.marketplace && x.plugin === p.name);
+  const toggle = (p: CatalogPlugin) =>
+    set({ plugins: has(p) ? (spec.plugins ?? []).filter((x) => !(x.marketplace === p.marketplace && x.plugin === p.name)) : [...(spec.plugins ?? []), { marketplace: p.marketplace, plugin: p.name }] });
+  async function save() {
+    if (!name.trim()) {
+      setErr("a name is required");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const clean: TemplateSpec = { ...spec };
+      for (const k of Object.keys(clean) as (keyof TemplateSpec)[]) {
+        const v = clean[k];
+        if (v === "" || v === null || v === undefined) delete clean[k];
+      }
+      await api.putTemplate(t.id, name.trim(), clean);
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form
+      className="strip tpl-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span className="label">{t.name ? `Edit ${t.name}` : "New template"}</span>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn ghost sm" onClick={onClose}>close</button>
+      </div>
+      <ErrorBar error={err} />
+      <div className="grid cols">
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Template name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. reviewer" />
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Default agent name (optional)</span>
+          <input value={spec.name ?? ""} onChange={(e) => set({ name: e.target.value })} placeholder="e.g. review" spellCheck={false} />
+        </label>
+      </div>
+      <div className="grid cols">
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Repo (handle, basename, origin URL, or path; blank = ask)</span>
+          <input className="mono" value={spec.repo ?? ""} onChange={(e) => set({ repo: e.target.value })} placeholder="hub" spellCheck={false} />
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Model (optional)</span>
+          <input value={spec.model ?? ""} onChange={(e) => set({ model: e.target.value })} placeholder="default" spellCheck={false} />
+        </label>
+      </div>
+      <label style={{ display: "grid", gap: 4 }}>
+        <span className="label">Charter (optional)</span>
+        <textarea rows={3} value={spec.charter ?? ""} onChange={(e) => set({ charter: e.target.value })} placeholder="what sessions from this template are here to do" />
+      </label>
+      <div className="grid cols">
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Extra claude args (optional)</span>
+          <input className="mono" value={spec.extra_args ?? ""} onChange={(e) => set({ extra_args: e.target.value })} placeholder="--chrome" spellCheck={false} />
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Permissions</span>
+          <select value={spec.permission ?? "ask"} onChange={(e) => set({ permission: e.target.value as "ask" | "skip" })}>
+            <option value="ask">ask (route prompts to the console)</option>
+            <option value="skip">skip (bypassPermissions)</option>
+          </select>
+        </label>
+      </div>
+      <div style={{ display: "grid", gap: 4 }}>
+        <span className="label">Plugins (session-scope rules are written for each new session)</span>
+        <div className="tpl-plugins">
+          {catalog.length === 0 && <span className="dim">no plugins in the catalog yet</span>}
+          {catalog.map((p) => (
+            <label key={`${p.marketplace}/${p.name}`} className={`chip mono kind-toggle${has(p) ? "" : " off"}`}>
+              <input type="checkbox" checked={has(p)} onChange={() => toggle(p)} />
+              {p.name}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="grid cols">
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Board (optional)</span>
+          <select value={spec.board?.id ?? ""} onChange={(e) => set({ board: e.target.value ? { id: e.target.value, mode: spec.board?.mode ?? "fill" } : null })}>
+            <option value="">— none —</option>
+            {boards.map((b) => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Placement</span>
+          <select value={spec.board?.mode ?? "fill"} onChange={(e) => set({ board: spec.board ? { ...spec.board, mode: e.target.value as "fill" | "right" | "down" } : null })} disabled={!spec.board}>
+            <option value="fill">first empty pane, else split right</option>
+            <option value="right">split right</option>
+            <option value="down">split down</option>
+          </select>
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button type="button" className="btn ghost" onClick={onClose} disabled={busy}>cancel</button>
+        <button type="submit" className="btn primary" disabled={busy}>{busy ? "saving…" : "save template"}</button>
+      </div>
+    </form>
   );
 }

@@ -151,6 +151,13 @@ CREATE TABLE IF NOT EXISTS replicas(
   updated_at REAL NOT NULL,
   PRIMARY KEY(node, agent, rel)
 );
+CREATE TABLE IF NOT EXISTS templates(
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  spec TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS memory_base(
   repo TEXT NOT NULL,
   rel TEXT NOT NULL,
@@ -246,6 +253,20 @@ pub struct Board {
 }
 
 /// One entry in the fleet event log.
+/// A session template (PLUGINS.md §templates): a named recipe, synced
+/// mesh-wide like boards. `spec` is the recipe as JSON: `{repo?, model?,
+/// permission?, charter?, extra_args?, plugins: [{marketplace, plugin,
+/// pin?}], board?: {id, mode}}`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Template {
+    pub id: String,
+    pub name: String,
+    pub spec: serde_json::Value,
+    pub updated_at: f64,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// The last content both sides of a memory sync agreed on (MEMORY.md).
 #[derive(Debug, Clone)]
 pub struct MemoryBase {
@@ -431,6 +452,7 @@ impl BusStore {
             "SELECT COALESCE(MAX(updated_at), 0) FROM boards",
             "SELECT COALESCE(MAX(updated_at), 0) FROM marketplaces",
             "SELECT COALESCE(MAX(updated_at), 0) FROM plugin_rules",
+            "SELECT COALESCE(MAX(updated_at), 0) FROM templates",
         ] {
             if let Ok(v) = conn.query_row(sql, [], |r| r.get::<_, f64>(0)) {
                 m = m.max(v);
@@ -729,6 +751,69 @@ impl BusStore {
             params![now_epoch(), agent, kind, detail.to_string()],
         )?;
         Ok(())
+    }
+
+    pub fn templates(&self, with_deleted: bool) -> Result<Vec<Template>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, spec, updated_at, deleted FROM templates ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Template {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    spec: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::Value::Null),
+                    updated_at: r.get(3)?,
+                    deleted: r.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().filter(|t| with_deleted || !t.deleted).collect())
+    }
+
+    /// Write a template if newer than what we hold (LWW per row).
+    pub fn upsert_template(&self, t: &Template) -> Result<bool> {
+        self.hlc_observe(t.updated_at);
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<f64> = conn
+            .query_row("SELECT updated_at FROM templates WHERE id=?1", params![t.id], |r| r.get(0))
+            .ok();
+        if cur.is_some_and(|c| c >= t.updated_at) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO templates(id, name, spec, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name=?2, spec=?3, updated_at=?4, deleted=?5",
+            params![t.id, t.name, t.spec.to_string(), t.updated_at, t.deleted as i64],
+        )?;
+        Ok(true)
+    }
+
+    pub fn delete_template(&self, id: &str) -> Result<()> {
+        let t = self.hlc_now();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE templates SET deleted=1, updated_at=?2 WHERE id=?1",
+            params![id, t],
+        )?;
+        Ok(())
+    }
+
+    pub fn templates_digest(&self) -> String {
+        let conn = self.conn.lock().unwrap();
+        let mut h: u64 = 0xcbf29ce484222325;
+        if let Ok(mut stmt) = conn.prepare("SELECT id, updated_at FROM templates ORDER BY id") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))) {
+                for (id, t) in rows.flatten() {
+                    for b in format!("{id}{t:.3}").bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
+                }
+            }
+        }
+        format!("{h:016x}")
     }
 
     pub fn memory_base(&self, repo: &str) -> Result<std::collections::BTreeMap<String, MemoryBase>> {

@@ -17,3 +17,7 @@
 .mx-scope { min-width: 240px; }
 .plugins-menu .row { display: flex; gap: 8px; align-items: baseline; padding: 4px 10px; }
 .plugin-nag { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--sig-gate-dim, #fff4e0); border-bottom: 1px solid var(--line); font-size: 12px; }
+
+/* session templates (PLUGINS.md §templates) */
+.tpl-editor { display: grid; gap: 12px; padding: 14px; margin: 8px 0 16px; }
+.tpl-plugins { display: flex; flex-wrap: wrap; gap: 6px; }

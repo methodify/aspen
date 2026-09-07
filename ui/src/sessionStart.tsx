@@ -1,7 +1,7 @@
 // The new-session panel: name + repo + charter/model/args/skip, through
 // the trust gate. Shared by Now and the Mesh list.
-import { useState } from "react";
-import { type StartAgentRequest } from "./api";
+import { useEffect, useState } from "react";
+import { api, type StartAgentRequest, type Template } from "./api";
 import { type TrustedStart } from "./trust";
 import { ErrorBar } from "./components";
 
@@ -13,12 +13,15 @@ export function NewSessionPanel({
   existing,
   onClose,
   onStarted,
+  initialTemplate,
 }: {
   startFn: TrustedStart;
   repoPaths: string[];
   existing: string[];
   onClose: () => void;
   onStarted: (name: string) => void | Promise<void>;
+  /** Preselect a template (id or name) — from the Plugins page or the palette. */
+  initialTemplate?: string;
 }) {
   const [name, setName] = useState("");
   const [repo, setRepo] = useState("");
@@ -28,6 +31,30 @@ export function NewSessionPanel({
   const [skip, setSkip] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [template, setTemplate] = useState<string>("");
+
+  useEffect(() => {
+    api.templates().then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+  // Choosing a template fills the form (everything stays editable); the
+  // spawn itself goes through the template so plugins and board placement
+  // come with it (PLUGINS.md §templates).
+  function pickTemplate(id: string) {
+    setTemplate(id);
+    const t = templates.find((x) => x.id === id || x.name === id);
+    if (!t) return;
+    if (t.spec.name) setName(t.spec.name);
+    if (t.spec.repo) setRepo(repoPaths.find((p) => p.endsWith(`/${t.spec.repo}`) || p.endsWith(`\\${t.spec.repo}`)) ?? t.spec.repo);
+    setCharter(t.spec.charter ?? "");
+    setModel(t.spec.model ?? "");
+    setExtraArgs(t.spec.extra_args ?? "");
+    setSkip(t.spec.permission === "skip");
+  }
+  useEffect(() => {
+    if (initialTemplate && templates.length && !template) pickTemplate(initialTemplate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTemplate, templates]);
 
   function validate(): string | null {
     const n = name.trim();
@@ -48,6 +75,7 @@ export function NewSessionPanel({
     setErr(null);
     setBusy(true);
     const req: StartAgentRequest = { name: name.trim(), repo: repo.trim() };
+    if (template) req.template = template;
     if (charter.trim()) req.charter = charter.trim();
     if (model.trim()) req.model = model.trim();
     if (extraArgs.trim()) req.extra_args = extraArgs.trim();
@@ -84,6 +112,23 @@ export function NewSessionPanel({
       </div>
 
       <ErrorBar error={err} />
+
+      {templates.length > 0 && (
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">From template (optional)</span>
+          <select value={template} onChange={(e) => pickTemplate(e.target.value)} aria-label="template">
+            <option value="">— none —</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+                {t.spec.repo ? ` · ${t.spec.repo}` : ""}
+                {t.spec.plugins?.length ? ` · ${t.spec.plugins.length} plugin${t.spec.plugins.length === 1 ? "" : "s"}` : ""}
+                {t.spec.board ? " · board" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <div className="grid cols">
         <label style={{ display: "grid", gap: 4 }}>

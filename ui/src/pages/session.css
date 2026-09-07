@@ -509,3 +509,4 @@
 .usage-mini th:first-child, .usage-mini td:first-child { text-align: left; }
 .usage-mini td { padding: 2px 6px; border-top: 1px solid var(--line); }
 .usage-mini .num { text-align: right; }
+.preflight { display: flex; flex-direction: column; gap: 3px; padding: 6px 0; }

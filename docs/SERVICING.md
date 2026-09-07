@@ -252,6 +252,24 @@ version newer than `latest` reports `withdrawn: true`; the console says
 *you're on 0.4.0, which is no longer published; latest is 0.3.1* and
 offers `aspen update --version v0.3.1` (auto never downgrades).
 
+## 13b. Evacuate: empty a node before servicing it (v0.17)
+
+`aspen evacuate [node] --to <peer>`, `POST /api/mesh/{node}/evacuate
+{to}`, or *evacuate…* on a node's row in the Mesh panel. The node enters
+**evacuating** (a fourth state beside ready / draining / updating):
+spawns are refused, the roster says so, and a driver moves every live
+session to the target one at a time — each is a MIGRATION.md move
+(`session_pull` run by the target, mode move), so it resumes there with
+its context and this address becomes a pointer. Busy sessions wait for
+their turn boundary; a session that cannot move (no counterpart repo on
+the target, a name already taken there, no transcript yet) is skipped
+and named. The node returns to ready when nothing live remains or after
+an hour; `DELETE /api/update` (the update cancel) cancels an
+evacuation too. Progress rides `service_detail` ("evacuating to j1: 2
+moved, 1 pending, 1 skipped") and the fleet trail (`evacuate_requested`,
+`evacuated {moved, skipped}`). An update request is refused while
+evacuating; evacuate first, update second, is the intended order.
+
 ## 14. Not built (yet), and why
 
 - **Peer-to-peer binary distribution** for air-gapped nodes — breaks §6's
