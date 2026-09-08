@@ -81,11 +81,14 @@ pub fn decisions_for(kind: PromptKind, suggestions: &Value) -> Vec<DecisionOptio
 pub struct ClaudeAdapter {
     pub bin: String,
     store: Arc<ClaudeStore>,
+    /// `claude --version`, probed once per daemon: the API asks on every
+    /// console poll, and a spawn per poll flashed a console on Windows.
+    version: std::sync::OnceLock<Option<String>>,
 }
 
 impl ClaudeAdapter {
     pub fn new() -> Self {
-        Self { bin: "claude".into(), store: Arc::new(ClaudeStore) }
+        Self { bin: "claude".into(), store: Arc::new(ClaudeStore), version: std::sync::OnceLock::new() }
     }
 }
 
@@ -179,14 +182,18 @@ impl AgentAdapter for ClaudeAdapter {
         self.store.clone()
     }
     fn version(&self) -> Option<String> {
-        std::process::Command::new(&self.bin)
-            .arg("--version")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
+        self.version
+            .get_or_init(|| {
+                aspen_core::quiet_command(&self.bin)
+                    .arg("--version")
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            })
+            .clone()
     }
     fn binary(&self) -> &'static str {
         "claude"

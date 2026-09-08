@@ -66,11 +66,13 @@ pub fn mode(id: &str) -> Option<&'static Mode> {
 pub struct CodexAdapter {
     pub bin: String,
     store: Arc<CodexStore>,
+    /// `codex --version`, probed once per daemon (no window on Windows).
+    version: std::sync::OnceLock<Option<String>>,
 }
 
 impl CodexAdapter {
     pub fn new() -> Self {
-        Self { bin: "codex".into(), store: Arc::new(CodexStore::new()) }
+        Self { bin: "codex".into(), store: Arc::new(CodexStore::new()), version: std::sync::OnceLock::new() }
     }
     /// Is the binary on PATH?
     pub fn available(&self) -> bool {
@@ -166,10 +168,14 @@ impl AgentAdapter for CodexAdapter {
         self.store.clone()
     }
     fn version(&self) -> Option<String> {
-        let out = std::process::Command::new(&self.bin).arg("--version").output().ok()?;
-        let s = String::from_utf8_lossy(&out.stdout);
-        // "codex-cli 0.153.4"
-        s.split_whitespace().last().map(str::to_owned).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        self.version
+            .get_or_init(|| {
+                let out = aspen_core::quiet_command(&self.bin).arg("--version").output().ok()?;
+                let s = String::from_utf8_lossy(&out.stdout);
+                // "codex-cli 0.153.4"
+                s.split_whitespace().last().map(str::to_owned).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            })
+            .clone()
     }
     fn binary(&self) -> &'static str {
         "codex"

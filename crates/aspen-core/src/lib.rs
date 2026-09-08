@@ -11,6 +11,7 @@ pub mod event;
 pub mod harness;
 pub mod ids;
 pub mod permission;
+pub mod process;
 pub mod store;
 
 pub use adapter::{AdapterCapabilities, AgentAdapter, SessionHandle, SpawnSpec, ToolDef, ToolProvider, Unsupported};
@@ -20,3 +21,4 @@ pub use store::{ProjectDirs, SessionInfo, SessionOrigin, SessionStore};
 pub use bus::{BusMessage, Urgency};
 pub use event::SessionEvent;
 pub use ids::{AgentName, NodeId, RepoId, SessionId};
+pub use process::quiet_command;

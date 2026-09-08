@@ -84,11 +84,12 @@ pub fn notice_json(n: &Notice, node: Option<&str>) -> Value {
 
 fn run_command(cmd: &str, stdin: &str) -> Result<(), String> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
+    // quiet_command: a hook must not flash a console on Windows.
     let mut child = if cfg!(windows) {
-        Command::new("cmd").args(["/C", cmd]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
+        aspen_core::quiet_command("cmd").args(["/C", cmd]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
     } else {
-        Command::new("sh").args(["-c", cmd]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
+        aspen_core::quiet_command("sh").args(["-c", cmd]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
     }
     .map_err(|e| e.to_string())?;
     if let Some(mut si) = child.stdin.take() {
