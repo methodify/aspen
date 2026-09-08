@@ -217,6 +217,25 @@ times, then both at once; every round must carry traffic afterwards):
   Handshakes time out after 15s so a crossed attempt never holds a peer's
   slot.
 
+### 8.1 Link liveness and re-linking (2026-09-08)
+
+Every federation link, direct or relayed, now has its own silence
+timeout: a live peer sends a roster every 10s, so 45s without an inbound
+frame closes the link and the dialer tries again (before, a half-open
+link — a laptop asleep, a relay that replaced the peer's socket — stayed
+"up" until TCP gave up, and the dialer would not redial a peer it thought
+it had). A hello arriving on a live link means the peer restarted; the
+link closes for the same reason.
+
+The presence race: when a relay replaces a peer's socket it sends
+`offline` then `online` back to back; the `online` arrived while the old
+link was still tearing down, `link_up` said "already up", nothing dialed,
+and the peer stayed invisible until the relay session itself reconnected
+(seen live: an Azure node updated hours earlier still showed its old
+version to a relay-only peer). The check is now against the relay
+session's own links (`peer_ins`), and every 30s the session re-links any
+present peer we dial that has no link.
+
 ## 9. Reach memory: backoff, timeouts, alternates (2026-09-06)
 
 An audit on the live mesh found three kinds of waste, all from dialing

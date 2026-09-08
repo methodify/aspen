@@ -1081,7 +1081,22 @@ async fn link_loop(
     peer_cert: &NodeCert,
     in_rx: &mut mpsc::UnboundedReceiver<String>,
 ) -> Result<()> {
-    while let Some(frame) = in_rx.recv().await {
+    loop {
+        // Liveness for every link kind (RELAY.md §8): a live peer sends a
+        // roster every 10s, so silence past LINK_SILENCE_SECS means the
+        // peer is gone (laptop sleep, a relay that replaced the socket)
+        // and the link must come down so the dialer tries again.
+        let frame = match tokio::time::timeout(std::time::Duration::from_secs(LINK_SILENCE_SECS), in_rx.recv()).await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(_) => bail!("link silent for {LINK_SILENCE_SECS}s; closing so it is redialed"),
+        };
+        // A hello on a live link: the peer started over (its process
+        // restarted) and is asking for a fresh handshake. Take this link
+        // down; presence or the dial loop brings a new one up.
+        if serde_json::from_str::<Hello>(&frame).is_ok() {
+            bail!("peer sent a new hello on a live link; closing so it is redialed");
+        }
         let env: SealedEnvelope = match serde_json::from_str(&frame) {
             Ok(e) => e,
             Err(e) => {
@@ -2787,6 +2802,11 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str, dial: &str) -> R
     result
 }
 
+/// Is there a link (or an attempt) to this peer riding this relay?
+fn relay_link_in_flight(peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, peer: &str) -> bool {
+    peer_ins.lock().unwrap().get(peer).is_some_and(|tx| !tx.is_closed())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn relay_read_loop(
     inner: &Arc<NodeInner>,
@@ -2815,6 +2835,34 @@ async fn relay_read_loop(
                 tokio::time::sleep(std::time::Duration::from_secs(RELAY_PING_SECS)).await;
                 if tx.send("ping".into()).is_err() {
                     break;
+                }
+            }
+        })
+    };
+    // Re-link: every RELAY_RELINK_SECS, any present peer we dial without a
+    // link gets one. Presence frames are the fast path; this is the net.
+    let relinker = {
+        let inner = inner.clone();
+        let mesh = mesh.clone();
+        let me = me.to_owned();
+        let relay_url = relay_url.to_owned();
+        let relay_tx = relay_tx.clone();
+        let peer_ins = peer_ins.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(RELAY_RELINK_SECS)).await;
+                let present: Vec<String> = mesh
+                    .relay_sessions
+                    .lock()
+                    .unwrap()
+                    .get(&relay_url)
+                    .map(|s| s.present.iter().cloned().collect())
+                    .unwrap_or_default();
+                for p in present {
+                    if me < p && !p.starts_with("console-") && !relay_link_in_flight(&peer_ins, &p) && !mesh.link_up(&p) {
+                        tracing::info!(peer = %p, "present on the relay with no link; starting one");
+                        start_relay_link(&inner, &me, &p, &relay_url, &relay_tx, &peer_ins);
+                    }
                 }
             }
         })
@@ -2873,7 +2921,7 @@ async fn relay_read_loop(
                     s.host = host;
                 }
                 for p in peers {
-                    if me < p.as_str() && !p.starts_with("console-") && !mesh.link_up(&p) {
+                    if me < p.as_str() && !p.starts_with("console-") && !relay_link_in_flight(peer_ins, &p) {
                         start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
                     }
                 }
@@ -2887,7 +2935,11 @@ async fn relay_read_loop(
                     }
                 }
                 if online {
-                    if me < node.as_str() && !mesh.link_up(&node) {
+                    // Checked against this relay's own links, not `links`:
+                    // an offline→online pair (the relay replaced the
+                    // peer's socket) arrives while the old link is still
+                    // tearing down, and `link_up` would say "already up".
+                    if me < node.as_str() && !relay_link_in_flight(peer_ins, &node) {
                         start_relay_link(inner, me, &node, relay_url, relay_tx, peer_ins);
                     }
                 } else {
@@ -2966,6 +3018,7 @@ async fn relay_read_loop(
         }
     };
     pinger.abort();
+    relinker.abort();
     result
 }
 
@@ -2975,6 +3028,13 @@ const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15
 /// Relay keepalive cadence (docs/RELAY.md §8).
 const RELAY_PING_SECS: u64 = 20;
 const RELAY_SILENCE_SECS: u64 = 45;
+/// A federation link (direct or relayed) with nothing inbound this long
+/// is dead: rosters arrive every 10s from a live peer.
+const LINK_SILENCE_SECS: u64 = 45;
+/// How often a relay session re-checks that every present peer we dial
+/// has a link (the presence race: offline then online while the old link
+/// was still tearing down left no link and nothing to start one).
+const RELAY_RELINK_SECS: u64 = 30;
 
 /// How long a handed-off row waits before being handed off again if it is
 /// still pending (the mailbox was full, the relay lost it, the ack got lost).

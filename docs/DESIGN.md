@@ -972,3 +972,12 @@ cleaner lane for roster updates than user-message headers.
   the events table is pruned; the Codex store indexes rollouts instead
   of walking the tree per call. `GET /api/ping` touches nothing, to tell
   pinned workers from a dead acceptor next time.
+- **2026-09-08 — v0.23.3, link liveness.** A relay-only node stayed
+  invisible to a peer for hours after a restart: the relay's
+  offline/online pair raced the old link's teardown, `link_up` said
+  "already up", and nothing redialed until the relay session itself
+  reconnected. Every link now has a 45s silence timeout (rosters are
+  10s apart), a hello on a live link closes it, presence is checked
+  against the relay session's own links, and a 30s re-link pass is the
+  net (RELAY.md §8.1). Release binaries keep their symbol table so the
+  next thread dump has names.
