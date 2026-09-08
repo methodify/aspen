@@ -524,6 +524,16 @@ export function MeshPanel() {
                     spoke (loopback only)
                   </span>
                 )}
+                {me.advertised?.hint === "wsl-nat" && (
+                  <span className="chip mono" title="this node runs on WSL: its addresses are NAT-internal, so other machines (and the Windows side of this one) reach it only through a relay, a forwarded port, or `aspen config advertise <url>`">
+                    wsl: relay or forwarded port only
+                  </span>
+                )}
+                {me.advertised?.hint === "win-firewall-block" && (
+                  <span className="chip mono" style={{ color: "var(--sig-gate)", borderColor: "var(--sig-gate)" }} title={`Windows Firewall has a Block rule for this program on the Public profile (the "allow this app" prompt writes one); the WSL adapter and most Wi-Fi are Public, so a WSL node or a LAN peer dialing this node times out. Fix in an elevated PowerShell: New-NetFirewallRule -DisplayName "Aspen node" -Direction Inbound -Protocol TCP -LocalPort <port> -Action Allow -Profile Any`}>
+                    firewall blocks inbound (Public)
+                  </span>
+                )}
                 <ReplicatePicker peers={peers} />
                 <MemorySyncToggle />
                 <EvacuateButton node={me.node} targets={peers.filter((x) => x.link_up).map((x) => x.node)} agents={1} />

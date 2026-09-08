@@ -617,6 +617,10 @@ pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
     }
     if configured.is_empty() && is_wsl() {
         out.hint = Some("wsl-nat".into());
+    } else if !crate::winfw::block_profiles().is_empty() {
+        // Windows: a Block rule names this executable (winfw.rs); the
+        // addresses above are real but a Public-profile peer times out.
+        out.hint = Some("win-firewall-block".into());
     }
     out
 }

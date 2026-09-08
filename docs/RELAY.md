@@ -319,6 +319,27 @@ Also in v0.18 (P-5): a node on WSL with no `aspen config advertise` URL
 advertises `hint: "wsl-nat"`; the Mesh panel says it is reachable only
 through a relay or a forwarded port.
 
+**The other direction, WSL → Windows (found 2026-09-08).** A WSL node
+dialing the Windows-side node on the same machine (the WSL gateway
+address, or the LAN address) times out even though the Windows node
+listens on `0.0.0.0`. Cause: Windows' first-run "allow this app" prompt
+writes an *Allow* rule for the Private profile and a *Block* rule for the
+Public profile, and both the WSL virtual adapter and most Wi-Fi networks
+are Public. It looked fine on the development box only because Tailscale
+sits on the Private profile and the WSL node reached the Windows node
+through it. `aspen status` on Windows now reports a Block rule for its
+own executable and prints the fix, and the node advertises `hint:
+"win-firewall-block"` so the Mesh panel's "this node" row shows a chip
+with the same fix (`aspen-node/src/winfw.rs`; probed once per process). Fix, in an elevated PowerShell on the Windows side:
+
+```powershell
+New-NetFirewallRule -DisplayName "Aspen node 7420" -Direction Inbound -Protocol TCP -LocalPort 7420 -Action Allow -Profile Any
+```
+
+Also: from WSL, the Windows hostname resolves to IPv6 only (link-local
+and Tailscale), and the node listens on IPv4; the dialer's alternate
+addresses (the WSL gateway IPv4) cover that once the port is open.
+
 Verified (rig, 2026-09-07): a console certified by the root node,
 attached through that node's embedded relay to a third node, rendered
 that node's fleet, opened one of its sessions and exchanged a turn with

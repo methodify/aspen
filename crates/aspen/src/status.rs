@@ -56,6 +56,11 @@ pub fn run(data_dir: &Path) -> Result<()> {
                         .unwrap_or(true)
                     {
                         println!("        listening beyond loopback: other machines can dial this node; the console needs the token above");
+                        if let Some(port) = listen.parse::<std::net::SocketAddr>().ok().map(|a| a.port()) {
+                            for line in windows_firewall_hints(port) {
+                                println!("        {line}");
+                            }
+                        }
                     }
                     if ver != env!("CARGO_PKG_VERSION") {
                         println!(
@@ -377,4 +382,20 @@ fn human_duration(secs: u64) -> String {
         3600..=86399 => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
         _ => format!("{}d {}h", secs / 86400, (secs % 86400) / 3600),
     }
+}
+
+/// Windows: a Block rule for this executable (aspen_node::winfw) means
+/// WSL nodes and LAN peers time out dialing us. Say so, with the fix.
+fn windows_firewall_hints(port: u16) -> Vec<String> {
+    let profiles = aspen_node::winfw::block_profiles();
+    if profiles.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        format!(
+            "firewall: Windows blocks inbound connections to this program on the {} profile(s) — the WSL adapter and most Wi-Fi count as Public, so a WSL node or a LAN peer dialing port {port} times out",
+            profiles.join(", ")
+        ),
+        format!("  fix (elevated PowerShell): {}", aspen_node::winfw::fix_command(port)),
+    ]
 }

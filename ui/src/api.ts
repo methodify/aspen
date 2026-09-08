@@ -890,7 +890,7 @@ export interface MeshPeer {
   /** "direct" or "relay:<url>" while linked. */
   link_kind?: string | null;
   /** Where the peer says it can be reached (empty = a spoke by choice). */
-  advertised?: { dial_urls: string[]; relay_urls: string[] } | null;
+  advertised?: { dial_urls: string[]; relay_urls: string[]; hint?: string | null } | null;
   /** Every URL this node may dial for the peer, with reach memory:
    *  consecutive failures, seconds of backoff left, last success. */
   candidates?: DialCandidate[] | null;
@@ -952,7 +952,7 @@ export interface MeshInfo {
     has_root?: boolean;
     root_key_path?: string | null;
     /** What this node tells peers about reaching it; empty = spoke. */
-    advertised?: { dial_urls: string[]; relay_urls: string[] };
+    advertised?: { dial_urls: string[]; relay_urls: string[]; hint?: string | null };
   } | null;
   root_public?: string;
   peers?: MeshPeer[];

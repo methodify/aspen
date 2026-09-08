@@ -9,6 +9,7 @@
 
 pub mod addr;
 pub mod adoption;
+pub mod winfw;
 pub mod artifacts;
 pub mod delivery;
 pub mod federation;
