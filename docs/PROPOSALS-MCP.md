@@ -1,4 +1,4 @@
-# Proposal: MCP servers as a first-class surface
+# Proposal: MCP servers as a first-class surface, and harness defaults mesh-wide
 
 **Status:** proposed 2026-09-08, for discussion. Field-verified against
 Claude Code 2.1.265 (the control channel) and read from Codex 0.153.4's
@@ -184,7 +184,10 @@ which is a useful self-check.
 
 ## 4. Phasing
 
-- **v0.24 — the surface** (one round): core types and handle methods,
+- **v0.24 — the surface and the defaults** (one round): §3 in full,
+  plus §5 (harness defaults as a synced table with per-node overrides,
+  the console panel with the effective-value table, the migration).
+  Also: core types and handle methods,
   Claude and Codex adapters, node cache + notices + needs-you row + API,
   the mcp menu, `/mcp` and the other local commands mapped or greyed,
   fleet chip. Verified on the rig with a working and a broken server on
@@ -193,7 +196,63 @@ which is a useful self-check.
 - **v0.25 — processes** (if wanted): child processes of a session in the
   activity drawer, for hook-launched monitors.
 
-## 5. Open questions for the discussion
+## 5. Second feature: harness defaults are mesh-wide (M-3)
+
+### 5.1 The problem
+
+The console's "Claude defaults" / "Codex defaults" forms sit on the Mesh
+tab's list view, beside every node's repos, but they write
+`settings.harness.<name>.args` in *this node's* `settings.json`
+(SETTINGS: per-node, never synced). A session spawned on a peer uses the
+peer's file, which the console cannot edit from here. The form's
+placement promises mesh-wide; the storage is node-local.
+
+### 5.2 The design
+
+Follow SYNC.md §4 exactly — rows, a digest in the roster, a pull op,
+newest-wins by HLC — the same fifty lines boards and templates use:
+
+```
+harness_defaults(scope TEXT, harness TEXT, args TEXT, updated_at REAL, deleted INTEGER, PRIMARY KEY(scope, harness))
+```
+
+- `scope` is `mesh` (every node) or `node:<name>` (one node's override).
+- Resolution at spawn, on the node that spawns: `node:<me>` row →
+  `mesh` row → the legacy `settings.harness[<name>].args` → nothing.
+  The legacy file keeps working for a node that has not been touched
+  from the console; the first console save for that node writes a
+  `node:<name>` row and the file stops mattering.
+- Args are still parsed and guarded per node at spawn (`settings.rs`:
+  protocol-owned flags refused), so a bad mesh-wide value is refused on
+  every node with the same message.
+- Roster: `harness_defaults_digest`; op `harness_defaults` (pull all
+  rows); merge newest-wins per `(scope, harness)`; `deleted` for a
+  cleared override. HLC via `hlc_now()` like every other table.
+- Capability: writing defaults is `Control` (a peer in observe-only
+  policy cannot push them), same as templates.
+
+### 5.3 The console
+
+The two forms become one panel, "Runtime defaults", still on the Mesh
+list view (where the operator looked for it), with a scope selector:
+**all nodes** (the `mesh` row) or a node name (its override, shown with
+"overrides the mesh default" and a clear button). Each row shows the
+effective value per node in a small table — node, harness, args, and
+which scope it came from — so "why did that session start with those
+flags" has an answer. The per-session "runtime args" field on the
+new-session panel stays: it appends after the defaults, as today.
+
+Templates keep their own `extra_args` (per template, appended after
+the defaults) — unchanged.
+
+### 5.4 Migration
+
+At daemon start, if `settings.harness` has args and the store has no
+`node:<me>` row for that harness, write one with the file's value (HLC
+now). Existing nodes keep their behavior; the console then sees and can
+edit every node's defaults from anywhere.
+
+## 6. Open questions for the discussion
 
 1. Should a failed MCP server be a *needs you* row (interrupting, like a
    prompt) or only a notice plus the red chip? The proposal says row: it
