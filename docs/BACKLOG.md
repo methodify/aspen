@@ -21,6 +21,8 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | H-8 | sessions + console | **Codex activity ledger.** `collabAgentToolCall` / `subAgentActivity` items show as tool cards; fold them into the activity ledger (ACTIVITY.md) with counts and a drawer, and read the agent threads' rollouts. | HARNESSES.md §6 |
 | H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
 | H-11 | sessions | **Incremental activity derive.** The ledger is rebuilt from the whole transcript whenever it changed; keep the last offset and parse only the appended tail. Cached at turn boundaries since v0.23.2, so this is cost, not correctness. | aspen-claude `activity.rs` |
+| M-1 | sessions + console | **MCP servers as a surface.** Status per server (connected / failed / needs auth / disabled), the harness's error text, reconnect, enable/disable, authenticate; `/mcp` opens it; a failed server is a needs-you row and a fleet chip; both harnesses. From a session whose plugin-provided MCP server was down and nothing showed it. | [PROPOSALS-MCP.md](PROPOSALS-MCP.md) |
+| M-2 | sessions + console | **Session child processes in the activity drawer.** Hook-launched monitors are outside every harness's view; a process-tree walk would list them with a stop button. | PROPOSALS-MCP.md §3.4 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
