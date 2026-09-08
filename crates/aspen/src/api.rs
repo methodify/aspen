@@ -985,8 +985,10 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                 v["node"] = json!(s.node.inner.mesh().map(|m| m.identity.node.clone()));
             }
             if let Some(mesh) = s.node.inner.mesh() {
-                let remote = mesh.remote.lock().unwrap();
-                for (node, agents) in remote.iter() {
+                // A snapshot: `link_up` takes `links`, and holding `remote`
+                // across it inverts get_mesh's order (a real deadlock).
+                for (node, agents) in mesh.remote_snapshot() {
+                    let node = &node;
                     let reachable = mesh.link_up(node);
                     for a in agents {
                         out.push(json!({
@@ -3760,7 +3762,8 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
         }));
     }
     if let Some(mesh) = s.node.inner.mesh() {
-        for (node, ras) in mesh.remote.lock().unwrap().iter() {
+        for (node, ras) in mesh.remote_snapshot() {
+            let node = &node;
             let reachable = mesh.link_up(node);
             for ra in ras {
                 sessions.push(json!({

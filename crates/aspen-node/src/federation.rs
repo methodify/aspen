@@ -491,6 +491,15 @@ impl MeshState {
         self.links.lock().unwrap().keys().cloned().collect()
     }
 
+    /// A copy of the remote rosters. Iterate this, never the guard, when
+    /// the loop asks `link_up` (which takes `links`): the lock order is
+    /// links → remote → health → link_mesh (get_mesh), and a handler that
+    /// held `remote` while taking `links` deadlocked against it — two
+    /// console polls, minutes apart in the wild (DESIGN.md, v0.23.4).
+    pub fn remote_snapshot(&self) -> Vec<(String, Vec<RemoteAgent>)> {
+        self.remote.lock().unwrap().iter().map(|(n, a)| (n.clone(), a.clone())).collect()
+    }
+
     /// Where a bare agent name is homed remotely, if anywhere.
     pub fn find_remote(&self, agent: &str) -> Option<(String, RemoteAgent)> {
         let remote = self.remote.lock().unwrap();

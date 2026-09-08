@@ -981,3 +981,18 @@ cleaner lane for roster updates than user-message headers.
   against the relay session's own links, and a 30s re-link pass is the
   net (RELAY.md §8.1). Release binaries keep their symbol table so the
   next thread dump has names.
+- **2026-09-08 — v0.23.4, the second lock inversion, named by a
+  thread dump.** The WSL node hung again on v0.23.2. Its dump had no
+  symbols (release binaries were stripped until v0.23.3), so the
+  v0.23.2 build was reproduced bit-for-bit in .text with the CI's
+  toolchain (rustc 1.98.1, zig's clang 21.1.0, glibc 2.28 target) and
+  the addresses matched by code bytes against a symbol-bearing twin.
+  Three threads sat in `Mutex::lock_contended`: `get_agents`, which
+  held `remote` while asking `link_up` (takes `links`); `get_mesh`,
+  which holds `links` then takes `remote`; and `run_link`, queued
+  behind them. The console polls both handlers every few seconds; the
+  window is microseconds; hours supply it. Rule now written down on
+  `MeshState`: links → remote → health → link_mesh, and never a
+  `remote` guard alive across `link_up` — every such loop iterates a
+  snapshot. The 2026-09-08 audit had looked at exactly these two
+  handlers and called the order consistent; the dump disagreed.

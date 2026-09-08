@@ -530,8 +530,8 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
         lines.push(line);
     }
     if let Some(mesh) = inner.mesh() {
-        let remote = mesh.remote.lock().unwrap();
-        for (node, agents) in remote.iter() {
+        for (node, agents) in mesh.remote_snapshot() {
+            let node = &node;
             let reachable = mesh.link_up(node);
             for a in agents {
                 let state = if !reachable {
