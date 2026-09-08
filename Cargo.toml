@@ -19,3 +19,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
+
+# Release binaries keep their symbol table: a thread dump of a hung daemon
+# (SERVICING.md "Diagnosing a hang") is only useful with function names,
+# and cargo-zigbuild strips everything by default. Debug info stays off.
+[profile.release]
+strip = "none"

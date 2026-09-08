@@ -318,3 +318,27 @@ Per platform: WSL/Linux and mac run the script from their checkout
 daemon keeps its old inode, so the build never disturbs it). Windows locks
 a running executable, so there the daemon goes down before the build;
 the operator does that cycle by hand (`aspen down`, build, `aspen up -d`).
+
+## Diagnosing a hang (2026-09-08)
+
+A daemon that is alive but answers nothing is usually runtime workers
+pinned on a lock or on blocking work (DESIGN.md §14b, v0.23.2). Two steps:
+
+1. `GET /api/ping` touches nothing. `pong` means the acceptor is alive
+   and the workers are pinned; no answer means the I/O driver itself is
+   held by a blocked worker (tokio parks the others, so even idle workers
+   never see the connection).
+2. A thread dump, without stopping the daemon (Linux/WSL):
+   ```
+   sudo apt-get install -y gdb
+   PID=$(python3 -c "import json;print(json.load(open('$HOME/.aspen/daemon.json'))['pid'])")
+   sudo gdb -p $PID -batch -ex 'set pagination off' -ex 'thread apply all bt' > ~/aspen-threads.txt 2>&1
+   ```
+   Windows: `procdump -ma <pid>` and WinDbg `~*k`, or Process Explorer's
+   thread stacks. Look for two threads parked in `Mutex::lock` under the
+   same module (a lock inversion) or many workers in file reads /
+   `Command::output` (blocking work on the runtime).
+
+Release binaries keep their symbol table since v0.23.3 (`profile.release
+strip = "none"`); earlier releases were stripped by the zig linker, so
+their dumps show addresses only.
