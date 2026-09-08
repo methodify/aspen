@@ -557,6 +557,21 @@ fn bus_payload(m: &StoredMessage, dest_node: &str) -> Value {
 /// plus anything the operator set with `aspen config advertise`. A
 /// loopback-only node advertises nothing — it is a spoke by its own choice.
 pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
+    // Interface enumeration, a hostname lookup and (Windows) a child
+    // process: cached, because the roster ticker and every received
+    // roster ask, on runtime workers.
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Advertised)>> = std::sync::Mutex::new(None);
+    if let Some((at, a)) = CACHE.lock().unwrap().as_ref() {
+        if at.elapsed() < std::time::Duration::from_secs(120) {
+            return a.clone();
+        }
+    }
+    let out = advertised_uncached(inner);
+    *CACHE.lock().unwrap() = Some((std::time::Instant::now(), out.clone()));
+    out
+}
+
+fn advertised_uncached(inner: &Arc<NodeInner>) -> Advertised {
     let mut out = Advertised::default();
     let Some(dir) = inner.data_dir.as_deref() else {
         return out;
@@ -671,6 +686,7 @@ fn hostname_is_ours(host: &str, port: u16, ours: &[std::net::Ipv4Addr]) -> bool 
 fn hostname() -> Option<String> {
     std::env::var("HOSTNAME")
         .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
         .or_else(|| {
             crate::gitstate::quiet_command("hostname")
                 .output()
@@ -710,7 +726,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                     TurnState::Busy => "busy",
                 }),
                 "summary": live.as_ref().map(|s| crate::node::summary_json(s)),
-                "activities": live.as_ref().map(|_| crate::node::activity_counts(inner, a.harness, &a.repo, a.session_id.as_deref(), a.last_spawned_at)),
+                "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
                 "harness": a.harness,
             })
         })
@@ -962,6 +978,12 @@ pub async fn run_link(
         .unwrap()
         .remove(&format!("pending:{peer}"))
         .unwrap_or_else(|| "direct".into());
+    // Two locks, never nested: a `link_kind` guard alive in the condition
+    // while `link_up` took `links` — against teardown's links → link_kind —
+    // could deadlock two runtime workers and, with them, the daemon.
+    let direct_already_up = kind != "direct"
+        && mesh.link_kind.lock().unwrap().get(&peer).is_some_and(|k| k == "direct")
+        && mesh.link_up(&peer);
     if kind == "direct" {
         let sessions = mesh.relay_sessions.lock().unwrap();
         for s in sessions.values() {
@@ -969,14 +991,7 @@ pub async fn run_link(
                 tracing::info!(peer = %peer, "direct link supersedes the relay link");
             }
         }
-    } else if mesh
-        .link_kind
-        .lock()
-        .unwrap()
-        .get(&peer)
-        .is_some_and(|k| k == "direct")
-        && mesh.link_up(&peer)
-    {
+    } else if direct_already_up {
         // A direct link already carries this peer: don't replace it.
         bail!("direct link already up; relay link not needed");
     }
@@ -1011,13 +1026,17 @@ pub async fn run_link(
     let result = link_loop(&inner, &mesh, &peer, &peer_cert, &mut in_rx).await;
 
     // 6. Teardown (only if the registered link is still ours).
-    let mut links = mesh.links.lock().unwrap();
-    let ours = links.get(&peer).is_some_and(|tx| tx.same_channel(&out_tx));
+    let ours = {
+        let mut links = mesh.links.lock().unwrap();
+        let ours = links.get(&peer).is_some_and(|tx| tx.same_channel(&out_tx));
+        if ours {
+            links.remove(&peer);
+        }
+        ours
+    };
     if ours {
-        links.remove(&peer);
         mesh.link_kind.lock().unwrap().remove(&peer);
     }
-    drop(links);
     if !ours {
         // Superseded (a direct link replaced this relay link): nothing else
         // to tear down — the live link's state stays.

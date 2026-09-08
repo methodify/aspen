@@ -159,6 +159,9 @@ fn iso_to_epoch(ts: &str) -> Option<f64> {
 #[derive(Default)]
 pub struct CodexStore {
     meta_cache: Mutex<HashMap<PathBuf, (f64, RolloutMeta)>>,
+    /// thread id → rollout path, rebuilt at most every few seconds (the
+    /// tree walk is a directory scan per day; every store call needs it).
+    index: Mutex<Option<(std::time::Instant, HashMap<String, PathBuf>)>>,
 }
 
 impl CodexStore {
@@ -178,9 +181,27 @@ impl CodexStore {
         Some(m)
     }
 
-    /// The rollout file for a thread id, if any.
+    fn index(&self, force: bool) -> HashMap<String, PathBuf> {
+        let mut guard = self.index.lock().unwrap();
+        if !force {
+            if let Some((at, m)) = guard.as_ref() {
+                if at.elapsed() < std::time::Duration::from_secs(5) {
+                    return m.clone();
+                }
+            }
+        }
+        let m: HashMap<String, PathBuf> = rollout_files().into_iter().filter_map(|p| thread_id_of(&p).map(|id| (id, p))).collect();
+        *guard = Some((std::time::Instant::now(), m.clone()));
+        m
+    }
+
+    /// The rollout file for a thread id, if any (indexed; a miss rescans
+    /// once, so a thread started seconds ago is found).
     pub fn rollout_path(&self, thread_id: &str) -> Option<PathBuf> {
-        rollout_files().into_iter().find(|p| thread_id_of(p).as_deref() == Some(thread_id))
+        if let Some(p) = self.index(false).get(thread_id) {
+            return Some(p.clone());
+        }
+        self.index(true).get(thread_id).cloned()
     }
 
     fn rollouts_for(&self, repo: &Path) -> Vec<(PathBuf, RolloutMeta)> {

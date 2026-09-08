@@ -20,6 +20,8 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | H-7 | sessions | **Deny message to Codex.** The console's deny text is not delivered to Codex (the approval reply has no channel for it); consider a follow-up user message carrying it, or drop the field for Codex prompts. | CODEX_RUNTIME_REFERENCE.md §6.1 |
 | H-8 | sessions + console | **Codex activity ledger.** `collabAgentToolCall` / `subAgentActivity` items show as tool cards; fold them into the activity ledger (ACTIVITY.md) with counts and a drawer, and read the agent threads' rollouts. | HARNESSES.md §6 |
 | H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
+| H-10 | protocol | **Direct-link keepalive.** Direct federation links have no silence timeout; a half-open link (laptop sleep, Windows network drop) stays "up" and stops the dialer until TCP gives up. Mirror the relay pinger (ping 20s, drop at 45s). Found by the 2026-09-08 hang audit. | federation.rs `link_loop` |
+| H-11 | sessions | **Incremental activity derive.** The ledger is rebuilt from the whole transcript whenever it changed; keep the last offset and parse only the appended tail. Cached at turn boundaries since v0.23.2, so this is cost, not correctness. | aspen-claude `activity.rs` |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 

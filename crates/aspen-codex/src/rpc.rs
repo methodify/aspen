@@ -194,12 +194,20 @@ impl RpcClient {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        self.write(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
-            .await?;
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(Ok(v))) => Ok(v),
-            Ok(Ok(Err(e))) => Err(anyhow!("{method}: {e}")),
-            Ok(Err(_)) => Err(anyhow!("{method}: app-server closed before responding")),
+        let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        match tokio::time::timeout(timeout, async {
+            self.write(frame).await?;
+            Ok::<_, anyhow::Error>(rx.await)
+        })
+        .await
+        {
+            Ok(Err(e)) => {
+                self.pending.lock().unwrap().remove(&id);
+                Err(e)
+            }
+            Ok(Ok(Ok(Ok(v)))) => Ok(v),
+            Ok(Ok(Ok(Err(e)))) => Err(anyhow!("{method}: {e}")),
+            Ok(Ok(Err(_))) => Err(anyhow!("{method}: app-server closed before responding")),
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
                 Err(anyhow!("{method}: timed out after {}s", timeout.as_secs()))

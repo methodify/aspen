@@ -60,6 +60,8 @@ pub async fn serve(
 
     let api = Router::new()
         .route("/node", get(get_node))
+        // Touches nothing: tells "workers pinned" from "acceptor dead".
+        .route("/ping", get(|| async { "pong" }))
         .route("/agents", get(get_agents).post(post_agent))
         .route("/agents/{name}/message", post(post_message))
         .route("/agents/{name}/interrupt", post(post_interrupt))
@@ -689,7 +691,10 @@ async fn get_node(State(s): S) -> Json<Value> {
             "name": a.harness(), "binary": a.binary(), "version": a.version(),
             "capabilities": a.capabilities(), "modes": a.permission_modes(),
         })).collect::<Vec<_>>(),
-        "hostname": hostname(),
+        // Computed once at startup: `hostname` is a child process, and a
+        // spawn per request sat on a runtime worker (Windows: with a pipe
+        // read that can outlive the request).
+        "hostname": s.node_name,
         // Servicing summary for the badge; GET /api/update has the rest.
         "update_available": newer.as_ref().map(|r| r.version.clone()),
         "update_skipped": newer.as_ref().is_some_and(|r| policy.skip.as_deref() == Some(r.version.as_str())),
@@ -925,7 +930,9 @@ async fn get_logs(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoResponse 
     let Some(dir) = s.node.inner.data_dir.as_deref() else {
         return err(StatusCode::NOT_FOUND, "node has no data dir").into_response();
     };
-    Json(json!({ "lines": aspen_node::servicing::tail_log(dir, lines) })).into_response()
+    let dir = dir.to_path_buf();
+    let out = tokio::task::spawn_blocking(move || aspen_node::servicing::tail_log(&dir, lines)).await.unwrap_or_default();
+    Json(json!({ "lines": out })).into_response()
 }
 
 fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
@@ -956,7 +963,7 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         "plugins": live.as_ref().map(|m| m.plugins.clone()).unwrap_or_default(),
         // Background work beside the main turn (activity.rs); counts only
         // while live — a stopped session's ledger is history.
-        "activities": live.as_ref().map(|_| aspen_node::node::activity_counts(&s.node.inner, a.harness, &a.repo, a.session_id.as_deref(), a.last_spawned_at)),
+        "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
         "harness": a.harness,
         "capabilities": live.as_ref().map(|m| m.handle.capabilities()),
         "plugin_updates": match (live.as_ref(), s.node.inner.data_dir.as_deref()) {
@@ -1713,7 +1720,9 @@ async fn get_activities(State(s): S, Path(name): Path<String>) -> impl IntoRespo
     let Some(sid) = row.session_id.as_deref() else {
         return Json(json!([])).into_response();
     };
-    let mut acts = s.node.inner.store_for(row.harness).activities(&row.repo, sid, row.last_spawned_at);
+    let st = s.node.inner.store_for(row.harness);
+    let (repo, sid, since) = (row.repo.clone(), sid.to_owned(), row.last_spawned_at);
+    let mut acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default();
     acts.reverse();
     Json(json!(acts)).into_response()
 }
@@ -2486,15 +2495,19 @@ async fn get_transcript(
         return Json(Vec::<Value>::new()).into_response();
     };
     let st = s.node.inner.store_for(agent.harness);
-    if let Some(after) = q.after.as_deref() {
-        return match st.rehydrate_after(&agent.repo, sid, after) {
-            Ok((items, found)) => {
+    // Whole-file reads: off the runtime workers.
+    let (repo, sid) = (agent.repo.clone(), sid.clone());
+    if let Some(after) = q.after.map(|a| a.to_owned()) {
+        let r = tokio::task::spawn_blocking(move || st.rehydrate_after(&repo, &sid, &after)).await;
+        return match r {
+            Ok(Ok((items, found))) => {
                 Json(json!({ "items": items, "after_found": found })).into_response()
             }
-            Err(_) => Json(json!({ "items": [], "after_found": false })).into_response(),
+            _ => Json(json!({ "items": [], "after_found": false })).into_response(),
         };
     }
-    match st.rehydrate(&agent.repo, sid) {
+    let r = tokio::task::spawn_blocking(move || st.rehydrate(&repo, &sid)).await.unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+    match r {
         Ok(items) => Json(items).into_response(),
         Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet
     }

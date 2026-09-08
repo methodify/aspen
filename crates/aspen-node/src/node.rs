@@ -76,6 +76,12 @@ pub struct ManagedSession {
     /// Activities running at the last turn end (`kind:id` → label), so the
     /// next turn end can raise `activity_settled` for what is gone.
     pub running_acts: Mutex<HashMap<String, String>>,
+    /// Activity counts (ACTIVITY.md) as of the last turn boundary — the
+    /// fleet views read this instead of re-deriving the ledger from the
+    /// transcript on every poll.
+    pub activity_counts: Mutex<serde_json::Value>,
+    /// When the counts were last derived (epoch), to throttle mid-turn refreshes.
+    pub activity_refreshed_at: Mutex<f64>,
     /// When this process started — the ledger's stale cutoff (ACTIVITY.md).
     pub spawned_at: f64,
 }
@@ -567,7 +573,18 @@ impl Node {
                 std::env::current_exe().ok(),
             ),
         });
-        tokio::spawn(delivery::run(inner.clone(), delivery_rx));
+        {
+            // The delivery engine is one task for every agent; a panic
+            // there would silently stop the bus. Say so, loudly.
+            let handle = tokio::spawn(delivery::run(inner.clone(), delivery_rx));
+            tokio::spawn(async move {
+                if let Err(e) = handle.await {
+                    if e.is_panic() {
+                        tracing::error!("delivery engine panicked: bus delivery is stopped until the daemon restarts");
+                    }
+                }
+            });
+        }
         Self { inner }
     }
 
@@ -835,6 +852,8 @@ impl Node {
             plugins: active_plugins,
             harness,
             running_acts: Mutex::new(HashMap::new()),
+            activity_counts: Mutex::new(serde_json::json!({ "running": 0, "agents": 0, "tasks": 0, "workflows": 0, "monitors": 0 })),
+            activity_refreshed_at: Mutex::new(0.0),
             spawned_at: crate::store::now_epoch(),
             name: name.to_owned(),
             repo,
@@ -863,7 +882,25 @@ impl Node {
             .unwrap()
             .insert(name.to_owned(), managed.clone());
 
-        tokio::spawn(pump(self.inner.clone(), managed.clone(), adapter_rx));
+        // The pump is the session's lifeline: if it ever panics, say so and
+        // take the session out of the live map rather than leave a ghost
+        // that looks busy forever.
+        {
+            let inner = self.inner.clone();
+            let managed = managed.clone();
+            let handle = tokio::spawn(pump(inner.clone(), managed.clone(), adapter_rx));
+            tokio::spawn(async move {
+                if let Err(e) = handle.await {
+                    if e.is_panic() {
+                        tracing::error!(agent = %managed.name, "session pump panicked; marking the session down");
+                        inner.sessions.lock().unwrap().remove(&managed.name);
+                        let _ = inner.store.set_agent_live(&managed.name, false);
+                        let _ = inner.store.record_event(&managed.name, "pump_panic", serde_json::json!({}));
+                        crate::federation::broadcast_roster(&inner);
+                    }
+                }
+            });
+        }
 
         // Anything held for this agent while it was down delivers at session
         // start (plumb's "next session start" rule).
@@ -2217,8 +2254,23 @@ async fn pump(
                         .ok()
                         .and_then(|rows| rows.into_iter().find(|a| a.name == sess.name))
                         .and_then(|a| a.session_id);
-                    let now_running =
-                        crate::notify::running_ids(&inner, sess.harness, &sess.repo, sid.as_deref(), Some(sess.spawned_at));
+                    // Deriving the ledger reads the whole transcript: off
+                    // the runtime workers, and cached for the fleet views.
+                    let (now_running, counts) = {
+                        let inner2 = inner.clone();
+                        let harness = sess.harness;
+                        let repo = sess.repo.clone();
+                        let sid2 = sid.clone();
+                        let since = Some(sess.spawned_at);
+                        tokio::task::spawn_blocking(move || {
+                            let ids = crate::notify::running_ids(&inner2, harness, &repo, sid2.as_deref(), since);
+                            let counts = activity_counts(&inner2, harness, &repo, sid2.as_deref(), since);
+                            (ids, counts)
+                        })
+                        .await
+                        .unwrap_or_default()
+                    };
+                    *sess.activity_counts.lock().unwrap() = counts;
                     let mut prev = sess.running_acts.lock().unwrap();
                     for (key, label) in prev.iter() {
                         if !now_running.contains_key(key) {
@@ -2243,8 +2295,35 @@ async fn pump(
                 sess.mark_busy();
             }
             SessionEvent::ToolUse {
-                tool_name, input, ..
+                tool_name, input, tool_kind, ..
             } => {
+                // A subagent/task/workflow started mid-turn: refresh the
+                // cached activity counts (throttled; off the workers) so
+                // the fleet chips move before the turn ends.
+                if *tool_kind == aspen_core::ToolKind::Agent {
+                    let now = crate::store::now_epoch();
+                    let due = {
+                        let mut at = sess.activity_refreshed_at.lock().unwrap();
+                        if now - *at > 5.0 {
+                            *at = now;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if due {
+                        let inner2 = inner.clone();
+                        let sess2 = sess.clone();
+                        tokio::spawn(async move {
+                            let sid = inner2.store.agents().ok().and_then(|rows| rows.into_iter().find(|a| a.name == sess2.name)).and_then(|a| a.session_id);
+                            let (harness, repo, since) = (sess2.harness, sess2.repo.clone(), Some(sess2.spawned_at));
+                            let counts = tokio::task::spawn_blocking(move || activity_counts(&inner2, harness, &repo, sid.as_deref(), since)).await;
+                            if let Ok(c) = counts {
+                                *sess2.activity_counts.lock().unwrap() = c;
+                            }
+                        });
+                    }
+                }
                 {
                     let path = ["file_path", "notebook_path", "path"]
                         .iter()

@@ -67,7 +67,7 @@ async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::
     if busy && has_gating {
         // The interrupt ends the in-flight turn with an error-flavored
         // result; our queued write then forms the next turn.
-        if let Err(e) = sess.handle.interrupt().await {
+        if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(10), sess.handle.interrupt()).await.unwrap_or_else(|_| Err(anyhow::anyhow!("interrupt timed out"))) {
             tracing::warn!(error = %e, "interrupt for gating delivery failed; delivering at boundary instead");
         }
     }
@@ -92,7 +92,10 @@ async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::
             "gating": has_gating,
         }),
     );
-    let ingest_uuid = sess.handle.send_user(text).await?;
+    // A wedged child must not stall delivery for every other agent.
+    let ingest_uuid = tokio::time::timeout(std::time::Duration::from_secs(30), sess.handle.send_user(text))
+        .await
+        .map_err(|_| anyhow::anyhow!("@{}: the session did not accept input within 30s", sess.name))??;
     let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
     inner.store.mark_delivered(&ids, via, Some(&ingest_uuid))?;
     Ok(())

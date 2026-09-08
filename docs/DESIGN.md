@@ -947,3 +947,28 @@ cleaner lane for roster updates than user-message headers.
   unchanged at every phase. Left for the backlog: a shared per-node
   app-server, Codex memory convergence, Codex plugins in the library,
   `turn/steer` as a first-class control, third-party MCP elicitations.
+- **2026-09-08 — v0.23.2, the Windows hang audit.** The Windows node
+  went unresponsive after hours (process alive, every request spinning).
+  Four parallel read-only audits of the daemon found one structural
+  deadlock and a pattern: `run_link` held a `link_kind` guard while
+  `link_up` took `links`, against teardown's `links → link_kind` — two
+  std mutexes, a microsecond window, and a relay peer that churns for
+  hours (the WSL peer behind the Windows firewall, RELAY.md §11)
+  supplies the collisions; once two workers block, every handler that
+  asks `link_up` joins them. Fixed by never nesting the two. The pattern:
+  whole-transcript reads on runtime workers — the activity ledger was
+  re-derived from the transcript on every fleet poll, every roster tick
+  and every turn end; `hostname` was a child process per `GET
+  /api/node`; `advertised()` enumerated interfaces and resolved names on
+  every roster. Now: activity counts are derived at turn boundaries (and
+  throttled when a subagent starts) in `spawn_blocking` and cached on
+  the session; rehydration, activities and the log tail run in
+  `spawn_blocking`; `advertised` and the hostname are cached. Safety
+  nets: request timeouts in both adapters cover the stdin write (a child
+  that stops reading no longer wedges every request to it); bus delivery
+  times out per session; the operator broker unpends a prompt when its
+  future is dropped; a pump panic marks the session down instead of
+  leaving a ghost; sqlite gets a busy timeout and `synchronous=NORMAL`;
+  the events table is pruned; the Codex store indexes rollouts instead
+  of walking the tree per call. `GET /api/ping` touches nothing, to tell
+  pinned workers from a dead acceptor next time.

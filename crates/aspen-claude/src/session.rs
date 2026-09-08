@@ -209,11 +209,21 @@ impl ClaudeSession {
             "request_id": request_id,
             "request": request,
         });
-        self.write(frame).await?;
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(Ok(v))) => Ok(v),
-            Ok(Ok(Err(e))) => Err(anyhow!("control error: {e}")),
-            Ok(Err(_)) => Err(anyhow!("session closed before response")),
+        // The timeout covers the write too: a child that stopped reading
+        // stdin fills the channel, and a bare write would wait forever.
+        match tokio::time::timeout(timeout, async {
+            self.write(frame).await?;
+            Ok::<_, anyhow::Error>(rx.await)
+        })
+        .await
+        {
+            Ok(Err(e)) => {
+                self.pending.lock().unwrap().remove(&request_id);
+                Err(e)
+            }
+            Ok(Ok(Ok(Ok(v)))) => Ok(v),
+            Ok(Ok(Ok(Err(e)))) => Err(anyhow!("control error: {e}")),
+            Ok(Ok(Err(_))) => Err(anyhow!("session closed before response")),
             Err(_) => {
                 self.pending.lock().unwrap().remove(&request_id);
                 Err(anyhow!("control request timed out"))
@@ -391,10 +401,15 @@ impl ClaudeSession {
                 self.respond_success(&request_id, json!({})).await;
             }
             "mcp_message" => {
+                // Bus tools touch the store and disk: off the router, off
+                // the runtime workers.
                 let message = request.get("message").cloned().unwrap_or(Value::Null);
-                let reply = mcp.handle(&message);
-                self.respond_success(&request_id, json!({ "mcp_response": reply }))
-                    .await;
+                let session = self.clone();
+                let mcp = mcp.clone();
+                tokio::spawn(async move {
+                    let reply = tokio::task::spawn_blocking(move || mcp.handle(&message)).await.unwrap_or(Value::Null);
+                    session.respond_success(&request_id, json!({ "mcp_response": reply })).await;
+                });
             }
             "elicitation" => {
                 self.respond_success(&request_id, json!({ "action": "decline" }))

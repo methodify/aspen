@@ -192,6 +192,15 @@ impl PermissionBroker for OperatorBroker {
             questions: req.questions,
         });
 
+        // If the adapter drops this future (the request was abandoned),
+        // the prompt must not stay open forever.
+        struct Unpend<'a>(&'a Mutex<HashMap<String, PendingPrompt>>, String);
+        impl Drop for Unpend<'_> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().remove(&self.1);
+            }
+        }
+        let _unpend = Unpend(&self.pending, req.request_id.clone());
         match tokio::time::timeout(OPERATOR_TIMEOUT, rx).await {
             Ok(Ok(decision)) => (decision, DecidedBy::Operator),
             _ => {

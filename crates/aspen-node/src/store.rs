@@ -432,6 +432,9 @@ fn additive_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Fleet event rows kept (History); older ones are pruned on insert.
+const EVENTS_KEEP: i64 = 50_000;
+
 impl BusStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -440,6 +443,12 @@ impl BusStore {
         let conn = Connection::open(path)
             .with_context(|| format!("opening bus store {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Another handle on the same file (a CLI command, a checkpoint
+        // stalled by an indexer on Windows) makes us wait, not fail.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // WAL + NORMAL: durable across a crash, no fsync per insert (the
+        // pump records an event per tool call).
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if found != 0 && found != SCHEMA_VERSION {
             anyhow::bail!(
@@ -794,11 +803,20 @@ impl BusStore {
 
     /// Append to the fleet event log (History). `detail` is free-form JSON.
     pub fn record_event(&self, agent: &str, kind: &str, detail: serde_json::Value) -> Result<()> {
+        static SINCE_PRUNE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO events(ts, agent, kind, detail) VALUES(?1, ?2, ?3, ?4)",
             params![now_epoch(), agent, kind, detail.to_string()],
         )?;
+        // The log is the fleet's History; it only ever grew. Keep the
+        // newest EVENTS_KEEP rows, pruning every few hundred inserts.
+        if SINCE_PRUNE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 500 == 499 {
+            let _ = conn.execute(
+                "DELETE FROM events WHERE id <= (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+                params![EVENTS_KEEP],
+            );
+        }
         Ok(())
     }
 
