@@ -119,6 +119,11 @@ with `wrangler dev` against real nodes: two loopback nodes linked through
 it, and a message stored while the peer was down landed on its return and
 was acked back.
 
+`/healthz?mesh=NAME` (2026-09-08) answers whether that mesh's root key is
+set on the live deployment and decodes to 32 bytes — the diagnosis for a
+403 — without revealing it; the object logs the same reason. A pasted key
+may carry quotes or whitespace; the worker strips them.
+
 ## 6. Certs learned over links
 
 The join bundle only ever carried the certifier's cert. A peer met through

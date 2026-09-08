@@ -34,7 +34,14 @@ const SWEEP_EVERY_MS = 6 * 3600 * 1000;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/healthz') return new Response('ok');
+    if (url.pathname === '/healthz') {
+      // `/healthz?mesh=NAME` says whether that mesh's root key is set and
+      // decodes, without revealing it — the answer to a 403.
+      const mesh = url.searchParams.get('mesh');
+      if (!mesh) return new Response('ok');
+      const r = rootStatus(env, mesh);
+      return new Response(r.ok ? `ok: mesh ${mesh} known (${r.source})` : `unknown mesh ${mesh}: ${r.reason}`, { status: r.ok ? 200 : 403 });
+    }
     if (url.pathname !== '/relay') return new Response('not found', { status: 404 });
     const mesh = url.searchParams.get('mesh');
     if (!mesh) return new Response('missing ?mesh', { status: 400 });
@@ -43,6 +50,36 @@ export default {
     return env.MESH.get(id).fetch(request);
   },
 };
+
+// ---- mesh roots ---------------------------------------------------------
+
+// A pasted key may carry quotes or whitespace; the base64 is what counts.
+function cleanKey(v) {
+  return String(v).trim().replace(/^["']|["']$/g, '').trim();
+}
+
+// Where a mesh's root key comes from, or why it does not.
+function rootStatus(env, mesh) {
+  const varName = 'MESH_ROOT_' + String(mesh).replace(/-/g, '_');
+  const single = env[varName];
+  if (single) {
+    try {
+      const key = b64(cleanKey(single));
+      return key.length === 32 ? { ok: true, key, source: varName } : { ok: false, reason: `${varName} decodes to ${key.length} bytes, expected a 32-byte ed25519 public key` };
+    } catch {
+      return { ok: false, reason: `${varName} is not base64` };
+    }
+  }
+  let roots;
+  try { roots = JSON.parse(env.MESH_ROOTS || '{}'); } catch { return { ok: false, reason: 'MESH_ROOTS is not JSON' }; }
+  if (!roots[mesh]) return { ok: false, reason: `neither ${varName} nor a "${mesh}" entry in MESH_ROOTS is set on this deployment` };
+  try {
+    const key = b64(cleanKey(roots[mesh]));
+    return key.length === 32 ? { ok: true, key, source: 'MESH_ROOTS' } : { ok: false, reason: `MESH_ROOTS["${mesh}"] decodes to ${key.length} bytes, expected 32` };
+  } catch {
+    return { ok: false, reason: `MESH_ROOTS["${mesh}"] is not base64` };
+  }
+}
 
 // ---- encoding helpers ---------------------------------------------------
 
@@ -112,13 +149,9 @@ export class MeshRelay {
   }
 
   rootFor(mesh) {
-    const single = this.env['MESH_ROOT_' + String(mesh).replace(/-/g, '_')];
-    if (single) {
-      try { return b64(String(single).trim()); } catch { return null; }
-    }
-    let roots = {};
-    try { roots = JSON.parse(this.env.MESH_ROOTS || '{}'); } catch { return null; }
-    return roots[mesh] ? b64(roots[mesh]) : null;
+    const r = rootStatus(this.env, mesh);
+    if (!r.ok) console.log(`unknown mesh=${mesh}: ${r.reason}`);
+    return r.ok ? r.key : null;
   }
 
   // Every live socket with its attachment { mesh, node|null, nonce }.
