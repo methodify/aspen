@@ -428,7 +428,7 @@
 .exited-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
 /* Tool cards: live-then-summary (PROPOSALS §2) */
-.tool-hint { margin-left: 6px; }
+.tool-hint { margin-left: 6px; white-space: nowrap; flex-shrink: 0; }
 .tool-cmd { background: var(--line); color: var(--text-hi); padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; }
 .tool-err { color: var(--sig-error, #d33); }
 .tool-diff { padding: 6px 8px; border-radius: 4px; background: var(--line); white-space: pre-wrap; }

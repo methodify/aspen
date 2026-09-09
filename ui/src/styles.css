@@ -492,11 +492,13 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 
 /* Tool cards / chips */
 .tool-chip { align-self: flex-start; display: inline-flex; gap: 6px; padding: 3px 8px; background: var(--bg-strip); border: 1px solid var(--line); font-size: 0.78rem; }
-.tool-card { align-self: flex-start; background: var(--bg-strip); border: 1px solid var(--line); max-width: 62ch; width: 100%; }
+/* Wide enough that the summary and the "NN lines" hint share a line: the
+   summary ellipsizes, the hint never wraps. */
+.tool-card { align-self: flex-start; background: var(--bg-strip); border: 1px solid var(--line); max-width: min(100ch, 100%); width: 100%; }
 .tool-card summary { display: flex; align-items: center; gap: 8px; padding: var(--sp-2) var(--sp-3); cursor: pointer; list-style: none; }
 .tool-card summary::-webkit-details-marker { display: none; }
 .tool-name { font-weight: 500; }
-.tool-summary { color: var(--text-dim); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-summary { color: var(--text-dim); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
 .tool-detail { padding: 0 var(--sp-3) var(--sp-3); }
 .tool-detail pre { background: var(--bg-well); border: 1px solid var(--line); padding: var(--sp-2); overflow: auto; font-size: 0.78rem; max-height: 320px; }
 .tool-section-label { font: 600 0.6rem/1 var(--font-display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim); margin: var(--sp-2) 0 4px; }
