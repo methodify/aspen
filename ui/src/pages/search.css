@@ -1,0 +1,16 @@
+/* Search — sessions with hits, snippets with the match marked. */
+.search-form { display: flex; gap: 8px; flex: 1; max-width: 720px; }
+.search-input { flex: 1; min-width: 0; }
+.search-session { border: 1px solid var(--line); background: var(--bg-panel); margin-bottom: 10px; }
+.search-session-head { display: flex; align-items: baseline; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg-strip-2); flex-wrap: wrap; }
+.search-agent { color: var(--text-hi); text-decoration: none; }
+.search-agent:hover { text-decoration: underline; }
+.search-title { color: var(--text-mid); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.search-hit { display: flex; align-items: baseline; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); font-size: 0.83rem; color: var(--text-mid); text-decoration: none; }
+.search-hit:last-child { border-bottom: 0; }
+a.search-hit:hover { background: var(--bg-strip-2); color: var(--text-hi); }
+.search-role { min-width: 40px; }
+.search-role.user { color: var(--sig-normal); }
+.search-snippet { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-snippet mark { background: var(--sig-notice); color: var(--bg-base); padding: 0 2px; border-radius: 2px; }
+.search-when { white-space: nowrap; }

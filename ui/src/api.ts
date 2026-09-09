@@ -23,6 +23,55 @@ export interface NodeInfo {
   started_at?: number;
   /** The harnesses this node can run sessions on (HARNESSES.md). */
   harnesses?: HarnessInfo[];
+  /** Auto-start at login (PROPOSALS-2026-09-C.md §3). */
+  autostart?: AutostartInfo;
+}
+
+/** GET /api/node/autostart — as the node sees it (files only; the CLI's
+ *  `autostart status` asks the platform). */
+export interface AutostartInfo {
+  supported: boolean;
+  kind?: "systemd" | "launchd" | "schtasks" | string | null;
+  enabled: boolean;
+  unit?: string | null;
+  path?: string | null;
+  /** The running daemon was started by the supervisor. */
+  supervised: boolean;
+  supervisor?: string | null;
+}
+
+/** One session with hits, from GET /api/search. */
+export interface SearchSession {
+  node: string;
+  session_id: string;
+  repo: string;
+  repo_handle: string;
+  /** The agent that owns the session (local key on its node), if any. */
+  agent: string | null;
+  harness?: Harness;
+  title: string | null;
+  modified: number;
+  replica: boolean;
+  home: string;
+  hits: SearchHit[];
+}
+
+export interface SearchHit {
+  uuid: string | null;
+  role: "user" | "assistant" | null;
+  timestamp?: string | null;
+  snippet: { before: string; match: string; after: string };
+}
+
+export interface SearchResult {
+  q: string;
+  /** This node's mesh identity — what `node` on each session is compared against. */
+  self: string;
+  sessions: SearchSession[];
+  scanned: number;
+  nodes: string[];
+  nodes_failed: string[];
+  took_ms: number;
 }
 
 export type Harness = "claude" | "codex";
@@ -49,6 +98,8 @@ export interface HarnessCapabilities {
   always_allow?: boolean;
   transcript_on_disk?: boolean;
   cost_from_harness?: boolean;
+  /** The harness can give a one-line recap on request (Claude's /recap). */
+  recap?: boolean;
 }
 
 export interface HarnessInfo {
@@ -1326,6 +1377,16 @@ export const api = {
   resolveMemory: (c: MemoryConflict, choice: "mine" | "theirs") =>
     post<{ ok: boolean }>("/api/memory/resolve", { node: c.node, repo: c.repo, rel: c.rel, copy: c.copy, choice }),
   agentReplica: (name: string) => request<{ replica: ReplicaInfo | null; home_up: boolean }>(`/api/agents/${enc(name)}/replica`),
+  /** The harness's own one-line recap (PROPOSALS-2026-09-C.md §1); 409 while busy, 501 without one. */
+  recap: (name: string) => post<{ text: string; took_ms: number; at: number }>(`/api/agents/${enc(name)}/recap`, {}),
+  /** Text search over every session the mesh holds (PROPOSALS-2026-09-C.md §2). */
+  search: (q: string, opts?: { limit?: number; repo?: string; mesh?: boolean }) =>
+    request<SearchResult>(
+      `/api/search?q=${enc(q)}${opts?.limit ? `&limit=${opts.limit}` : ""}${opts?.repo ? `&repo=${enc(opts.repo)}` : ""}${opts?.mesh === false ? "&mesh=false" : ""}`,
+    ),
+  autostart: (node?: string) => request<AutostartInfo>(`/api/node/autostart${node ? `?node=${enc(node)}` : ""}`),
+  setAutostart: (enabled: boolean, node?: string) =>
+    request<{ started: boolean; pid: number; enabled: boolean }>("/api/node/autostart", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled, node }) }),
   moveAgent: (name: string, body: { to: string; mode: "move" | "copy"; repo?: string; name?: string; apply_patch?: boolean; from_replica?: boolean }) =>
     post<MoveReport>(`/api/agents/${enc(name)}/move`, body),
   fileStat: (name: string, path: string) =>

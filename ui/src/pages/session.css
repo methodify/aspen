@@ -522,3 +522,17 @@
 .status-activity { background: none; border: 0; padding: 0; color: var(--sig-normal); cursor: pointer; font: inherit; }
 .status-activity:hover { text-decoration: underline; }
 .mcp-menu .error-text { display: block; }
+
+.status-note-x { background: none; border: 0; color: var(--text-dim); cursor: pointer; font: inherit; margin-left: 6px; padding: 0 2px; }
+.status-note-x:hover { color: var(--text-hi); }
+
+/* since you last looked (catchUp.tsx) */
+.catchup { border-bottom: 1px solid var(--line); background: var(--bg-strip-2); padding: 6px 12px; display: flex; flex-direction: column; gap: 4px; }
+.catchup-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.catchup-title { color: var(--sig-notice); font-size: 0.78rem; letter-spacing: 0.02em; }
+.catchup-stats { color: var(--text-mid); font-size: 0.82rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catchup-word, .catchup-recap { color: var(--text-hi); font-size: 0.85rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.catchup-recap { font-style: italic; white-space: normal; }
+.catchup-auto { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.item-anchor { display: contents; }
+.bubble.flash { outline: 2px solid var(--sig-notice); outline-offset: 2px; transition: outline-color 1.5s ease 0.8s; }

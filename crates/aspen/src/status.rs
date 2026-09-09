@@ -62,6 +62,9 @@ pub fn run(data_dir: &Path) -> Result<()> {
                             }
                         }
                     }
+                    if let Some(sup) = s.get("supervisor").and_then(|v| v.as_str()) {
+                        println!("        supervised by {sup} (autostart)");
+                    }
                     if ver != env!("CARGO_PKG_VERSION") {
                         println!(
                             "        note: daemon runs v{ver}, this binary is v{} — `aspen update --restart` or `aspen down && aspen up -d` to switch",
@@ -131,6 +134,24 @@ pub fn run(data_dir: &Path) -> Result<()> {
                     .join(" ")
             );
         }
+    }
+    println!();
+
+    // Auto-start at login (autostart.rs).
+    let auto = crate::autostart::status_quick(data_dir);
+    if auto.enabled {
+        println!(
+            "autostart: on — {}{}",
+            match auto.kind.as_deref() {
+                Some("systemd") => "systemd --user unit",
+                Some("launchd") => "LaunchAgent",
+                Some("schtasks") => "Scheduled Task at logon",
+                _ => "installed",
+            },
+            if state.is_some() && !auto.supervised { " (the running daemon was started by hand)" } else { "" }
+        );
+    } else if auto.supported {
+        println!("autostart: off — `aspen autostart enable` starts the daemon at your login, as you");
     }
     println!();
 

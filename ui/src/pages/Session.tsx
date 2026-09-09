@@ -90,6 +90,7 @@ import {
   type SlashCommand,
 } from "./sessionExtras";
 import "./session.css";
+import { AWAY_SECS, CatchUpBar, computeCatchUp, readMarker, writeMarker, type SeenMarker } from "./catchUp";
 
 // ---------------------------------------------------------------------------
 // Transcript reducer (thin shell over the pure module)
@@ -215,7 +216,7 @@ const TuiMd = memo(function TuiMd({ text, agent }: { text: string; agent?: strin
 
 const AssistantBubble = memo(function AssistantBubble({ item, source, agent }: { item: AssistantBubbleItem; source?: boolean; agent?: string }) {
   return (
-    <div className="bubble bubble-assistant">
+    <div className="bubble bubble-assistant" data-uuid={item.uuid ?? undefined}>
       {item.thinking && (
         <details className="thinking">
           <summary>thinking</summary>
@@ -238,7 +239,7 @@ const AssistantBubble = memo(function AssistantBubble({ item, source, agent }: {
 
 const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) {
   return (
-    <div className="bubble bubble-user">
+    <div className="bubble bubble-user" data-uuid={item.uuid ?? undefined}>
       <div className="bubble-tag mono">@operator</div>
       <div className="user-text">{item.text}</div>
       {item.images && item.images.length > 0 && (
@@ -1323,6 +1324,25 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // Signals that open the header menus from elsewhere (the status line,
   // `/mcp` in the composer); each increment opens once.
   const [mcpSignal, setMcpSignal] = useState(0);
+  // The spawn note (how this process started) is dismissable; the
+  // dismissal is remembered per session and note in this browser.
+  const noteKey = `aspen.note.${name}`;
+  const [noteDismissed, setNoteDismissed] = useState(false);
+  useEffect(() => {
+    try {
+      setNoteDismissed(!!agent?.spawn_note && localStorage.getItem(noteKey) === agent.spawn_note);
+    } catch {
+      setNoteDismissed(false);
+    }
+  }, [agent?.spawn_note, noteKey]);
+  function dismissNote() {
+    setNoteDismissed(true);
+    try {
+      if (agent?.spawn_note) localStorage.setItem(noteKey, agent.spawn_note);
+    } catch {
+      // per-viewer convenience only
+    }
+  }
   const [activitySignal, setActivitySignal] = useState(0);
   const [ctlNote, setCtlNote] = useState<string | null>(null);
   const [ctlError, setCtlError] = useState<string | null>(null);
@@ -1691,12 +1711,74 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // Auto-scroll: stick to the bottom unless the operator scrolled away.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
+  // Scroll the transcript pane alone: scrollIntoView would also scroll
+  // the stage and push the header off the top.
+  const scrollTranscriptTo = (el: Element, align: "start" | "center") => {
+    const pane = scrollRef.current;
+    if (!pane) return;
+    const delta = el.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+    const offset = align === "center" ? pane.clientHeight / 2 - (el as HTMLElement).offsetHeight / 2 : 8;
+    pane.scrollTop += delta - offset;
+    stickRef.current = false;
+  };
+  // "Since you last looked" (catchUp.tsx): the marker this browser left
+  // for this session, captured when the page opens and again whenever it
+  // comes back into view; the bar is derived from it and the items.
+  const [seen, setSeen] = useState<SeenMarker | null>(() => (subagent ? null : readMarker(name)));
+  const seenName = useRef(name);
+  useEffect(() => {
+    if (seenName.current !== name) {
+      seenName.current = name;
+      setSeen(subagent ? null : readMarker(name));
+    }
+  }, [name, subagent]);
+  // Where the eyes are: written while the page is in view. Frozen while
+  // hidden, so what happened meanwhile is what the bar sums up on return.
+  useEffect(() => {
+    if (subagent || transcript.items.length === 0 || document.visibilityState !== "visible") return;
+    writeMarker(name, transcript.items);
+  }, [name, subagent, transcript.items]);
+  useEffect(() => {
+    if (subagent) return;
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        const m = readMarker(name);
+        if (m && Date.now() - m.at >= AWAY_SECS * 1000) setSeen(m);
+        if (transcript.items.length) writeMarker(name, transcript.items);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [name, subagent, transcript.items]);
+  const catchUp = useMemo(() => {
+    if (!seen || subagent || transcript.items.length === 0) return null;
+    const cu = computeCatchUp(transcript.items, seen);
+    if (!cu) return null;
+    return cu.unseen > 0 || cu.awaySecs >= AWAY_SECS ? cu : null;
+  }, [seen, subagent, transcript.items]);
+  // A search hit (`?at=<uuid>`): show everything and scroll to the line.
+  const atParam = new URLSearchParams(window.location.search).get("at");
+  useEffect(() => {
+    if (!atParam || transcript.items.length === 0) return;
+    setShowEarlier(Infinity);
+    const t = window.setTimeout(() => {
+      const el = scrollRef.current?.querySelector(`[data-uuid="${CSS.escape(atParam)}"]`);
+      if (el) {
+        scrollTranscriptTo(el, "center");
+        el.classList.add("flash");
+        window.setTimeout(() => el.classList.remove("flash"), 2400);
+      }
+    }, 80);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atParam, transcript.items.length > 0]);
   useEffect(() => {
     const el = scrollRef.current;
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [transcript.items]);
 
   async function send() {
+    setSeen(null);
     const text = draft.trim();
     if (!text || exited) return;
     // TUI-local commands the console has a surface for open it instead
@@ -2206,7 +2288,11 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         continue;
       }
       flush();
-      out.push(tui ? renderConsoleItem(item) : renderItem(item));
+      out.push(
+        <div key={`w-${item.id}`} className="item-anchor" data-item-id={item.id}>
+          {tui ? renderConsoleItem(item) : renderItem(item)}
+        </div>,
+      );
     }
     flush();
     return out;
@@ -2921,6 +3007,26 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         </div>
       )}
 
+      {catchUp && (
+        <CatchUpBar
+          agent={name}
+          cu={catchUp}
+          canRecap={agent?.capabilities?.recap === true && agent?.live === true}
+          idle={agent?.turn_state !== "busy"}
+          onJump={() => {
+            setShowEarlier(Infinity);
+            const first = transcript.items[catchUp.firstUnseen];
+            window.setTimeout(() => {
+              const el = first ? scrollRef.current?.querySelector(`[data-item-id="${first.id}"]`) : null;
+              if (el) scrollTranscriptTo(el, "start");
+            }, 60);
+          }}
+          onDismiss={() => {
+            writeMarker(name, transcript.items);
+            setSeen(null);
+          }}
+        />
+      )}
       <div
         className={renderMode === "console" ? "transcript console" : "transcript"}
         ref={scrollRef}
@@ -2976,7 +3082,12 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             <>
               <span className="dim">{lastTurn ? `last turn: ${lastTurn.subtype}` : "idle"}</span>
               {statusNote && <span className="status-note">{statusNote}</span>}
-              {agent?.spawn_note && <span className="status-note" title={agent.spawn_note}>forked — {agent.spawn_note.split(" — ")[0]}</span>}
+              {agent?.spawn_note && !noteDismissed && (
+                <span className="status-note" title={agent.spawn_note}>
+                  {agent.spawn_note.split(" — ")[0]}
+                  <button className="status-note-x" onClick={() => dismissNote()} title="dismiss" aria-label="dismiss this note">×</button>
+                </span>
+              )}
             </>
           )}
         </span>

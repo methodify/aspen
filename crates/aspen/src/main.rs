@@ -13,6 +13,7 @@ use aspen_core::SessionEvent;
 use aspen_node::{Node, SpawnOpts};
 
 mod api;
+mod autostart;
 mod meshops;
 mod relayhost;
 mod status;
@@ -37,11 +38,11 @@ struct Cli {
     command: Command,
 }
 
-fn default_data_dir() -> PathBuf {
+pub(crate) fn default_data_dir() -> PathBuf {
     dirs_home().join(".aspen")
 }
 
-fn dirs_home() -> PathBuf {
+pub(crate) fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -81,6 +82,12 @@ enum Command {
     Restart,
     /// Show node status: daemon, sessions, mesh.
     Status,
+    /// Start the daemon at login, as you (a systemd --user unit, a
+    /// LaunchAgent, or a Scheduled Task) — never a system service.
+    Autostart {
+        #[command(subcommand)]
+        command: AutostartCommand,
+    },
     /// Get or set daemon start defaults (headless, listen), harness args,
     /// and the update policy.
     Config {
@@ -245,6 +252,21 @@ enum HooksCommand {
     /// Remove them.
     Uninstall,
     /// Show whether they are installed.
+    Status,
+}
+
+#[derive(Subcommand)]
+enum AutostartCommand {
+    /// Install the unit and bring the daemon under it (a daemon started by
+    /// hand is stopped and started again supervised; sessions are revived).
+    Enable {
+        /// Install only; leave whatever is running alone.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove the unit. Stops nothing that is running.
+    Disable,
+    /// Is it installed, and is the running daemon under it?
     Status,
 }
 
@@ -479,6 +501,15 @@ async fn main() -> Result<()> {
         Command::Restart => restart_daemon(&cli.data_dir),
         Command::Config { key, value } => config_command(&cli.data_dir, key, value),
         Command::Status => status::run(&cli.data_dir),
+        Command::Autostart { command } => {
+            let st = match command {
+                AutostartCommand::Enable { no_start } => autostart::enable(&cli.data_dir, !no_start)?,
+                AutostartCommand::Disable => autostart::disable(&cli.data_dir)?,
+                AutostartCommand::Status => autostart::status(&cli.data_dir),
+            };
+            print_autostart(&st);
+            Ok(())
+        }
         Command::Repos { command } => match command {
             ReposCommand::Discover => {
                 let node = Node::open(&cli.data_dir)?;
@@ -660,6 +691,9 @@ pub(crate) fn write_daemon_state(
         "requested": requested.to_string(),
         "ui": ui.map(|p| p.to_string_lossy()),
         "headless": headless,
+        // Set by the autostart unit (autostart.rs): down/restart/update go
+        // through the supervisor instead of signalling and re-spawning.
+        "supervisor": std::env::var("ASPEN_SUPERVISOR").ok().filter(|s| !s.is_empty()),
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -731,6 +765,19 @@ fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
     let ui = state["ui"].as_str().map(PathBuf::from);
     let headless = state["headless"].as_bool().unwrap_or(false);
 
+    if let Some(sup) = state["supervisor"].as_str() {
+        // Supervised: the supervisor stops and starts; re-spawning here
+        // would leave two owners of one daemon.
+        println!("stopping daemon (via {sup}) …");
+        autostart::supervised_stop(data_dir).transpose()?;
+        println!("starting daemon (via {sup}) …");
+        autostart::supervised_start(data_dir, sup)?;
+        if let Some(st) = read_daemon_state(data_dir) {
+            println!("daemon restarted (pid {}); previous sessions are being revived.", st["pid"]);
+        }
+        return Ok(());
+    }
+
     println!("stopping daemon …");
     stop_detached(data_dir)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -741,6 +788,36 @@ fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     spawn_detached(data_dir, listen, ui.as_deref(), false, headless)
+}
+
+fn print_autostart(st: &autostart::Status) {
+    if !st.supported {
+        println!("autostart: unsupported here{}", st.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default());
+        return;
+    }
+    let kind = st.kind.as_deref().unwrap_or("?");
+    let how = match kind {
+        "systemd" => "systemd --user unit",
+        "launchd" => "LaunchAgent",
+        "schtasks" => "Scheduled Task at logon",
+        k => k,
+    };
+    if st.enabled {
+        println!(
+            "autostart: on — {how} {}{}",
+            st.unit.as_deref().unwrap_or(""),
+            st.path.as_deref().map(|p| format!(" ({})", p.display())).unwrap_or_default()
+        );
+        println!(
+            "daemon:    {}",
+            if st.supervised { "running under it" } else if read_daemon_state(&default_data_dir()).is_some() { "running, but started by hand (aspen restart brings it under the supervisor)" } else { "not running" }
+        );
+    } else {
+        println!("autostart: off — would use a {how}");
+    }
+    if let Some(n) = &st.note {
+        println!("note:      {n}");
+    }
 }
 
 /// Get or set daemon start defaults (settings.json). Keys: headless, listen,
@@ -1433,6 +1510,15 @@ pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
     if !process_alive(pid) {
         remove_daemon_state(data_dir);
         anyhow::bail!("process {pid} not running (cleared stale state)");
+    }
+
+    // 0. Supervised (autostart.rs): stop through the supervisor, which
+    // signals the daemon into the same ladder and, unlike a bare signal,
+    // does not then restart it.
+    if let Some(r) = autostart::supervised_stop(data_dir) {
+        r?;
+        println!("stopped (pid {pid}, via the supervisor)");
+        return Ok(());
     }
 
     // 1. Graceful, over the API.

@@ -123,10 +123,10 @@ pub fn op_capability(op: &str) -> Capability {
         "transcript" | "activities" | "subagent" | "artifacts" | "file_stat" | "file_read"
         | "runtime" | "context" | "bookmarks" | "plugins_effective" | "boards"
         | "plugin_registry" | "plugins_registry_view" | "templates" | "needs" | "node_repos"
-        | "node_sessions" | "history" | "node_update_status" | "node_logs" | "adoptions"
+        | "node_sessions" | "history" | "node_update_status" | "node_autostart" | "node_logs" | "adoptions"
         | "usage" | "fleet_activities" | "notices" | "memory_files" | "memory_conflicts"
         | "replica_offsets" | "session_spec" | "session_preflight" | "node_preflight_target"
-        | "harness_defaults" | "mcp_list" | "processes"
+        | "harness_defaults" | "mcp_list" | "processes" | "search"
         | "sub" | "http" => Capability::Observe,
         "spawn" | "template_spawn" => Capability::Spawn,
         "adoption" | "node_repo_skip" => Capability::Trust,
@@ -1708,6 +1708,7 @@ async fn serve_api_req(
         "processes" => node.processes(agent).await,
         "process_stop" => node.stop_process(agent, body.get("activity").and_then(|v| v.as_str()), body.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)).await,
         "mcp_list" => node.mcp_list(agent, body.get("refresh").and_then(|r| r.as_bool()).unwrap_or(false)).await,
+        "recap" => node.recap(agent).await,
         "mcp_reconnect" => node.mcp_reconnect(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or("")).await,
         "mcp_toggle" => node.mcp_toggle(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or(""), body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)).await,
         "mcp_auth" => node.mcp_auth(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or("")).await,
@@ -2282,6 +2283,19 @@ async fn serve_api_req(
             )
         }
         "node_update_status" => Ok(crate::servicing::status_json(inner)),
+        "node_autostart" => Ok(crate::servicing::autostart_json(inner)),
+        "node_autostart_set" => {
+            let enabled = body.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
+            let pid = crate::servicing::launch_cli(inner, &["autostart", if enabled { "enable" } else { "disable" }])?;
+            Ok(json!({ "started": true, "pid": pid, "enabled": enabled }))
+        }
+        "search" => {
+            let q = body.get("q").and_then(|q| q.as_str()).unwrap_or("").to_owned();
+            let limit = body.get("limit").and_then(|l| l.as_u64()).unwrap_or(200).clamp(1, 1000) as usize;
+            let inner2 = inner.clone();
+            let r = tokio::task::spawn_blocking(move || crate::search::search_local(&inner2, &q, limit, None)).await?;
+            Ok(json!({ "sessions": r.sessions, "scanned": r.scanned }))
+        }
         "adoptions" => Ok(json!(inner
             .store
             .adoptions(true)?

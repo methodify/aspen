@@ -14,6 +14,7 @@ import Attach from "./pages/Attach";
 import { tunnel } from "./tunnel";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
+import Search from "./pages/Search";
 import Palette from "./Palette";
 import { NoticesBell, NoticesProvider } from "./notices";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
@@ -59,6 +60,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean }[] = [
   { to: "/flow", key: "F", label: "Flow" },
   { to: "/mesh", key: "M", label: "Mesh" },
   { to: "/history", key: "H", label: "History" },
+  { to: "/search", key: "S", label: "Search" },
   { to: "/boards", key: "B", label: "Boards" },
   { to: "/plugins", key: "P", label: "Plugins" },
   { to: "/usage", key: "U", label: "Usage" },
@@ -425,6 +427,7 @@ export default function App() {
               <Route path="/board/:id" element={<BoardPage />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />
+              <Route path="/search" element={<Search />} />
               {/* old surfaces → their new homes */}
               <Route path="/command" element={<Navigate to="/" replace />} />
               <Route path="/sessions" element={<Navigate to="/" replace />} />

@@ -1014,3 +1014,22 @@ cleaner lane for roster updates than user-message headers.
   harness that cannot run them. Runtime defaults moved from a per-node
   file the Mesh page pretended was mesh-wide to a synced table with
   per-node overrides, migrated from the file on first start.
+- **2026-09-09 — v0.25, catch me up, search, auto-start**
+  (PROPOSALS-2026-09-C.md; CATCH_UP_AND_SEARCH.md, AUTOSTART.md). The
+  slate's first tier, with the supervisor parked (N-1: two hangs were
+  bugs, both fixed; a watchdog answers a symptom that has not recurred)
+  and auto-start in its slot. Learned by probing: Claude's `/recap` is a
+  local command that runs headlessly and leaves nothing in the model's
+  context — the node captures the side turn's events instead of
+  broadcasting them, so the console never sees a phantom turn. Decisions:
+  the deterministic "since you last looked" digest is the primary and
+  works for both harnesses; the recap is a button and, on return after
+  five minutes, automatic; the seen marker lives in the browser, per
+  session, because it is that browser's eyes it records. Search is plain
+  case-folded text over rehydrated items with a cheap file gate and no
+  index — the corpus is small enough and recency is the only ranking
+  anyone asked for. Auto-start is user-scoped on every platform, never a
+  system service: the node holds the operator's repos and credentials.
+  Where a supervisor exists the CLI routes `down`/`restart`/update through
+  it rather than re-spawning beside it; the unit carries today's `PATH`
+  because the user manager's is not the shell's.

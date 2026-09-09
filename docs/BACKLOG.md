@@ -21,8 +21,23 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | H-8 | sessions + console | **Codex activity ledger.** `collabAgentToolCall` / `subAgentActivity` items show as tool cards; fold them into the activity ledger (ACTIVITY.md) with counts and a drawer, and read the agent threads' rollouts. | HARNESSES.md §6 |
 | H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
 | H-11 | sessions | **Incremental activity derive.** The ledger is rebuilt from the whole transcript whenever it changed; keep the last offset and parse only the appended tail. Cached at turn boundaries since v0.23.2, so this is cost, not correctness. | aspen-claude `activity.rs` |
+| N-1 | servicing | **A supervisor for the daemon.** The `aspen up -d` parent stays as a watchdog: ping, and on silence take a thread dump and restart; peers show a deaf node as such. Parked 2026-09-09: two hangs were bugs, now fixed; revisit if it recurs. | SERVICING.md "Diagnosing a hang" |
+| N-2 | sessions + console | **A queue per session.** Hand a session the next item when it goes idle, from a list the operator keeps or from the bus; pairs with templates and boards. | — |
+| N-3 | sessions + servicing | **Scheduled sessions.** A template plus a cron: "every morning, run triage in repo X on node Y." | PLUGINS.md §templates |
+| N-4 | console + sessions | **Budgets.** Usage is measured; nothing acts on it. A ceiling per repo or mesh with a notice at 80% and a stop at 100%. | USAGE.md |
+| N-5 | protocol + console | **A second operator.** Everything on the bus says "operator"; with a colleague on the mesh: identity, per-person names, and a watch / spawn permission split (console-as-peer certs carry most of it). | RELAY.md §11, MESHES.md |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-09: catch me up, search, auto-start (T-1, T-2, T-3, v0.25)
+
+Design: [PROPOSALS-2026-09-C.md](PROPOSALS-2026-09-C.md). The
+"since you last looked" digest and the harness recap
+(CATCH_UP_AND_SEARCH.md §1–2, T-1); text search across every session the
+mesh holds with a Search page and palette fall-through (§3, T-2); user-
+level auto-start on Linux/WSL, macOS and Windows with supervisor-aware
+down/restart/update (AUTOSTART.md, T-3). The live-elsewhere note reads as
+written and is dismissable.
 
 ## Shipped — 2026-09-08: MCP surface, session processes, mesh-wide runtime defaults (M-1, M-2, M-3, v0.24)
 

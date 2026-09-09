@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, type BlobInfo, type MeshInfo, type MeshPeer } from "./api";
+import { api, type AutostartInfo, type BlobInfo, type MeshInfo, type MeshPeer } from "./api";
 import { usePoll } from "./hooks";
 import { useAppData } from "./App";
 import { ErrorBar, relTime } from "./components";
@@ -154,6 +154,58 @@ function EvacuateButton({ node, targets, agents }: { node: string; targets: stri
   );
 }
 
+/** Auto-start at login (PROPOSALS-2026-09-C.md §3), per node: a chip and
+ *  a toggle. Enabling on a node with a supervisor restarts its daemon
+ *  under it, so the chip says so before the click. */
+export function AutostartChip({ node, self }: { node: string; self: boolean }) {
+  const [info, setInfo] = useState<AutostartInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const load = () => api.autostart(self ? undefined : node).then(setInfo).catch(() => setInfo(null));
+  useEffect(() => {
+    void load();
+    const t = window.setInterval(load, 15000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node, self]);
+  if (!info) return null;
+  if (!info.supported) return <span className="mono-meta" title="no user-level auto-start mechanism on that platform (on WSL: enable systemd in /etc/wsl.conf)">no autostart</span>;
+  const how = info.kind === "systemd" ? "systemd --user unit" : info.kind === "launchd" ? "LaunchAgent" : info.kind === "schtasks" ? "Scheduled Task at logon" : "installed";
+  const supervised = info.kind === "systemd" || info.kind === "launchd";
+  const toggle = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      await api.setAutostart(!info.enabled, self ? undefined : node);
+      setNote(info.enabled ? "removing…" : supervised ? "installing; the daemon restarts under it…" : "installing…");
+      window.setTimeout(() => void load(), 4000);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="mesh-autostart" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span
+        className="chip mono"
+        style={info.enabled ? { color: "var(--sig-normal)", borderColor: "var(--sig-normal)" } : undefined}
+        title={
+          info.enabled
+            ? `starts at login as the user — ${how}${info.unit ? ` ${info.unit}` : ""}${info.path ? ` (${info.path})` : ""}${info.supervised ? "; the running daemon is under it" : supervised ? "; the running daemon was started by hand (aspen restart brings it under)" : ""}`
+            : `not started at login; enable installs a ${how} for the user (never a system service)${supervised ? " and restarts the daemon under it — sessions are revived" : ""}`
+        }
+      >
+        autostart {info.enabled ? "on" : "off"}
+      </span>
+      <button className="btn ghost sm" disabled={busy} onClick={() => void toggle()} title={info.enabled ? "remove the unit; stops nothing running" : supervised ? "install and restart the daemon under the supervisor" : "install the logon task"}>
+        {busy ? "…" : info.enabled ? "disable" : "enable"}
+      </button>
+      {note && <span className="mono-meta">{note}</span>}
+    </span>
+  );
+}
+
 function PeerRow({ p, selfVersion, onRemove, evacuateTargets }: { p: MeshPeer; selfVersion?: string; onRemove?: () => void; evacuateTargets?: string[] }) {
   const h = p.health;
   const skew = h?.version && selfVersion && h.version !== selfVersion;
@@ -204,6 +256,7 @@ function PeerRow({ p, selfVersion, onRemove, evacuateTargets }: { p: MeshPeer; s
         </span>
       )}
       <span style={{ flex: 1 }} />
+      {p.link_up && <AutostartChip node={p.node} self={false} />}
       {p.link_up && evacuateTargets && <EvacuateButton node={p.node} targets={evacuateTargets.filter((t) => t !== p.node)} agents={p.agents} />}
       {h?.last_error && !p.link_up && (
         <span className="mono-meta" style={{ color: "var(--sig-gate)" }} title={h.last_error}>
@@ -536,6 +589,7 @@ export function MeshPanel() {
                 )}
                 <ReplicatePicker peers={peers} />
                 <MemorySyncToggle />
+                <AutostartChip node={me.node} self />
                 <EvacuateButton node={me.node} targets={peers.filter((x) => x.link_up).map((x) => x.node)} agents={1} />
                 <span style={{ flex: 1 }} />
                 {me.cert_blob && <Copy text={me.cert_blob} label="copy my cert blob" />}

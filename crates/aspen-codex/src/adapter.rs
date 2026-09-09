@@ -15,6 +15,7 @@ use crate::store::CodexStore;
 
 pub fn capabilities() -> HarnessCapabilities {
     HarnessCapabilities {
+        recap: false,
         streaming: true,
         interrupt: true,
         mid_turn_inject: true,

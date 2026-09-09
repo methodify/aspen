@@ -32,6 +32,7 @@ const NAV_TARGETS: { label: string; to: string }[] = [
   { label: "Mesh", to: "/mesh" },
   { label: "Mesh · list", to: "/mesh?view=list" },
   { label: "History", to: "/history" },
+  { label: "Search", to: "/search" },
 ];
 
 const presenceColor: Record<Presence, string> = {
@@ -476,6 +477,21 @@ export default function Palette() {
 
     if (t) ranked.sort((a, b) => b.s - a.s || a.order - b.order);
     for (const r of ranked.slice(0, 24)) out.push(r.item);
+    // Free text falls through to search: whatever you typed, looked for
+    // in every transcript the mesh holds (PROPOSALS-2026-09-C.md §2).
+    if (t.length >= 2 && !/^(msg|interrupt|start)(\s|$)/i.test(t)) {
+      out.push({
+        key: `search:${t}`,
+        section: "Search",
+        node: (
+          <>
+            <span>search transcripts for</span>
+            <span className="pal-sub">“{t.length > 60 ? `${t.slice(0, 60)}…` : t}”</span>
+          </>
+        ),
+        run: () => goto(`/search?q=${encodeURIComponent(t)}`),
+      });
+    }
 
     // Hint rows for the argument verbs — shown when the input is empty.
     if (!t) {

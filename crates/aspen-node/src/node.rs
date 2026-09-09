@@ -20,6 +20,13 @@ pub enum TurnState {
     Busy,
 }
 
+/// The recap turn's collector: assistant text accumulates here and the
+/// turn's result wakes the waiting request.
+pub struct RecapCapture {
+    pub text: String,
+    pub done: Option<tokio::sync::oneshot::Sender<String>>,
+}
+
 /// What an agent is doing, for the operator's fleet view — accumulated from
 /// the event stream since this process started (a revive starts fresh).
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -89,6 +96,11 @@ pub struct ManagedSession {
     /// Activities the operator stopped from the console (by id or tool
     /// use id) with when: shown as stopped until the harness settles them.
     pub stopped_acts: Mutex<HashMap<String, f64>>,
+    /// A recap in flight (PROPOSALS-2026-09-C.md §1): while set, the pump
+    /// routes the side turn's events here instead of to observers and the
+    /// ledger — the recap is an answer to the operator, not a turn of the
+    /// conversation.
+    pub recap: Mutex<Option<RecapCapture>>,
     /// When this process started — the ledger's stale cutoff (ACTIVITY.md).
     pub spawned_at: f64,
 }
@@ -811,7 +823,7 @@ impl Node {
                     }
                     Some("in_place") => {
                         spawn_note = Some(format!(
-                            "resumed in place at your request while session {} was being written elsewhere — two processes share this transcript",
+                            "resumed in place at your request; session {} was being written elsewhere — two processes share this transcript",
                             &sid[..8.min(sid.len())]
                         ));
                     }
@@ -1009,6 +1021,7 @@ impl Node {
             mcp: Mutex::new(Vec::new()),
             mcp_refreshed_at: Mutex::new(0.0),
             stopped_acts: Mutex::new(HashMap::new()),
+            recap: Mutex::new(None),
             spawned_at: crate::store::now_epoch(),
             name: name.to_owned(),
             repo,
@@ -2247,6 +2260,51 @@ impl Node {
         }))
     }
 
+    /// A one-line recap of the session from the harness itself
+    /// (PROPOSALS-2026-09-C.md §1): Claude's `/recap` runs as a side
+    /// query — nothing enters the conversation, the transcript gains only
+    /// a local-command marker — and its answer comes back here. Refused
+    /// while a turn is running: the recap would queue behind it and answer
+    /// late; refused for a harness without one, where the digest is what
+    /// there is.
+    pub async fn recap(&self, name: &str) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        if !sess.handle.capabilities().recap {
+            return Err(anyhow!("unsupported: {} has no recap of its own", sess.harness));
+        }
+        if sess.turn_state() == TurnState::Busy {
+            return Err(anyhow!("busy: @{name} is mid-turn; ask again when it is idle"));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        {
+            let mut cap = sess.recap.lock().unwrap();
+            if cap.is_some() {
+                return Err(anyhow!("busy: a recap is already being asked"));
+            }
+            *cap = Some(RecapCapture { text: String::new(), done: Some(tx) });
+        }
+        let started = std::time::Instant::now();
+        if let Err(e) = sess.handle.send_user("/recap".to_owned()).await {
+            sess.recap.lock().unwrap().take();
+            return Err(e);
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(90), rx).await {
+            Ok(Ok(text)) => Ok(serde_json::json!({
+                "text": text,
+                "took_ms": started.elapsed().as_millis() as u64,
+                "at": crate::store::now_epoch(),
+            })),
+            Ok(Err(_)) => {
+                sess.recap.lock().unwrap().take();
+                Err(anyhow!("the session ended before it answered"))
+            }
+            Err(_) => {
+                sess.recap.lock().unwrap().take();
+                Err(anyhow!("no recap within 90s"))
+            }
+        }
+    }
+
     pub async fn mcp_reconnect(&self, name: &str, server: &str) -> Result<serde_json::Value> {
         let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         let r = sess.handle.mcp_reconnect(server).await;
@@ -2471,6 +2529,49 @@ async fn pump(
     mut rx: tokio::sync::mpsc::Receiver<SessionEvent>,
 ) {
     while let Some(ev) = rx.recv().await {
+        // A recap in flight: the side turn is not the conversation. Its
+        // text goes to the request that asked; its result ends the capture;
+        // nothing reaches observers, the ledger or the notices.
+        let capturing = sess.recap.lock().unwrap().is_some();
+        if capturing {
+            match &ev {
+                SessionEvent::TurnEnded { result_text, .. } => {
+                    let cap = sess.recap.lock().unwrap().take();
+                    if let Some(mut c) = cap {
+                        let text = result_text
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|t| !t.is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| c.text.trim().to_owned());
+                        if let Some(tx) = c.done.take() {
+                            let _ = tx.send(text);
+                        }
+                    }
+                    *sess.turn_state.lock().unwrap() = TurnState::Idle;
+                    continue;
+                }
+                SessionEvent::AssistantMessage { raw, .. } => {
+                    if let Some(blocks) = raw.pointer("/message/content").and_then(|c| c.as_array()) {
+                        let mut cap = sess.recap.lock().unwrap();
+                        if let Some(c) = cap.as_mut() {
+                            for b in blocks {
+                                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                                    c.text.push_str(t);
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                SessionEvent::Exited { .. } => {
+                    // The process died mid-recap: drop the capture (the
+                    // request sees the closed channel) and handle the exit.
+                    sess.recap.lock().unwrap().take();
+                }
+                _ => continue,
+            }
+        }
         match &ev {
             SessionEvent::TurnEnded {
                 total_cost_usd,

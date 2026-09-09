@@ -447,6 +447,9 @@ struct RestartParams {
     listen: String,
     ui: Option<String>,
     headless: bool,
+    /// The daemon ran under a supervisor (autostart.rs): start it back
+    /// through that, not with `up -d`.
+    supervisor: Option<String>,
 }
 
 /// Stop a running daemon and wait until it has fully released the port and
@@ -466,6 +469,7 @@ fn stop_daemon(data_dir: &Path) -> Result<Option<RestartParams>> {
         listen: listen.clone(),
         ui: state["ui"].as_str().map(str::to_owned),
         headless: state["headless"].as_bool().unwrap_or(false),
+        supervisor: state["supervisor"].as_str().map(str::to_owned),
     };
 
     println!("stopping daemon …");
@@ -505,6 +509,11 @@ fn stop_daemon(data_dir: &Path) -> Result<Option<RestartParams>> {
 
 /// Launch the daemon detached with the captured parameters.
 fn start_daemon(exe: &Path, data_dir: &Path, params: &RestartParams) -> Result<()> {
+    if let Some(sup) = &params.supervisor {
+        crate::autostart::supervised_start(data_dir, sup)?;
+        println!("daemon restarted under {sup}; previous sessions are being revived.");
+        return Ok(());
+    }
     let mut cmd = aspen_node::gitstate::quiet_command(&exe.to_string_lossy());
     cmd.arg("--data-dir")
         .arg(data_dir)

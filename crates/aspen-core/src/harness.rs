@@ -197,6 +197,10 @@ pub struct HarnessCapabilities {
     pub question_prompts: bool,
     #[serde(default)]
     pub always_allow: bool,
+    /// The harness can produce a one-line recap of the session on request
+    /// (Claude's `/recap`), without the text entering the conversation.
+    #[serde(default)]
+    pub recap: bool,
     #[serde(default)]
     pub transcript_on_disk: bool,
     #[serde(default)]

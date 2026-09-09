@@ -36,6 +36,8 @@ export interface AssistantBubbleItem {
   messageId: string | null;
   /** True while this is the streaming tail bubble. */
   open: boolean;
+  /** The transcript line's uuid when rehydrated — a search hit's target. */
+  uuid?: string | null;
 }
 
 export interface UserBubbleItem {
@@ -226,6 +228,7 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
           thinking: "",
           messageId: null,
           open: false,
+          uuid: typeof h.uuid === "string" ? h.uuid : null,
         });
       }
       for (const t of h.tools ?? []) {

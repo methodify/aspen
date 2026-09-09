@@ -279,6 +279,14 @@ evacuating; evacuate first, update second, is the intended order.
 - **Harness update orchestration** — Claude Code updates itself; we report
   its version and skew, nothing more.
 
+## Under a supervisor (v0.25) — AUTOSTART.md
+
+A daemon started at login by `systemd --user` or launchd says so in
+daemon.json (`supervisor`), and `aspen down`, `aspen restart` and the
+updater's restart go through the supervisor instead of signalling and
+re-spawning. The unit's `KillMode=process` is what lets the updater the
+daemon launched outlive it. Details in AUTOSTART.md §3.
+
 ## Local development cycle (2026-09-06)
 
 Releases are for the fleet; day-to-day work on a node runs from its own

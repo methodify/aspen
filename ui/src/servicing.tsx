@@ -20,6 +20,7 @@ import {
 import { usePoll } from "./hooks";
 import { useAppData } from "./App";
 import { ErrorBar, relTime } from "./components";
+import { AutostartChip } from "./meshPanel";
 import { Modal } from "./channels";
 
 export interface NodeRow {
@@ -402,6 +403,7 @@ function NodeRowView({
           </span>
         )}
         {row.policy && <span className="mono-meta" title="update policy">policy {row.policy}</span>}
+        {(row.self || row.link_up) && <AutostartChip node={row.node} self={row.self} />}
         <StateChip row={row} />
         <OutcomeChip o={row.last_outcome} />
         <span style={{ flex: 1 }} />

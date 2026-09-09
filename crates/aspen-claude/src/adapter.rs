@@ -100,6 +100,7 @@ impl Default for ClaudeAdapter {
 
 pub fn capabilities() -> HarnessCapabilities {
     HarnessCapabilities {
+        recap: true,
         streaming: true,
         interrupt: true,
         mid_turn_inject: true,

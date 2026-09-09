@@ -26,6 +26,7 @@ pub mod permit;
 pub mod plugins;
 pub mod release;
 pub mod replicate;
+pub mod search;
 pub mod servicing;
 pub mod settings;
 pub mod skills;

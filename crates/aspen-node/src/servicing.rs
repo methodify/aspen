@@ -767,6 +767,90 @@ fn drain_tick(inner: &Arc<NodeInner>) {
 
 /// Spawn `aspen update --restart --unattended` detached, output to
 /// aspen.log, and move to `updating`. The child stops this daemon.
+/// Auto-start as the node sees it (PROPOSALS-2026-09-C.md §3): the marker
+/// `aspen autostart enable` leaves in the data dir, and whether the running
+/// daemon was started by the supervisor (its own daemon.json says so).
+/// Cheap — files only — so the fleet views can carry it; the CLI's
+/// `autostart status` asks the platform.
+pub fn autostart_json(inner: &Arc<NodeInner>) -> Value {
+    let Some(dd) = inner.data_dir.as_deref() else {
+        return json!({ "supported": false, "enabled": false, "supervised": false });
+    };
+    let marker: Option<Value> = std::fs::read_to_string(dd.join("autostart.json")).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let supervisor = std::fs::read_to_string(dd.join("daemon.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("supervisor").and_then(|x| x.as_str()).map(str::to_owned));
+    let supported = marker.is_some()
+        || cfg!(windows)
+        || cfg!(target_os = "macos")
+        || (cfg!(target_os = "linux") && std::path::Path::new("/run/systemd/system").exists());
+    let kind = marker
+        .as_ref()
+        .and_then(|m| m.get("kind").and_then(|k| k.as_str()).map(str::to_owned))
+        .or_else(|| {
+            if cfg!(windows) {
+                Some("schtasks".into())
+            } else if cfg!(target_os = "macos") {
+                Some("launchd".into())
+            } else if supported {
+                Some("systemd".into())
+            } else {
+                None
+            }
+        });
+    json!({
+        "supported": supported,
+        "kind": kind,
+        "enabled": marker.is_some(),
+        "unit": marker.as_ref().and_then(|m| m.get("unit").cloned()),
+        "path": marker.as_ref().and_then(|m| m.get("path").cloned()),
+        "supervised": supervisor.is_some(),
+        "supervisor": supervisor,
+    })
+}
+
+/// Run this binary's CLI against this node's data dir, detached from the
+/// daemon (a new session, output to aspen.log) — for operations that stop
+/// and start the daemon itself, which cannot run inside it.
+pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> {
+    let s = &inner.servicing;
+    let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {
+        anyhow::bail!("this node does not know its own binary or data dir");
+    };
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(data_dir.join("aspen.log"));
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--data-dir").arg(&data_dir).args(args).env_remove("ASPEN_DETACHED").stdin(std::process::Stdio::null());
+    match log {
+        Ok(f) => {
+            if let Ok(e) = f.try_clone() {
+                cmd.stdout(f).stderr(e);
+            }
+        }
+        Err(_) => {
+            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
+    }
+    let child = cmd.spawn()?;
+    let _ = inner.store.record_event(NODE_AGENT, "cli_launched", json!({ "args": args }));
+    Ok(child.id())
+}
+
 fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
     let s = &inner.servicing;
     let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {

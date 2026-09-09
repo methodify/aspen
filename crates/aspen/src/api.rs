@@ -143,6 +143,8 @@ pub async fn serve(
         )
         .route("/agents/{name}/reload", post(post_reload))
         .route("/agents/{name}/mcp", get(get_mcp).post(post_mcp_add))
+        .route("/agents/{name}/recap", post(post_recap))
+        .route("/search", get(get_search))
         .route("/agents/{name}/processes", get(get_processes))
         .route("/agents/{name}/processes/stop", post(post_process_stop))
         .route("/agents/{name}/mcp/{server}/reconnect", post(post_mcp_reconnect))
@@ -178,6 +180,10 @@ pub async fn serve(
         .route(
             "/update",
             get(get_update).post(post_update).delete(delete_update),
+        )
+        .route(
+            "/node/autostart",
+            get(get_autostart).put(put_autostart),
         )
         .route("/update/check", post(post_update_check))
         .route("/update/policy", put(put_update_policy))
@@ -693,6 +699,8 @@ async fn get_node(State(s): S) -> Json<Value> {
         "built": env!("ASPEN_BUILD_DATE"),
         "listen": listen,
         "loopback_only": loopback_only,
+        // Auto-start at login (PROPOSALS-2026-09-C.md §3).
+        "autostart": aspen_node::servicing::autostart_json(&s.node.inner),
         // The harnesses this node can run (HARNESSES.md), with versions.
         "harnesses": s.node.inner.adapters.values().map(|a| json!({
             "name": a.harness(), "binary": a.binary(), "version": a.version(),
@@ -729,6 +737,34 @@ async fn get_update(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoRespons
         return proxy(&s, node, "node_update_status", "", json!({})).await;
     }
     Json(aspen_node::servicing::status_json(&s.node.inner)).into_response()
+}
+
+/// Auto-start at login (PROPOSALS-2026-09-C.md §3). `?node=` asks a peer.
+async fn get_autostart(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoResponse {
+    if let Some(node) = q.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_autostart", "", json!({})).await;
+    }
+    Json(aspen_node::servicing::autostart_json(&s.node.inner)).into_response()
+}
+
+#[derive(Deserialize)]
+struct AutostartBody {
+    enabled: bool,
+    node: Option<String>,
+}
+
+/// Enable or disable, on this node or a peer. Enabling on a node with a
+/// supervisor restarts its daemon under the supervisor (sessions are
+/// revived), so the work runs detached from the daemon: the answer says
+/// it started, and the node's `autostart` reflects the result.
+async fn put_autostart(State(s): S, Json(b): Json<AutostartBody>) -> impl IntoResponse {
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_autostart_set", "", json!({ "enabled": b.enabled })).await;
+    }
+    match aspen_node::servicing::launch_cli(&s.node.inner, &["autostart", if b.enabled { "enable" } else { "disable" }]) {
+        Ok(pid) => Json(json!({ "started": true, "pid": pid, "enabled": b.enabled })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -3927,6 +3963,108 @@ async fn get_activity(State(s): S) -> impl IntoResponse {
 
 // ---------------------------------------------------------------------- repos
 
+// ----------------------------------------------------------------- search
+// (PROPOSALS-2026-09-C.md §2): text search over every session this node
+// holds — registered repos, both harnesses, replicas — and every up peer's.
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    limit: Option<usize>,
+    /// Repo handle or path to restrict to (this node's repos only).
+    repo: Option<String>,
+    /// Include peers (default true).
+    mesh: Option<bool>,
+}
+
+async fn get_search(State(s): S, Query(q): Query<SearchQuery>) -> impl IntoResponse {
+    let needle = q.q.trim().to_owned();
+    if needle.len() < 2 {
+        return err(StatusCode::BAD_REQUEST, anyhow::anyhow!("the query needs at least two characters")).into_response();
+    }
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let me = self_node_name(&s);
+    let started = std::time::Instant::now();
+    let local = {
+        let inner = s.node.inner.clone();
+        let needle = needle.clone();
+        let repo = q.repo.clone();
+        tokio::task::spawn_blocking(move || aspen_node::search::search_local(&inner, &needle, limit, repo.as_deref()))
+            .await
+            .unwrap_or_default()
+    };
+    let mut sessions: Vec<Value> = local.sessions.into_iter().map(|mut v| { v["node"] = json!(me); v }).collect();
+    let mut scanned = local.scanned;
+    let mut nodes_asked = vec![me.clone()];
+    let mut nodes_failed: Vec<String> = Vec::new();
+    if q.mesh.unwrap_or(true) && q.repo.is_none() {
+        if let Some(mesh) = s.node.inner.mesh() {
+            let calls = mesh
+                .peers()
+                .into_iter()
+                .filter(|p| mesh.link_up(&p.cert.node))
+                .map(|peer| {
+                    let mesh = mesh.clone();
+                    let needle = needle.clone();
+                    async move {
+                        let name = peer.cert.node.clone();
+                        let r = mesh
+                            .api_call(&name, "search", "", json!({ "q": needle, "limit": limit }), std::time::Duration::from_secs(25))
+                            .await
+                            .ok();
+                        (name, r)
+                    }
+                });
+            for (name, r) in futures_util::future::join_all(calls).await {
+                nodes_asked.push(name.clone());
+                let Some(v) = r else {
+                    nodes_failed.push(name);
+                    continue;
+                };
+                scanned += v.get("scanned").and_then(|n| n.as_u64()).unwrap_or(0) as usize;
+                for sv in v.get("sessions").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+                    let mut sv = sv;
+                    // A replica a peer holds of OUR session is ours: the
+                    // live copy is here, and the local pass already saw it.
+                    if sv.get("replica").and_then(|b| b.as_bool()) == Some(true) && sv.get("home").and_then(|h| h.as_str()) == Some(me.as_str()) {
+                        continue;
+                    }
+                    sv["node"] = json!(name);
+                    sessions.push(sv);
+                }
+            }
+        }
+    }
+    // One row per (home node, session): a replica held elsewhere duplicates
+    // its home's live copy when the home answered.
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    sessions.sort_by(|a, b| {
+        let ra = a.get("replica").and_then(|x| x.as_bool()).unwrap_or(false);
+        let rb = b.get("replica").and_then(|x| x.as_bool()).unwrap_or(false);
+        ra.cmp(&rb).then_with(|| b["modified"].as_f64().unwrap_or(0.0).total_cmp(&a["modified"].as_f64().unwrap_or(0.0)))
+    });
+    for sv in sessions {
+        let home = sv.get("home").and_then(|h| h.as_str()).or_else(|| sv.get("node").and_then(|h| h.as_str())).unwrap_or("").to_owned();
+        let sid = sv.get("session_id").and_then(|h| h.as_str()).unwrap_or("").to_owned();
+        if seen.insert((home, sid)) {
+            out.push(sv);
+        }
+    }
+    out.sort_by(|a, b| b["modified"].as_f64().unwrap_or(0.0).total_cmp(&a["modified"].as_f64().unwrap_or(0.0)));
+    out.truncate(limit);
+    Json(json!({
+        "q": needle,
+        "self": me,
+        "sessions": out,
+        "scanned": scanned,
+        "nodes": nodes_asked,
+        "nodes_failed": nodes_failed,
+        "took_ms": started.elapsed().as_millis() as u64,
+    }))
+    .into_response()
+}
+
 // ---------------------------------------------------------------- history
 
 #[derive(Deserialize)]
@@ -4519,6 +4657,20 @@ async fn get_mcp(State(s): S, Path(name): Path<String>, Query(q): Query<McpQuery
     }
     match s.node.mcp_list(&name, refresh).await {
         Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+/// `POST /api/agents/{name}/recap` (PROPOSALS-2026-09-C.md §1): the
+/// harness's own one-line recap. 409 while the session is busy or a
+/// recap is already in flight; 501 for a harness without one.
+async fn post_recap(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "recap", &bare, json!({})).await;
+    }
+    match s.node.recap(&name).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) if e.to_string().starts_with("unsupported:") => err(StatusCode::NOT_IMPLEMENTED, e).into_response(),
         Err(e) => err(StatusCode::CONFLICT, e).into_response(),
     }
 }

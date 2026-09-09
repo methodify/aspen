@@ -140,6 +140,7 @@ Start the daemon in the background instead:
 ```bash
 aspen up -d      # detached; logs to <data-dir>/aspen.log
 aspen down       # stop it (clean shutdown)
+aspen autostart enable   # start it at your login, as you (docs/AUTOSTART.md)
 ```
 
 The **Library** shows repositories grouped by node — this node and every
