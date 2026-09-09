@@ -83,12 +83,34 @@ pub struct ClaudeAdapter {
     store: Arc<ClaudeStore>,
     /// `claude --version`, probed once per daemon: the API asks on every
     /// console poll, and a spawn per poll flashed a console on Windows.
-    version: std::sync::OnceLock<Option<String>>,
+    version: std::sync::Arc<std::sync::OnceLock<Option<String>>>,
 }
 
 impl ClaudeAdapter {
     pub fn new() -> Self {
-        Self { bin: "claude".into(), store: Arc::new(ClaudeStore), version: std::sync::OnceLock::new() }
+        let me = Self { bin: "claude".into(), store: Arc::new(ClaudeStore), version: Default::default() };
+        me.probe_version();
+        me
+    }
+
+    /// `claude --version` on its own thread: on Windows it takes seconds
+    /// (a Node start-up), and it used to run inside the first API request
+    /// that asked — on a runtime worker, with every other request queued
+    /// behind it (the "API takes 15–20 s after start" seen live).
+    fn probe_version(&self) {
+        let cell = self.version.clone();
+        let bin = self.bin.clone();
+        std::thread::spawn(move || {
+            let v = aspen_core::quiet_command(&bin)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            let _ = cell.set(v);
+        });
     }
 }
 
@@ -241,18 +263,8 @@ impl AgentAdapter for ClaudeAdapter {
         self.store.clone()
     }
     fn version(&self) -> Option<String> {
-        self.version
-            .get_or_init(|| {
-                aspen_core::quiet_command(&self.bin)
-                    .arg("--version")
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .map(|s| s.trim().to_owned())
-                    .filter(|s| !s.is_empty())
-            })
-            .clone()
+        // Whatever the probe has found so far; None until it has.
+        self.version.get().cloned().flatten()
     }
     fn binary(&self) -> &'static str {
         "claude"

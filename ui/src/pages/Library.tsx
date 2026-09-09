@@ -113,7 +113,21 @@ function NameComposer({
 
 // ── Repositories section ───────────────────────────────────────────────────
 
+/** Add a repository here or on any linked peer: the path is one on the
+ *  chosen node, and that node registers it (op `node_repo_add`). */
 function AddRepoForm({ onAdded }: { onAdded: () => void }) {
+  const [nodes, setNodes] = useState<{ node: string; me: boolean }[]>([]);
+  const [onNode, setOnNode] = useState<string>("");
+  useEffect(() => {
+    api
+      .mesh()
+      .then((m) => {
+        const list = [{ node: m.node, me: true }, ...(m.peers ?? []).filter((p) => p.link_up).map((p) => ({ node: p.node, me: false }))];
+        setNodes(list);
+        setOnNode((cur) => cur || m.node);
+      })
+      .catch(() => setNodes([]));
+  }, []);
   const [path, setPath] = useState("");
   const [skip, setSkip] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,7 +143,8 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
     }
     setBusy(true);
     try {
-      await api.addRepo(path.trim(), skip ? true : undefined);
+      const me = nodes.find((n) => n.me)?.node;
+      await api.addRepo(path.trim(), skip ? true : undefined, onNode && onNode !== me ? onNode : undefined);
       setPath("");
       setSkip(false);
       onAdded();
@@ -148,10 +163,17 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
     >
       <span className="label">Add repository</span>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        {nodes.length > 1 && (
+          <select value={onNode} onChange={(e) => setOnNode(e.target.value)} title="which node the path is on — that node registers the repository" aria-label="node">
+            {nodes.map((n) => (
+              <option key={n.node} value={n.node}>{n.me ? `${n.node} · this node` : n.node}</option>
+            ))}
+          </select>
+        )}
         <input
           value={path}
           onChange={(e) => setPath(e.target.value)}
-          placeholder="/home/you/src/project"
+          placeholder={onNode && !nodes.find((n) => n.me && n.node === onNode) ? `a path on ${onNode}` : "/home/you/src/project"}
           className="mono"
           style={{ flex: 1, minWidth: 240 }}
         />
@@ -702,7 +724,24 @@ function RepositoriesSection({
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [openNodes, setOpenNodes] = useState<Record<string, boolean>>({});
+  // Which node groups are open — remembered per browser, so the list
+  // comes back the way it was left (default: this node open, peers shut).
+  const OPEN_KEY = "aspen.mesh.openNodes";
+  const [openNodes, setOpenNodes] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(OPEN_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(OPEN_KEY, JSON.stringify(openNodes));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [openNodes]);
   const [discovering, setDiscovering] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const q = filter.trim().toLowerCase();

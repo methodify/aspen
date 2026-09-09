@@ -472,6 +472,9 @@ async fn main() -> Result<()> {
                 return spawn_detached(&cli.data_dir, listen, ui.as_deref(), no_resume, headless);
             }
             let node = Node::open(&cli.data_dir)?;
+            // Windows Firewall probe (PowerShell, seconds): start it now so
+            // the answer is in before the console asks, off the runtime.
+            aspen_node::winfw::warm();
             if let Some(d) = &ui {
                 eprintln!("[aspen] serving console from {}", d.display());
             }

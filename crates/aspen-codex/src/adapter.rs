@@ -73,12 +73,29 @@ pub struct CodexAdapter {
     pub bin: String,
     store: Arc<CodexStore>,
     /// `codex --version`, probed once per daemon (no window on Windows).
-    version: std::sync::OnceLock<Option<String>>,
+    version: std::sync::Arc<std::sync::OnceLock<Option<String>>>,
 }
 
 impl CodexAdapter {
     pub fn new() -> Self {
-        Self { bin: "codex".into(), store: Arc::new(CodexStore::new()), version: std::sync::OnceLock::new() }
+        let me = Self { bin: "codex".into(), store: Arc::new(CodexStore::new()), version: Default::default() };
+        me.probe_version();
+        me
+    }
+
+    /// `codex --version` on its own thread (see the Claude adapter: a
+    /// probe inside the first API request stalled every request behind it).
+    fn probe_version(&self) {
+        let cell = self.version.clone();
+        let bin = self.bin.clone();
+        std::thread::spawn(move || {
+            let v = aspen_core::quiet_command(&bin).arg("--version").output().ok().and_then(|out| {
+                let s = String::from_utf8_lossy(&out.stdout);
+                // "codex-cli 0.153.4"
+                s.split_whitespace().last().map(str::to_owned).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            });
+            let _ = cell.set(v);
+        });
     }
     /// Is the binary on PATH?
     pub fn available(&self) -> bool {
@@ -175,14 +192,7 @@ impl AgentAdapter for CodexAdapter {
         self.store.clone()
     }
     fn version(&self) -> Option<String> {
-        self.version
-            .get_or_init(|| {
-                let out = aspen_core::quiet_command(&self.bin).arg("--version").output().ok()?;
-                let s = String::from_utf8_lossy(&out.stdout);
-                // "codex-cli 0.153.4"
-                s.split_whitespace().last().map(str::to_owned).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
-            })
-            .clone()
+        self.version.get().cloned().flatten()
     }
     fn binary(&self) -> &'static str {
         "codex"

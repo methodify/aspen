@@ -1888,6 +1888,10 @@ impl BusStore {
                 skip.map(|b| b as i64),
             ],
         )?;
+        // A repo has its handle from the moment it is registered — the
+        // list and the address book show it at once, not after the first
+        // spawn happens to ask.
+        Self::assign_repo_handles(&conn)?;
         Ok(())
     }
 

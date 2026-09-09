@@ -279,6 +279,18 @@ evacuating; evacuate first, update second, is the intended order.
 - **Harness update orchestration** — Claude Code updates itself; we report
   its version and skew, nothing more.
 
+## Start-up: nothing slow on a request (v0.25.2)
+
+A Windows node served the console's HTML at once but answered no API
+call for 15–20 s after start. Two probes ran inside the first request
+that needed them, on a runtime worker, with every other request queued
+behind: `claude --version` and `codex --version` (a Node start-up each on
+Windows) and the Windows Firewall rule scan (PowerShell). Both now run on
+their own threads from start-up; until they answer, the version is
+`null` and the firewall hint absent, and no request waits. Rule: nothing
+that can take a second runs on a runtime worker inside a request — probe
+on a thread, cache, answer with what is known.
+
 ## Under a supervisor (v0.25) — AUTOSTART.md
 
 A daemon started at login by `systemd --user` or launchd says so in

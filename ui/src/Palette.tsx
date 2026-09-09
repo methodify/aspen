@@ -30,7 +30,7 @@ const NAV_TARGETS: { label: string; to: string }[] = [
   { label: "Now", to: "/" },
   { label: "Flow", to: "/flow" },
   { label: "Mesh", to: "/mesh" },
-  { label: "Mesh · list", to: "/mesh?view=list" },
+  { label: "Mesh · map", to: "/mesh?view=map" },
   { label: "History", to: "/history" },
   { label: "Search", to: "/search" },
 ];

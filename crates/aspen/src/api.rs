@@ -4500,9 +4500,14 @@ async fn post_repo_expose(State(s): S, Json(b): Json<ExposeBody>) -> impl IntoRe
 struct RepoAddBody {
     path: String,
     skip_permissions: Option<bool>,
+    /// Register on this peer instead (the path is one on that node).
+    node: Option<String>,
 }
 
 async fn post_repo(State(s): S, Json(b): Json<RepoAddBody>) -> impl IntoResponse {
+    if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        return proxy(&s, node, "node_repo_add", "", json!({ "path": b.path, "skip_permissions": b.skip_permissions })).await;
+    }
     // Register only real directories, stored in the one normalized form
     // every other entry point uses (see aspen_node::node::normalize_repo).
     let path = match dunce::canonicalize(std::path::Path::new(&b.path)) {

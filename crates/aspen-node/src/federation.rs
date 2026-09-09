@@ -129,7 +129,7 @@ pub fn op_capability(op: &str) -> Capability {
         | "harness_defaults" | "mcp_list" | "processes" | "search"
         | "sub" | "http" => Capability::Observe,
         "spawn" | "template_spawn" => Capability::Spawn,
-        "adoption" | "node_repo_skip" => Capability::Trust,
+        "adoption" | "node_repo_skip" | "node_repo_add" => Capability::Trust,
         _ => Capability::Control,
     }
 }
@@ -2086,6 +2086,21 @@ async fn serve_api_req(
             };
             node.inner.store.delete_link_by_ends(&src, &dst)?;
             Ok(json!({ "ok": true }))
+        }
+        "node_repo_add" => {
+            let path = body
+                .get("path")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing path"))?;
+            let skip = body.get("skip_permissions").and_then(|b| b.as_bool());
+            let p = match dunce::canonicalize(std::path::Path::new(path)) {
+                Ok(p) if p.is_dir() => p,
+                Ok(_) => return Err(anyhow!("{path}: not a directory on this node")),
+                Err(e) => return Err(anyhow!("{path}: {e} (on this node)")),
+            };
+            node.inner.store.add_repo(&p, skip)?;
+            let row = node.inner.store.repo(&p)?.ok_or_else(|| anyhow!("added but not found"))?;
+            Ok(json!({ "ok": true, "path": row.path.to_string_lossy(), "handle": row.handle }))
         }
         "node_repo_skip" => {
             let path = body

@@ -1049,3 +1049,12 @@ cleaner lane for roster updates than user-message headers.
   hostname, which on WSL is the Windows machine's name: it is the mesh
   identity now. Decision: the unit writes to aspen.log, not only the
   journal — the log is what operators zip and send.
+- **2026-09-09 — v0.25.2, three operator observations.** The Windows
+  node's API silent for 15–20 s after start while the HTML served:
+  harness version probes and the firewall scan ran inside the first
+  request, on runtime workers (SERVICING.md "Start-up"); they are threads
+  now. The Mesh page opens on the list, where the work is; the map is a
+  tab. Add repository takes a node: the path is one on that node, which
+  registers it (`node_repo_add`, a trust-class op) — and a repo has its
+  handle from registration, not from the first spawn. The list's
+  per-node groups remember which were open.

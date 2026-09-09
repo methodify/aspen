@@ -408,7 +408,7 @@ fn human_duration(secs: u64) -> String {
 /// Windows: a Block rule for this executable (aspen_node::winfw) means
 /// WSL nodes and LAN peers time out dialing us. Say so, with the fix.
 fn windows_firewall_hints(port: u16) -> Vec<String> {
-    let profiles = aspen_node::winfw::block_profiles();
+    let profiles = aspen_node::winfw::block_profiles_blocking();
     if profiles.is_empty() {
         return Vec::new();
     }

@@ -1431,10 +1431,12 @@ export const api = {
     }),
 
   repos: () => request<Repo[]>("/api/repos"),
-  addRepo: (path: string, skipPermissions?: boolean) =>
+  /** `node`: register on that peer (the path is one on that node). */
+  addRepo: (path: string, skipPermissions?: boolean, node?: string) =>
     post<Repo>("/api/repos", {
       path,
       ...(skipPermissions !== undefined ? { skip_permissions: skipPermissions } : {}),
+      ...(node ? { node } : {}),
     }),
   setRepoHarness: (path: string, harness: Harness | null, node?: string) =>
     post<{ ok: boolean }>("/api/repos/harness", { path, harness, ...(node ? { node } : {}) }),
