@@ -60,6 +60,25 @@ store,adapter,event}.rs` (the vocabulary and traits),
   as `list()` + `call()`; Claude mounts it as its in-process MCP server
   (`McpServer::from_provider`); Codex will reach it through a stdio bridge.
 
+### 2.1 The session's identity in the environment (v0.24.4)
+
+Every harness process starts with the session's identity in its
+environment, so hooks, MCP servers and scripts the harness launches know
+which agent they serve without being told:
+
+| variable | value |
+|---|---|
+| `ASPEN_AGENT` | the bus address, `name@repo` (what `bus_send` uses) |
+| `ASPEN_AGENT_NAME` | the bare name the operator chose |
+| `ASPEN_CHANNEL` | the repo's handle (the channel) |
+| `ASPEN_NODE` | this node's name |
+| `ASPEN_SESSION_ID` | Aspen's session id (Claude's session id; Codex assigns its own thread id later) |
+| `ASPEN_NODE_API` | the node's local API base URL, when the daemon listens |
+| `ASPEN_NODE_TOKEN` | the node's API token, when it has one |
+
+The node fills `SpawnSpec::env`; each adapter passes it to its process
+(Claude `extra_env`, Codex `ProcessSpec.extra_env`), validating names.
+
 ## 3. Events
 
 `SessionEvent::ToolUse` gains `tool_kind`, `summary`, `path`, `command`;

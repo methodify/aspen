@@ -221,6 +221,7 @@ impl AgentAdapter for ClaudeAdapter {
         cfg.policy = spec.policy;
         cfg.charter = spec.charter.clone();
         cfg.extra_args = spec.extra_args.clone();
+        cfg.env = spec.env.clone();
         for d in &spec.plugin_dirs {
             cfg.extra_args.push("--plugin-dir".into());
             cfg.extra_args.push(d.clone());

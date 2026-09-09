@@ -911,6 +911,8 @@ impl Node {
             .interactive
             .then(|| Arc::new(crate::permit::OperatorBroker::new(policy)));
         let session_id = aspen_core::SessionId::new();
+        let bridge_token = self.inner.data_dir.as_deref().and_then(|d| std::fs::read_to_string(d.join("api-token")).ok()).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        let node_api = self.inner.data_dir.as_deref().and_then(local_api_addr);
         let spec = aspen_core::SpawnSpec {
             repo: repo.clone(),
             session_id,
@@ -927,8 +929,27 @@ impl Node {
             tools: Some(tools),
             broker: op_broker.clone().map(|b| b as Arc<dyn aspen_core::PermissionBroker>),
             agent: name.to_owned(),
-            bridge_token: self.inner.data_dir.as_deref().and_then(|d| std::fs::read_to_string(d.join("api-token")).ok()).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()),
-            node_api: self.inner.data_dir.as_deref().and_then(local_api_addr),
+            bridge_token: bridge_token.clone(),
+            node_api: node_api.clone(),
+            env: {
+                // The session's identity for everything the harness
+                // starts — hooks, MCP servers, scripts — so a plugin can
+                // know which agent it serves without asking.
+                let mut env = vec![
+                    ("ASPEN_AGENT".to_owned(), name.to_owned()),
+                    ("ASPEN_AGENT_NAME".to_owned(), crate::addr::bare(name).to_owned()),
+                    ("ASPEN_CHANNEL".to_owned(), channel.clone()),
+                    ("ASPEN_NODE".to_owned(), self.inner.node_name()),
+                    ("ASPEN_SESSION_ID".to_owned(), session_id.to_string()),
+                ];
+                if let Some(api) = &node_api {
+                    env.push(("ASPEN_NODE_API".to_owned(), api.clone()));
+                }
+                if let Some(t) = &bridge_token {
+                    env.push(("ASPEN_NODE_TOKEN".to_owned(), t.clone()));
+                }
+                env
+            },
         };
         let (handle, adapter_rx) = adapter.spawn(spec).await?;
 

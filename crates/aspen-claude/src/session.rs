@@ -38,6 +38,9 @@ pub struct ClaudeConfig {
     /// Extra CLI arguments appended verbatim after the protocol flags
     /// (harness defaults + per-session args, already split).
     pub extra_args: Vec<String>,
+    /// Extra environment for the process (the session's identity, the
+    /// node's API); see `aspen_core::SpawnSpec::env`.
+    pub env: Vec<(String, String)>,
 }
 
 impl ClaudeConfig {
@@ -54,6 +57,7 @@ impl ClaudeConfig {
             claude_bin: "claude".into(),
             charter: None,
             extra_args: Vec::new(),
+            env: Vec::new(),
         }
     }
 }
@@ -102,6 +106,7 @@ impl ClaudeSession {
         spec.permission_mode = cfg.permission_mode.clone();
         spec.model = cfg.model.clone();
         spec.extra_args = cfg.extra_args.clone();
+        spec.extra_env.extend(cfg.env.iter().cloned());
         if let Some(r) = &cfg.resume {
             spec.resume = Some(r.clone());
             spec.fork_session = cfg.fork;

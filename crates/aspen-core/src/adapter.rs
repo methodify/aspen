@@ -49,6 +49,12 @@ pub struct SpawnSpec {
     pub policy: PermissionPolicy,
     pub charter: Option<String>,
     pub extra_args: Vec<String>,
+    /// Environment for the harness process: the session's identity as
+    /// `ASPEN_AGENT` (the bus address), `ASPEN_AGENT_NAME`, `ASPEN_CHANNEL`,
+    /// `ASPEN_NODE`, `ASPEN_SESSION_ID`, and the node's API for hooks and
+    /// MCP servers that want to talk back (`ASPEN_NODE_API`,
+    /// `ASPEN_NODE_TOKEN`). Names are validated by the adapters.
+    pub env: Vec<(String, String)>,
     /// Plugin directories (Claude `--plugin-dir`); ignored by harnesses
     /// without the capability.
     pub plugin_dirs: Vec<String>,

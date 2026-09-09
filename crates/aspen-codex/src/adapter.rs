@@ -153,6 +153,7 @@ impl AgentAdapter for CodexAdapter {
             policy: spec.policy,
             charter: spec.charter.clone(),
             extra_args: spec.extra_args.clone(),
+            env: spec.env.clone(),
             codex_bin: self.bin.clone(),
             agent: spec.agent.clone(),
             bridge: spec.node_api.clone().map(|api| crate::session::Bridge {

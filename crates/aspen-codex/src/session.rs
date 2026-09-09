@@ -47,6 +47,7 @@ pub struct CodexConfig {
     pub policy: PermissionPolicy,
     pub charter: Option<String>,
     pub extra_args: Vec<String>,
+    pub env: Vec<(String, String)>,
     pub codex_bin: String,
     pub agent: String,
     pub bridge: Option<Bridge>,
@@ -93,6 +94,7 @@ impl CodexSession {
         // write: Aspen's trust gate is the only trust decision.
         let mut overrides = vec![(format!("projects.{}.trust_level", toml_str(&cwd_str)), toml_str("trusted"))];
         let mut env = vec![("CODEX_INTERNAL_ORIGINATOR_OVERRIDE".to_owned(), "aspen".to_owned())];
+        env.extend(cfg.env.iter().cloned());
         if let Some(b) = &cfg.bridge {
             overrides.push(("mcp_servers.aspen.command".into(), toml_str(&b.aspen_bin)));
             overrides.push(("mcp_servers.aspen.args".into(), "[\"mcp\"]".into()));
@@ -106,7 +108,6 @@ impl CodexSession {
             overrides.push(("mcp_servers.aspen.env".into(), format!("{{ {} }}", kv.join(", "))));
             // The bridge is a tiny process; do not wait long on it.
             overrides.push(("mcp_servers.aspen.startup_timeout_sec".into(), "20".into()));
-            env.push(("ASPEN_AGENT".into(), cfg.agent.clone()));
         }
         let spec = ProcessSpec {
             codex_bin: cfg.codex_bin.clone(),
