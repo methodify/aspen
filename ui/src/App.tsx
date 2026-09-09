@@ -367,7 +367,7 @@ function StatusBar() {
   const off = agents.filter((a) => !a.live).length;
   return (
     <header className="statusbar">
-      <span className="brand">ASP<b>E</b>N</span>
+      <span className="brand"><img className="brand-mark" src="/aspen-mark.svg" alt="" width="18" height="18" />ASP<b>E</b>N</span>
       <span className="mono-meta">{node ? `node ${node.node}` : "connecting…"}</span>
       <span className="spacer" />
       <VersionBadge node={node} />
