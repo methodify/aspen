@@ -142,11 +142,22 @@ export function useTrustedStart(): {
     if (!pending) return;
     setConfirming(true);
     setErr(null);
+    const req = { ...pending.req, acknowledge_trust: true };
     try {
-      const agent = await startRequest({ ...pending.req, acknowledge_trust: true });
+      const agent = await startRequest(req);
       settle(agent);
     } catch (e) {
       setConfirming(false);
+      // Trust granted, but the session is being written elsewhere: hand
+      // over to the live-elsewhere choice (fork / resume in place) instead
+      // of quoting its message here with nothing to click.
+      if (e instanceof ApiError && e.status === 409 && e.body && e.body["live_elsewhere"]) {
+        const le = e.body["live_elsewhere"] as { session?: string; written_ago_secs?: number };
+        setPending(null);
+        setErr(null);
+        setLive({ req, session: le.session ?? req.resume ?? "", writtenAgo: le.written_ago_secs ?? 0 });
+        return;
+      }
       setErr(e instanceof Error ? e.message : "failed to start");
     }
   }
