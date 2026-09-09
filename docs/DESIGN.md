@@ -1033,3 +1033,19 @@ cleaner lane for roster updates than user-message headers.
   Where a supervisor exists the CLI routes `down`/`restart`/update through
   it rather than re-spawning beside it; the unit carries today's `PATH`
   because the user manager's is not the shell's.
+- **2026-09-09 — v0.25.1, the laptop pair that flapped.** Two nodes on
+  one laptop (WSL and Windows), both up, no link for hours: the Windows
+  log showed a 30 s cycle — relay link up, direct link supersedes it,
+  direct link lost within a millisecond, fallback relay link closed
+  before the peer's hello, the peer's hello ignored. Two defects in the
+  link lifecycle (RELAY.md §8.1): the link kind travelled through a
+  shared per-peer "pending" slot that a concurrent direct handshake
+  could take, and a relay link's teardown removed its successor's inbound
+  slot. Alongside: a fully qualified address naming this node
+  (`bare@repo@me`) was not collapsed to the local key by the API — every
+  handler used the whole string — so a board made on the Windows node
+  could not open the same agents on the WSL node; an outer middleware
+  now collapses it before routing. And `/api/node`'s `node` was the
+  hostname, which on WSL is the Windows machine's name: it is the mesh
+  identity now. Decision: the unit writes to aspen.log, not only the
+  journal — the log is what operators zip and send.

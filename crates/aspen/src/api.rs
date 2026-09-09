@@ -289,6 +289,14 @@ pub async fn serve(
         Some(tk) => eprintln!("[aspen] node up: http://{actual}/?token={tk}"),
         None => eprintln!("[aspen] node up: http://{actual}"),
     }
+    // Before routing (a Router::layer runs after the path is matched, too
+    // late to change a path param): `bare@repo@<this node>` in an agent
+    // path is this node's own `bare@repo`. Boards and links carry the
+    // fully qualified form from wherever they were made.
+    let app = tower::ServiceBuilder::new()
+        .layer(axum::middleware::from_fn_with_state(state.clone(), self_name_middleware))
+        .service(app);
+    let app = axum::ServiceExt::<axum::extract::Request>::into_make_service(app);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal(shutdown_notify).await;
@@ -561,6 +569,41 @@ fn load_or_create_token(data_dir: &std::path::Path) -> Result<String> {
     Ok(token)
 }
 
+/// Collapse `/api/agents/<bare>@<repo>@<me>…` to `/api/agents/<bare>@<repo>…`
+/// when `<me>` is this node's mesh identity. The segment arrives
+/// percent-encoded (`%40` for `@`) or raw; both forms are handled.
+async fn self_name_middleware(
+    State(s): S,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(me) = s.node.inner.mesh().map(|m| m.identity.node.clone()) {
+        let path = req.uri().path().to_owned();
+        if let Some(rest) = path.strip_prefix("/api/agents/") {
+            let (seg, tail) = match rest.find('/') {
+                Some(i) => (&rest[..i], &rest[i..]),
+                None => (rest, ""),
+            };
+            let decoded = seg.replace("%40", "@");
+            let suffix = format!("@{me}");
+            if decoded.matches('@').count() == 2 && decoded.ends_with(&suffix) {
+                let keep = seg.len() - (if seg.ends_with(&suffix) { suffix.len() } else { suffix.len() + 2 });
+                let new_path = format!("/api/agents/{}{}", &seg[..keep], tail);
+                let pq = match req.uri().query() {
+                    Some(q) => format!("{new_path}?{q}"),
+                    None => new_path,
+                };
+                let mut parts = req.uri().clone().into_parts();
+                parts.path_and_query = pq.parse().ok();
+                if let Ok(uri) = axum::http::Uri::from_parts(parts) {
+                    *req.uri_mut() = uri;
+                }
+            }
+        }
+    }
+    next.run(req).await
+}
+
 async fn auth_middleware(
     State(s): S,
     req: axum::extract::Request,
@@ -693,7 +736,9 @@ async fn get_node(State(s): S) -> Json<Value> {
         .and_then(|l| l.parse::<std::net::SocketAddr>().ok())
         .is_none_or(|a| a.ip().is_loopback());
     Json(json!({
-        "node": s.node_name,
+        // The mesh identity when there is one — what peers, addresses and
+        // the fleet views call this node; the hostname is a separate field.
+        "node": s.node.inner.mesh().map(|m| m.identity.node.clone()).unwrap_or_else(|| s.node_name.clone()),
         "version": env!("CARGO_PKG_VERSION"),
         "sha": env!("ASPEN_GIT_SHA"),
         "built": env!("ASPEN_BUILD_DATE"),
@@ -2606,7 +2651,7 @@ async fn ws_federation(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
                 }
             }
         });
-        if let Err(e) = aspen_node::federation::run_link(inner, out_tx, in_rx).await {
+        if let Err(e) = aspen_node::federation::run_link(inner, out_tx, in_rx, None).await {
             tracing::debug!(error = %e, "inbound federation link ended");
         }
         writer.abort();

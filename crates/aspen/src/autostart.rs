@@ -404,6 +404,9 @@ mod systemd {
              # Only the daemon is signalled on stop: it shuts its sessions down\n\
              # itself, and an updater it launched must outlive it.\n\
              KillMode=process\n\
+             # The same log as `aspen up -d` writes, so `aspen logs` and the console's log view keep working.\n\
+             StandardOutput=append:{}\n\
+             StandardError=inherit\n\
              Environment=ASPEN_SUPERVISOR=systemd\n\
              Environment={}\n\
              \n\
@@ -411,6 +414,7 @@ mod systemd {
              WantedBy=default.target\n",
             data_dir.display(),
             exec.join(" "),
+            data_dir.join("aspen.log").display(),
             systemd_quote(&format!("PATH={path_env}")),
         );
         std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;

@@ -236,6 +236,19 @@ version to a relay-only peer). The check is now against the relay
 session's own links (`peer_ins`), and every 30s the session re-links any
 present peer we dial that has no link.
 
+**Two link-lifecycle defects fixed in v0.25.1** (seen live 2026-09-09 as a
+WSL↔Windows pair flapping every 30 s: relay link up, a direct link
+superseding it, the direct link "lost" within a millisecond, the fallback
+relay link "closed before peer hello", the peer's answering hello "ignored").
+First, a link's kind was handed to `run_link` through a shared
+`pending:<peer>` slot, so a direct dial that finished its handshake while
+a relay link to the same peer was mid-handshake took the relay's kind, and
+the two sides disagreed about what they had; the kind is now an explicit
+argument per link. Second, a relay link's task removed the peer's inbound
+slot unconditionally when it ended, which closed the *successor* link
+(the fallback started during its teardown, or a peer's fresh hello)
+before that link's hello arrived; it now removes only its own slot.
+
 ## 9. Reach memory: backoff, timeouts, alternates (2026-09-06)
 
 An audit on the live mesh found three kinds of waste, all from dialing

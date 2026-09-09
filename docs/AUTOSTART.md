@@ -20,6 +20,11 @@ what the running daemon was asked for (`--listen`, `--headless`, `--ui`
 from daemon.json) when one runs at enable time, else the configured
 defaults (`aspen config listen | headless`), which `up` applies itself.
 
+The unit appends the daemon's output to the same `aspen.log` as `aspen up
+-d` writes (`StandardOutput=append:`; the LaunchAgent's
+`StandardOutPath`), without colour, so `aspen logs`, the console's log
+view and a zipped-up log all keep working — the journal has a copy too.
+
 The unit carries `ASPEN_SUPERVISOR=systemd|launchd` and today's `PATH`:
 the user manager's environment is not the login shell's, and the harness
 binaries (`claude`, `codex`) usually live under `~/.local/bin` or a version

@@ -428,7 +428,9 @@ async fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         // Detached daemons log to a file: no color codes there.
-        .with_ansi(std::env::var_os("ASPEN_DETACHED").is_none())
+        // No colour into a file: detached (aspen.log) or under a supervisor
+        // (the unit appends to the same file).
+        .with_ansi(std::env::var_os("ASPEN_DETACHED").is_none() && std::env::var_os("ASPEN_SUPERVISOR").is_none())
         .init();
 
     let _ = aspen_node::federation::VERSION.set((

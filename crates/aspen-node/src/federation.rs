@@ -827,10 +827,17 @@ fn proto_one() -> u32 {
 /// Run one authenticated link over a pair of text-frame channels. The
 /// transport adapters (axum WS server side, tungstenite client side) bridge
 /// to these channels; this function is transport-blind.
+/// `kind`: `None` for a direct socket (dialed or inbound), `Some("relay:<url>")`
+/// for a link over a relay session. Explicit, per link: a shared "pending"
+/// slot keyed by peer let a direct dial that completed its handshake first
+/// walk off with the kind a concurrent relay link had announced — and
+/// then both sides disagreed about what they had (seen live 2026-09-09:
+/// a direct link that died the millisecond it came up, every 30 s).
 pub async fn run_link(
     inner: Arc<NodeInner>,
     out_tx: mpsc::UnboundedSender<String>,
     mut in_rx: mpsc::UnboundedReceiver<String>,
+    kind: Option<String>,
 ) -> Result<()> {
     let mesh = inner
         .mesh()
@@ -987,12 +994,7 @@ pub async fn run_link(
     // else is direct (dialed or inbound). A direct link supersedes a relay
     // one — drop the relay-side channel so that session ends.
     let peer = peer_cert.node.clone();
-    let kind = mesh
-        .link_kind
-        .lock()
-        .unwrap()
-        .remove(&format!("pending:{peer}"))
-        .unwrap_or_else(|| "direct".into());
+    let kind = kind.unwrap_or_else(|| "direct".into());
     // Two locks, never nested: a `link_kind` guard alive in the condition
     // while `link_up` took `links` — against teardown's links → link_kind —
     // could deadlock two runtime workers and, with them, the daemon.
@@ -2429,7 +2431,7 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
                                     }
                                 }
                             });
-                            let _ = run_link(inner.clone(), out_tx, in_rx).await;
+                            let _ = run_link(inner.clone(), out_tx, in_rx, None).await;
                             writer.abort();
                             reader.abort();
                         }
@@ -3240,14 +3242,6 @@ fn start_relay_link(
 ) -> mpsc::UnboundedSender<String> {
     use aspen_wire::relay::RelayFrame;
 
-    // The link about to come up is a relay one; run_link records the kind
-    // it finds pending here when the hello completes.
-    inner.mesh().map(|m| {
-        m.link_kind
-            .lock()
-            .unwrap()
-            .insert(format!("pending:{peer}"), format!("relay:{relay_url}"))
-    });
     let (in_tx, in_rx) = mpsc::unbounded_channel::<String>();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     peer_ins
@@ -3275,12 +3269,21 @@ fn start_relay_link(
     let inner2 = inner.clone();
     let peer3 = peer.to_owned();
     let peer_ins2 = peer_ins.clone();
+    let mine = in_tx.clone();
+    let kind = format!("relay:{relay_url}");
     tracing::info!(peer = %peer, relay = %relay_url, "relay link starting");
     tokio::spawn(async move {
-        if let Err(e) = run_link(inner2, out_tx, in_rx).await {
+        if let Err(e) = run_link(inner2, out_tx, in_rx, Some(kind)).await {
             tracing::info!(peer = %peer3, error = %e, "relay link ended");
         }
-        peer_ins2.lock().unwrap().remove(&peer3);
+        // Only our own slot: a link that replaced this one (a fallback
+        // started while this one was ending, a peer's fresh hello) owns
+        // the entry now, and removing it would close that link before its
+        // hello — the "closed before peer hello" every 30 s seen live.
+        let mut ins = peer_ins2.lock().unwrap();
+        if ins.get(&peer3).is_some_and(|tx| tx.same_channel(&mine)) {
+            ins.remove(&peer3);
+        }
     });
     in_tx
 }
