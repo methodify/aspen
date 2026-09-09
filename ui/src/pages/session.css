@@ -510,3 +510,15 @@
 .usage-mini td { padding: 2px 6px; border-top: 1px solid var(--line); }
 .usage-mini .num { text-align: right; }
 .preflight { display: flex; flex-direction: column; gap: 3px; padding: 6px 0; }
+
+/* activity details and the mcp menu (PROPOSALS-MCP.md) */
+.act-block.open { background: var(--bg-1, rgba(0,0,0,0.03)); }
+.act-details { padding: 6px 12px 10px 48px; display: grid; gap: 6px; }
+.act-kv { display: grid; grid-template-columns: 70px 1fr; gap: 8px; align-items: start; font-size: 12px; }
+.act-kv .k { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; padding-top: 2px; }
+.act-kv .v.live { color: var(--sig-normal); }
+.act-script, .act-output { margin: 0; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; font-size: 12px; }
+.act-actions { display: flex; gap: 6px; align-items: center; }
+.status-activity { background: none; border: 0; padding: 0; color: var(--sig-normal); cursor: pointer; font: inherit; }
+.status-activity:hover { text-decoration: underline; }
+.mcp-menu .error-text { display: block; }

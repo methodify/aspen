@@ -197,6 +197,10 @@ function kindGlyph(kind: string): string {
       return "✓";
     case "activity_settled":
       return "◆";
+    case "mcp_failed":
+      return "✕";
+    case "mcp_recovered":
+      return "↻";
     case "exited":
       return "×";
     case "inbox":

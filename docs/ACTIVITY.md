@@ -77,3 +77,15 @@ Cost roll-up from subagent transcripts (USAGE.md folds their tokens);
 a live tail of a subagent over a socket rather than a poll;
 recognizing tasks the harness stopped without a notification (they age
 out with the stale rule at the next restart).
+
+## Details, stop, processes (v0.24, PROPOSALS-MCP.md §6.4)
+
+The composer's status line carries the running count (`1 monitor ·`)
+and opens the drawer; a row opens to status, runtime, script, purpose
+and output; **stop** terminates the process running the script (a child
+of the session's process matched by command line), after which the
+harness reports the task ended and the ledger settles it — until it
+does, the row reads `stopped (by you)`. Child processes no ledger row
+explains (a hook-launched monitor) are listed under "processes under
+this session" with a stop of their own. Monitors keep the whole script
+and the tool's replies in `detail.command` / `detail.output`.

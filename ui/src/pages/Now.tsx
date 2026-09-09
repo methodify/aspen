@@ -135,6 +135,11 @@ function WorkCard({
         {a.harness && a.harness !== "claude" && (
           <span className="chip mono harness-chip" title={`runs on ${a.harness}`}>{a.harness}</span>
         )}
+        {a.mcp && (a.mcp.failed > 0 || a.mcp.needs_auth > 0) && (
+          <span className="chip mono" style={{ color: "var(--sig-gate)", borderColor: "var(--sig-gate)" }} title={`${a.mcp.failed} MCP server(s) failed, ${a.mcp.needs_auth} need authentication — open the session's mcp menu`}>
+            mcp {a.mcp.failed + a.mcp.needs_auth} down
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         <span className={`wc-state ${p}`}>{state}</span>
         {(a.activities?.running ?? 0) > 0 && (

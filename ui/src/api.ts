@@ -64,6 +64,57 @@ export type Posture = "ask" | "edits" | "plan" | "auto" | "guarded";
 export type ToolKind = "shell" | "file_write" | "file_edit" | "file_read" | "search" | "web" | "mcp" | "agent" | "question" | "other";
 export type PromptKind = "permission" | "question" | "elicitation";
 
+/** An MCP server as the harness reports it (PROPOSALS-MCP.md §3.1). */
+export type McpStatus = "connected" | "failed" | "needs_auth" | "pending" | "disabled";
+export interface McpServerState {
+  name: string;
+  status: McpStatus;
+  error?: string | null;
+  scope?: string | null;
+  transport?: string | null;
+  command?: string | null;
+  server?: string | null;
+  tools: string[];
+  plugin?: string | null;
+}
+export interface McpSummary {
+  total: number;
+  connected: number;
+  failed: number;
+  needs_auth: number;
+  pending: number;
+  disabled: number;
+}
+export interface McpList {
+  servers: McpServerState[];
+  /** epoch seconds of the last time the harness was asked; 0 = never */
+  refreshed_at: number;
+  can: { status: boolean; reconnect: boolean; toggle: boolean; auth: boolean; add: boolean };
+}
+/** A child process of the session (PROPOSALS-MCP.md §6.4). */
+export interface ProcessInfo {
+  pid: number;
+  parent: number;
+  cmdline: string;
+  age_secs?: number | null;
+  /** The ledger row whose script this process runs, when one matches. */
+  activity?: { id: string; kind: string; label: string } | null;
+}
+/** Harness default args, mesh-wide or per node (PROPOSALS-MCP.md §5). */
+export interface HarnessDefaultRow {
+  scope: string;
+  harness: string;
+  args: string;
+  updated_at: number;
+}
+export interface HarnessDefaultsView {
+  rows: HarnessDefaultRow[];
+  effective: { node: string; harness: string; args: string; source: string | null }[];
+  nodes: string[];
+  harnesses_here: string[];
+  me: string;
+}
+
 /** One answer a prompt accepts, as the harness offers it; `id` goes back verbatim. */
 export interface DecisionOption {
   id: string;
@@ -169,6 +220,8 @@ export interface Agent {
   harness?: Harness;
   /** What that runtime can do — present while live. */
   capabilities?: HarnessCapabilities | null;
+  /** MCP servers by status (PROPOSALS-MCP.md), live sessions only. */
+  mcp?: McpSummary | null;
   /** The address: `bare@repo` locally, `bare@repo@node` for a remote
    *  agent. Route key and bus address alike. */
   name: string;
@@ -658,7 +711,7 @@ export interface ReplicaInfo {
 }
 
 /** Notices (NOTIFICATIONS.md). */
-export type NoticeKind = "turn_ended" | "question" | "permission" | "activity_settled" | "exited" | "inbox" | string;
+export type NoticeKind = "turn_ended" | "question" | "permission" | "activity_settled" | "exited" | "inbox" | "mcp_failed" | "mcp_recovered" | string;
 export interface Notice {
   id: number;
   ts: number;
@@ -1216,6 +1269,22 @@ export const api = {
     request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
   activities: (name: string) => request<Activity[]>(`/api/agents/${enc(name)}/activities`),
+  processes: (name: string) => request<{ pid: number | null; processes: ProcessInfo[] }>(`/api/agents/${enc(name)}/processes`),
+  processStop: (name: string, what: { activity?: string; pid?: number }) =>
+    post<{ ok: boolean; pid: number; cmdline: string }>(`/api/agents/${enc(name)}/processes/stop`, what),
+  mcp: (name: string, refresh = false) => request<McpList>(`/api/agents/${enc(name)}/mcp${refresh ? "?refresh=1" : ""}`),
+  mcpReconnect: (name: string, server: string) =>
+    post<{ ok: boolean; error?: string; servers: McpServerState[] }>(`/api/agents/${enc(name)}/mcp/${enc(server)}/reconnect`, {}),
+  mcpToggle: (name: string, server: string, enabled: boolean) =>
+    post<{ ok: boolean; servers: McpServerState[] }>(`/api/agents/${enc(name)}/mcp/${enc(server)}/toggle`, { enabled }),
+  mcpAuth: (name: string, server: string) => post<{ url?: string | null; requires_user: boolean }>(`/api/agents/${enc(name)}/mcp/${enc(server)}/auth`, {}),
+  mcpAdd: (name: string, server: string, config: Record<string, unknown>) =>
+    post<{ ok: boolean; servers: McpServerState[] }>(`/api/agents/${enc(name)}/mcp`, { name: server, config }),
+  harnessDefaults: () => request<HarnessDefaultsView>("/api/harness-defaults"),
+  putHarnessDefault: (scope: string, harness: string, args: string) =>
+    request<{ ok: boolean }>("/api/harness-defaults", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope, harness, args }) }),
+  deleteHarnessDefault: (scope: string, harness: string) =>
+    request<{ ok: boolean }>("/api/harness-defaults", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope, harness }) }),
   fleetActivities: () => request<FleetActivityItem[]>("/api/activities"),
   usage: (from: number) => request<UsageRow[]>(`/api/usage?from=${from}`),
   agentUsage: (name: string) => request<UsageRow[]>(`/api/agents/${enc(name)}/usage`),

@@ -21,11 +21,20 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | H-8 | sessions + console | **Codex activity ledger.** `collabAgentToolCall` / `subAgentActivity` items show as tool cards; fold them into the activity ledger (ACTIVITY.md) with counts and a drawer, and read the agent threads' rollouts. | HARNESSES.md §6 |
 | H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
 | H-11 | sessions | **Incremental activity derive.** The ledger is rebuilt from the whole transcript whenever it changed; keep the last offset and parse only the appended tail. Cached at turn boundaries since v0.23.2, so this is cost, not correctness. | aspen-claude `activity.rs` |
-| M-1 | sessions + console | **MCP servers as a surface.** Status per server (connected / failed / needs auth / disabled), the harness's error text, reconnect, enable/disable, authenticate; `/mcp` opens it; a failed server is a needs-you row and a fleet chip; both harnesses. From a session whose plugin-provided MCP server was down and nothing showed it. | [PROPOSALS-MCP.md](PROPOSALS-MCP.md) |
-| M-2 | sessions + console | **Session child processes in the activity drawer.** Hook-launched monitors are outside every harness's view; a process-tree walk would list them with a stop button. | PROPOSALS-MCP.md §3.4 |
-| M-3 | protocol + console | **Harness defaults mesh-wide.** The Claude/Codex default-args forms live on the Mesh list view but write this node's settings.json; a session spawned on a peer uses the peer's file. Make them a synced table (`mesh` row + `node:<name>` overrides, HLC, digest + pull op like templates) with an effective-value table per node. | [PROPOSALS-MCP.md §5](PROPOSALS-MCP.md) |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-08: MCP surface, session processes, mesh-wide runtime defaults (M-1, M-2, M-3, v0.24)
+
+Design: [PROPOSALS-MCP.md](PROPOSALS-MCP.md). One round: the session's
+MCP servers with status, error, tools and the harness's controls
+(reconnect, enable/disable, authenticate, add), `/mcp` opening it, a
+refresh that asks the harness now, notices and a fleet chip (M-1); the
+status line's activity count, the details view (status, runtime,
+script, output) with a stop that terminates the process, and the
+session's child processes listed with a stop (M-2); harness defaults as
+a synced table with per-node overrides and an effective-value panel on
+the Mesh list view (M-3).
 
 ## Shipped — 2026-09-07: Codex as a second harness (H-1, v0.20–v0.23)
 

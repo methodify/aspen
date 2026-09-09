@@ -120,6 +120,63 @@ pub fn capabilities() -> HarnessCapabilities {
         always_allow: true,
         transcript_on_disk: true,
         cost_from_harness: true,
+        mcp_status: true,
+        mcp_reconnect: true,
+        mcp_toggle: true,
+        mcp_auth: true,
+        mcp_add: true,
+    }
+}
+
+/// One entry of `mcp_status`'s reply (or of `system/init`'s `mcp_servers`)
+/// in the neutral shape (CLAUDE_RUNTIME_REFERENCE.md; PROPOSALS-MCP.md §2.1).
+pub fn mcp_state_from(v: &Value) -> aspen_core::McpServerState {
+    use aspen_core::McpStatus;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+    let status = match s("status").as_deref() {
+        Some("connected") => McpStatus::Connected,
+        Some("failed") => McpStatus::Failed,
+        Some("needs-auth") | Some("needs_auth") => McpStatus::NeedsAuth,
+        Some("disabled") => McpStatus::Disabled,
+        _ => McpStatus::Pending,
+    };
+    let cfg = v.get("config").cloned().unwrap_or(Value::Null);
+    let transport = cfg.get("type").and_then(|t| t.as_str()).map(|t| match t {
+        "claudeai-proxy" => "proxy".to_owned(),
+        other => other.to_owned(),
+    });
+    let command = cfg
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(|c| {
+            let args: Vec<&str> = cfg.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+            if args.is_empty() { c.to_owned() } else { format!("{c} {}", args.join(" ")) }
+        })
+        .or_else(|| cfg.get("url").and_then(|u| u.as_str()).map(str::to_owned));
+    let server = v.get("serverInfo").and_then(|i| {
+        let n = i.get("name").and_then(|x| x.as_str())?;
+        Some(match i.get("version").and_then(|x| x.as_str()) {
+            Some(ver) => format!("{n} {ver}"),
+            None => n.to_owned(),
+        })
+    });
+    let tools = v
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| a.iter().filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_owned)).collect())
+        .unwrap_or_default();
+    let scope = s("scope");
+    let plugin = scope.as_deref().and_then(|sc| sc.strip_prefix("plugin:").map(str::to_owned)).or_else(|| s("pluginName")).or_else(|| s("plugin"));
+    aspen_core::McpServerState {
+        name: s("name").unwrap_or_default(),
+        status,
+        error: s("error"),
+        scope,
+        transport,
+        command,
+        server,
+        tools,
+        plugin,
     }
 }
 

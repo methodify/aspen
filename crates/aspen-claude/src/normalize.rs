@@ -138,11 +138,24 @@ fn normalize_result(frame: Value) -> SessionEvent {
 
 fn normalize_system(frame: Value) -> Vec<SessionEvent> {
     match frame.get("subtype").and_then(|t| t.as_str()).unwrap_or("") {
-        "init" => vec![SessionEvent::RuntimeInit {
-            session_id: s(&frame, "session_id").unwrap_or_default(),
-            model: s(&frame, "model"),
-            raw: frame,
-        }],
+        "init" => {
+            // The first MCP picture (name + status only; `mcp_status`
+            // fills the rest when the node asks).
+            let servers: Vec<aspen_core::McpServerState> = frame
+                .get("mcp_servers")
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().map(crate::adapter::mcp_state_from).collect())
+                .unwrap_or_default();
+            let mut out = vec![SessionEvent::RuntimeInit {
+                session_id: s(&frame, "session_id").unwrap_or_default(),
+                model: s(&frame, "model"),
+                raw: frame,
+            }];
+            if !servers.is_empty() {
+                out.push(SessionEvent::McpChanged { servers });
+            }
+            out
+        }
         _ => vec![SessionEvent::Status { raw: frame }],
     }
 }

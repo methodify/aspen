@@ -77,6 +77,7 @@ pub struct ClaudeSession {
     pending: Pending,
     kill_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub handshake: Arc<HandshakeInfo>,
+    pid: Option<u32>,
 }
 
 impl ClaudeSession {
@@ -114,12 +115,14 @@ impl ClaudeSession {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
 
+        let pid = proc.child.id();
         let session = Arc::new(Self {
             id: cfg.session_id,
             stdin_tx: proc.stdin_tx.clone(),
             pending: pending.clone(),
             kill_tx: Mutex::new(Some(kill_tx)),
             handshake: Arc::new(HandshakeInfo::default()),
+            pid,
         });
 
         // Child supervisor: waits for exit or a kill order.
@@ -541,6 +544,52 @@ impl SessionHandle for ClaudeSession {
 
     async fn context_usage(&self) -> Result<Value> {
         self.get_context_usage().await
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    async fn mcp_servers(&self) -> Result<Vec<aspen_core::McpServerState>> {
+        let v = self.request(json!({ "subtype": "mcp_status" }), Duration::from_secs(30)).await?;
+        Ok(v.get("mcpServers")
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().map(crate::adapter::mcp_state_from).collect())
+            .unwrap_or_default())
+    }
+
+    async fn mcp_reconnect(&self, name: &str) -> Result<()> {
+        // A failed reconnect answers with a control error carrying the
+        // reason ("Connection closed"): that text is the diagnosis.
+        self.request(json!({ "subtype": "mcp_reconnect", "serverName": name }), Duration::from_secs(60))
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow!("{}", e.to_string().trim_start_matches("control error: ")))
+    }
+
+    async fn mcp_toggle(&self, name: &str, enabled: bool) -> Result<()> {
+        self.request(json!({ "subtype": "mcp_toggle", "serverName": name, "enabled": enabled }), Duration::from_secs(30))
+            .await
+            .map(|_| ())
+    }
+
+    async fn mcp_authenticate(&self, name: &str) -> Result<aspen_core::McpAuth> {
+        let v = self.request(json!({ "subtype": "mcp_authenticate", "serverName": name }), Duration::from_secs(60)).await?;
+        Ok(aspen_core::McpAuth {
+            url: v.get("authUrl").and_then(|u| u.as_str()).map(str::to_owned),
+            requires_user: v.get("requiresUserAction").and_then(|b| b.as_bool()).unwrap_or(true),
+        })
+    }
+
+    async fn mcp_add(&self, name: &str, config: Value) -> Result<()> {
+        let v = self
+            .request(json!({ "subtype": "mcp_set_servers", "servers": { name: config } }), Duration::from_secs(60))
+            .await?;
+        if let Some(errs) = v.get("errors").and_then(|e| e.as_object()).filter(|e| !e.is_empty()) {
+            let text: Vec<String> = errs.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or(&v.to_string()))).collect();
+            anyhow::bail!("{}", text.join("; "));
+        }
+        Ok(())
     }
 
     async fn reload(&self) -> Result<Value> {

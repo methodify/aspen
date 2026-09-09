@@ -46,6 +46,9 @@ pub struct RemoteAgent {
     /// Which runtime the session runs on (HARNESSES.md).
     #[serde(default)]
     pub harness: aspen_core::Harness,
+    /// MCP servers by status (PROPOSALS-MCP.md), live sessions only.
+    #[serde(default)]
+    pub mcp: Option<Value>,
 }
 
 pub struct MeshState {
@@ -123,6 +126,7 @@ pub fn op_capability(op: &str) -> Capability {
         | "node_sessions" | "history" | "node_update_status" | "node_logs" | "adoptions"
         | "usage" | "fleet_activities" | "notices" | "memory_files" | "memory_conflicts"
         | "replica_offsets" | "session_spec" | "session_preflight" | "node_preflight_target"
+        | "harness_defaults" | "mcp_list" | "processes"
         | "sub" | "http" => Capability::Observe,
         "spawn" | "template_spawn" => Capability::Spawn,
         "adoption" | "node_repo_skip" => Capability::Trust,
@@ -737,6 +741,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                 "summary": live.as_ref().map(|s| crate::node::summary_json(s)),
                 "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
                 "harness": a.harness,
+                "mcp": live.as_ref().map(|m| crate::node::mcp_summary(m)),
             })
         })
         .collect();
@@ -762,6 +767,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
         "boards_digest": if for_primary { Some(inner.store.boards_digest()) } else { None },
         "plugins_digest": if for_primary { Some(inner.store.plugin_registry_digest()) } else { None },
         "templates_digest": if for_primary { Some(inner.store.templates_digest()) } else { None },
+        "harness_defaults_digest": if for_primary { Some(inner.store.harness_defaults_digest()) } else { None },
         "memory": if for_primary { crate::memory::roster_digests(inner) } else { None },
         "meshes": inner.mesh().map(|m| m.mesh_names()),
     })
@@ -1244,6 +1250,15 @@ async fn link_loop(
                             });
                         }
                     }
+                    if let Some(d) = payload.get("harness_defaults_digest").and_then(|d| d.as_str()) {
+                        if d != inner.store.harness_defaults_digest() {
+                            let inner2 = inner.clone();
+                            let peer2 = peer.to_owned();
+                            tokio::spawn(async move {
+                                sync_harness_defaults_from(&inner2, &peer2).await;
+                            });
+                        }
+                    }
                     if let Some(m) = payload.get("memory").and_then(|m| m.as_object()) {
                         if let Some(mine) = crate::memory::roster_digests(inner) {
                             for (key, d) in m {
@@ -1690,6 +1705,13 @@ async fn serve_api_req(
             Ok(json!({}))
         }
         "reload" => node.reload_plugins(agent).await,
+        "processes" => node.processes(agent).await,
+        "process_stop" => node.stop_process(agent, body.get("activity").and_then(|v| v.as_str()), body.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)).await,
+        "mcp_list" => node.mcp_list(agent, body.get("refresh").and_then(|r| r.as_bool()).unwrap_or(false)).await,
+        "mcp_reconnect" => node.mcp_reconnect(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or("")).await,
+        "mcp_toggle" => node.mcp_toggle(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or(""), body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)).await,
+        "mcp_auth" => node.mcp_auth(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or("")).await,
+        "mcp_add" => node.mcp_add(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or(""), body.get("config").cloned().unwrap_or(Value::Null)).await,
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
         "fleet_activities" => Ok(json!(crate::node::fleet_activities(&node.inner))),
@@ -1715,6 +1737,7 @@ async fn serve_api_req(
             Ok(gw(method, path, b, headers).await)
         }
         "templates" => Ok(json!(node.inner.store.templates(true)?)),
+        "harness_defaults" => Ok(json!(node.inner.store.harness_defaults(true)?)),
         "template_spawn" => {
             let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
             let overrides = body.get("overrides").cloned().unwrap_or(Value::Null);
@@ -1756,20 +1779,7 @@ async fn serve_api_req(
             let out: Vec<Value> = rows.iter().map(|n| crate::notify::notice_json(n, None)).collect();
             Ok(json!({ "head": rows.last().map(|n| n.id).unwrap_or(since), "notices": out }))
         }
-        "activities" => {
-            let rows = node.inner.store.agents()?;
-            let row = rows
-                .iter()
-                .find(|a| a.name == agent)
-                .ok_or_else(|| anyhow!("no agent named @{agent}"))?;
-            let sid = row
-                .session_id
-                .as_deref()
-                .ok_or_else(|| anyhow!("no session on record"))?;
-            let mut acts = node.inner.store_for(row.harness).activities(&row.repo, sid, row.last_spawned_at);
-            acts.reverse();
-            Ok(json!(acts))
-        }
+        "activities" => Ok(json!(node.activities(agent).await?)),
         "subagent" => {
             let rows = node.inner.store.agents()?;
             let row = rows
@@ -2630,6 +2640,30 @@ async fn sync_templates_from(inner: &Arc<NodeInner>, peer: &str) {
     }
     if changed {
         tracing::info!(peer, n = rows.len(), "templates synced from peer");
+        broadcast_roster(inner);
+    }
+}
+
+/// Pull a peer's harness defaults and merge (newer wins per row).
+async fn sync_harness_defaults_from(inner: &Arc<NodeInner>, peer: &str) {
+    let Some(mesh) = inner.mesh() else { return };
+    let Ok(v) = mesh
+        .api_call(peer, "harness_defaults", "", json!({}), std::time::Duration::from_secs(20))
+        .await
+    else {
+        return;
+    };
+    let Ok(rows) = serde_json::from_value::<Vec<crate::store::HarnessDefault>>(v) else {
+        return;
+    };
+    let mut changed = false;
+    for d in &rows {
+        if inner.store.upsert_harness_default(d).unwrap_or(false) {
+            changed = true;
+        }
+    }
+    if changed {
+        tracing::info!(peer, n = rows.len(), "harness defaults synced from peer");
         broadcast_roster(inner);
     }
 }

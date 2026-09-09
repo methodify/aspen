@@ -996,3 +996,21 @@ cleaner lane for roster updates than user-message headers.
   `remote` guard alive across `link_up` — every such loop iterates a
   snapshot. The 2026-09-08 audit had looked at exactly these two
   handlers and called the order consistent; the dump disagreed.
+- **2026-09-08 — v0.24, MCP servers, session processes, runtime
+  defaults mesh-wide** (PROPOSALS-MCP.md). Three things learned by
+  probing rather than reading: Claude's control channel has the whole
+  `/mcp` surface (`mcp_status` with the error text, `mcp_reconnect`
+  answering with the reason, `mcp_toggle`, `mcp_authenticate`,
+  `mcp_set_servers`), Codex has the same picture plus a push per server
+  and a reload instead of a per-server reconnect, and neither harness
+  offers a host any way to stop a background task — so Aspen stops the
+  process: a child of the session's process whose command line carries
+  the script, found by walking the tree (`procs.rs`, Linux `/proc`,
+  Windows CIM). Decisions: a failed MCP server is a notice and a red
+  chip, never a needs-you row (most MCP trouble is inconsequential); the
+  picture refreshes at turn boundaries and on demand from the menu, so
+  what the operator looks at is current when they ask; `/mcp` and the
+  task-list commands open Aspen's own surfaces instead of going to a
+  harness that cannot run them. Runtime defaults moved from a per-node
+  file the Mesh page pretended was mesh-wide to a synced table with
+  per-node overrides, migrated from the file on first start.

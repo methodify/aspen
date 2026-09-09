@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError, type MeshRepoNode, type Harness, type Repo, type SessionInfo, type SkillEntry } from "../api";
+import { api, ApiError, type MeshRepoNode, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
@@ -177,35 +177,29 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
 }
 
 function HarnessDefaults() {
-  return (
-    <>
-      <HarnessArgsForm harness="claude" placeholder="extra CLI args for every claude session, e.g. --chrome" />
-      <HarnessArgsForm harness="codex" placeholder={"extra args for every codex app-server, e.g. -c model=\"gpt-5.6-sol\""} />
-    </>
-  );
-}
-
-function HarnessArgsForm({ harness, placeholder }: { harness: "claude" | "codex"; placeholder: string }) {
+  // Mesh-wide runtime defaults with per-node overrides (PROPOSALS-MCP.md
+  // §5): one panel on the Mesh list view, the effective value per node.
+  const [view, setView] = useState<HarnessDefaultsView | null>(null);
+  const [scope, setScope] = useState("mesh");
+  const [harness, setHarness] = useState<"claude" | "codex">("claude");
   const [args, setArgs] = useState("");
-  const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const load = useCallback(() => {
+    api.harnessDefaults().then(setView).catch((e) => setError(errText(e)));
+  }, []);
   useEffect(() => {
-    let live = true;
-    api
-      .settings()
-      .then((s) => {
-        if (!live) return;
-        setArgs(s.harness?.[harness]?.args ?? "");
-        setLoaded(true);
-      })
-      .catch((e) => live && setError(errText(e)));
-    return () => {
-      live = false;
-    };
-  }, [harness]);
+    load();
+  }, [load]);
+  // The field shows the row for the chosen scope, if any.
+  useEffect(() => {
+    if (!view) return;
+    const sc = scope === "mesh" ? "mesh" : `node:${scope}`;
+    setArgs(view.rows.find((r) => r.scope === sc && r.harness === harness)?.args ?? "");
+    setSaved(false);
+  }, [view, scope, harness]);
+  const hasRow = view?.rows.some((r) => r.scope === (scope === "mesh" ? "mesh" : `node:${scope}`) && r.harness === harness) ?? false;
 
   async function save() {
     if (busy) return;
@@ -213,8 +207,22 @@ function HarnessArgsForm({ harness, placeholder }: { harness: "claude" | "codex"
     setSaved(false);
     setBusy(true);
     try {
-      await api.saveSettings({ harness: { [harness]: { args: args.trim() } } });
+      await api.putHarnessDefault(scope, harness, args.trim());
       setSaved(true);
+      load();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function clear() {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await api.deleteHarnessDefault(scope, harness);
+      load();
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -231,28 +239,65 @@ function HarnessArgsForm({ harness, placeholder }: { harness: "claude" | "codex"
       }}
       style={{ display: "flex", flexDirection: "column", gap: 10, padding: 14 }}
     >
-      <span className="label">{harness === "claude" ? "Claude" : "Codex"} defaults</span>
+      <span className="label">Runtime defaults</span>
+      <span className="micro" style={{ color: "var(--text-mid)" }}>
+        extra CLI args every session of a runtime starts with — mesh-wide, or overridden for one node; synced to every node like templates. Per-session args come after these.
+      </span>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <select value={scope} onChange={(e) => setScope(e.target.value)} aria-label="scope" title="all nodes, or one node's override">
+          <option value="mesh">all nodes</option>
+          {(view?.nodes ?? []).map((n) => (
+            <option key={n} value={n}>{n}{n === view?.me ? " (this node)" : ""}</option>
+          ))}
+        </select>
+        <select value={harness} onChange={(e) => setHarness(e.target.value as "claude" | "codex")} aria-label="runtime">
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+        </select>
         <input
           value={args}
-          disabled={!loaded}
+          disabled={!view}
           onChange={(e) => {
             setArgs(e.target.value);
             setSaved(false);
           }}
-          placeholder={placeholder}
+          placeholder={harness === "claude" ? "e.g. --chrome" : "e.g. -c model=\"gpt-5.6-sol\""}
           className="mono"
           style={{ flex: 1, minWidth: 240 }}
           spellCheck={false}
-          aria-label={`default ${harness} args`}
+          aria-label="default args"
         />
-        <button type="submit" className="btn sm" disabled={busy || !loaded}>
+        <button type="submit" className="btn sm" disabled={busy || !view}>
           {busy ? "saving…" : saved ? "saved" : "save"}
         </button>
+        {hasRow && (
+          <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void clear()} title={scope === "mesh" ? "remove the mesh-wide default" : "remove this node's override (it falls back to the mesh default)"}>
+            clear
+          </button>
+        )}
       </div>
-      <span className="micro" style={{ color: "var(--text-mid)" }}>
-        appended to every session of this harness; per-session args come after these.
-      </span>
+      {view && (
+        <table className="mono" style={{ fontSize: 12, borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ color: "var(--text-dim)", textAlign: "left" }}>
+              <th style={{ paddingRight: 12 }}>node</th>
+              <th style={{ paddingRight: 12 }}>runtime</th>
+              <th style={{ paddingRight: 12 }}>starts with</th>
+              <th>from</th>
+            </tr>
+          </thead>
+          <tbody>
+            {view.effective.map((e) => (
+              <tr key={`${e.node}/${e.harness}`}>
+                <td style={{ paddingRight: 12 }}>{e.node}</td>
+                <td style={{ paddingRight: 12 }}>{e.harness}</td>
+                <td style={{ paddingRight: 12 }}>{e.args || <span style={{ color: "var(--text-dim)" }}>—</span>}</td>
+                <td style={{ color: "var(--text-dim)" }}>{e.source === "mesh" ? "all nodes" : e.source ? "this node's override" : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       <ErrorBar error={error} />
     </form>
   );

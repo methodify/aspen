@@ -163,6 +163,14 @@ CREATE TABLE IF NOT EXISTS templates(
   updated_at REAL NOT NULL,
   deleted INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS harness_defaults(
+  scope TEXT NOT NULL,
+  harness TEXT NOT NULL,
+  args TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(scope, harness)
+);
 CREATE TABLE IF NOT EXISTS memory_base(
   repo TEXT NOT NULL,
   rel TEXT NOT NULL,
@@ -271,6 +279,19 @@ pub struct Template {
     pub id: String,
     pub name: String,
     pub spec: serde_json::Value,
+    pub updated_at: f64,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// A harness's default CLI args, mesh-wide (`scope = "mesh"`) or for one
+/// node (`scope = "node:<name>"`), synced like templates
+/// (PROPOSALS-MCP.md §5; SYNC.md §4).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HarnessDefault {
+    pub scope: String,
+    pub harness: String,
+    pub args: String,
     pub updated_at: f64,
     #[serde(default)]
     pub deleted: bool,
@@ -892,6 +913,68 @@ impl BusStore {
             params![id, t],
         )?;
         Ok(())
+    }
+
+    pub fn harness_defaults(&self, with_deleted: bool) -> Result<Vec<HarnessDefault>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT scope, harness, args, updated_at, deleted FROM harness_defaults ORDER BY scope, harness")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(HarnessDefault {
+                    scope: r.get(0)?,
+                    harness: r.get(1)?,
+                    args: r.get(2)?,
+                    updated_at: r.get(3)?,
+                    deleted: r.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().filter(|d| with_deleted || !d.deleted).collect())
+    }
+
+    /// Write a default if newer than what we hold (LWW per row).
+    pub fn upsert_harness_default(&self, d: &HarnessDefault) -> Result<bool> {
+        self.hlc_observe(d.updated_at);
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<f64> = conn
+            .query_row("SELECT updated_at FROM harness_defaults WHERE scope=?1 AND harness=?2", params![d.scope, d.harness], |r| r.get(0))
+            .ok();
+        if cur.is_some_and(|c| c >= d.updated_at) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO harness_defaults(scope, harness, args, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(scope, harness) DO UPDATE SET args=?3, updated_at=?4, deleted=?5",
+            params![d.scope, d.harness, d.args, d.updated_at, d.deleted as i64],
+        )?;
+        Ok(true)
+    }
+
+    /// The effective default args for a harness on this node: the node's
+    /// own row, else the mesh row, else nothing. Returns (args, source).
+    pub fn effective_harness_default(&self, node: &str, harness: &str) -> Option<(String, String)> {
+        let rows = self.harness_defaults(false).ok()?;
+        let me = format!("node:{node}");
+        if let Some(r) = rows.iter().find(|r| r.scope == me && r.harness == harness) {
+            return Some((r.args.clone(), me));
+        }
+        rows.iter().find(|r| r.scope == "mesh" && r.harness == harness).map(|r| (r.args.clone(), "mesh".to_owned()))
+    }
+
+    pub fn harness_defaults_digest(&self) -> String {
+        let conn = self.conn.lock().unwrap();
+        let mut h: u64 = 0xcbf29ce484222325;
+        if let Ok(mut stmt) = conn.prepare("SELECT scope, harness, updated_at FROM harness_defaults ORDER BY scope, harness") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))) {
+                for (sc, hn, t) in rows.flatten() {
+                    for b in format!("{sc}/{hn}{t:.3}").bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
+                }
+            }
+        }
+        format!("{h:016x}")
     }
 
     pub fn templates_digest(&self) -> String {

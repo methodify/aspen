@@ -201,6 +201,79 @@ pub struct HarnessCapabilities {
     pub transcript_on_disk: bool,
     #[serde(default)]
     pub cost_from_harness: bool,
+    /// MCP servers (PROPOSALS-MCP.md): status per server, reconnect one,
+    /// enable/disable one, start its auth flow, add one to the running
+    /// session.
+    #[serde(default)]
+    pub mcp_status: bool,
+    #[serde(default)]
+    pub mcp_reconnect: bool,
+    #[serde(default)]
+    pub mcp_toggle: bool,
+    #[serde(default)]
+    pub mcp_auth: bool,
+    #[serde(default)]
+    pub mcp_add: bool,
+}
+
+/// An MCP server's state as the harness reports it (PROPOSALS-MCP.md §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStatus {
+    Connected,
+    Failed,
+    NeedsAuth,
+    #[default]
+    Pending,
+    Disabled,
+}
+
+impl McpStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            McpStatus::Connected => "connected",
+            McpStatus::Failed => "failed",
+            McpStatus::NeedsAuth => "needs_auth",
+            McpStatus::Pending => "pending",
+            McpStatus::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpServerState {
+    pub name: String,
+    pub status: McpStatus,
+    /// The harness's failure text, when it gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// project | user | local | plugin | claudeai | …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// stdio | http | sse | proxy
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// stdio: the command line; http/sse: the url.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// serverInfo name/version once connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// The plugin that provides it, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+}
+
+/// The answer to "authenticate": a URL the operator opens, when the flow
+/// needs one.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpAuth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub requires_user: bool,
 }
 
 /// What the runtime told us about itself: the model in use, the mode, the

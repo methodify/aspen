@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::harness::{Harness, HarnessCapabilities, PermissionMode, Posture, RuntimeInfo};
+use crate::harness::{Harness, HarnessCapabilities, McpAuth, McpServerState, PermissionMode, Posture, RuntimeInfo};
 use crate::ids::SessionId;
 use crate::permission::{PermissionBroker, PermissionPolicy};
 use crate::store::SessionStore;
@@ -138,5 +138,33 @@ pub trait SessionHandle: Send + Sync {
     /// Reload plugins/skills/commands from disk.
     async fn reload(&self) -> Result<Value> {
         Err(Unsupported { harness: self.harness(), what: "reloading plugins" }.into())
+    }
+
+    /// The harness process id, for the process-tree view (PROPOSALS-MCP.md §6).
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    /// MCP servers as the harness sees them now (PROPOSALS-MCP.md §3.1).
+    async fn mcp_servers(&self) -> Result<Vec<McpServerState>> {
+        Err(Unsupported { harness: self.harness(), what: "MCP server status" }.into())
+    }
+    /// Reconnect one server; Err carries the harness's reason.
+    async fn mcp_reconnect(&self, name: &str) -> Result<()> {
+        let _ = name;
+        Err(Unsupported { harness: self.harness(), what: "reconnecting an MCP server" }.into())
+    }
+    async fn mcp_toggle(&self, name: &str, enabled: bool) -> Result<()> {
+        let _ = (name, enabled);
+        Err(Unsupported { harness: self.harness(), what: "enabling or disabling an MCP server" }.into())
+    }
+    async fn mcp_authenticate(&self, name: &str) -> Result<McpAuth> {
+        let _ = name;
+        Err(Unsupported { harness: self.harness(), what: "MCP authentication" }.into())
+    }
+    /// Add a server to the running session (harness config shape).
+    async fn mcp_add(&self, name: &str, config: Value) -> Result<()> {
+        let _ = (name, config);
+        Err(Unsupported { harness: self.harness(), what: "adding an MCP server to a running session" }.into())
     }
 }

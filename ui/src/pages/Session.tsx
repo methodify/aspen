@@ -5,6 +5,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useCallback,
   type KeyboardEvent,
 } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -31,6 +32,8 @@ import {
   type MovePreflight,
   serverNow,
   type ActivityCounts,
+  type McpList,
+  type ProcessInfo,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -664,14 +667,29 @@ function fmtElapsed(startIso: string | null, endIso: string | null): string {
 /** "activity ▾": the session's ledger (PROPOSALS §8) — background tasks,
  *  subagents, workflows, monitors — running first; agents open their own
  *  transcript. */
-function ActivityMenu({ agent, counts }: { agent: string; counts: ActivityCounts | null }) {
+function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: ActivityCounts | null; openSignal?: number }) {
   const [open, setOpen] = useState(false);
   const [acts, setActs] = useState<Activity[] | null>(null);
+  const [procs, setProcs] = useState<ProcessInfo[]>([]);
+  const [detail, setDetail] = useState<string | null>(null);
+  const [stopping, setStopping] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const [at, setAt] = useState({ top: 0, left: 0 });
   const [, setTick] = useState(0);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  // The status line's count opens this menu (PROPOSALS-MCP.md §6.4).
+  useEffect(() => {
+    if (!openSignal) return;
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+    setOpen(true);
+  }, [openSignal]);
   useEffect(() => {
     if (!open) return;
-    const load = () => api.activities(agent).then(setActs).catch(() => setActs([]));
+    const load = () => {
+      api.activities(agent).then(setActs).catch(() => setActs([]));
+      api.processes(agent).then((p) => setProcs(p.processes)).catch(() => setProcs([]));
+    };
     void load();
     const t = window.setInterval(() => {
       void load();
@@ -684,13 +702,30 @@ function ActivityMenu({ agent, counts }: { agent: string; counts: ActivityCounts
     ? [counts.agents ? `${counts.agents} agent${counts.agents === 1 ? "" : "s"}` : "", counts.tasks ? `${counts.tasks} task${counts.tasks === 1 ? "" : "s"}` : "", counts.workflows ? `${counts.workflows} wf` : "", counts.monitors ? `${counts.monitors} mon` : ""].filter(Boolean).join(" · ")
     : "";
   const sorted = (acts ?? []).slice().sort((x, y) => Number(y.status === "running") - Number(x.status === "running"));
+  // Child processes no ledger row explains: what hooks and plugins started.
+  const orphans = procs.filter((p) => !p.activity);
+  async function stop(what: { activity?: string; pid?: number }, key: string) {
+    setStopping(key);
+    setNote(null);
+    try {
+      const r = await api.processStop(agent, what);
+      setNote(`stopped pid ${r.pid}`);
+      api.activities(agent).then(setActs).catch(() => undefined);
+      api.processes(agent).then((p) => setProcs(p.processes)).catch(() => undefined);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "stop failed");
+    } finally {
+      setStopping(null);
+    }
+  }
   return (
     <span className="artifacts-wrap">
       <button
+        ref={btnRef}
         className={`charter-toggle${running ? " activity-live" : ""}`}
         onClick={(e) => {
           const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 560)) });
+          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
           setOpen((o) => !o);
         }}
         title="background tasks, subagents, workflows and monitors of this session"
@@ -699,38 +734,239 @@ function ActivityMenu({ agent, counts }: { agent: string; counts: ActivityCounts
       </button>
       {open &&
         createPortal(
-          <div className="artifacts-menu activity-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 540 }} role="menu" onMouseLeave={() => setOpen(false)}>
+          <div className="artifacts-menu activity-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 560 }} role="menu" onMouseLeave={() => setOpen(false)}>
             {acts === null ? (
               <div className="row dim">loading…</div>
             ) : sorted.length === 0 ? (
               <div className="row dim">nothing beside the main turn — no background tasks, subagents, workflows or monitors yet</div>
             ) : (
-              sorted.map((a) => (
-                <div className={`row act-row act-${a.status}`} key={`${a.kind}:${a.id}:${a.tool_use_id}`}>
-                  <span className={`chip mono act-kind act-${a.kind}`}>{a.kind}</span>
+              sorted.map((a) => {
+                const key = `${a.kind}:${a.id}:${a.tool_use_id}`;
+                const script = typeof a.detail["command"] === "string" ? String(a.detail["command"]) : null;
+                const output = typeof a.detail["output"] === "string" ? String(a.detail["output"]) : typeof a.detail["summary"] === "string" ? String(a.detail["summary"]) : null;
+                const isOpen = detail === key;
+                return (
+                  <div className={`act-block${isOpen ? " open" : ""}`} key={key}>
+                    <div className={`row act-row act-${a.status}`} onClick={() => setDetail(isOpen ? null : key)} style={{ cursor: "pointer" }} title="click for details">
+                      <span className={`chip mono act-kind act-${a.kind}`}>{a.kind}</span>
+                      <span className="act-body">
+                        <span className="act-label">
+                          {a.kind === "agent" && a.has_transcript ? (
+                            <Link to={`/session/${encodeURIComponent(agent)}/agent/${encodeURIComponent(a.id)}`} onClick={() => setOpen(false)} title="open this agent's transcript">
+                              {a.label}
+                            </Link>
+                          ) : (
+                            a.label
+                          )}
+                        </span>
+                        <span className="mono-meta act-detail">
+                          {(a.kind === "task" || a.kind === "monitor") && script ? `$ ${script.slice(0, 120)}` : ""}
+                          {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
+                          {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 120) : ""}
+                          {a.kind === "monitor" && !script && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
+                          {typeof a.detail["summary"] === "string" ? ` — ${a.detail["summary"]}` : ""}
+                        </span>
+                      </span>
+                      <span className={`mono-meta act-status ${a.status === "running" ? "live" : ""}`}>
+                        {a.status === "running" ? `running ${fmtElapsed(a.started_at, null)}` : `${a.status}${a.ended_at ? ` · ${fmtElapsed(a.started_at, a.ended_at)}` : ""}`}
+                      </span>
+                    </div>
+                    {isOpen && (
+                      <div className="act-details">
+                        <div className="act-kv"><span className="k">status</span><span className={`v mono ${a.status === "running" ? "live" : ""}`}>{a.status}{a.detail["stopped_by"] === "operator" ? " (by you)" : ""}</span></div>
+                        <div className="act-kv"><span className="k">runtime</span><span className="v mono">{a.status === "running" ? fmtElapsed(a.started_at, null) : fmtElapsed(a.started_at, a.ended_at)}</span></div>
+                        {script && <div className="act-kv"><span className="k">script</span><pre className="v mono act-script">{script}</pre></div>}
+                        {typeof a.detail["description"] === "string" && <div className="act-kv"><span className="k">purpose</span><span className="v">{String(a.detail["description"])}</span></div>}
+                        <div className="act-kv"><span className="k">output</span>{output ? <pre className="v mono act-output">{output}</pre> : <span className="v dim">no output yet</span>}</div>
+                        {a.status === "running" && script && (
+                          <div className="act-actions">
+                            <button className="btn danger sm" disabled={stopping === key} onClick={(e) => { e.stopPropagation(); void stop({ activity: a.id }, key); }} title="terminate the process running this script">
+                              {stopping === key ? "stopping…" : "stop"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+            {orphans.length > 0 && (
+              <>
+                <div className="row"><span className="label">processes under this session</span><span className="mono-meta">not from a tool call — a hook or a plugin started them</span></div>
+                {orphans.map((p) => (
+                  <div className="row act-row" key={p.pid}>
+                    <span className="chip mono act-kind">pid {p.pid}</span>
+                    <span className="act-body"><span className="mono-meta act-detail" title={p.cmdline}>{p.cmdline.slice(0, 140)}</span></span>
+                    <span className="mono-meta">{typeof p.age_secs === "number" ? `${Math.floor(p.age_secs / 60)}m` : ""}</span>
+                    <button className="btn ghost sm" disabled={stopping === `pid:${p.pid}`} onClick={() => void stop({ pid: p.pid }, `pid:${p.pid}`)} title="terminate this process">stop</button>
+                  </div>
+                ))}
+              </>
+            )}
+            {note && <div className="row mono-meta">{note}</div>}
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
+}
+
+/** "mcp ▾" (PROPOSALS-MCP.md §3.3): the session's MCP servers as the
+ *  harness sees them — status, tools, error, and the controls the harness
+ *  offers. Refresh asks the harness now, so what the operator sees is the
+ *  current picture, not the last turn boundary's. */
+function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { total: number; failed: number; needs_auth: number } | null | undefined; openSignal?: number }) {
+  const [open, setOpen] = useState(false);
+  const [list, setList] = useState<McpList | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [rowErr, setRowErr] = useState<Record<string, string>>({});
+  const [adding, setAdding] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addKind, setAddKind] = useState<"stdio" | "http">("stdio");
+  const [addTarget, setAddTarget] = useState("");
+  const [at, setAt] = useState({ top: 0, left: 0 });
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const load = useCallback((refresh: boolean) => {
+    setBusy(refresh ? "refresh" : null);
+    api.mcp(agent, refresh)
+      .then((l) => { setList(l); setErr(null); })
+      .catch((e) => setErr(e instanceof Error ? e.message : "could not read MCP status"))
+      .finally(() => setBusy(null));
+  }, [agent]);
+  useEffect(() => {
+    if (!openSignal) return;
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+    setOpen(true);
+    load(false);
+  }, [openSignal, load]);
+  const down = (summary?.failed ?? 0) + (summary?.needs_auth ?? 0);
+  async function act(server: string, what: "reconnect" | "enable" | "disable" | "auth") {
+    setBusy(`${what}:${server}`);
+    setRowErr((m) => ({ ...m, [server]: "" }));
+    try {
+      if (what === "reconnect") {
+        const r = await api.mcpReconnect(agent, server);
+        if (!r.ok) setRowErr((m) => ({ ...m, [server]: r.error ?? "reconnect failed" }));
+        setList((l) => (l ? { ...l, servers: r.servers, refreshed_at: Date.now() / 1000 } : l));
+      } else if (what === "auth") {
+        const r = await api.mcpAuth(agent, server);
+        if (r.url) window.open(r.url, "_blank", "noopener");
+        else setRowErr((m) => ({ ...m, [server]: "no authentication URL was offered" }));
+      } else {
+        const r = await api.mcpToggle(agent, server, what === "enable");
+        setList((l) => (l ? { ...l, servers: r.servers, refreshed_at: Date.now() / 1000 } : l));
+      }
+    } catch (e) {
+      setRowErr((m) => ({ ...m, [server]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function add() {
+    if (!addName.trim() || !addTarget.trim()) return;
+    setBusy("add");
+    setErr(null);
+    try {
+      const parts = addTarget.trim().split(/\s+/);
+      const config = addKind === "stdio" ? { type: "stdio", command: parts[0], args: parts.slice(1) } : { type: "http", url: addTarget.trim() };
+      const r = await api.mcpAdd(agent, addName.trim(), config);
+      setList((l) => (l ? { ...l, servers: r.servers, refreshed_at: Date.now() / 1000 } : l));
+      setAdding(false);
+      setAddName("");
+      setAddTarget("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "add failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+  const statusColor = (st: string) => (st === "connected" ? "var(--sig-normal)" : st === "failed" ? "var(--sig-gate)" : st === "needs_auth" ? "var(--sig-busy, #c80)" : "var(--text-dim)");
+  return (
+    <span className="artifacts-wrap">
+      <button
+        ref={btnRef}
+        className="charter-toggle"
+        style={down ? { color: "var(--sig-gate)" } : undefined}
+        onClick={(e) => {
+          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+          setOpen((o) => !o);
+          if (!open) load(false);
+        }}
+        title="MCP servers of this session: status, tools, reconnect, enable/disable, authenticate"
+      >
+        mcp{summary?.total ? ` ${summary.total}` : ""}{down ? ` · ${down} down` : ""} ▾
+      </button>
+      {open &&
+        createPortal(
+          <div className="artifacts-menu mcp-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 560 }} role="menu" onMouseLeave={() => setOpen(false)}>
+            <div className="row">
+              <span className="label">MCP servers</span>
+              <span style={{ flex: 1 }} />
+              {list && list.refreshed_at > 0 && <span className="mono-meta" title="when the harness was last asked">as of {relTime(list.refreshed_at)} ago</span>}
+              <button className="btn ghost sm" disabled={busy === "refresh"} onClick={() => load(true)} title="ask the harness for the current state now">
+                {busy === "refresh" ? "asking…" : "refresh"}
+              </button>
+            </div>
+            {err && <div className="row error-text mono-meta">{err}</div>}
+            {list === null && !err && <div className="row dim">loading…</div>}
+            {list && list.servers.length === 0 && <div className="row dim">no MCP servers in this session</div>}
+            {list?.servers.map((m) => (
+              <div className="act-block" key={m.name}>
+                <div className="row act-row">
+                  <span className="chip mono" style={{ color: statusColor(m.status), borderColor: statusColor(m.status) }}>{m.status.replace("_", " ")}</span>
                   <span className="act-body">
-                    <span className="act-label">
-                      {a.kind === "agent" && a.has_transcript ? (
-                        <Link to={`/session/${encodeURIComponent(agent)}/agent/${encodeURIComponent(a.id)}`} onClick={() => setOpen(false)} title="open this agent's transcript">
-                          {a.label}
-                        </Link>
-                      ) : (
-                        a.label
-                      )}
+                    <span className="act-label mono">
+                      {m.name}
+                      {m.plugin && <span className="mono-meta"> · plugin {m.plugin}</span>}
+                      {m.scope && !m.plugin && <span className="mono-meta"> · {m.scope}</span>}
                     </span>
-                    <span className="mono-meta act-detail">
-                      {a.kind === "task" && typeof a.detail["command"] === "string" ? `$ ${String(a.detail["command"]).slice(0, 120)}` : ""}
-                      {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
-                      {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 120) : ""}
-                      {a.kind === "monitor" && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
-                      {typeof a.detail["summary"] === "string" ? ` — ${a.detail["summary"]}` : ""}
+                    <span className="mono-meta act-detail" title={m.tools.join(", ")}>
+                      {m.tools.length ? `${m.tools.length} tool${m.tools.length === 1 ? "" : "s"}` : "no tools"}
+                      {m.server ? ` · ${m.server}` : ""}
+                      {m.command ? ` · ${m.transport ?? ""} ${m.command}` : ""}
                     </span>
+                    {(m.error || rowErr[m.name]) && <span className="error-text mono-meta">{rowErr[m.name] || m.error}</span>}
                   </span>
-                  <span className={`mono-meta act-status ${a.status === "running" ? "live" : ""}`}>
-                    {a.status === "running" ? `running ${fmtElapsed(a.started_at, null)}` : `${a.status}${a.ended_at ? ` · ${fmtElapsed(a.started_at, a.ended_at)}` : ""}`}
+                  <span className="act-actions">
+                    {list.can.reconnect && m.status !== "disabled" && (
+                      <button className="btn ghost sm" disabled={busy === `reconnect:${m.name}`} onClick={() => void act(m.name, "reconnect")} title={list.can.toggle ? "reconnect this server" : "reload every server (this harness has no per-server reconnect)"}>
+                        {busy === `reconnect:${m.name}` ? "…" : "reconnect"}
+                      </button>
+                    )}
+                    {list.can.toggle &&
+                      (m.status === "disabled" ? (
+                        <button className="btn ghost sm" disabled={busy === `enable:${m.name}`} onClick={() => void act(m.name, "enable")}>enable</button>
+                      ) : (
+                        <button className="btn ghost sm" disabled={busy === `disable:${m.name}`} onClick={() => void act(m.name, "disable")}>disable</button>
+                      ))}
+                    {list.can.auth && m.status === "needs_auth" && (
+                      <button className="btn sm" disabled={busy === `auth:${m.name}`} onClick={() => void act(m.name, "auth")} title="open the authentication flow in a new tab">authenticate</button>
+                    )}
                   </span>
                 </div>
-              ))
+              </div>
+            ))}
+            {list?.can.add && (
+              <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+                {!adding ? (
+                  <button className="btn ghost sm" onClick={() => setAdding(true)} title="add a server to this running session (no restart); not written to .mcp.json">add server…</button>
+                ) : (
+                  <>
+                    <input className="mono" placeholder="name" value={addName} onChange={(e) => setAddName(e.target.value)} style={{ width: 120 }} />
+                    <select value={addKind} onChange={(e) => setAddKind(e.target.value as "stdio" | "http")}>
+                      <option value="stdio">stdio</option>
+                      <option value="http">http</option>
+                    </select>
+                    <input className="mono" placeholder={addKind === "stdio" ? "command and args" : "https://…"} value={addTarget} onChange={(e) => setAddTarget(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+                    <button className="btn primary sm" disabled={busy === "add" || !addName.trim() || !addTarget.trim()} onClick={() => void add()}>{busy === "add" ? "adding…" : "add"}</button>
+                    <button className="btn ghost sm" onClick={() => setAdding(false)}>cancel</button>
+                  </>
+                )}
+              </div>
             )}
           </div>,
           document.body,
@@ -1049,6 +1285,10 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [renderMode, setRenderMode] = useState<RenderMode>(loadRenderMode);
   const [modelValue, setModelValue] = useState("default");
   const [modeValue, setModeValue] = useState("default");
+  // Signals that open the header menus from elsewhere (the status line,
+  // `/mcp` in the composer); each increment opens once.
+  const [mcpSignal, setMcpSignal] = useState(0);
+  const [activitySignal, setActivitySignal] = useState(0);
   const [ctlNote, setCtlNote] = useState<string | null>(null);
   const [ctlError, setCtlError] = useState<string | null>(null);
   const [statusNote, setStatusNote] = useState<string | null>(null);
@@ -1424,6 +1664,18 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   async function send() {
     const text = draft.trim();
     if (!text || busy || exited) return;
+    // TUI-local commands the console has a surface for open it instead
+    // of going to a harness that cannot run them (PROPOSALS-MCP.md §3.3).
+    if (/^\/mcp(\s|$)/.test(text)) {
+      setDraft("");
+      setMcpSignal((n) => n + 1);
+      return;
+    }
+    if (/^\/(tasks|bashes|monitors)(\s|$)/.test(text)) {
+      setDraft("");
+      setActivitySignal((n) => n + 1);
+      return;
+    }
     // Aspen-level command: /branch [label] — handled here, never sent.
     if (/^\/branch(\s|$)/.test(text)) {
       setDraft("");
@@ -2230,7 +2482,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         )}
         <AddToBoard agent={name} />
         <PluginsMenu agent={name} running={agent?.plugins ?? []} updates={agent?.plugin_updates ?? []} />
-        <ActivityMenu agent={name} counts={agent?.activities ?? null} />
+        <McpMenu agent={name} summary={agent?.mcp ?? null} openSignal={mcpSignal} />
+        <ActivityMenu agent={name} counts={agent?.activities ?? null} openSignal={activitySignal} />
         {moveOpen &&
           createPortal(
             <div className="trust-backdrop" onClick={() => !moveBusy && setMoveOpen(false)} role="presentation">
@@ -2601,6 +2854,16 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
 
       <div className="status-line">
         <span className="status-left mono">
+          {(agent?.activities?.running ?? 0) > 0 && (
+            <button
+              className="status-activity"
+              onClick={() => setActivitySignal((n) => n + 1)}
+              title="background work of this session — click to manage"
+            >
+              {[agent?.activities?.monitors ? `${agent.activities.monitors} monitor${agent.activities.monitors === 1 ? "" : "s"}` : "", agent?.activities?.tasks ? `${agent.activities.tasks} task${agent.activities.tasks === 1 ? "" : "s"}` : "", agent?.activities?.agents ? `${agent.activities.agents} agent${agent.activities.agents === 1 ? "" : "s"}` : "", agent?.activities?.workflows ? `${agent.activities.workflows} wf` : ""].filter(Boolean).join(" · ")}
+              {" · "}
+            </button>
+          )}
           {busy ? (
             <>
               <span className="working">

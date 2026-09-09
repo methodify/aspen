@@ -15,7 +15,7 @@ pub mod process;
 pub mod store;
 
 pub use adapter::{AdapterCapabilities, AgentAdapter, SessionHandle, SpawnSpec, ToolDef, ToolProvider, Unsupported};
-pub use harness::{DecisionOption, DecisionScope, Harness, HarnessCapabilities, PermissionMode, Posture, PromptKind, RuntimeInfo, ToolKind};
+pub use harness::{DecisionOption, DecisionScope, Harness, HarnessCapabilities, McpAuth, McpServerState, McpStatus, PermissionMode, Posture, PromptKind, RuntimeInfo, ToolKind};
 pub use permission::{BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest, PolicyBroker};
 pub use store::{ProjectDirs, SessionInfo, SessionOrigin, SessionStore};
 pub use bus::{BusMessage, Urgency};

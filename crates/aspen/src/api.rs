@@ -79,6 +79,7 @@ pub async fn serve(
         .route("/replicas", get(get_replicas))
         .route("/memory/resolve", post(post_memory_resolve))
         .route("/mesh/{node}/evacuate", post(post_evacuate))
+        .route("/harness-defaults", get(get_harness_defaults).put(put_harness_default).delete(delete_harness_default))
         .route("/templates", get(get_templates))
         .route("/templates/{id}", put(put_template).delete(delete_template))
         .route("/templates/{id}/spawn", post(post_template_spawn))
@@ -141,6 +142,12 @@ pub async fn serve(
             get(get_skill).put(put_skill).delete(delete_skill),
         )
         .route("/agents/{name}/reload", post(post_reload))
+        .route("/agents/{name}/mcp", get(get_mcp).post(post_mcp_add))
+        .route("/agents/{name}/processes", get(get_processes))
+        .route("/agents/{name}/processes/stop", post(post_process_stop))
+        .route("/agents/{name}/mcp/{server}/reconnect", post(post_mcp_reconnect))
+        .route("/agents/{name}/mcp/{server}/toggle", post(post_mcp_toggle))
+        .route("/agents/{name}/mcp/{server}/auth", post(post_mcp_auth))
         .route("/agents/{name}/runtime", get(get_runtime))
         .route("/agents/{name}/context", get(get_context))
         .route("/agents/{name}/model", post(post_model))
@@ -965,6 +972,7 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         // while live — a stopped session's ledger is history.
         "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
         "harness": a.harness,
+        "mcp": live.as_ref().map(|m| aspen_node::node::mcp_summary(m)),
         "capabilities": live.as_ref().map(|m| m.handle.capabilities()),
         "plugin_updates": match (live.as_ref(), s.node.inner.data_dir.as_deref()) {
             (Some(m), Some(dd)) => aspen_node::plugins::updates_for(dd, &m.plugins),
@@ -1008,6 +1016,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "remote": true,
                             "mesh": mesh.mesh_of_peer(node),
                             "harness": a.harness,
+                            "mcp": if reachable { a.mcp.clone() } else { None },
                         }));
                     }
                 }
@@ -1715,18 +1724,10 @@ async fn get_activities(State(s): S, Path(name): Path<String>) -> impl IntoRespo
     if let Some((bare, node)) = remote_parts(&s, &name) {
         return proxy(&s, &node, "activities", &bare, json!({})).await;
     }
-    let rows = s.node.inner.store.agents().unwrap_or_default();
-    let Some(row) = rows.iter().find(|a| a.name == name) else {
-        return err(StatusCode::NOT_FOUND, format!("no agent named @{name}")).into_response();
-    };
-    let Some(sid) = row.session_id.as_deref() else {
-        return Json(json!([])).into_response();
-    };
-    let st = s.node.inner.store_for(row.harness);
-    let (repo, sid, since) = (row.repo.clone(), sid.to_owned(), row.last_spawned_at);
-    let mut acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default();
-    acts.reverse();
-    Json(json!(acts)).into_response()
+    match s.node.activities(&name).await {
+        Ok(acts) => Json(json!(acts)).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
 }
 
 /// Everything running across the estate: this node's live sessions plus
@@ -2802,6 +2803,105 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
 
 // ---- session templates (PLUGINS.md §templates): stored here, synced
 // across the mesh by roster digest like boards.
+
+// -------------------------------------------------- harness defaults
+// (PROPOSALS-MCP.md §5): mesh-wide rows with per-node overrides, and the
+// effective value per node so "why did that session start with those
+// flags" has an answer.
+
+async fn get_harness_defaults(State(s): S) -> impl IntoResponse {
+    let rows = s.node.inner.store.harness_defaults(false).unwrap_or_default();
+    let me = s.node.inner.node_name();
+    let mut nodes: Vec<String> = vec![me.clone()];
+    if let Some(mesh) = s.node.inner.mesh() {
+        for p in mesh.peers() {
+            if !p.cert.node.starts_with("console-") && !nodes.contains(&p.cert.node) {
+                nodes.push(p.cert.node.clone());
+            }
+        }
+    }
+    let harnesses: Vec<String> = s.node.inner.adapters.keys().map(|h| h.as_str().to_owned()).collect();
+    let mut effective = Vec::new();
+    for n in &nodes {
+        for h in ["claude", "codex"] {
+            let scope = format!("node:{n}");
+            let (args, source) = rows
+                .iter()
+                .find(|r| r.scope == scope && r.harness == h)
+                .map(|r| (r.args.clone(), scope.clone()))
+                .or_else(|| rows.iter().find(|r| r.scope == "mesh" && r.harness == h).map(|r| (r.args.clone(), "mesh".to_owned())))
+                .unwrap_or_default();
+            effective.push(json!({ "node": n, "harness": h, "args": args, "source": if source.is_empty() { Value::Null } else { json!(source) } }));
+        }
+    }
+    Json(json!({ "rows": rows, "effective": effective, "nodes": nodes, "harnesses_here": harnesses, "me": me })).into_response()
+}
+
+#[derive(Deserialize)]
+struct HarnessDefaultBody {
+    /// `mesh`, or a node name (stored as `node:<name>`).
+    scope: String,
+    harness: String,
+    args: String,
+}
+
+fn default_scope(scope: &str) -> String {
+    let t = scope.trim();
+    if t.is_empty() || t == "mesh" {
+        "mesh".into()
+    } else if let Some(n) = t.strip_prefix("node:") {
+        format!("node:{n}")
+    } else {
+        format!("node:{t}")
+    }
+}
+
+async fn put_harness_default(State(s): S, Json(b): Json<HarnessDefaultBody>) -> impl IntoResponse {
+    if aspen_core::Harness::parse(&b.harness).is_none() {
+        return err(StatusCode::BAD_REQUEST, format!("unknown harness {:?}", b.harness)).into_response();
+    }
+    // The same guard every node applies at spawn: protocol-owned flags refused here too.
+    if let Err(e) = aspen_node::settings::split_args(b.args.trim(), None) {
+        return err(StatusCode::BAD_REQUEST, e).into_response();
+    }
+    let d = aspen_node::store::HarnessDefault {
+        scope: default_scope(&b.scope),
+        harness: b.harness.trim().to_lowercase(),
+        args: b.args.trim().to_owned(),
+        updated_at: s.node.inner.store.hlc_now(),
+        deleted: false,
+    };
+    match s.node.inner.store.upsert_harness_default(&d) {
+        Ok(changed) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true, "changed": changed, "row": d })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct HarnessDefaultDelete {
+    scope: String,
+    harness: String,
+}
+
+async fn delete_harness_default(State(s): S, Json(b): Json<HarnessDefaultDelete>) -> impl IntoResponse {
+    let d = aspen_node::store::HarnessDefault {
+        scope: default_scope(&b.scope),
+        harness: b.harness.trim().to_lowercase(),
+        args: String::new(),
+        updated_at: s.node.inner.store.hlc_now(),
+        deleted: true,
+    };
+    match s.node.inner.store.upsert_harness_default(&d) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
 
 async fn get_templates(State(s): S) -> impl IntoResponse {
     match s.node.inner.store.templates(false) {
@@ -4370,6 +4470,113 @@ async fn delete_skill(Query(q): Query<SkillQuery>) -> impl IntoResponse {
     match aspen_node::skills::delete(std::path::Path::new(&q.repo), &q.rel) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+// ------------------------------------------------------------ processes
+// (PROPOSALS-MCP.md §6.4): the session's child processes, and a stop.
+
+async fn get_processes(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "processes", &bare, json!({})).await;
+    }
+    match s.node.processes(&name).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct ProcessStopBody {
+    activity: Option<String>,
+    pid: Option<u32>,
+}
+
+async fn post_process_stop(State(s): S, Path(name): Path<String>, Json(b): Json<ProcessStopBody>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "process_stop", &bare, json!({ "activity": b.activity, "pid": b.pid })).await;
+    }
+    match s.node.stop_process(&name, b.activity.as_deref(), b.pid).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+// ------------------------------------------------------------------- MCP
+// (PROPOSALS-MCP.md §3.2): the session's servers, refreshed on demand.
+
+#[derive(Deserialize, Default)]
+struct McpQuery {
+    /// `1` or `true`: ask the harness now.
+    #[serde(default)]
+    refresh: Option<String>,
+}
+
+async fn get_mcp(State(s): S, Path(name): Path<String>, Query(q): Query<McpQuery>) -> impl IntoResponse {
+    let refresh = matches!(q.refresh.as_deref(), Some("1") | Some("true") | Some("yes"));
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "mcp_list", &bare, json!({ "refresh": refresh })).await;
+    }
+    match s.node.mcp_list(&name, refresh).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+async fn post_mcp_reconnect(State(s): S, Path((name, server)): Path<(String, String)>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "mcp_reconnect", &bare, json!({ "server": server })).await;
+    }
+    match s.node.mcp_reconnect(&name, &server).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct McpToggleBody {
+    enabled: bool,
+}
+
+async fn post_mcp_toggle(State(s): S, Path((name, server)): Path<(String, String)>, Json(b): Json<McpToggleBody>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "mcp_toggle", &bare, json!({ "server": server, "enabled": b.enabled })).await;
+    }
+    match s.node.mcp_toggle(&name, &server, b.enabled).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+async fn post_mcp_auth(State(s): S, Path((name, server)): Path<(String, String)>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "mcp_auth", &bare, json!({ "server": server })).await;
+    }
+    match s.node.mcp_auth(&name, &server).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct McpAddBody {
+    name: String,
+    /// The harness's server config: `{type: "stdio", command, args?, env?}`
+    /// or `{type: "http"|"sse", url, headers?}`.
+    config: Value,
+}
+
+async fn post_mcp_add(State(s): S, Path(name): Path<String>, Json(b): Json<McpAddBody>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "mcp_add", &bare, json!({ "server": b.name, "config": b.config })).await;
+    }
+    let server = b.name.trim().to_owned();
+    if server.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "a server needs a name").into_response();
+    }
+    match s.node.mcp_add(&name, &server, b.config).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e).into_response(),
     }
 }
 

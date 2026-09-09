@@ -35,6 +35,11 @@ pub fn capabilities() -> HarnessCapabilities {
         always_allow: true,
         transcript_on_disk: true,
         cost_from_harness: false,
+        mcp_status: true,
+        mcp_reconnect: true,
+        mcp_toggle: false,
+        mcp_auth: true,
+        mcp_add: false,
     }
 }
 

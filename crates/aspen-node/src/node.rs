@@ -82,6 +82,13 @@ pub struct ManagedSession {
     pub activity_counts: Mutex<serde_json::Value>,
     /// When the counts were last derived (epoch), to throttle mid-turn refreshes.
     pub activity_refreshed_at: Mutex<f64>,
+    /// The MCP picture as last learned (PROPOSALS-MCP.md §3.2): at init,
+    /// at turn boundaries, on a harness push, on demand.
+    pub mcp: Mutex<Vec<aspen_core::McpServerState>>,
+    pub mcp_refreshed_at: Mutex<f64>,
+    /// Activities the operator stopped from the console (by id or tool
+    /// use id) with when: shown as stopped until the harness settles them.
+    pub stopped_acts: Mutex<HashMap<String, f64>>,
     /// When this process started — the ledger's stale cutoff (ACTIVITY.md).
     pub spawned_at: f64,
 }
@@ -165,6 +172,11 @@ impl NodeInner {
     }
 
     /// Which harness an agent (by local key) runs on.
+    /// This node's name (the mesh identity, else "this node").
+    pub fn node_name(&self) -> String {
+        self.mesh().map(|m| m.identity.node.clone()).unwrap_or_else(|| "this node".into())
+    }
+
     pub fn harness_of(&self, agent: &str) -> Harness {
         if let Some(s) = self.live(agent) {
             return s.harness;
@@ -397,6 +409,91 @@ fn local_api_addr(data_dir: &Path) -> Option<String> {
     Some(format!("http://{host}:{}", addr.port()))
 }
 
+/// Counts of the session's MCP servers by status, for fleet rows.
+pub fn mcp_summary(s: &ManagedSession) -> serde_json::Value {
+    use aspen_core::McpStatus;
+    let list = s.mcp.lock().unwrap();
+    let n = |st: McpStatus| list.iter().filter(|m| m.status == st).count();
+    serde_json::json!({
+        "total": list.len(),
+        "connected": n(McpStatus::Connected),
+        "failed": n(McpStatus::Failed),
+        "needs_auth": n(McpStatus::NeedsAuth),
+        "pending": n(McpStatus::Pending),
+        "disabled": n(McpStatus::Disabled),
+    })
+}
+
+/// Ask the harness for the MCP picture, store it, raise notices for what
+/// changed, and tell the session's listeners. Returns the picture.
+pub async fn refresh_mcp(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> Result<Vec<aspen_core::McpServerState>> {
+    use aspen_core::McpStatus;
+    if !sess.handle.capabilities().mcp_status {
+        return Ok(sess.mcp.lock().unwrap().clone());
+    }
+    let now = tokio::time::timeout(std::time::Duration::from_secs(40), sess.handle.mcp_servers())
+        .await
+        .map_err(|_| anyhow!("the session did not answer an MCP status request within 40s"))??;
+    let before = std::mem::replace(&mut *sess.mcp.lock().unwrap(), now.clone());
+    // The first full picture says everything that is wrong at start (the
+    // adapter's init list, if any, is only names and statuses).
+    let first = *sess.mcp_refreshed_at.lock().unwrap() == 0.0;
+    let before = if first { Vec::new() } else { before };
+    *sess.mcp_refreshed_at.lock().unwrap() = crate::store::now_epoch();
+    let link = format!("/session/{}", sess.name);
+    for m in &now {
+        let was = before.iter().find(|b| b.name == m.name).map(|b| b.status);
+        let bad = matches!(m.status, McpStatus::Failed | McpStatus::NeedsAuth);
+        let was_bad = matches!(was, Some(McpStatus::Failed) | Some(McpStatus::NeedsAuth));
+        if bad && !was_bad {
+            let what = match m.status {
+                McpStatus::NeedsAuth => "needs authentication".to_owned(),
+                _ => m.error.clone().map(|e| format!("failed: {e}")).unwrap_or_else(|| "failed".into()),
+            };
+            crate::notify::raise(inner, &sess.name, "mcp_failed", &format!("MCP {} {what}", m.name), m.plugin.as_deref().map(|p| format!("from plugin {p}")).as_deref(), Some(&link));
+        } else if !bad && was_bad && m.status == McpStatus::Connected {
+            crate::notify::raise(inner, &sess.name, "mcp_recovered", &format!("MCP {} connected", m.name), None, Some(&link));
+        }
+    }
+    let _ = sess.events.send(SessionEvent::McpChanged { servers: now.clone() });
+    Ok(now)
+}
+
+fn schedule_mcp_refresh(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>, delay_ms: u64) {
+    let inner = inner.clone();
+    let sess = sess.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        // Debounce: pushes and turn ends can cluster.
+        let last = *sess.mcp_refreshed_at.lock().unwrap();
+        if crate::store::now_epoch() - last < 1.0 {
+            return;
+        }
+        if let Err(e) = refresh_mcp(&inner, &sess).await {
+            tracing::debug!(agent = %sess.name, error = %e, "mcp refresh");
+        }
+    });
+}
+
+/// Epoch seconds → an ISO-8601 UTC timestamp (the ledger's format).
+fn iso_of(epoch: f64) -> String {
+    let secs = epoch.floor() as i64;
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    // civil from days (Howard Hinnant)
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
 pub fn summary_json(s: &ManagedSession) -> serde_json::Value {
     let w = s.summary.lock().unwrap().clone();
     let (busy_since, last_tool) = s.presence_detail();
@@ -585,6 +682,27 @@ impl Node {
                 }
             });
         }
+        // Harness defaults from settings.json become this node's synced
+        // row once (PROPOSALS-MCP.md §5.4); the file stops mattering.
+        if let Some(dd) = inner.data_dir.as_deref() {
+            let me = inner.node_name();
+            for (h, cfg) in crate::settings::load(dd).harness {
+                if cfg.args.trim().is_empty() {
+                    continue;
+                }
+                let scope = format!("node:{me}");
+                let have = inner.store.harness_defaults(true).unwrap_or_default().iter().any(|d| d.scope == scope && d.harness == h);
+                if !have {
+                    let _ = inner.store.upsert_harness_default(&crate::store::HarnessDefault {
+                        scope,
+                        harness: h,
+                        args: cfg.args.trim().to_owned(),
+                        updated_at: inner.store.hlc_now(),
+                        deleted: false,
+                    });
+                }
+            }
+        }
         Self { inner }
     }
 
@@ -740,16 +858,24 @@ impl Node {
             );
             charter.push_str(&guidance);
         }
-        // Harness defaults (settings.json, read live) + this session's args.
+        // Harness defaults (PROPOSALS-MCP.md §5): this node's synced row,
+        // else the mesh row, else the legacy settings.json — then this
+        // session's args.
         let defaults = self
             .inner
-            .data_dir
-            .as_deref()
-            .map(crate::settings::load)
-            .unwrap_or_default()
-            .harness
-            .get(harness.as_str())
-            .map(|h| h.args.clone())
+            .store
+            .effective_harness_default(&self.inner.node_name(), harness.as_str())
+            .map(|(a, _)| a)
+            .or_else(|| {
+                self.inner
+                    .data_dir
+                    .as_deref()
+                    .map(crate::settings::load)
+                    .unwrap_or_default()
+                    .harness
+                    .get(harness.as_str())
+                    .map(|h| h.args.clone())
+            })
             .unwrap_or_default();
         let extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
         // Plugins by scope (plugins.rs): every enclosing rule's plugin, at
@@ -854,6 +980,9 @@ impl Node {
             running_acts: Mutex::new(HashMap::new()),
             activity_counts: Mutex::new(serde_json::json!({ "running": 0, "agents": 0, "tasks": 0, "workflows": 0, "monitors": 0 })),
             activity_refreshed_at: Mutex::new(0.0),
+            mcp: Mutex::new(Vec::new()),
+            mcp_refreshed_at: Mutex::new(0.0),
+            stopped_acts: Mutex::new(HashMap::new()),
             spawned_at: crate::store::now_epoch(),
             name: name.to_owned(),
             repo,
@@ -2075,6 +2204,150 @@ impl Node {
         sess.handle.reload().await
     }
 
+    /// The session's MCP servers; `refresh` asks the harness now
+    /// (PROPOSALS-MCP.md §6.2), else the last picture.
+    pub async fn mcp_list(&self, name: &str, refresh: bool) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let servers = if refresh || sess.mcp.lock().unwrap().is_empty() {
+            refresh_mcp(&self.inner, &sess).await?
+        } else {
+            sess.mcp.lock().unwrap().clone()
+        };
+        let caps = sess.handle.capabilities();
+        Ok(serde_json::json!({
+            "servers": servers,
+            "refreshed_at": *sess.mcp_refreshed_at.lock().unwrap(),
+            "can": { "status": caps.mcp_status, "reconnect": caps.mcp_reconnect, "toggle": caps.mcp_toggle, "auth": caps.mcp_auth, "add": caps.mcp_add },
+        }))
+    }
+
+    pub async fn mcp_reconnect(&self, name: &str, server: &str) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let r = sess.handle.mcp_reconnect(server).await;
+        let servers = refresh_mcp(&self.inner, &sess).await.unwrap_or_default();
+        match r {
+            Ok(()) => Ok(serde_json::json!({ "ok": true, "servers": servers })),
+            Err(e) => Ok(serde_json::json!({ "ok": false, "error": e.to_string(), "servers": servers })),
+        }
+    }
+
+    pub async fn mcp_toggle(&self, name: &str, server: &str, enabled: bool) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        sess.handle.mcp_toggle(server, enabled).await?;
+        let servers = refresh_mcp(&self.inner, &sess).await.unwrap_or_default();
+        Ok(serde_json::json!({ "ok": true, "servers": servers }))
+    }
+
+    pub async fn mcp_auth(&self, name: &str, server: &str) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let a = sess.handle.mcp_authenticate(server).await?;
+        Ok(serde_json::to_value(a)?)
+    }
+
+    pub async fn mcp_add(&self, name: &str, server: &str, config: serde_json::Value) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        sess.handle.mcp_add(server, config).await?;
+        let servers = refresh_mcp(&self.inner, &sess).await.unwrap_or_default();
+        Ok(serde_json::json!({ "ok": true, "servers": servers }))
+    }
+
+    /// The session's activity ledger with the console's own stops
+    /// applied (a stopped row reads "stopped" until the harness says so).
+    pub async fn activities(&self, name: &str) -> Result<Vec<serde_json::Value>> {
+        let row = self.agent_row(name)?;
+        let Some(sid) = row.session_id.clone() else { return Ok(Vec::new()) };
+        let st = self.inner.store_for(row.harness);
+        let (repo, since) = (row.repo.clone(), row.last_spawned_at);
+        let mut acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default();
+        if let Some(sess) = self.inner.live(name) {
+            let stopped = sess.stopped_acts.lock().unwrap().clone();
+            for a in acts.iter_mut() {
+                let id = a.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+                let tu = a.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+                if let Some(at) = stopped.get(&id).or_else(|| stopped.get(&tu)) {
+                    if a.get("status").and_then(|s| s.as_str()) == Some("running") {
+                        a["status"] = serde_json::json!("stopped");
+                        a["ended_at"] = serde_json::json!(iso_of(*at));
+                        a["detail"]["stopped_by"] = serde_json::json!("operator");
+                    }
+                }
+            }
+        }
+        acts.reverse();
+        Ok(acts)
+    }
+
+    /// The session's child processes (PROPOSALS-MCP.md §6.4): each with
+    /// the ledger row it matches, if any — the rest are what hooks and
+    /// plugins started outside the tool stream.
+    pub async fn processes(&self, name: &str) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let Some(pid) = sess.handle.pid() else {
+            return Ok(serde_json::json!({ "pid": null, "processes": [] }));
+        };
+        let acts = {
+            let row = self.agent_row(name)?;
+            let st = self.inner.store_for(row.harness);
+            match row.session_id.as_deref() {
+                Some(sid) => {
+                    let (repo, sid, since) = (row.repo.clone(), sid.to_owned(), row.last_spawned_at);
+                    tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default()
+                }
+                None => Vec::new(),
+            }
+        };
+        let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(pid)).await.unwrap_or_default();
+        let list: Vec<serde_json::Value> = procs
+            .iter()
+            .map(|p| {
+                let matched = acts.iter().find(|a| {
+                    a.get("status").and_then(|s| s.as_str()) == Some("running")
+                        && a.get("detail").and_then(|d| d.get("command")).and_then(|c| c.as_str()).is_some_and(|c| crate::procs::matches_script(&p.cmdline, c))
+                });
+                serde_json::json!({
+                    "pid": p.pid, "parent": p.parent, "cmdline": p.cmdline, "age_secs": p.age_secs,
+                    "activity": matched.map(|a| serde_json::json!({ "id": a.get("id"), "kind": a.get("kind"), "label": a.get("label") })),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "pid": pid, "processes": list }))
+    }
+
+    /// Stop a background activity by terminating the process its script
+    /// runs in, or a bare child process by pid. Returns what was stopped.
+    pub async fn stop_process(&self, name: &str, activity_id: Option<&str>, pid: Option<u32>) -> Result<serde_json::Value> {
+        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let root = sess.handle.pid().ok_or_else(|| anyhow!("the session's process id is not known"))?;
+        let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(root)).await.unwrap_or_default();
+        let target = if let Some(pid) = pid {
+            procs.iter().find(|p| p.pid == pid).cloned().ok_or_else(|| anyhow!("pid {pid} is not a child of this session"))?
+        } else {
+            let id = activity_id.ok_or_else(|| anyhow!("an activity id or a pid is needed"))?;
+            let row = self.agent_row(name)?;
+            let st = self.inner.store_for(row.harness);
+            let sid = row.session_id.clone().ok_or_else(|| anyhow!("no session"))?;
+            let (repo, since) = (row.repo.clone(), row.last_spawned_at);
+            let acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default();
+            let act = acts
+                .iter()
+                .find(|a| a.get("id").and_then(|i| i.as_str()) == Some(id) || a.get("tool_use_id").and_then(|i| i.as_str()) == Some(id))
+                .ok_or_else(|| anyhow!("no activity {id}"))?;
+            let script = act.get("detail").and_then(|d| d.get("command")).and_then(|c| c.as_str()).ok_or_else(|| anyhow!("that activity has no script to match a process by"))?;
+            procs
+                .iter()
+                .find(|p| crate::procs::matches_script(&p.cmdline, script))
+                .cloned()
+                .ok_or_else(|| anyhow!("no running process under this session matches the script; it may have already ended"))?
+        };
+        let tpid = target.pid;
+        tokio::task::spawn_blocking(move || crate::procs::terminate(tpid)).await??;
+        if let Some(id) = activity_id {
+            sess.stopped_acts.lock().unwrap().insert(id.to_owned(), crate::store::now_epoch());
+        }
+        let _ = self.inner.store.record_event(name, "process_stopped", serde_json::json!({ "pid": target.pid, "cmdline": target.cmdline, "activity": activity_id }));
+        Ok(serde_json::json!({ "ok": true, "pid": target.pid, "cmdline": target.cmdline }))
+    }
+
     /// Reload every live session running in a given repo (after a skill edit).
     pub async fn reload_repo(&self, repo: &Path) -> usize {
         let targets: Vec<Arc<ManagedSession>> = self
@@ -2287,6 +2560,8 @@ async fn pump(
                     }
                     *prev = now_running;
                 }
+                // The MCP picture at the boundary (PROPOSALS-MCP.md §6.2).
+                schedule_mcp_refresh(&inner, &sess, 300);
                 // A boundary is a delivery opportunity for anything that
                 // arrived for us while nothing could be written.
                 inner.tick_delivery(&sess.name);
@@ -2397,8 +2672,20 @@ async fn pump(
             SessionEvent::UserReplay { uuid } => {
                 let _ = inner.store.mark_ingested(uuid);
             }
+            SessionEvent::McpChanged { servers } => {
+                // The adapter's own picture (Claude's init): keep it; the
+                // full one follows from the refresh below.
+                let mut cur = sess.mcp.lock().unwrap();
+                if cur.is_empty() {
+                    *cur = servers.clone();
+                }
+            }
+            SessionEvent::Status { raw } if raw.get("type").and_then(|t| t.as_str()) == Some("mcp_startup") => {
+                schedule_mcp_refresh(&inner, &sess, 800);
+            }
             SessionEvent::RuntimeInit { raw, .. } => {
                 *sess.inventory.lock().unwrap() = Some(raw.clone());
+                schedule_mcp_refresh(&inner, &sess, 1500);
                 // The runtime's announced id is the head. On a fork it is
                 // new — move the agent to it and record where it came from.
                 if let Some(announced) = raw.get("session_id").and_then(|s| s.as_str()) {

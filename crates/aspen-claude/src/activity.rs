@@ -209,7 +209,16 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                             (
                                 "monitor",
                                 lbl,
-                                serde_json::json!({ "tool": name, "delay_seconds": input.get("delaySeconds"), "cron": input.get("cron") }),
+                                serde_json::json!({
+                                    "tool": name,
+                                    "delay_seconds": input.get("delaySeconds"),
+                                    "cron": input.get("cron"),
+                                    // The script, whole: the details view and the
+                                    // process match (PROPOSALS-MCP.md §6.4) need it.
+                                    "command": input.get("command"),
+                                    "description": input.get("description"),
+                                    "timeout": input.get("timeout"),
+                                }),
                             )
                         }
                         _ => continue,
@@ -278,10 +287,22 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                                     if is_err {
                                         a.status = "failed".into();
                                         a.ended_at = ts.clone();
+                                        a.detail["output"] = Value::String(snippet(&text, 2000));
                                     } else if a.detail.get("tool").and_then(|t| t.as_str())
                                         == Some("ScheduleWakeup")
                                     {
                                         // A wakeup fires once; the tool result is its scheduling ack.
+                                    } else {
+                                        // A background monitor answers with its id
+                                        // and later with output; keep what it said.
+                                        if let Some(id) = find_after(&text, "background with ID:")
+                                            .or_else(|| find_after(&text, "(task "))
+                                            .or_else(|| find_after(&text, "monitor ID:"))
+                                            .or_else(|| find_after(&text, "ID:"))
+                                        {
+                                            a.id = id;
+                                        }
+                                        a.detail["output"] = Value::String(snippet(&text, 2000));
                                     }
                                 }
                                 _ => {}
@@ -299,6 +320,7 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                                     a.ended_at = ts.clone();
                                     if let Some(s) = summary {
                                         a.detail["summary"] = Value::String(snippet(&s, 200));
+                                        a.detail["output"] = Value::String(snippet(&s, 4000));
                                     }
                                     if let Some(f) = tag(&text, "output-file") {
                                         a.detail["output_file"] = Value::String(f);

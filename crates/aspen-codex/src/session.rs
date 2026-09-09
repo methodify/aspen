@@ -370,6 +370,11 @@ impl CodexSession {
                 send(SessionEvent::Status { raw: json!({ "type": "settings", "settings": params.get("threadSettings") }) }).await;
             }
             "thread/compacted" => send(SessionEvent::Status { raw: json!({ "type": "compacted" }) }).await,
+            "mcpServer/startupStatus/updated" => {
+                // Push from Codex (PROPOSALS-MCP.md §2.2); the node re-lists
+                // on it so the picture carries tools and auth state.
+                send(SessionEvent::Status { raw: json!({ "type": "mcp_startup", "name": params.get("name"), "status": params.get("status"), "error": params.get("error") }) }).await;
+            }
             "model/rerouted" => send(SessionEvent::Status { raw: json!({ "type": "model_rerouted", "detail": params }) }).await,
             "warning" | "guardianWarning" | "configWarning" | "deprecationNotice" => {
                 let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or("").to_owned();
@@ -873,6 +878,34 @@ impl SessionHandle for CodexSession {
         Ok(())
     }
 
+    fn pid(&self) -> Option<u32> {
+        self.rpc.pid
+    }
+
+    async fn mcp_servers(&self) -> Result<Vec<aspen_core::McpServerState>> {
+        let v = self
+            .rpc
+            .call("mcpServerStatus/list", json!({ "threadId": self.thread(), "detail": "toolsAndAuthOnly" }), Duration::from_secs(30))
+            .await?;
+        Ok(v.get("data")
+            .and_then(|d| d.as_array())
+            .map(|a| a.iter().map(codex_mcp_state).collect())
+            .unwrap_or_default())
+    }
+
+    async fn mcp_reconnect(&self, _name: &str) -> Result<()> {
+        // Codex reloads all servers from config; there is no per-server call.
+        self.rpc.call("config/mcpServer/reload", json!({}), Duration::from_secs(60)).await.map(|_| ())
+    }
+
+    async fn mcp_authenticate(&self, name: &str) -> Result<aspen_core::McpAuth> {
+        let v = self.rpc.call("mcpServer/oauth/login", json!({ "name": name }), Duration::from_secs(60)).await?;
+        Ok(aspen_core::McpAuth {
+            url: v.get("authorizationUrl").or_else(|| v.get("authUrl")).or_else(|| v.get("url")).and_then(|u| u.as_str()).map(str::to_owned),
+            requires_user: true,
+        })
+    }
+
     async fn context_usage(&self) -> Result<Value> {
         let tu = self.last_usage.lock().unwrap().clone();
         let window = tu.get("modelContextWindow").and_then(|w| w.as_u64());
@@ -890,5 +923,37 @@ impl SessionHandle for CodexSession {
             ],
             "total": tu.get("total"),
         }))
+    }
+}
+
+/// One `mcpServerStatus/list` row in the neutral shape (PROPOSALS-MCP.md §3.5).
+fn codex_mcp_state(v: &Value) -> aspen_core::McpServerState {
+    use aspen_core::McpStatus;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+    let status = match s("runtimeStatus").as_deref() {
+        Some("connected") => McpStatus::Connected,
+        Some("failed") | Some("cancelled") => McpStatus::Failed,
+        Some("authenticationRequired") => McpStatus::NeedsAuth,
+        Some("disabled") => McpStatus::Disabled,
+        _ => McpStatus::Pending,
+    };
+    let tools: Vec<String> = v.get("tools").and_then(|t| t.as_object()).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+    let server = v.get("serverInfo").and_then(|i| {
+        let n = i.get("name").and_then(|x| x.as_str())?;
+        Some(match i.get("version").and_then(|x| x.as_str()) {
+            Some(ver) => format!("{n} {ver}"),
+            None => n.to_owned(),
+        })
+    });
+    aspen_core::McpServerState {
+        name: s("name").unwrap_or_default(),
+        status,
+        error: s("toolsError"),
+        scope: v.get("pluginId").and_then(|p| p.as_str()).map(|_| "plugin".to_owned()),
+        transport: None,
+        command: None,
+        server,
+        tools,
+        plugin: s("pluginId"),
     }
 }

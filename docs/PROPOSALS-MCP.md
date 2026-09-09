@@ -1,8 +1,8 @@
 # Proposal: MCP servers as a first-class surface, and harness defaults mesh-wide
 
-**Status:** proposed 2026-09-08, for discussion. Field-verified against
-Claude Code 2.1.265 (the control channel) and read from Codex 0.153.4's
-protocol; nothing here is built yet.
+**Status:** shipped as v0.24.0 on 2026-09-08 (§3, §5, §6 as built; the
+process tree of §6.4 included). Field-verified against Claude Code
+2.1.265 and Codex 0.153.4.
 
 ## 0. The ask, as put
 
@@ -252,7 +252,38 @@ At daemon start, if `settings.harness` has args and the store has no
 now). Existing nodes keep their behavior; the console then sees and can
 edit every node's defaults from anywhere.
 
-## 6. Open questions for the discussion
+## 6. Decisions (2026-09-08)
+
+1. A failed MCP server is **not** a needs-you row: most MCP trouble is
+   inconsequential. It is a notice (toast, bell) and the red chip.
+2. Refresh at turn boundaries, **plus an explicit refresh** in the mcp
+   menu: the operator can ask for the current picture on demand and
+   trust what the view shows at that moment (a server can drop after
+   the turn ended and before the next one).
+3. `mcp_set_servers` **is exposed**: an "add server" form in the menu
+   (name, transport, command or url), for this session, no restart.
+4. Monitors: the ask is the TUI's status line — `… · 1 monitor · ↓ to
+   manage` — and its details view (status, runtime, script, output,
+   stop), and the list when there are several. Aspen has the ledger; it
+   lacks the bar, the details view and the stop:
+   - **The bar**: the composer's status line (`idle · session $—`) gains
+     the running-activity count (`1 monitor`, `2 tasks`) as a button
+     opening the activity drawer, on both chat and console renderings.
+   - **Details**: a monitor/task row opens to status, runtime (since
+     `started_at`, live), the script (the tool's command, full), the
+     output so far (the tool result / task-notification text when it has
+     arrived; "no output yet" otherwise), and **stop**.
+   - **Stop**: no harness control stops a background task from the host.
+     Aspen finds the task's process — a child of the session's process
+     whose command line matches the script — and terminates it (Linux:
+     `/proc` walk + SIGTERM; Windows: `Get-CimInstance Win32_Process`
+     by ParentProcessId + `taskkill`). The harness then reports the task
+     ended and the ledger settles it. That is the process-tree work of
+     M-2, scoped to what the stop needs; the drawer also lists any child
+     process of the session that no ledger row explains (a hook-launched
+     monitor) with its command line and a stop.
+
+## 7. Open questions, answered above
 
 1. Should a failed MCP server be a *needs you* row (interrupting, like a
    prompt) or only a notice plus the red chip? The proposal says row: it

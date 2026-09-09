@@ -46,6 +46,7 @@ pub struct RpcClient {
     pending: Pending,
     next_id: AtomicU64,
     kill_tx: Mutex<Option<oneshot::Sender<()>>>,
+    pub pid: Option<u32>,
 }
 
 impl RpcClient {
@@ -86,6 +87,7 @@ impl RpcClient {
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
             kill_tx: Mutex::new(Some(kill_tx)),
+            pid: child.id(),
         });
 
         // Writer.
