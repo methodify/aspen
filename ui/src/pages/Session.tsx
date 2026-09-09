@@ -7,6 +7,7 @@ import {
   useState,
   useCallback,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
@@ -382,6 +383,40 @@ const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBu
 /** A tool call. Open while it is the active call (the newest item of a
  *  busy turn) or when the operator pinned it open; a click toggles and
  *  pins. `now` ticks while the turn is busy so the running timer moves. */
+/** Finished tool cards in a row of at least this many fold into a summary. */
+const TOOL_RUN_MIN = 3;
+
+/** One line for a run of finished tool cards: how many, which tools (with
+ *  counts), how many failed; click to open the cards. */
+function ToolRunSummary({ items, open, tui, onToggle }: { items: ToolCardItem[]; open: boolean; tui: boolean; onToggle: () => void }) {
+  const counts = new Map<string, number>();
+  let errors = 0;
+  for (const it of items) {
+    counts.set(it.name, (counts.get(it.name) ?? 0) + 1);
+    if (it.isError) errors += 1;
+  }
+  const names = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([n, c]) => (c > 1 ? `${n} ×${c}` : n))
+    .join(", ");
+  const label = `${items.length} tool uses`;
+  if (tui) {
+    return (
+      <div className="cline cline-tool tool-run tool-run-tui" onClick={onToggle} role="button" tabIndex={0} title={open ? "collapse" : "expand the tool cards"}>
+        <span className="mono">{open ? "▾" : "▸"} [{label}] {names}{errors ? ` · ${errors} failed` : ""}</span>
+      </div>
+    );
+  }
+  return (
+    <div className={`tool-card tool-run${open ? " open" : ""}${errors ? " has-error" : ""}`} onClick={onToggle} role="button" tabIndex={0} title={open ? "collapse these tool cards" : "expand the tool cards"}>
+      <span className="tool-dot" aria-hidden />
+      <span className="tool-name">{label}</span>
+      <span className="tool-summary">{names}</span>
+      <span className="tool-hint mono-meta">{errors ? `${errors} failed` : open ? "▾" : "▸"}</span>
+    </div>
+  );
+}
+
 const ToolCard = memo(function ToolCard({
   item,
   open,
@@ -2123,6 +2158,60 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       }
     }
   }
+  // Long strings of finished tool cards collapse into one summary line
+  // ("12 tool uses · Bash ×6, Read ×3…") that opens back into the cards.
+  // The running tool, pinned-open cards and runs shorter than
+  // TOOL_RUN_MIN stay as they are.
+  const [openRuns, setOpenRuns] = useState<Set<number>>(() => new Set());
+  function renderGrouped(items: TranscriptItem[], tui: boolean) {
+    const out: ReactNode[] = [];
+    let run: ToolCardItem[] = [];
+    const flush = () => {
+      if (run.length >= TOOL_RUN_MIN) {
+        const key = run[0]!.id;
+        const open = openRuns.has(key);
+        out.push(
+          <ToolRunSummary
+            key={`run-${key}`}
+            items={run}
+            open={open}
+            tui={tui}
+            onToggle={() =>
+              setOpenRuns((s) => {
+                const n = new Set(s);
+                if (n.has(key)) n.delete(key);
+                else n.add(key);
+                return n;
+              })
+            }
+          />,
+        );
+        if (open) {
+          for (const it of run) out.push(toolCard(it, tui));
+          out.push(
+            <button key={`run-end-${key}`} className="tool-run-collapse mono-meta" onClick={() => setOpenRuns((s) => { const n = new Set(s); n.delete(key); return n; })}>
+              collapse {run.length} tool uses ▴
+            </button>,
+          );
+        }
+      } else {
+        for (const it of run) out.push(toolCard(it, tui));
+      }
+      run = [];
+    };
+    for (const item of items) {
+      const groupable = item.kind === "tool" && item.done && item.id !== activeToolId && pinnedTools.get(item.id) !== true;
+      if (groupable) {
+        run.push(item);
+        continue;
+      }
+      flush();
+      out.push(tui ? renderConsoleItem(item) : renderItem(item));
+    }
+    flush();
+    return out;
+  }
+
   function toolCard(item: ToolCardItem, tui: boolean) {
     const pinned = pinnedTools.get(item.id);
     const open = pinned !== undefined ? pinned : item.id === activeToolId;
@@ -2853,7 +2942,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             </button>
           </div>
         )}
-        {visibleItems.map(renderItem)}
+        {renderGrouped(visibleItems, renderMode === "console")}
       </div>
 
       <div className="status-line">

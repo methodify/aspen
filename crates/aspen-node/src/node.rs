@@ -450,7 +450,12 @@ pub async fn refresh_mcp(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> 
                 McpStatus::NeedsAuth => "needs authentication".to_owned(),
                 _ => m.error.clone().map(|e| format!("failed: {e}")).unwrap_or_else(|| "failed".into()),
             };
-            crate::notify::raise(inner, &sess.name, "mcp_failed", &format!("MCP {} {what}", m.name), m.plugin.as_deref().map(|p| format!("from plugin {p}")).as_deref(), Some(&link));
+            // Once per six hours per server and reason: a permanently
+            // broken server toasts on first sight, not on every restart.
+            let title = format!("MCP {} {what}", m.name);
+            if !inner.store.notice_recent(&sess.name, "mcp_failed", &title, 6.0 * 3600.0) {
+                crate::notify::raise(inner, &sess.name, "mcp_failed", &title, m.plugin.as_deref().map(|p| format!("from plugin {p}")).as_deref(), Some(&link));
+            }
         } else if !bad && was_bad && m.status == McpStatus::Connected {
             crate::notify::raise(inner, &sess.name, "mcp_recovered", &format!("MCP {} connected", m.name), None, Some(&link));
         }

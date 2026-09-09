@@ -637,3 +637,12 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .attach-blob { white-space: pre-wrap; word-break: break-all; font-size: 0.75rem; background: var(--bg-well); border: 1px solid var(--line); padding: 8px; margin: 0; max-height: 160px; overflow: auto; }
 .attach-state.s-up { color: var(--live); border-color: var(--live); }
 .attach-state.s-down { color: var(--sig-gate); border-color: var(--sig-gate); }
+
+/* a run of finished tool cards, folded (Session: ToolRunSummary) */
+.tool-run { display: flex; align-items: center; gap: 8px; padding: var(--sp-2) var(--sp-3); cursor: pointer; user-select: none; }
+.tool-run .tool-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+.tool-run.has-error .tool-dot { background: var(--sig-error, #d33); }
+.tool-run.open { border-style: dashed; }
+.tool-run:hover { border-color: var(--line-hi); }
+.tool-run-collapse { align-self: flex-start; background: none; border: 0; padding: 2px 0; cursor: pointer; color: var(--text-dim); font: inherit; font-size: 0.75rem; }
+.tool-run-collapse:hover { text-decoration: underline; }

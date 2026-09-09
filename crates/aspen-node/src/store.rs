@@ -1094,6 +1094,20 @@ impl BusStore {
     }
 
     /// Add a notice; notices older than seven days are pruned as we go.
+    /// Was a notice with this agent, kind and title raised in the last
+    /// `within_secs`? (Repeat failures — an MCP server that is always down
+    /// — should not toast on every daemon restart.)
+    pub fn notice_recent(&self, agent: &str, kind: &str, title: &str, within_secs: f64) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM notices WHERE agent=?1 AND kind=?2 AND title=?3 AND ts > ?4",
+            params![agent, kind, title, now_epoch() - within_secs],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false)
+    }
+
     pub fn add_notice(
         &self,
         agent: &str,
