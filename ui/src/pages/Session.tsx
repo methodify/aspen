@@ -1663,7 +1663,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
 
   async function send() {
     const text = draft.trim();
-    if (!text || busy || exited) return;
+    if (!text || exited) return;
     // TUI-local commands the console has a surface for open it instead
     // of going to a harness that cannot run them (PROPOSALS-MCP.md §3.3).
     if (/^\/mcp(\s|$)/.test(text)) {
@@ -2195,7 +2195,11 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
 
-  const composerDisabled = busy || exited !== null;
+  // The composer stays open while the agent works: Claude queues a
+  // mid-turn message for the next turn (and coalesces several), Codex
+  // steers the running turn — the TUI's behavior, and the reference's
+  // rule ("send immediately, always").
+  const composerDisabled = exited !== null;
 
   const pendingPerms = transcript.items.filter(
     (it): it is PermissionCardItem => it.kind === "permission" && !it.settled,
@@ -2948,7 +2952,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             exited
               ? "session exited"
               : busy
-                ? "working… unlocks at turn end"
+                ? agent?.harness === "codex"
+                  ? "working… Enter steers this turn, Shift+Enter for a newline"
+                  : "working… Enter queues for the next turn, Shift+Enter for a newline"
                 : `message @${name} — Enter sends, Shift+Enter for a newline, / for commands`
           }
           disabled={composerDisabled}
