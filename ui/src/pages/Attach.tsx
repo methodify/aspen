@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
-import { activate, activeConnection, addConnection, directUrlProblem, hosted, listConnections, removeConnection, type Connection } from "../connections";
+import { activate, activeConnection, addConnection, directUrlProblem, hosted, listConnections, markActive, removeConnection, type Connection } from "../connections";
 import { ErrorBar } from "../components";
 
 export default function Attach() {
@@ -32,6 +32,15 @@ export default function Attach() {
   async function connect() {
     setErr(null);
     apply({ enabled: true });
+    // Connecting is saving: the relay and node become a connection and
+    // the active one, so the rest of the console (and the next visit)
+    // knows where it is talking to. No reload — the tunnel is starting
+    // right here.
+    if (cfg.relay && cfg.node) {
+      const existing = listConnections().find((c) => c.kind === "relay" && c.relay === cfg.relay && c.node === cfg.node);
+      const c = existing ?? addConnection({ name: `${cfg.node} via relay`, kind: "relay", relay: cfg.relay, node: cfg.node });
+      markActive(c.id);
+    }
     try {
       await tunnel.start();
     } catch (e) {

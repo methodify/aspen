@@ -1080,3 +1080,14 @@ cleaner lane for roster updates than user-message headers.
   versions are separate trains now: a minimum, a badge, gating on
   capabilities. A phone layout is CSS over the same components; boards
   and the mesh views say they are desktop surfaces rather than pretend.
+- **2026-09-09 — v0.26.1, first contact with the hosted console.** Two
+  things the operator hit on a Mac and a phone within an hour of Pages
+  going live. A relay host was not a client of its own relay, so a
+  console attaching through a local node's relay could reach every node
+  but that one, and the present list said so by omission; the host now
+  registers on itself over loopback. And the hosted console's gate
+  counted only a saved connection as "connected": attach through steps
+  1–3, and every route bounced back to Connect while the pill said up.
+  Connecting now saves the connection, and an attached tunnel counts.
+  Rule from both: a state the status bar shows as good must be the same
+  state the rest of the console acts on.

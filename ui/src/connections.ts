@@ -63,6 +63,12 @@ export function removeConnection(id: string) {
   }
 }
 
+/** Record which connection is active without touching the tunnel or
+ *  reloading — for the attach page, which is starting the tunnel itself. */
+export function markActive(id: string) {
+  localStorage.setItem(ACTIVE_KEY, id);
+}
+
 /** Make a connection the active one: a relay connection turns the
  *  tunnel on for its relay and node; a direct one turns it off. The
  *  page reloads so every poll starts over against the new target. */

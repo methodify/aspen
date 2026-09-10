@@ -308,6 +308,16 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(listen).await?;
     // Port 0 = ephemeral: the OS just chose, so report what it chose.
     let actual = listener.local_addr().unwrap_or(listen);
+    // A node that hosts a relay is a client of it too (federation.rs,
+    // ensure_dialers): registered under its own name, so a console that
+    // attaches through this relay can attach to this node.
+    let _ = state.node.inner.self_relay.set(format!(
+        "ws://127.0.0.1:{}/api/federation/relay",
+        actual.port()
+    ));
+    if state.node.inner.mesh().is_some() {
+        aspen_node::federation::ensure_dialers(state.node.inner.clone());
+    }
     // Bound successfully — now this process owns the daemon state file.
     crate::write_daemon_state(data_dir, actual, listen, ui_for_state.as_deref(), headless);
     tracing::info!("aspen node API listening on http://{actual}");

@@ -2710,6 +2710,17 @@ pub fn ensure_dialers(inner: Arc<NodeInner>) {
     // Keep a client on every configured rendezvous relay — the fallback
     // for peers with no direct path, and the mailbox for peers that are
     // offline. A client whose URL is removed from the config exits.
+    // The relay this node hosts is one it is a client of too: a relay
+    // host was not registered on its own relay, so anything addressed to
+    // it there — a console attaching to the node whose relay it reached —
+    // came back undeliverable, and the host never showed as present.
+    if let Some(u) = inner.self_relay.get() {
+        mesh.discovered_relays
+            .lock()
+            .unwrap()
+            .entry(u.clone())
+            .or_insert_with(|| mesh.identity.node.clone());
+    }
     let mut relay_urls = mesh.relay_urls();
     for u in mesh.discovered_relays.lock().unwrap().keys() {
         if !relay_urls.contains(u) {

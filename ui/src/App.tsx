@@ -392,8 +392,8 @@ function TunnelPill() {
   if (!tunnel.enabled && tunnel.state === "off") return null;
   const color = tunnel.state === "up" ? "var(--live)" : tunnel.state === "down" ? "var(--sig-gate)" : "var(--sig-normal)";
   return (
-    <button className="btn ghost sm mono" style={{ color }} onClick={() => nav("/attach")} title={tunnel.error ?? `console attached through ${tunnel.config.relay}`}>
-      via relay → {tunnel.config.node} · {tunnel.state}
+    <button className="btn ghost sm mono" style={{ color: tunnel.error ? "var(--sig-gate)" : color }} onClick={() => nav("/attach")} title={tunnel.error ?? `console attached through ${tunnel.config.relay}`}>
+      via relay → {tunnel.config.node} · {tunnel.state}{tunnel.error ? " · trouble" : ""}
     </button>
   );
 }
@@ -477,7 +477,8 @@ export default function App() {
   const loc = useLocation();
   const navTo = useNavigate();
   useEffect(() => {
-    if (hosted && !activeConnection() && loc.pathname !== "/attach" && loc.pathname !== "/open") navTo("/attach", { replace: true });
+    // Attached through steps 1–3 counts as connected, saved or not.
+    if (hosted && !activeConnection() && !tunnel.enabled && loc.pathname !== "/attach" && loc.pathname !== "/open") navTo("/attach", { replace: true });
   }, [loc.pathname, navTo]);
 
   const data: AppData = {

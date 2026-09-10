@@ -473,8 +473,14 @@ class Tunnel {
     const p = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       window.setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error("request timed out"));
-      }, 60000);
+        if (this.pending.delete(id)) {
+          // Say so where the operator looks: the link is up but the node
+          // does not answer through it.
+          this.error = "the node is not answering requests through the relay";
+          this.emit();
+          reject(new Error("request timed out: the node did not answer through the relay"));
+        }
+      }, 20000);
     });
     this.sendSealed({ t: "api_req", id, op: "http", agent: "", body: { method, path, body: body ?? null, headers: headers ?? {} } });
     return (await p) as HttpResult;

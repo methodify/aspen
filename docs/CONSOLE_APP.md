@@ -63,6 +63,13 @@ named list, one active:
   unchanged; the identity, certify and relay steps on the connect page
   are the same, and "save relay → node" keeps them as a connection.
 
+Connecting in step 3 saves the relay and node as a connection and makes
+it the active one; the console counts an attached tunnel as connected
+whether or not it was saved (v0.26.1 — before, the hosted console bounced
+every route back to Connect until a connection was saved by hand). A
+node that hosts a relay is present on it, so it can be the node you
+attach to (RELAY.md §11).
+
 `api.ts` prefixes every request and the events WebSocket with the active
 direct connection's URL; a relay connection turns the tunnel on. With no
 active connection the hosted console opens on the connect page. The

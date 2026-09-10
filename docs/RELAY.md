@@ -376,3 +376,13 @@ Verified (rig, 2026-09-07): a console certified by the root node,
 attached through that node's embedded relay to a third node, rendered
 that node's fleet, opened one of its sessions and exchanged a turn with
 it — every request and event over the relay.
+
+**A relay host is its own client (v0.26.1).** A node that hosts a relay
+was not registered on it: a console that reached a node's relay could
+attach to every *other* node present there but not to the host, and the
+host never showed in the present list — frames to it came back
+undeliverable, and the console sat at "registered" for ever. The node
+now registers on its own relay over loopback (`self_relay`, set when the
+listener binds; `ensure_dialers` treats it as a discovered relay), so
+"attach to the node whose relay this is" works, which on a laptop with a
+local node is the natural first thing to do.

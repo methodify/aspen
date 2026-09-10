@@ -158,6 +158,11 @@ pub struct NodeInner {
     /// Dispatch an HTTP request into this node's own router — the `http`
     /// mesh op a console peer uses (RELAY.md §11). Set by the API server.
     pub http_gateway: std::sync::OnceLock<HttpGateway>,
+    /// This node's own hosted relay, as a loopback URL, once the listener
+    /// is bound: the node registers on it like any client, so a console
+    /// (or a peer) that reaches the relay can reach its host too
+    /// (RELAY.md §11).
+    pub self_relay: std::sync::OnceLock<String>,
 }
 
 /// (method, path, body, headers) → `{status, content_type, body|body_b64}`.
@@ -750,6 +755,7 @@ impl Node {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             replication: Mutex::new(Default::default()),
             http_gateway: std::sync::OnceLock::new(),
+            self_relay: std::sync::OnceLock::new(),
             servicing: crate::servicing::Servicing::new(
                 crate::federation::VERSION
                     .get()
