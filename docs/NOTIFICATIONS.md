@@ -96,3 +96,12 @@ one now. Pushes come from the node subscribed on: subscribe on each node
 whose notices you want, or on the one you attach to through a relay.
 The node needs outbound HTTPS; relaying a push through a peer that has it
 is not built.
+
+Verified 2026-09-10 on the rig from the hosted console attached through a
+relay: subscribe registered the browser's push service endpoint on the
+node; the test push and a real `turn_ended` notice both arrived as
+notifications shown by the worker, with the session's link as the click
+target; `last_ok` moved on the row. Note when testing with `question`:
+a session in bypass-permissions mode answers `AskUserQuestion` itself, so
+no prompt reaches the node and no notice is raised — use a session that
+asks.
