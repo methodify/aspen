@@ -87,9 +87,19 @@ fn run_command(cmd: &str, stdin: &str) -> Result<(), String> {
     use std::process::Stdio;
     // quiet_command: a hook must not flash a console on Windows.
     let mut child = if cfg!(windows) {
-        aspen_core::quiet_command("cmd").args(["/C", cmd]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
+        aspen_core::quiet_command("cmd")
+            .args(["/C", cmd])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
     } else {
-        aspen_core::quiet_command("sh").args(["-c", cmd]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()
+        aspen_core::quiet_command("sh")
+            .args(["-c", cmd])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
     }
     .map_err(|e| e.to_string())?;
     if let Some(mut si) = child.stdin.take() {
@@ -123,14 +133,24 @@ fn run_command(cmd: &str, stdin: &str) -> Result<(), String> {
 
 /// Which activity ids are running for a session right now — the pump keeps
 /// the previous set to raise `activity_settled` when one disappears.
-pub fn running_ids(inner: &crate::node::NodeInner, harness: aspen_core::Harness, repo: &std::path::Path, session_id: Option<&str>, since: Option<f64>) -> std::collections::HashMap<String, String> {
+pub fn running_ids(
+    inner: &crate::node::NodeInner,
+    harness: aspen_core::Harness,
+    repo: &std::path::Path,
+    session_id: Option<&str>,
+    since: Option<f64>,
+) -> std::collections::HashMap<String, String> {
     let mut m = std::collections::HashMap::new();
     if let Some(sid) = session_id {
         for a in inner.store_for(harness).activities(repo, sid, since) {
             if a.get("status").and_then(|s| s.as_str()) == Some("running") {
                 let kind = a.get("kind").and_then(|k| k.as_str()).unwrap_or("");
                 let id = a.get("id").and_then(|k| k.as_str()).unwrap_or("");
-                let label = a.get("label").and_then(|k| k.as_str()).unwrap_or("").to_owned();
+                let label = a
+                    .get("label")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 m.insert(format!("{kind}:{id}"), label);
             }
         }

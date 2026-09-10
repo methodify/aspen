@@ -5,7 +5,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::harness::{Harness, HarnessCapabilities, McpAuth, McpServerState, PermissionMode, Posture, RuntimeInfo};
+use crate::harness::{
+    Harness, HarnessCapabilities, McpAuth, McpServerState, PermissionMode, Posture, RuntimeInfo,
+};
 use crate::ids::SessionId;
 use crate::permission::{PermissionBroker, PermissionPolicy};
 use crate::store::SessionStore;
@@ -77,7 +79,13 @@ pub trait AgentAdapter: Send + Sync {
     fn permission_modes(&self) -> Vec<PermissionMode>;
     /// The harness's mode id for a posture.
     fn mode_for_posture(&self, posture: Posture) -> Option<String>;
-    async fn spawn(&self, spec: SpawnSpec) -> Result<(Arc<dyn SessionHandle>, tokio::sync::mpsc::Receiver<SessionEvent>)>;
+    async fn spawn(
+        &self,
+        spec: SpawnSpec,
+    ) -> Result<(
+        Arc<dyn SessionHandle>,
+        tokio::sync::mpsc::Receiver<SessionEvent>,
+    )>;
     fn store(&self) -> Arc<dyn SessionStore>;
     /// The installed binary's version, if it can be found.
     fn version(&self) -> Option<String>;
@@ -130,20 +138,36 @@ pub trait SessionHandle: Send + Sync {
     /// Switch model; takes effect next turn.
     async fn set_model(&self, model: Option<&str>) -> Result<()> {
         let _ = model;
-        Err(Unsupported { harness: self.harness(), what: "changing the model" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "changing the model",
+        }
+        .into())
     }
     /// Live-switch the permission mode (a harness mode id).
     async fn set_mode(&self, mode: &str) -> Result<()> {
         let _ = mode;
-        Err(Unsupported { harness: self.harness(), what: "changing the mode" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "changing the mode",
+        }
+        .into())
     }
     /// Context usage breakdown, in the harness's own shape.
     async fn context_usage(&self) -> Result<Value> {
-        Err(Unsupported { harness: self.harness(), what: "context usage" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "context usage",
+        }
+        .into())
     }
     /// Reload plugins/skills/commands from disk.
     async fn reload(&self) -> Result<Value> {
-        Err(Unsupported { harness: self.harness(), what: "reloading plugins" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "reloading plugins",
+        }
+        .into())
     }
 
     /// The harness process id, for the process-tree view (PROPOSALS-MCP.md §6).
@@ -153,24 +177,44 @@ pub trait SessionHandle: Send + Sync {
 
     /// MCP servers as the harness sees them now (PROPOSALS-MCP.md §3.1).
     async fn mcp_servers(&self) -> Result<Vec<McpServerState>> {
-        Err(Unsupported { harness: self.harness(), what: "MCP server status" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "MCP server status",
+        }
+        .into())
     }
     /// Reconnect one server; Err carries the harness's reason.
     async fn mcp_reconnect(&self, name: &str) -> Result<()> {
         let _ = name;
-        Err(Unsupported { harness: self.harness(), what: "reconnecting an MCP server" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "reconnecting an MCP server",
+        }
+        .into())
     }
     async fn mcp_toggle(&self, name: &str, enabled: bool) -> Result<()> {
         let _ = (name, enabled);
-        Err(Unsupported { harness: self.harness(), what: "enabling or disabling an MCP server" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "enabling or disabling an MCP server",
+        }
+        .into())
     }
     async fn mcp_authenticate(&self, name: &str) -> Result<McpAuth> {
         let _ = name;
-        Err(Unsupported { harness: self.harness(), what: "MCP authentication" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "MCP authentication",
+        }
+        .into())
     }
     /// Add a server to the running session (harness config shape).
     async fn mcp_add(&self, name: &str, config: Value) -> Result<()> {
         let _ = (name, config);
-        Err(Unsupported { harness: self.harness(), what: "adding an MCP server to a running session" }.into())
+        Err(Unsupported {
+            harness: self.harness(),
+            what: "adding an MCP server to a running session",
+        }
+        .into())
     }
 }

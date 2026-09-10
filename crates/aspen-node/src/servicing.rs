@@ -104,11 +104,21 @@ impl NodeState {
                 )
             }),
             NodeState::Updating { since, .. } => Some(format!("updater running since {since:.0}")),
-            NodeState::Evacuating { to, done, pending, skipped, .. } => Some(format!(
+            NodeState::Evacuating {
+                to,
+                done,
+                pending,
+                skipped,
+                ..
+            } => Some(format!(
                 "evacuating to {to}: {} moved, {} pending{}",
                 done.len(),
                 pending.len(),
-                if skipped.is_empty() { String::new() } else { format!(", {} skipped", skipped.len()) }
+                if skipped.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} skipped", skipped.len())
+                }
             )),
         }
     }
@@ -470,7 +480,9 @@ pub fn cancel(inner: &Arc<NodeInner>, by: &str) -> Result<bool> {
 /// that fails to move is skipped and named. Spawns are refused meanwhile.
 pub fn evacuate(inner: &Arc<NodeInner>, to: &str, by: &str) -> Result<NodeState> {
     let s = &inner.servicing;
-    let mesh = inner.mesh().ok_or_else(|| anyhow!("this node is not in a mesh"))?;
+    let mesh = inner
+        .mesh()
+        .ok_or_else(|| anyhow!("this node is not in a mesh"))?;
     if to == mesh.identity.node {
         return Err(anyhow!("cannot evacuate a node to itself"));
     }
@@ -483,13 +495,7 @@ pub fn evacuate(inner: &Arc<NodeInner>, to: &str, by: &str) -> Result<NodeState>
             NodeState::Ready => {}
             other => return Err(anyhow!("node is {}; cancel that first", other.name())),
         }
-        let pending: Vec<String> = inner
-            .sessions
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
+        let pending: Vec<String> = inner.sessions.lock().unwrap().keys().cloned().collect();
         *st = NodeState::Evacuating {
             since: now_epoch(),
             by: by.to_owned(),
@@ -499,7 +505,11 @@ pub fn evacuate(inner: &Arc<NodeInner>, to: &str, by: &str) -> Result<NodeState>
             pending,
         };
     }
-    let _ = inner.store.record_event(NODE_AGENT, "evacuate_requested", json!({ "to": to, "by": by }));
+    let _ = inner.store.record_event(
+        NODE_AGENT,
+        "evacuate_requested",
+        json!({ "to": to, "by": by }),
+    );
     let inner2 = inner.clone();
     let to2 = to.to_owned();
     tokio::spawn(async move { run_evacuation(inner2, to2).await });
@@ -509,7 +519,10 @@ pub fn evacuate(inner: &Arc<NodeInner>, to: &str, by: &str) -> Result<NodeState>
 async fn run_evacuation(inner: Arc<NodeInner>, to: String) {
     let s = &inner.servicing;
     let started = now_epoch();
-    let me = inner.mesh().map(|m| m.identity.node.clone()).unwrap_or_default();
+    let me = inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_default();
     loop {
         // Still evacuating? (cancel puts us back to ready)
         let (done, skipped) = match s.state() {
@@ -517,7 +530,11 @@ async fn run_evacuation(inner: Arc<NodeInner>, to: String) {
             _ => return,
         };
         if now_epoch() - started > 3600.0 {
-            let _ = inner.store.record_event(NODE_AGENT, "evacuate_timeout", json!({ "to": to, "moved": done.len() }));
+            let _ = inner.store.record_event(
+                NODE_AGENT,
+                "evacuate_timeout",
+                json!({ "to": to, "moved": done.len() }),
+            );
             *s.state.lock().unwrap() = NodeState::Ready;
             return;
         }
@@ -526,7 +543,12 @@ async fn run_evacuation(inner: Arc<NodeInner>, to: String) {
             sessions
                 .values()
                 .filter(|m| !done.contains(&m.name) && !skipped.iter().any(|(a, _)| a == &m.name))
-                .map(|m| (m.name.clone(), matches!(m.turn_state(), crate::node::TurnState::Idle)))
+                .map(|m| {
+                    (
+                        m.name.clone(),
+                        matches!(m.turn_state(), crate::node::TurnState::Idle),
+                    )
+                })
                 .collect()
         };
         {
@@ -547,7 +569,10 @@ async fn run_evacuation(inner: Arc<NodeInner>, to: String) {
             }
             return;
         }
-        let next = candidates.iter().find(|(_, idle)| *idle).map(|(n, _)| n.clone());
+        let next = candidates
+            .iter()
+            .find(|(_, idle)| *idle)
+            .map(|(n, _)| n.clone());
         let Some(name) = next else {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             continue;
@@ -776,11 +801,17 @@ pub fn autostart_json(inner: &Arc<NodeInner>) -> Value {
     let Some(dd) = inner.data_dir.as_deref() else {
         return json!({ "supported": false, "enabled": false, "supervised": false });
     };
-    let marker: Option<Value> = std::fs::read_to_string(dd.join("autostart.json")).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let marker: Option<Value> = std::fs::read_to_string(dd.join("autostart.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
     let supervisor = std::fs::read_to_string(dd.join("daemon.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get("supervisor").and_then(|x| x.as_str()).map(str::to_owned));
+        .and_then(|v| {
+            v.get("supervisor")
+                .and_then(|x| x.as_str())
+                .map(str::to_owned)
+        });
     let supported = marker.is_some()
         || cfg!(windows)
         || cfg!(target_os = "macos")
@@ -818,9 +849,16 @@ pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> 
     let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {
         anyhow::bail!("this node does not know its own binary or data dir");
     };
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(data_dir.join("aspen.log"));
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir.join("aspen.log"));
     let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("--data-dir").arg(&data_dir).args(args).env_remove("ASPEN_DETACHED").stdin(std::process::Stdio::null());
+    cmd.arg("--data-dir")
+        .arg(&data_dir)
+        .args(args)
+        .env_remove("ASPEN_DETACHED")
+        .stdin(std::process::Stdio::null());
     match log {
         Ok(f) => {
             if let Ok(e) = f.try_clone() {
@@ -828,7 +866,8 @@ pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> 
             }
         }
         Err(_) => {
-            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
         }
     }
     #[cfg(unix)]
@@ -847,7 +886,9 @@ pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> 
         cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
     }
     let child = cmd.spawn()?;
-    let _ = inner.store.record_event(NODE_AGENT, "cli_launched", json!({ "args": args }));
+    let _ = inner
+        .store
+        .record_event(NODE_AGENT, "cli_launched", json!({ "args": args }));
     Ok(child.id())
 }
 

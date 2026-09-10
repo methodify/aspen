@@ -53,7 +53,10 @@ fn touched_paths_codex(path: &Path) -> Vec<Artifact> {
             continue;
         }
         let item = &p["item"];
-        let at = line.get("timestamp").and_then(|t| t.as_str()).map(str::to_owned);
+        let at = line
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .map(str::to_owned);
         match item.get("type").and_then(|t| t.as_str()) {
             Some("FileChange") => {
                 if item.get("status").and_then(|s| s.as_str()) != Some("completed") {
@@ -71,7 +74,12 @@ fn touched_paths_codex(path: &Path) -> Vec<Artifact> {
                                 existing.kind = kind.into();
                             }
                         } else {
-                            out.push(Artifact { path: path.clone(), kind: kind.into(), at: at.clone(), tool: "fileChange".into() });
+                            out.push(Artifact {
+                                path: path.clone(),
+                                kind: kind.into(),
+                                at: at.clone(),
+                                tool: "fileChange".into(),
+                            });
                         }
                     }
                 }
@@ -81,9 +89,18 @@ fn touched_paths_codex(path: &Path) -> Vec<Artifact> {
                 if let Some(actions) = item.get("parsed_cmd").and_then(|a| a.as_array()) {
                     for a in actions {
                         if a.get("type").and_then(|t| t.as_str()) == Some("read") {
-                            if let Some(path) = a.get("path").or_else(|| a.get("name")).and_then(|x| x.as_str()) {
+                            if let Some(path) = a
+                                .get("path")
+                                .or_else(|| a.get("name"))
+                                .and_then(|x| x.as_str())
+                            {
                                 if !out.iter().any(|x| x.path == path) {
-                                    out.push(Artifact { path: path.to_owned(), kind: "read".into(), at: at.clone(), tool: "commandExecution".into() });
+                                    out.push(Artifact {
+                                        path: path.to_owned(),
+                                        kind: "read".into(),
+                                        at: at.clone(),
+                                        tool: "commandExecution".into(),
+                                    });
                                 }
                             }
                         }
@@ -280,7 +297,9 @@ pub fn resolve(
     if let Some(sid) = session_id {
         let main = match harness {
             aspen_core::Harness::Claude => aspen_claude::transcript::transcript_path(repo, sid),
-            aspen_core::Harness::Codex => aspen_core::SessionStore::main_path(&aspen_codex::CodexStore::new(), repo, sid),
+            aspen_core::Harness::Codex => {
+                aspen_core::SessionStore::main_path(&aspen_codex::CodexStore::new(), repo, sid)
+            }
         };
         let touched = touched_paths_for(harness, &main);
         if touched

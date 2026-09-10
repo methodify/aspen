@@ -10,7 +10,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot};
 
-use aspen_core::permission::{policy_opinion, BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest};
+use aspen_core::permission::{
+    policy_opinion, BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy,
+    PermissionRequest,
+};
 use aspen_core::{DecisionOption, PromptKind, SessionEvent, ToolKind};
 
 /// How long a prompt stays open before an honest deny. Generous: an operator
@@ -78,7 +81,14 @@ impl OperatorBroker {
         updated_input: Option<Value>,
         updated_permissions: Option<Value>,
     ) -> bool {
-        self.answer_with(request_id, allow, message, updated_input, updated_permissions, None)
+        self.answer_with(
+            request_id,
+            allow,
+            message,
+            updated_input,
+            updated_permissions,
+            None,
+        )
     }
 
     /// Answer by one of the offered decisions (`decision_id`), or by the
@@ -154,8 +164,11 @@ impl PermissionBroker for OperatorBroker {
         // Questions always reach the operator — a silently "allowed"
         // question is a question nobody answered (reference §7.6).
         let is_question = req.prompt == PromptKind::Question;
-        let bus_tool = req.tool_name.starts_with("mcp__aspen__") || req.tool_name.starts_with("bus_");
-        if !is_question && (bus_tool || policy_opinion(self.policy, req.kind, req.prompt) == Some(true)) {
+        let bus_tool =
+            req.tool_name.starts_with("mcp__aspen__") || req.tool_name.starts_with("bus_");
+        if !is_question
+            && (bus_tool || policy_opinion(self.policy, req.kind, req.prompt) == Some(true))
+        {
             return (
                 BrokerDecision::Allow {
                     updated_input: req.input,

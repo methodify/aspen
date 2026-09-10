@@ -136,7 +136,11 @@ impl NodeIdentity {
     /// Install a cert for an additional mesh (same keys, same name).
     pub fn install_extra_cert(&mut self, cert: NodeCert) -> Result<()> {
         if cert.node != self.node {
-            bail!("cert names node {:?}, this node is {:?}", cert.node, self.node);
+            bail!(
+                "cert names node {:?}, this node is {:?}",
+                cert.node,
+                self.node
+            );
         }
         if cert.ed_public != self.ed_public || cert.x_public != self.x_public {
             bail!("cert covers different keys than this node holds");

@@ -53,7 +53,9 @@ pub fn repo_key(repo: &Path) -> String {
         Some(o) => format!("origin:{o}"),
         None => format!(
             "name:{}",
-            repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            repo.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
         ),
     }
 }
@@ -74,9 +76,11 @@ fn fnv(bytes: &[u8]) -> String {
 fn is_text_name(rel: &str) -> bool {
     let lower = rel.to_ascii_lowercase();
     !lower.contains(".from-")
-        && [".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".jsonl"]
-            .iter()
-            .any(|e| lower.ends_with(e))
+        && [
+            ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".jsonl",
+        ]
+        .iter()
+        .any(|e| lower.ends_with(e))
 }
 
 /// Every text file in a memory dir: rel → (hash, content). Files that
@@ -85,11 +89,17 @@ pub fn read_dir_files(dir: &Path) -> BTreeMap<String, (String, String)> {
     let mut out = BTreeMap::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
     while let Some((d, prefix)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
-            let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
             if p.is_dir() {
                 stack.push((p, rel));
             } else if is_text_name(&rel) {
@@ -156,7 +166,10 @@ pub fn roster_digests(inner: &Arc<NodeInner>) -> Option<Value> {
 /// `memory_files {key}`: every file of the repo matching `key`,
 /// canonicalized, plus tombstones.
 pub fn files_for_key(inner: &Arc<NodeInner>, key: &str) -> Result<Value> {
-    let dd = inner.data_dir.clone().ok_or_else(|| anyhow!("no data dir"))?;
+    let dd = inner
+        .data_dir
+        .clone()
+        .ok_or_else(|| anyhow!("no data dir"))?;
     if !crate::settings::load(&dd).memory.on() {
         return Err(anyhow!("memory sync is off on this node"));
     }
@@ -188,7 +201,12 @@ pub fn files_for_key(inner: &Arc<NodeInner>, key: &str) -> Result<Value> {
 }
 
 /// Merge what a peer sent for one repo. Returns (written, conflicts).
-pub fn merge_from(inner: &Arc<NodeInner>, peer: &str, repo: &Path, files: &[Value]) -> (usize, Vec<String>) {
+pub fn merge_from(
+    inner: &Arc<NodeInner>,
+    peer: &str,
+    repo: &Path,
+    files: &[Value],
+) -> (usize, Vec<String>) {
     let dir = memory_dir(repo);
     let ctx = PathCtx::local(repo);
     let repo_s = repo.to_string_lossy().to_string();
@@ -198,8 +216,14 @@ pub fn merge_from(inner: &Arc<NodeInner>, peer: &str, repo: &Path, files: &[Valu
     let mut written = 0usize;
     let mut conflicts = Vec::new();
     for f in files {
-        let Some(rel) = f.get("rel").and_then(|r| r.as_str()) else { continue };
-        if rel.split('/').any(|p| p.is_empty() || p == "." || p == "..") || rel.contains('\\') {
+        let Some(rel) = f.get("rel").and_then(|r| r.as_str()) else {
+            continue;
+        };
+        if rel
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == "..")
+            || rel.contains('\\')
+        {
             continue;
         }
         let path = dir.join(rel);
@@ -227,18 +251,24 @@ pub fn merge_from(inner: &Arc<NodeInner>, peer: &str, repo: &Path, files: &[Valu
             }
             (false, Some(rc), None) => {
                 // We deleted it (tombstone matching what they hold): stay deleted.
-                if b.map(|x| x.deleted).unwrap_or(false) && b.and_then(|x| x.content.as_deref()) == Some(rc.as_str()) {
+                if b.map(|x| x.deleted).unwrap_or(false)
+                    && b.and_then(|x| x.content.as_deref()) == Some(rc.as_str())
+                {
                     continue;
                 }
                 if write(&path, &rc).is_ok() {
-                    let _ = inner.store.set_memory_base(&repo_s, rel, Some(&rc), false, now);
+                    let _ = inner
+                        .store
+                        .set_memory_base(&repo_s, rel, Some(&rc), false, now);
                     written += 1;
                 }
             }
             (false, Some(rc), Some(lc)) => {
                 if rc == lc {
                     if b_content.as_deref() != Some(lc.as_str()) {
-                        let _ = inner.store.set_memory_base(&repo_s, rel, Some(&lc), false, now);
+                        let _ = inner
+                            .store
+                            .set_memory_base(&repo_s, rel, Some(&lc), false, now);
                     }
                     // Converged: a conflict copy from this peer is stale now.
                     let stale = from_path(&dir, rel, peer);
@@ -251,14 +281,23 @@ pub fn merge_from(inner: &Arc<NodeInner>, peer: &str, repo: &Path, files: &[Valu
                     Some(bc) if bc == rc => {} // they have not moved; keep ours
                     Some(bc) if bc == lc => {
                         if write(&path, &rc).is_ok() {
-                            let _ = inner.store.set_memory_base(&repo_s, rel, Some(&rc), false, now);
+                            let _ =
+                                inner
+                                    .store
+                                    .set_memory_base(&repo_s, rel, Some(&rc), false, now);
                             written += 1;
                         }
                     }
                     Some(bc) => match diffy::merge(bc, &lc, &rc) {
                         Ok(merged) => {
                             if write(&path, &merged).is_ok() {
-                                let _ = inner.store.set_memory_base(&repo_s, rel, Some(&merged), false, now);
+                                let _ = inner.store.set_memory_base(
+                                    &repo_s,
+                                    rel,
+                                    Some(&merged),
+                                    false,
+                                    now,
+                                );
                                 written += 1;
                             }
                         }
@@ -288,8 +327,14 @@ fn write(path: &Path, content: &str) -> std::io::Result<()> {
 
 fn from_path(dir: &Path, rel: &str, peer: &str) -> PathBuf {
     let p = Path::new(rel);
-    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| rel.to_owned());
-    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| rel.to_owned());
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     let parent = p.parent().map(|x| x.to_path_buf()).unwrap_or_default();
     dir.join(parent).join(format!("{stem}.from-{peer}{ext}"))
 }
@@ -302,12 +347,24 @@ fn keep_both(dir: &Path, rel: &str, peer: &str, remote: &str) {
 /// conflict.
 pub async fn sync_from(inner: &Arc<NodeInner>, peer: &str, key: &str) {
     let Some(mesh) = inner.mesh() else { return };
-    let Ok(repos) = inner.store.repos() else { return };
-    let Some(repo) = repos.into_iter().map(|r| r.path).find(|p| repo_key(p) == key) else {
+    let Ok(repos) = inner.store.repos() else {
+        return;
+    };
+    let Some(repo) = repos
+        .into_iter()
+        .map(|r| r.path)
+        .find(|p| repo_key(p) == key)
+    else {
         return;
     };
     let v = match mesh
-        .api_call(peer, "memory_files", "", json!({ "key": key }), std::time::Duration::from_secs(30))
+        .api_call(
+            peer,
+            "memory_files",
+            "",
+            json!({ "key": key }),
+            std::time::Duration::from_secs(30),
+        )
         .await
     {
         Ok(v) => v,
@@ -316,7 +373,11 @@ pub async fn sync_from(inner: &Arc<NodeInner>, peer: &str, key: &str) {
             return;
         }
     };
-    let files = v.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+    let files = v
+        .get("files")
+        .and_then(|f| f.as_array())
+        .cloned()
+        .unwrap_or_default();
     let inner2 = inner.clone();
     let peer2 = peer.to_owned();
     let repo2 = repo.clone();
@@ -340,7 +401,10 @@ pub async fn sync_from(inner: &Arc<NodeInner>, peer: &str, key: &str) {
             &format!("memory@{repo_handle}"),
             "memory_conflict",
             &format!("memory conflict in #{repo_handle}: {rel}"),
-            Some(&format!("both nodes edited it since they last agreed; {peer}'s copy is beside it as {}", from_path(Path::new(""), &rel, peer).display())),
+            Some(&format!(
+                "both nodes edited it since they last agreed; {peer}'s copy is beside it as {}",
+                from_path(Path::new(""), &rel, peer).display()
+            )),
             Some("/"),
         );
     }
@@ -349,31 +413,48 @@ pub async fn sync_from(inner: &Arc<NodeInner>, peer: &str, key: &str) {
 /// Conflicts on this node: every `.from-<node>` file in a memory dir.
 pub fn conflicts(inner: &Arc<NodeInner>) -> Vec<Value> {
     let mut out = Vec::new();
-    let Ok(repos) = inner.store.repos() else { return out };
+    let Ok(repos) = inner.store.repos() else {
+        return out;
+    };
     for r in repos {
         let dir = memory_dir(&r.path);
         let mut stack = vec![(dir.clone(), String::new())];
         while let Some((d, prefix)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let p = e.path();
                 let name = e.file_name().to_string_lossy().to_string();
-                let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                let rel = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
                 if p.is_dir() {
                     stack.push((p, rel));
                     continue;
                 }
-                let Some(idx) = name.find(".from-") else { continue };
+                let Some(idx) = name.find(".from-") else {
+                    continue;
+                };
                 let stem = &name[..idx];
                 let rest = &name[idx + 6..];
                 let (peer, ext) = match rest.find('.') {
                     Some(i) => (&rest[..i], &rest[i..]),
                     None => (rest, ""),
                 };
-                let original = if prefix.is_empty() { format!("{stem}{ext}") } else { format!("{prefix}/{stem}{ext}") };
+                let original = if prefix.is_empty() {
+                    format!("{stem}{ext}")
+                } else {
+                    format!("{prefix}/{stem}{ext}")
+                };
                 // A copy identical to the file is a conflict already
                 // resolved (the other side took ours, or ours theirs).
-                if let (Ok(a), Ok(b)) = (std::fs::read_to_string(&p), std::fs::read_to_string(dir.join(&original))) {
+                if let (Ok(a), Ok(b)) = (
+                    std::fs::read_to_string(&p),
+                    std::fs::read_to_string(dir.join(&original)),
+                ) {
                     if a == b {
                         let _ = std::fs::remove_file(&p);
                         continue;
@@ -402,7 +483,13 @@ pub fn conflicts(inner: &Arc<NodeInner>) -> Vec<Value> {
 
 /// Resolve a conflict: `mine` drops the incoming copy; `theirs` replaces
 /// the file with it. Either way the result becomes the new base.
-pub fn resolve(inner: &Arc<NodeInner>, repo: &Path, rel: &str, copy: &str, choice: &str) -> Result<()> {
+pub fn resolve(
+    inner: &Arc<NodeInner>,
+    repo: &Path,
+    rel: &str,
+    copy: &str,
+    choice: &str,
+) -> Result<()> {
     let dir = memory_dir(repo);
     let target = dir.join(rel);
     let from = dir.join(copy);
@@ -441,8 +528,13 @@ mod tests {
         let base = "a\nb\nc\nd\ne\nf\ng\nh\n";
         let ours = "A\nb\nc\nd\ne\nf\ng\nh\n";
         let theirs = "a\nb\nc\nd\ne\nf\ng\nH\n";
-        assert_eq!(diffy::merge(base, ours, theirs).unwrap(), "A\nb\nc\nd\ne\nf\ng\nH\n");
-        assert!(diffy::merge(base, "X\nb\nc\nd\ne\nf\ng\nh\n", "Y\nb\nc\nd\ne\nf\ng\nh\n").is_err());
+        assert_eq!(
+            diffy::merge(base, ours, theirs).unwrap(),
+            "A\nb\nc\nd\ne\nf\ng\nH\n"
+        );
+        assert!(
+            diffy::merge(base, "X\nb\nc\nd\ne\nf\ng\nh\n", "Y\nb\nc\nd\ne\nf\ng\nh\n").is_err()
+        );
     }
 
     #[test]
@@ -451,7 +543,10 @@ mod tests {
             from_path(Path::new("/m"), "notes/plan.md", "j2"),
             PathBuf::from("/m/notes/plan.from-j2.md")
         );
-        assert_eq!(from_path(Path::new("/m"), "README", "j2"), PathBuf::from("/m/README.from-j2"));
+        assert_eq!(
+            from_path(Path::new("/m"), "README", "j2"),
+            PathBuf::from("/m/README.from-j2")
+        );
         assert!(!is_text_name("plan.from-j2.md"));
         assert!(is_text_name("plan.md"));
     }

@@ -56,7 +56,11 @@ pub fn run(data_dir: &Path) -> Result<()> {
                         .unwrap_or(true)
                     {
                         println!("        listening beyond loopback: other machines can dial this node; the console needs the token above");
-                        if let Some(port) = listen.parse::<std::net::SocketAddr>().ok().map(|a| a.port()) {
+                        if let Some(port) = listen
+                            .parse::<std::net::SocketAddr>()
+                            .ok()
+                            .map(|a| a.port())
+                        {
                             for line in windows_firewall_hints(port) {
                                 println!("        {line}");
                             }
@@ -148,10 +152,16 @@ pub fn run(data_dir: &Path) -> Result<()> {
                 Some("schtasks") => "Scheduled Task at logon",
                 _ => "installed",
             },
-            if state.is_some() && !auto.supervised { " (the running daemon was started by hand)" } else { "" }
+            if state.is_some() && !auto.supervised {
+                " (the running daemon was started by hand)"
+            } else {
+                ""
+            }
         );
     } else if auto.supported {
-        println!("autostart: off — `aspen autostart enable` starts the daemon at your login, as you");
+        println!(
+            "autostart: off — `aspen autostart enable` starts the daemon at your login, as you"
+        );
     }
     println!();
 

@@ -36,19 +36,37 @@ pub fn descendants(root: u32) -> Vec<Proc> {
 #[cfg(target_os = "linux")]
 fn list_all() -> Vec<Proc> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
-    let uptime = std::fs::read_to_string("/proc/uptime").ok().and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok());
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    let uptime = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok());
     let hz = 100.0;
     for e in rd.flatten() {
-        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
-        let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else { continue };
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else {
+            continue;
+        };
         // "pid (comm) state ppid ..." — comm may contain spaces/parens.
-        let Some(close) = stat.rfind(')') else { continue };
+        let Some(close) = stat.rfind(')') else {
+            continue;
+        };
         let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
-        let Some(parent) = rest.get(1).and_then(|p| p.parse::<u32>().ok()) else { continue };
+        let Some(parent) = rest.get(1).and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
         let start_ticks = rest.get(19).and_then(|s| s.parse::<f64>().ok());
         let cmdline = std::fs::read(e.path().join("cmdline"))
-            .map(|b| b.split(|c| *c == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect::<Vec<_>>().join(" "))
+            .map(|b| {
+                b.split(|c| *c == 0)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default();
         if cmdline.is_empty() {
             continue; // kernel threads
@@ -57,7 +75,12 @@ fn list_all() -> Vec<Proc> {
             (Some(u), Some(st)) => Some((u - st / hz).max(0.0) as u64),
             _ => None,
         };
-        out.push(Proc { pid, parent, cmdline, age_secs });
+        out.push(Proc {
+            pid,
+            parent,
+            cmdline,
+            age_secs,
+        });
     }
     out
 }
@@ -82,14 +105,24 @@ fn list_all() -> Vec<Proc> {
             if cmdline.is_empty() {
                 return None;
             }
-            Some(Proc { pid, parent, cmdline, age_secs: (age >= 0).then_some(age as u64) })
+            Some(Proc {
+                pid,
+                parent,
+                cmdline,
+                age_secs: (age >= 0).then_some(age as u64),
+            })
         })
         .collect()
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
 fn list_all() -> Vec<Proc> {
-    let Ok(out) = std::process::Command::new("ps").args(["-axo", "pid=,ppid=,etimes=,args="]).output() else { return Vec::new() };
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,etimes=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| {
@@ -98,7 +131,12 @@ fn list_all() -> Vec<Proc> {
             let parent = it.next()?.parse().ok()?;
             let age = it.next()?.parse().ok();
             let cmdline = it.collect::<Vec<_>>().join(" ");
-            Some(Proc { pid, parent, cmdline, age_secs: age })
+            Some(Proc {
+                pid,
+                parent,
+                cmdline,
+                age_secs: age,
+            })
         })
         .collect()
 }
@@ -110,25 +148,39 @@ pub fn terminate(pid: u32) -> std::io::Result<()> {
     {
         let alive = |p: u32| std::path::Path::new(&format!("/proc/{p}")).exists();
         for c in descendants(pid) {
-            let _ = std::process::Command::new("kill").args(["-TERM", &c.pid.to_string()]).status();
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &c.pid.to_string()])
+                .status();
         }
         // The parent (a shell wrapper) often exits on its own once its
         // child is gone; a missing process is the outcome we wanted.
-        let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
         std::thread::sleep(std::time::Duration::from_millis(1500));
         if alive(pid) {
-            let _ = std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
         if alive(pid) {
-            return Err(std::io::Error::other(format!("process {pid} is still running after SIGKILL")));
+            return Err(std::io::Error::other(format!(
+                "process {pid} is still running after SIGKILL"
+            )));
         }
         Ok(())
     }
     #[cfg(windows)]
     {
-        let st = aspen_core::quiet_command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status()?;
-        if st.success() { Ok(()) } else { Err(std::io::Error::other(format!("taskkill {pid} failed"))) }
+        let st = aspen_core::quiet_command("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()?;
+        if st.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!("taskkill {pid} failed")))
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {

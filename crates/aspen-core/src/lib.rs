@@ -14,11 +14,18 @@ pub mod permission;
 pub mod process;
 pub mod store;
 
-pub use adapter::{AdapterCapabilities, AgentAdapter, SessionHandle, SpawnSpec, ToolDef, ToolProvider, Unsupported};
-pub use harness::{DecisionOption, DecisionScope, Harness, HarnessCapabilities, McpAuth, McpServerState, McpStatus, PermissionMode, Posture, PromptKind, RuntimeInfo, ToolKind};
-pub use permission::{BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest, PolicyBroker};
-pub use store::{ProjectDirs, SessionInfo, SessionOrigin, SessionStore};
+pub use adapter::{
+    AdapterCapabilities, AgentAdapter, SessionHandle, SpawnSpec, ToolDef, ToolProvider, Unsupported,
+};
 pub use bus::{BusMessage, Urgency};
 pub use event::SessionEvent;
+pub use harness::{
+    DecisionOption, DecisionScope, Harness, HarnessCapabilities, McpAuth, McpServerState,
+    McpStatus, PermissionMode, Posture, PromptKind, RuntimeInfo, ToolKind,
+};
 pub use ids::{AgentName, NodeId, RepoId, SessionId};
+pub use permission::{
+    BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest, PolicyBroker,
+};
 pub use process::quiet_command;
+pub use store::{ProjectDirs, SessionInfo, SessionOrigin, SessionStore};

@@ -1,0 +1,42 @@
+# The hosted console on GitHub Pages (docs/CONSOLE_APP.md §3): the same
+# UI built for methodify.github.io/aspen — hash routes, connections to
+# nodes and relays. Runs on every release tag and on demand. Needs the
+# repository's Pages source set to "GitHub Actions" (one-time).
+name: pages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: build hosted console
+        run: npm ci && VITE_HOSTED=1 npx vite build --outDir dist-hosted
+        working-directory: ui
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ui/dist-hosted
+      - id: deploy
+        uses: actions/deploy-pages@v4

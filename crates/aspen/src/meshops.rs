@@ -301,7 +301,10 @@ fn join_extra(
     );
     if let Some(b) = bundle {
         b.certifier.verify_against(&m.root_public)?;
-        m.peers.push(aspen_node::mesh::PeerConfig { cert: b.certifier.clone(), url: b.certifier_url.clone() });
+        m.peers.push(aspen_node::mesh::PeerConfig {
+            cert: b.certifier.clone(),
+            url: b.certifier_url.clone(),
+        });
         summary.push_str(&format!("; peer '{}' registered", b.certifier.node));
         if let Some(relay) = b.relay {
             m.add_relay(&relay);
@@ -320,7 +323,17 @@ pub fn leave_mesh(files: &MeshFiles, mesh: &str) -> Result<Done> {
 /// Set what peers of a mesh may do here.
 pub fn policy(files: &MeshFiles, mesh: &str, policy: &str) -> Result<Done> {
     files.set_policy(mesh, policy)?;
-    Ok(done(format!("mesh '{mesh}': peers may now {} here", if policy == "full" { "do everything (full)" } else { "only observe" }), None))
+    Ok(done(
+        format!(
+            "mesh '{mesh}': peers may now {} here",
+            if policy == "full" {
+                "do everything (full)"
+            } else {
+                "only observe"
+            }
+        ),
+        None,
+    ))
 }
 
 pub fn peers_add(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Done> {

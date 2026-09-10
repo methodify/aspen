@@ -9,8 +9,6 @@
 
 pub mod addr;
 pub mod adoption;
-pub mod winfw;
-pub mod procs;
 pub mod artifacts;
 pub mod delivery;
 pub mod federation;
@@ -24,6 +22,7 @@ pub mod notify;
 pub mod pending;
 pub mod permit;
 pub mod plugins;
+pub mod procs;
 pub mod release;
 pub mod replicate;
 pub mod search;
@@ -34,6 +33,7 @@ pub mod store;
 pub mod tools;
 pub mod topology;
 pub mod trust;
+pub mod winfw;
 
 pub use node::{Node, SpawnOpts, TurnState};
 pub use store::{BusStore, StoredMessage};

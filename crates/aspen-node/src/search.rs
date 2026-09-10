@@ -28,12 +28,20 @@ pub struct SearchResult {
     pub scanned: usize,
 }
 
-pub fn search_local(inner: &Arc<NodeInner>, needle: &str, limit: usize, repo_filter: Option<&str>) -> SearchResult {
+pub fn search_local(
+    inner: &Arc<NodeInner>,
+    needle: &str,
+    limit: usize,
+    repo_filter: Option<&str>,
+) -> SearchResult {
     let needle_lc = needle.to_lowercase();
     if needle_lc.trim().is_empty() {
         return SearchResult::default();
     }
-    let me = inner.mesh().map(|m| m.identity.node.clone()).unwrap_or_default();
+    let me = inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_default();
     let agents = inner.store.agents().unwrap_or_default();
     let repos = inner.store.repos().unwrap_or_default();
     let mut out = SearchResult::default();
@@ -67,7 +75,9 @@ pub fn search_local(inner: &Arc<NodeInner>, needle: &str, limit: usize, repo_fil
         }
         let agent = agents
             .iter()
-            .find(|a| a.session_id.as_deref() == Some(si.session_id.as_str()) && a.moved_to.is_none())
+            .find(|a| {
+                a.session_id.as_deref() == Some(si.session_id.as_str()) && a.moved_to.is_none()
+            })
             .map(|a| a.name.clone());
         let title = agents
             .iter()
@@ -92,7 +102,9 @@ pub fn search_local(inner: &Arc<NodeInner>, needle: &str, limit: usize, repo_fil
             if out.sessions.len() >= limit {
                 break;
             }
-            let Some(main) = r.main.as_deref() else { continue };
+            let Some(main) = r.main.as_deref() else {
+                continue;
+            };
             out.scanned += 1;
             if !file_mentions(main, &needle_lc) {
                 continue;
@@ -122,11 +134,15 @@ pub fn search_local(inner: &Arc<NodeInner>, needle: &str, limit: usize, repo_fil
 
 /// The cheap gate: does the file contain the needle at all, case-folded?
 fn file_mentions(path: &Path, needle_lc: &str) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else { return false };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
     if meta.len() > MAX_FILE_BYTES {
         return false;
     }
-    let Ok(bytes) = std::fs::read(path) else { return false };
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
     // JSON escapes newlines and quotes, so a needle with either would miss
     // here; the item pass below sees the real text. Gate on the first
     // "word" then, which is never escaped.
@@ -156,7 +172,10 @@ fn hits_in(items: &[Value], needle_lc: &str) -> Vec<Value> {
                 }
             }
         }
-        let Some((field, pos)) = fields.iter().find_map(|f| f.to_lowercase().find(needle_lc).map(|p| (f, p))) else {
+        let Some((field, pos)) = fields
+            .iter()
+            .find_map(|f| f.to_lowercase().find(needle_lc).map(|p| (f, p)))
+        else {
             continue;
         };
         hits.push(json!({
@@ -186,7 +205,14 @@ fn snippet_around(text: &str, byte_pos: usize, needle_len: usize) -> Value {
     while !text.is_char_boundary(end) {
         end += 1;
     }
-    let before: String = text[..start].chars().rev().take(90).collect::<Vec<_>>().into_iter().rev().collect();
+    let before: String = text[..start]
+        .chars()
+        .rev()
+        .take(90)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let after: String = text[end..].chars().take(90).collect();
     let cut_before = before.chars().count() < text[..start].chars().count();
     let cut_after = after.chars().count() < text[end..].chars().count();

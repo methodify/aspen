@@ -54,7 +54,9 @@ pub fn rollout_files() -> Vec<PathBuf> {
     let root = sessions_dir();
     let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -102,7 +104,10 @@ pub fn read_meta(path: &Path) -> Option<RolloutMeta> {
         timestamp: s("timestamp"),
         cli_version: s("cli_version"),
         history_base: p.get("history_base").and_then(|h| {
-            Some((h.get("thread_id")?.as_str()?.to_owned(), h.get("end_ordinal_exclusive")?.as_u64()?))
+            Some((
+                h.get("thread_id")?.as_str()?.to_owned(),
+                h.get("end_ordinal_exclusive")?.as_u64()?,
+            ))
         }),
     })
 }
@@ -139,13 +144,20 @@ fn iso_to_epoch(ts: &str) -> Option<f64> {
     let mi = num(&ts[14..16])?;
     let s = num(&ts[17..19])?;
     let frac: f64 = if b.len() > 20 && b[19] == b'.' {
-        let end = ts[20..].find(|c: char| !c.is_ascii_digit()).map(|i| 20 + i).unwrap_or(ts.len());
+        let end = ts[20..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map(|i| 20 + i)
+            .unwrap_or(ts.len());
         format!("0.{}", &ts[20..end]).parse().unwrap_or(0.0)
     } else {
         0.0
     };
     // days from civil (Howard Hinnant)
-    let (y2, m2) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
+    let (y2, m2) = if mo <= 2 {
+        (y - 1, mo + 9)
+    } else {
+        (y, mo - 3)
+    };
     let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
     let yoe = y2 - era * 400;
     let doy = (153 * m2 + 2) / 5 + d - 1;
@@ -177,7 +189,10 @@ impl CodexStore {
             }
         }
         let m = read_meta(path)?;
-        self.meta_cache.lock().unwrap().insert(path.to_path_buf(), (mtime, m.clone()));
+        self.meta_cache
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), (mtime, m.clone()));
         Some(m)
     }
 
@@ -190,7 +205,10 @@ impl CodexStore {
                 }
             }
         }
-        let m: HashMap<String, PathBuf> = rollout_files().into_iter().filter_map(|p| thread_id_of(&p).map(|id| (id, p))).collect();
+        let m: HashMap<String, PathBuf> = rollout_files()
+            .into_iter()
+            .filter_map(|p| thread_id_of(&p).map(|id| (id, p)))
+            .collect();
         *guard = Some((std::time::Instant::now(), m.clone()));
         m
     }
@@ -216,20 +234,32 @@ impl CodexStore {
 /// A rollout with its inherited history: a fork's rollout starts where
 /// the parent's `history_base` ends, so the parent's lines up to that
 /// ordinal come first (recursively — a fork of a fork).
-pub fn read_lines_with_history(store: &CodexStore, path: &Path, depth: usize) -> Result<Vec<Value>> {
+pub fn read_lines_with_history(
+    store: &CodexStore,
+    path: &Path,
+    depth: usize,
+) -> Result<Vec<Value>> {
     let own = read_lines(path)?;
     if depth > 8 {
         return Ok(own);
     }
-    let Some(meta) = store.meta_cached(path) else { return Ok(own) };
-    let Some((parent, end)) = meta.history_base else { return Ok(own) };
-    let Some(parent_path) = store.rollout_path(&parent) else { return Ok(own) };
+    let Some(meta) = store.meta_cached(path) else {
+        return Ok(own);
+    };
+    let Some((parent, end)) = meta.history_base else {
+        return Ok(own);
+    };
+    let Some(parent_path) = store.rollout_path(&parent) else {
+        return Ok(own);
+    };
     let mut lines: Vec<Value> = read_lines_with_history(store, &parent_path, depth + 1)?
         .into_iter()
         .filter(|l| {
             // Inherited lines keep their own ordinals; only the parent's
             // own lines are bounded by the fork point.
-            l.get("ordinal").and_then(|o| o.as_u64()).is_none_or(|o| o < end)
+            l.get("ordinal")
+                .and_then(|o| o.as_u64())
+                .is_none_or(|o| o < end)
                 || l.get("__inherited").is_some()
         })
         .map(|mut l| {
@@ -243,8 +273,12 @@ pub fn read_lines_with_history(store: &CodexStore, path: &Path, depth: usize) ->
 
 /// Read every line of a rollout as JSON, in order.
 pub fn read_lines(path: &Path) -> Result<Vec<Value>> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading rollout {}", path.display()))?;
-    Ok(text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect())
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading rollout {}", path.display()))?;
+    Ok(text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect())
 }
 
 fn item_text(item: &Value) -> String {
@@ -267,7 +301,11 @@ fn command_string(item: &Value) -> String {
             if parts.len() == 3 && parts[1].as_str() == Some("-lc") {
                 parts[2].as_str().unwrap_or("").to_owned()
             } else {
-                parts.iter().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(" ")
+                parts
+                    .iter()
+                    .filter_map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             }
         }
         Some(Value::String(s)) => s.clone(),
@@ -281,7 +319,11 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
     let mut model: Option<String> = None;
     for line in lines {
-        let ts = line.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_owned();
+        let ts = line
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_owned();
         let ty = line.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let payload = line.get("payload").cloned().unwrap_or(Value::Null);
         match ty {
@@ -296,7 +338,11 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
                     "item_completed" => {
                         let item = payload.get("item").cloned().unwrap_or(Value::Null);
                         let it = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        let id = item.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+                        let id = item
+                            .get("id")
+                            .and_then(|i| i.as_str())
+                            .unwrap_or("")
+                            .to_owned();
                         match it {
                             "UserMessage" => {
                                 let text = item_text(&item);
@@ -322,11 +368,13 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
                                     "id": id, "name": name, "input": input,
                                     "result": result, "is_error": is_error,
                                 });
-                                let attach = items
-                                    .last()
-                                    .is_some_and(|l| l.get("role").and_then(|r| r.as_str()) == Some("assistant"));
+                                let attach = items.last().is_some_and(|l| {
+                                    l.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                                });
                                 if attach {
-                                    if let Some(arr) = items.last_mut().and_then(|l| l["tools"].as_array_mut()) {
+                                    if let Some(arr) =
+                                        items.last_mut().and_then(|l| l["tools"].as_array_mut())
+                                    {
                                         arr.push(tool);
                                     }
                                 } else {
@@ -339,17 +387,17 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
                         }
                     }
                     "token_count" => {
-                        if let Some(last) = payload.get("info").and_then(|i| i.get("last_token_usage")) {
+                        if let Some(last) =
+                            payload.get("info").and_then(|i| i.get("last_token_usage"))
+                        {
                             let n = |k: &str| last.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
                             let usage = json!({
                                 "input": n("input_tokens"), "output": n("output_tokens"),
                                 "cache_read": n("cached_input_tokens"), "cache_create": n("cache_write_input_tokens"),
                             });
-                            if let Some(l) = items
-                                .iter_mut()
-                                .rev()
-                                .find(|l| l.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-                            {
+                            if let Some(l) = items.iter_mut().rev().find(|l| {
+                                l.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                            }) {
                                 l["usage"] = usage;
                             }
                         }
@@ -405,8 +453,17 @@ fn tool_from_item(it: &str, item: &Value) -> (String, Value, Value, bool) {
                         .collect()
                 })
                 .unwrap_or_default();
-            let out = item.get("stdout").and_then(|o| o.as_str()).unwrap_or("").to_owned();
-            ("fileChange".into(), json!({ "changes": changes }), Value::String(out), is_error)
+            let out = item
+                .get("stdout")
+                .and_then(|o| o.as_str())
+                .unwrap_or("")
+                .to_owned();
+            (
+                "fileChange".into(),
+                json!({ "changes": changes }),
+                Value::String(out),
+                is_error,
+            )
         }
         "McpToolCall" => {
             let server = item.get("server").and_then(|s| s.as_str()).unwrap_or("mcp");
@@ -414,7 +471,12 @@ fn tool_from_item(it: &str, item: &Value) -> (String, Value, Value, bool) {
             let result = item
                 .get("result")
                 .map(|r| serde_json::to_string_pretty(r).unwrap_or_default())
-                .or_else(|| item.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).map(str::to_owned))
+                .or_else(|| {
+                    item.get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .map(str::to_owned)
+                })
                 .unwrap_or_default();
             (
                 format!("mcp__{server}__{tool}"),
@@ -429,12 +491,7 @@ fn tool_from_item(it: &str, item: &Value) -> (String, Value, Value, bool) {
             Value::Null,
             false,
         ),
-        other => (
-            lower_camel(other),
-            item.clone(),
-            Value::Null,
-            is_error,
-        ),
+        other => (lower_camel(other), item.clone(), Value::Null, is_error),
     }
 }
 
@@ -458,7 +515,10 @@ pub fn usage_of(lines: &[Value], thread_id: &str) -> Value {
     let mut first_ts: Option<String> = None;
     let mut last_ts: Option<String> = None;
     for line in lines {
-        let ts = line.get("timestamp").and_then(|t| t.as_str()).map(str::to_owned);
+        let ts = line
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .map(str::to_owned);
         if first_ts.is_none() {
             first_ts = ts.clone();
         }
@@ -473,7 +533,8 @@ pub fn usage_of(lines: &[Value], thread_id: &str) -> Value {
             "event_msg" => match payload.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                 "task_started" => turns += 1,
                 "token_count" => {
-                    if let Some(last) = payload.get("info").and_then(|i| i.get("last_token_usage")) {
+                    if let Some(last) = payload.get("info").and_then(|i| i.get("last_token_usage"))
+                    {
                         let n = |k: &str| last.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
                         input += n("input_tokens");
                         output += n("output_tokens");
@@ -552,14 +613,17 @@ impl SessionStore for CodexStore {
         Ok(out)
     }
     fn rehydrate(&self, _repo: &Path, sid: &str) -> Result<Vec<Value>> {
-        let path = self.rollout_path(sid).with_context(|| format!("no rollout for thread {sid}"))?;
+        let path = self
+            .rollout_path(sid)
+            .with_context(|| format!("no rollout for thread {sid}"))?;
         Ok(rehydrate_lines(&read_lines_with_history(self, &path, 0)?))
     }
     fn rehydrate_after(&self, repo: &Path, sid: &str, after: &str) -> Result<(Vec<Value>, bool)> {
         let items = self.rehydrate(repo, sid)?;
-        let idx = items
-            .iter()
-            .position(|i| i.get("role").and_then(|r| r.as_str()) == Some("user") && i.get("uuid").and_then(|u| u.as_str()) == Some(after));
+        let idx = items.iter().position(|i| {
+            i.get("role").and_then(|r| r.as_str()) == Some("user")
+                && i.get("uuid").and_then(|u| u.as_str()) == Some(after)
+        });
         match idx {
             Some(i) => Ok((items[i + 1..].to_vec(), true)),
             None => Ok((items, false)),
@@ -583,7 +647,11 @@ impl SessionStore for CodexStore {
                 None
             }
         });
-        let last_ts = lines.last().and_then(|l| l.get("timestamp")).and_then(|t| t.as_str()).and_then(iso_to_epoch);
+        let last_ts = lines
+            .last()
+            .and_then(|l| l.get("timestamp"))
+            .and_then(|t| t.as_str())
+            .and_then(iso_to_epoch);
         Some(SessionOrigin {
             forked_from: meta.forked_from.map(|p| (p, None)),
             first_ref,
@@ -596,14 +664,23 @@ impl SessionStore for CodexStore {
         let mut next = Some(sid.to_owned());
         let mut seen = 0;
         while let Some(id) = next.take() {
-            let Some(path) = self.rollout_path(&id) else { break };
+            let Some(path) = self.rollout_path(&id) else {
+                break;
+            };
             let rel = path
                 .strip_prefix(codex_home())
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                .unwrap_or_else(|_| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
             out.push((rel, path.clone()));
             // A fork carries its parent's rollout too (the history base).
-            next = self.meta_cached(&path).and_then(|m| m.history_base).map(|(p, _)| p);
+            next = self
+                .meta_cached(&path)
+                .and_then(|m| m.history_base)
+                .map(|(p, _)| p);
             seen += 1;
             if seen > 8 {
                 break;
@@ -612,10 +689,14 @@ impl SessionStore for CodexStore {
         out
     }
     fn main_path(&self, _repo: &Path, sid: &str) -> PathBuf {
-        self.rollout_path(sid).unwrap_or_else(|| sessions_dir().join(format!("rollout-{sid}.jsonl")))
+        self.rollout_path(sid)
+            .unwrap_or_else(|| sessions_dir().join(format!("rollout-{sid}.jsonl")))
     }
     fn usage(&self, _repo: &Path, sid: &str) -> Value {
-        match self.rollout_path(sid).and_then(|p| read_lines_with_history(self, &p, 0).ok()) {
+        match self
+            .rollout_path(sid)
+            .and_then(|p| read_lines_with_history(self, &p, 0).ok())
+        {
             Some(lines) => usage_of(&lines, sid),
             None => Value::Null,
         }
@@ -664,8 +745,12 @@ mod tests {
 
     #[test]
     fn thread_id_from_name() {
-        let p = Path::new("/x/rollout-2026-09-07T14-50-31-01a07dd9-f5a1-7810-8a13-d723094e2739.jsonl");
-        assert_eq!(thread_id_of(p).as_deref(), Some("01a07dd9-f5a1-7810-8a13-d723094e2739"));
+        let p =
+            Path::new("/x/rollout-2026-09-07T14-50-31-01a07dd9-f5a1-7810-8a13-d723094e2739.jsonl");
+        assert_eq!(
+            thread_id_of(p).as_deref(),
+            Some("01a07dd9-f5a1-7810-8a13-d723094e2739")
+        );
     }
 
     #[test]

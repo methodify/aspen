@@ -73,8 +73,13 @@ impl NotifySettings {
         }
     }
     pub fn configured(&self) -> bool {
-        self.webhook.as_deref().is_some_and(|w| !w.trim().is_empty())
-            || self.command.as_deref().is_some_and(|c| !c.trim().is_empty())
+        self.webhook
+            .as_deref()
+            .is_some_and(|w| !w.trim().is_empty())
+            || self
+                .command
+                .as_deref()
+                .is_some_and(|c| !c.trim().is_empty())
     }
 }
 

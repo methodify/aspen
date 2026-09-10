@@ -71,7 +71,8 @@ fn inspect_codex(repo: &Path, r: &mut RepoAutorun) {
     if let Some(v) = read_json(&repo.join(".codex/hooks.json")) {
         let mut hooks = Vec::new();
         collect_hooks(&v, &mut hooks);
-        r.hooks.extend(hooks.into_iter().map(|h| format!("codex · {h}")));
+        r.hooks
+            .extend(hooks.into_iter().map(|h| format!("codex · {h}")));
     }
     if let Ok(text) = std::fs::read_to_string(repo.join(".codex/config.toml")) {
         // A header-aware line scan: enough to name what would run without
@@ -97,13 +98,31 @@ fn inspect_codex(repo: &Path, r: &mut RepoAutorun) {
             }
             if let Some(name) = section.strip_prefix("mcp_servers.") {
                 let name = name.split('.').next().unwrap_or(name).trim_matches('"');
-                if let Some(cmd) = line.strip_prefix("command").map(|x| x.trim_start().trim_start_matches('=').trim().trim_matches('"')) {
-                    if let Some(entry) = r.mcp_servers.iter_mut().find(|e| **e == format!("codex · {name}")) {
+                if let Some(cmd) = line.strip_prefix("command").map(|x| {
+                    x.trim_start()
+                        .trim_start_matches('=')
+                        .trim()
+                        .trim_matches('"')
+                }) {
+                    if let Some(entry) = r
+                        .mcp_servers
+                        .iter_mut()
+                        .find(|e| **e == format!("codex · {name}"))
+                    {
                         *entry = format!("codex · {name}: {cmd}");
                     }
                 }
-                if let Some(url) = line.strip_prefix("url").map(|x| x.trim_start().trim_start_matches('=').trim().trim_matches('"')) {
-                    if let Some(entry) = r.mcp_servers.iter_mut().find(|e| **e == format!("codex · {name}")) {
+                if let Some(url) = line.strip_prefix("url").map(|x| {
+                    x.trim_start()
+                        .trim_start_matches('=')
+                        .trim()
+                        .trim_matches('"')
+                }) {
+                    if let Some(entry) = r
+                        .mcp_servers
+                        .iter_mut()
+                        .find(|e| **e == format!("codex · {name}"))
+                    {
                         *entry = format!("codex · {name}: {url}");
                     }
                 }
@@ -114,7 +133,8 @@ fn inspect_codex(repo: &Path, r: &mut RepoAutorun) {
         if let Ok(entries) = std::fs::read_dir(repo.join(dir)) {
             for e in entries.flatten() {
                 if e.path().join("SKILL.md").is_file() {
-                    r.skills.push(format!("codex · {}", e.file_name().to_string_lossy()));
+                    r.skills
+                        .push(format!("codex · {}", e.file_name().to_string_lossy()));
                 }
             }
         }

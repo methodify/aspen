@@ -77,7 +77,9 @@ fn fold_file(path: &Path, into: &mut SessionUsage, main: bool) -> u64 {
         };
         match v.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => {
-                let Some(msg) = v.get("message") else { continue };
+                let Some(msg) = v.get("message") else {
+                    continue;
+                };
                 let model = msg
                     .get("model")
                     .and_then(|m| m.as_str())
@@ -87,7 +89,8 @@ fn fold_file(path: &Path, into: &mut SessionUsage, main: bool) -> u64 {
                     let mu = into.models.entry(model).or_default();
                     let before = mu.input + mu.output + mu.cache_read + mu.cache_create;
                     mu.add(u);
-                    tokens_here += (mu.input + mu.output + mu.cache_read + mu.cache_create) - before;
+                    tokens_here +=
+                        (mu.input + mu.output + mu.cache_read + mu.cache_create) - before;
                 }
                 if main {
                     if let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {

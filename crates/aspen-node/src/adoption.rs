@@ -82,13 +82,18 @@ pub fn scan(inner: &Arc<NodeInner>) -> Result<Vec<i64>> {
             if now - si.modified_epoch < GRACE_SECS {
                 continue; // look again next pass
             }
-            let origin = inner.store_for(si.harness).origin(path, &si.session_id).unwrap_or_default();
+            let origin = inner
+                .store_for(si.harness)
+                .origin(path, &si.session_id)
+                .unwrap_or_default();
             // Claude stamps every line with the writer's entrypoint, so
             // "aspen" on the newest line means ours. A Codex fork inherits
             // its parent's originator, so for Codex "ours" is what the
             // registry knows (`known`, checked above) — the stamp says
             // nothing about who forked it.
-            if si.harness == aspen_core::Harness::Claude && origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT) {
+            if si.harness == aspen_core::Harness::Claude
+                && origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT)
+            {
                 // Ours (spawned here; its id is recorded at the first turn).
                 // Not marked seen: a copied prefix still says "aspen" even
                 // when someone else forked it, so re-check once it has
@@ -184,8 +189,13 @@ pub fn scan(inner: &Arc<NodeInner>) -> Result<Vec<i64>> {
             {
                 continue;
             }
-            let origin = inner.store_for(si.harness).origin(path, head).unwrap_or_default();
-            if si.harness == aspen_core::Harness::Claude && origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT) {
+            let origin = inner
+                .store_for(si.harness)
+                .origin(path, head)
+                .unwrap_or_default();
+            if si.harness == aspen_core::Harness::Claude
+                && origin.last_entrypoint.as_deref() == Some(OUR_ENTRYPOINT)
+            {
                 continue;
             }
             if let Some(id) = inner.store.upsert_adoption(
@@ -317,7 +327,9 @@ pub async fn resolve(
             let row = rows.iter().find(|a| a.name == agent);
             // The fork runs on whatever wrote it: the agent it forked from
             // says which harness that is.
-            let harness = row.map(|r| r.harness).unwrap_or_else(|| inner.harness_of(&agent));
+            let harness = row
+                .map(|r| r.harness)
+                .unwrap_or_else(|| inner.harness_of(&agent));
             let opts = crate::node::SpawnOpts {
                 harness: Some(harness),
                 charter: row.and_then(|r| r.charter.clone()),

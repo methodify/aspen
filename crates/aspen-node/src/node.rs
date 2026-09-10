@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc};
 
-use aspen_core::{AgentAdapter, Harness, PermissionPolicy, Posture, SessionEvent, SessionHandle, SessionStore};
+use aspen_core::{
+    AgentAdapter, Harness, PermissionPolicy, Posture, SessionEvent, SessionHandle, SessionStore,
+};
 
 use crate::delivery;
 use crate::store::BusStore;
@@ -165,7 +167,8 @@ pub type HttpGateway = Arc<
             String,
             Option<String>,
             HashMap<String, String>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>>
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>>
         + Send
         + Sync,
 >;
@@ -189,7 +192,9 @@ impl NodeInner {
     /// Which harness an agent (by local key) runs on.
     /// This node's name (the mesh identity, else "this node").
     pub fn node_name(&self) -> String {
-        self.mesh().map(|m| m.identity.node.clone()).unwrap_or_else(|| "this node".into())
+        self.mesh()
+            .map(|m| m.identity.node.clone())
+            .unwrap_or_else(|| "this node".into())
     }
 
     pub fn harness_of(&self, agent: &str) -> Harness {
@@ -199,7 +204,11 @@ impl NodeInner {
         self.store
             .agents()
             .ok()
-            .and_then(|rows| rows.into_iter().find(|a| a.name == agent).map(|a| a.harness))
+            .and_then(|rows| {
+                rows.into_iter()
+                    .find(|a| a.name == agent)
+                    .map(|a| a.harness)
+            })
             .unwrap_or_default()
     }
 
@@ -300,7 +309,9 @@ pub fn repo_exposed(inner: &Arc<NodeInner>, repo: &Path, mesh: &str) -> bool {
 
 /// Is an agent (by local key) visible to peers of `mesh`?
 pub fn agent_exposed(inner: &Arc<NodeInner>, agent: &str, mesh: &str) -> bool {
-    let Ok(rows) = inner.store.agents() else { return false };
+    let Ok(rows) = inner.store.agents() else {
+        return false;
+    };
     match rows.iter().find(|a| a.name == agent) {
         Some(a) => repo_exposed(inner, &a.repo, mesh),
         None => true,
@@ -319,7 +330,9 @@ fn pin_exposure_on_first_extra(inner: &Arc<NodeInner>) {
     }
     let primary = m.mesh_name();
     for r in inner.store.repos().unwrap_or_default() {
-        let _ = inner.store.set_exposure(&r.path, std::slice::from_ref(&primary));
+        let _ = inner
+            .store
+            .set_exposure(&r.path, std::slice::from_ref(&primary));
     }
     tracing::info!(mesh = %primary, "second mesh joined: existing repos pinned to the primary mesh");
 }
@@ -338,7 +351,10 @@ pub fn fleet_activities(inner: &Arc<NodeInner>) -> Vec<serde_json::Value> {
         let Some(sid) = row.session_id.as_deref() else {
             continue;
         };
-        for mut v in inner.store_for(row.harness).activities(&row.repo, sid, row.last_spawned_at) {
+        for mut v in inner
+            .store_for(row.harness)
+            .activities(&row.repo, sid, row.last_spawned_at)
+        {
             if v.get("status").and_then(|s| s.as_str()) != Some("running") {
                 continue;
             }
@@ -352,7 +368,12 @@ pub fn fleet_activities(inner: &Arc<NodeInner>) -> Vec<serde_json::Value> {
 /// Usage (USAGE.md) for every agent on this node: transcript totals plus
 /// spend observed in [from, to] from the fleet trail. `agent` limits it
 /// to one.
-pub fn usage_rows(inner: &Arc<NodeInner>, from: f64, to: f64, agent: Option<&str>) -> Vec<serde_json::Value> {
+pub fn usage_rows(
+    inner: &Arc<NodeInner>,
+    from: f64,
+    to: f64,
+    agent: Option<&str>,
+) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     let Ok(rows) = inner.store.agents() else {
         return out;
@@ -398,7 +419,9 @@ pub fn activity_counts(
     session_id: Option<&str>,
     process_started: Option<f64>,
 ) -> serde_json::Value {
-    inner.store_for(harness).activity_counts(repo, session_id, process_started)
+    inner
+        .store_for(harness)
+        .activity_counts(repo, session_id, process_started)
 }
 
 /// Every session on disk for a repo, across every harness this node runs,
@@ -420,7 +443,11 @@ fn local_api_addr(data_dir: &Path) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     let listen = v.get("listen")?.as_str()?;
     let addr: std::net::SocketAddr = listen.parse().ok()?;
-    let host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { addr.ip().to_string() };
+    let host = if addr.ip().is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        addr.ip().to_string()
+    };
     Some(format!("http://{host}:{}", addr.port()))
 }
 
@@ -441,14 +468,20 @@ pub fn mcp_summary(s: &ManagedSession) -> serde_json::Value {
 
 /// Ask the harness for the MCP picture, store it, raise notices for what
 /// changed, and tell the session's listeners. Returns the picture.
-pub async fn refresh_mcp(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> Result<Vec<aspen_core::McpServerState>> {
+pub async fn refresh_mcp(
+    inner: &Arc<NodeInner>,
+    sess: &Arc<ManagedSession>,
+) -> Result<Vec<aspen_core::McpServerState>> {
     use aspen_core::McpStatus;
     if !sess.handle.capabilities().mcp_status {
         return Ok(sess.mcp.lock().unwrap().clone());
     }
-    let now = tokio::time::timeout(std::time::Duration::from_secs(40), sess.handle.mcp_servers())
-        .await
-        .map_err(|_| anyhow!("the session did not answer an MCP status request within 40s"))??;
+    let now = tokio::time::timeout(
+        std::time::Duration::from_secs(40),
+        sess.handle.mcp_servers(),
+    )
+    .await
+    .map_err(|_| anyhow!("the session did not answer an MCP status request within 40s"))??;
     let before = std::mem::replace(&mut *sess.mcp.lock().unwrap(), now.clone());
     // The first full picture says everything that is wrong at start (the
     // adapter's init list, if any, is only names and statuses).
@@ -463,19 +496,45 @@ pub async fn refresh_mcp(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> 
         if bad && !was_bad {
             let what = match m.status {
                 McpStatus::NeedsAuth => "needs authentication".to_owned(),
-                _ => m.error.clone().map(|e| format!("failed: {e}")).unwrap_or_else(|| "failed".into()),
+                _ => m
+                    .error
+                    .clone()
+                    .map(|e| format!("failed: {e}"))
+                    .unwrap_or_else(|| "failed".into()),
             };
             // Once per six hours per server and reason: a permanently
             // broken server toasts on first sight, not on every restart.
             let title = format!("MCP {} {what}", m.name);
-            if !inner.store.notice_recent(&sess.name, "mcp_failed", &title, 6.0 * 3600.0) {
-                crate::notify::raise(inner, &sess.name, "mcp_failed", &title, m.plugin.as_deref().map(|p| format!("from plugin {p}")).as_deref(), Some(&link));
+            if !inner
+                .store
+                .notice_recent(&sess.name, "mcp_failed", &title, 6.0 * 3600.0)
+            {
+                crate::notify::raise(
+                    inner,
+                    &sess.name,
+                    "mcp_failed",
+                    &title,
+                    m.plugin
+                        .as_deref()
+                        .map(|p| format!("from plugin {p}"))
+                        .as_deref(),
+                    Some(&link),
+                );
             }
         } else if !bad && was_bad && m.status == McpStatus::Connected {
-            crate::notify::raise(inner, &sess.name, "mcp_recovered", &format!("MCP {} connected", m.name), None, Some(&link));
+            crate::notify::raise(
+                inner,
+                &sess.name,
+                "mcp_recovered",
+                &format!("MCP {} connected", m.name),
+                None,
+                Some(&link),
+            );
         }
     }
-    let _ = sess.events.send(SessionEvent::McpChanged { servers: now.clone() });
+    let _ = sess.events.send(SessionEvent::McpChanged {
+        servers: now.clone(),
+    });
     Ok(now)
 }
 
@@ -511,7 +570,12 @@ fn iso_of(epoch: f64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 pub fn summary_json(s: &ManagedSession) -> serde_json::Value {
@@ -661,7 +725,10 @@ impl Node {
     ) -> Self {
         let (delivery_tx, delivery_rx) = mpsc::unbounded_channel::<String>();
         let mut adapters: HashMap<Harness, Arc<dyn AgentAdapter>> = HashMap::new();
-        adapters.insert(Harness::Claude, Arc::new(aspen_claude::ClaudeAdapter::new()));
+        adapters.insert(
+            Harness::Claude,
+            Arc::new(aspen_claude::ClaudeAdapter::new()),
+        );
         // Codex is listed when its binary resolves (HARNESSES.md: a node
         // lists what it can run); `ASPEN_CODEX_BIN` overrides the name.
         let mut codex = aspen_codex::CodexAdapter::new();
@@ -712,15 +779,22 @@ impl Node {
                     continue;
                 }
                 let scope = format!("node:{me}");
-                let have = inner.store.harness_defaults(true).unwrap_or_default().iter().any(|d| d.scope == scope && d.harness == h);
+                let have = inner
+                    .store
+                    .harness_defaults(true)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|d| d.scope == scope && d.harness == h);
                 if !have {
-                    let _ = inner.store.upsert_harness_default(&crate::store::HarnessDefault {
-                        scope,
-                        harness: h,
-                        args: cfg.args.trim().to_owned(),
-                        updated_at: inner.store.hlc_now(),
-                        deleted: false,
-                    });
+                    let _ = inner
+                        .store
+                        .upsert_harness_default(&crate::store::HarnessDefault {
+                            scope,
+                            harness: h,
+                            args: cfg.args.trim().to_owned(),
+                            updated_at: inner.store.hlc_now(),
+                            deleted: false,
+                        });
                 }
             }
         }
@@ -932,7 +1006,13 @@ impl Node {
             .interactive
             .then(|| Arc::new(crate::permit::OperatorBroker::new(policy)));
         let session_id = aspen_core::SessionId::new();
-        let bridge_token = self.inner.data_dir.as_deref().and_then(|d| std::fs::read_to_string(d.join("api-token")).ok()).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        let bridge_token = self
+            .inner
+            .data_dir
+            .as_deref()
+            .and_then(|d| std::fs::read_to_string(d.join("api-token")).ok())
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty());
         let node_api = self.inner.data_dir.as_deref().and_then(local_api_addr);
         let spec = aspen_core::SpawnSpec {
             repo: repo.clone(),
@@ -948,7 +1028,9 @@ impl Node {
             extra_args,
             plugin_dirs,
             tools: Some(tools),
-            broker: op_broker.clone().map(|b| b as Arc<dyn aspen_core::PermissionBroker>),
+            broker: op_broker
+                .clone()
+                .map(|b| b as Arc<dyn aspen_core::PermissionBroker>),
             agent: name.to_owned(),
             bridge_token: bridge_token.clone(),
             node_api: node_api.clone(),
@@ -958,7 +1040,10 @@ impl Node {
                 // know which agent it serves without asking.
                 let mut env = vec![
                     ("ASPEN_AGENT".to_owned(), name.to_owned()),
-                    ("ASPEN_AGENT_NAME".to_owned(), crate::addr::bare(name).to_owned()),
+                    (
+                        "ASPEN_AGENT_NAME".to_owned(),
+                        crate::addr::bare(name).to_owned(),
+                    ),
                     ("ASPEN_CHANNEL".to_owned(), channel.clone()),
                     ("ASPEN_NODE".to_owned(), self.inner.node_name()),
                     ("ASPEN_SESSION_ID".to_owned(), session_id.to_string()),
@@ -1020,7 +1105,9 @@ impl Node {
             plugins: active_plugins,
             harness,
             running_acts: Mutex::new(HashMap::new()),
-            activity_counts: Mutex::new(serde_json::json!({ "running": 0, "agents": 0, "tasks": 0, "workflows": 0, "monitors": 0 })),
+            activity_counts: Mutex::new(
+                serde_json::json!({ "running": 0, "agents": 0, "tasks": 0, "workflows": 0, "monitors": 0 }),
+            ),
             activity_refreshed_at: Mutex::new(0.0),
             mcp: Mutex::new(Vec::new()),
             mcp_refreshed_at: Mutex::new(0.0),
@@ -1067,7 +1154,11 @@ impl Node {
                         tracing::error!(agent = %managed.name, "session pump panicked; marking the session down");
                         inner.sessions.lock().unwrap().remove(&managed.name);
                         let _ = inner.store.set_agent_live(&managed.name, false);
-                        let _ = inner.store.record_event(&managed.name, "pump_panic", serde_json::json!({}));
+                        let _ = inner.store.record_event(
+                            &managed.name,
+                            "pump_panic",
+                            serde_json::json!({}),
+                        );
                         crate::federation::broadcast_roster(&inner);
                     }
                 }
@@ -1499,7 +1590,12 @@ impl Node {
         Ok(row
             .session_id
             .as_deref()
-            .map(|sid| crate::artifacts::touched_paths_for(row.harness, &self.inner.store_for(row.harness).main_path(&row.repo, sid)))
+            .map(|sid| {
+                crate::artifacts::touched_paths_for(
+                    row.harness,
+                    &self.inner.store_for(row.harness).main_path(&row.repo, sid),
+                )
+            })
             .unwrap_or_default())
     }
 
@@ -1610,7 +1706,9 @@ impl Node {
         let r = crate::replicate::find(&inner, from_node, agent)
             .ok_or_else(|| anyhow!("no replica of @{agent}@{from_node} held here"))?;
         if r.main.is_none() {
-            return Err(anyhow!("the replica of @{agent}@{from_node} has no main transcript yet"));
+            return Err(anyhow!(
+                "the replica of @{agent}@{from_node} has no main transcript yet"
+            ));
         }
         let mut o = opts.clone();
         o.mode = Some("copy".into());
@@ -1665,7 +1763,11 @@ impl Node {
     /// API layer's, as for any spawn. Session-scope
     /// plugin rules are written for the new name first, so the process
     /// starts with its `--plugin-dir`s. Board placement is the console's.
-    pub async fn spawn_from_template(&self, id: &str, overrides: &serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn spawn_from_template(
+        &self,
+        id: &str,
+        overrides: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let t = self
             .inner
             .store
@@ -1726,10 +1828,19 @@ impl Node {
             }
             crate::plugins::spawn_sync(self.inner.clone(), None);
         }
-        let pick_str = |k: &str| ov(k).and_then(|v| v.as_str()).map(str::to_owned).or_else(|| spec.get(k).and_then(|v| v.as_str()).map(str::to_owned));
+        let pick_str = |k: &str| {
+            ov(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .or_else(|| spec.get(k).and_then(|v| v.as_str()).map(str::to_owned))
+        };
         let skip = ov("skip_permissions")
             .and_then(|v| v.as_bool())
-            .or_else(|| spec.get("permission").and_then(|v| v.as_str()).map(|p| p == "skip"));
+            .or_else(|| {
+                spec.get("permission")
+                    .and_then(|v| v.as_str())
+                    .map(|p| p == "skip")
+            });
         let opts = SpawnOpts {
             harness: pick_str("harness").and_then(|h| Harness::parse(&h)),
             charter: pick_str("charter"),
@@ -1743,7 +1854,11 @@ impl Node {
         if let Some(title) = pick_str("title") {
             let _ = self.inner.store.set_agent_title(&sess.name, Some(&title));
         }
-        let _ = self.inner.store.record_event(&sess.name, "template", serde_json::json!({ "template": t.name, "id": t.id }));
+        let _ = self.inner.store.record_event(
+            &sess.name,
+            "template",
+            serde_json::json!({ "template": t.name, "id": t.id }),
+        );
         Ok(serde_json::json!({
             "name": sess.name,
             "bare": crate::addr::bare(&sess.name),
@@ -1772,7 +1887,10 @@ impl Node {
             }
         }
         let mem = crate::memory::memory_dir(&row.repo);
-        let c: u64 = crate::memory::read_dir_files(&mem).values().map(|(_, t)| t.len() as u64).sum();
+        let c: u64 = crate::memory::read_dir_files(&mem)
+            .values()
+            .map(|(_, t)| t.len() as u64)
+            .sum();
         let git = crate::gitstate::get(&row.repo);
         let live = self.inner.live(name);
         Ok(serde_json::json!({
@@ -2250,7 +2368,10 @@ impl Node {
     /// The session's MCP servers; `refresh` asks the harness now
     /// (PROPOSALS-MCP.md §6.2), else the last picture.
     pub async fn mcp_list(&self, name: &str, refresh: bool) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         let servers = if refresh || sess.mcp.lock().unwrap().is_empty() {
             refresh_mcp(&self.inner, &sess).await?
         } else {
@@ -2272,12 +2393,20 @@ impl Node {
     /// late; refused for a harness without one, where the digest is what
     /// there is.
     pub async fn recap(&self, name: &str) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         if !sess.handle.capabilities().recap {
-            return Err(anyhow!("unsupported: {} has no recap of its own", sess.harness));
+            return Err(anyhow!(
+                "unsupported: {} has no recap of its own",
+                sess.harness
+            ));
         }
         if sess.turn_state() == TurnState::Busy {
-            return Err(anyhow!("busy: @{name} is mid-turn; ask again when it is idle"));
+            return Err(anyhow!(
+                "busy: @{name} is mid-turn; ask again when it is idle"
+            ));
         }
         let (tx, rx) = tokio::sync::oneshot::channel::<String>();
         {
@@ -2285,7 +2414,10 @@ impl Node {
             if cap.is_some() {
                 return Err(anyhow!("busy: a recap is already being asked"));
             }
-            *cap = Some(RecapCapture { text: String::new(), done: Some(tx) });
+            *cap = Some(RecapCapture {
+                text: String::new(),
+                done: Some(tx),
+            });
         }
         let started = std::time::Instant::now();
         if let Err(e) = sess.handle.send_user("/recap".to_owned()).await {
@@ -2310,30 +2442,54 @@ impl Node {
     }
 
     pub async fn mcp_reconnect(&self, name: &str, server: &str) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         let r = sess.handle.mcp_reconnect(server).await;
         let servers = refresh_mcp(&self.inner, &sess).await.unwrap_or_default();
         match r {
             Ok(()) => Ok(serde_json::json!({ "ok": true, "servers": servers })),
-            Err(e) => Ok(serde_json::json!({ "ok": false, "error": e.to_string(), "servers": servers })),
+            Err(e) => {
+                Ok(serde_json::json!({ "ok": false, "error": e.to_string(), "servers": servers }))
+            }
         }
     }
 
-    pub async fn mcp_toggle(&self, name: &str, server: &str, enabled: bool) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+    pub async fn mcp_toggle(
+        &self,
+        name: &str,
+        server: &str,
+        enabled: bool,
+    ) -> Result<serde_json::Value> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         sess.handle.mcp_toggle(server, enabled).await?;
         let servers = refresh_mcp(&self.inner, &sess).await.unwrap_or_default();
         Ok(serde_json::json!({ "ok": true, "servers": servers }))
     }
 
     pub async fn mcp_auth(&self, name: &str, server: &str) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         let a = sess.handle.mcp_authenticate(server).await?;
         Ok(serde_json::to_value(a)?)
     }
 
-    pub async fn mcp_add(&self, name: &str, server: &str, config: serde_json::Value) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+    pub async fn mcp_add(
+        &self,
+        name: &str,
+        server: &str,
+        config: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         sess.handle.mcp_add(server, config).await?;
         let servers = refresh_mcp(&self.inner, &sess).await.unwrap_or_default();
         Ok(serde_json::json!({ "ok": true, "servers": servers }))
@@ -2343,15 +2499,27 @@ impl Node {
     /// applied (a stopped row reads "stopped" until the harness says so).
     pub async fn activities(&self, name: &str) -> Result<Vec<serde_json::Value>> {
         let row = self.agent_row(name)?;
-        let Some(sid) = row.session_id.clone() else { return Ok(Vec::new()) };
+        let Some(sid) = row.session_id.clone() else {
+            return Ok(Vec::new());
+        };
         let st = self.inner.store_for(row.harness);
         let (repo, since) = (row.repo.clone(), row.last_spawned_at);
-        let mut acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default();
+        let mut acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since))
+            .await
+            .unwrap_or_default();
         if let Some(sess) = self.inner.live(name) {
             let stopped = sess.stopped_acts.lock().unwrap().clone();
             for a in acts.iter_mut() {
-                let id = a.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
-                let tu = a.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+                let id = a
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let tu = a
+                    .get("tool_use_id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 if let Some(at) = stopped.get(&id).or_else(|| stopped.get(&tu)) {
                     if a.get("status").and_then(|s| s.as_str()) == Some("running") {
                         a["status"] = serde_json::json!("stopped");
@@ -2369,7 +2537,10 @@ impl Node {
     /// the ledger row it matches, if any — the rest are what hooks and
     /// plugins started outside the tool stream.
     pub async fn processes(&self, name: &str) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
         let Some(pid) = sess.handle.pid() else {
             return Ok(serde_json::json!({ "pid": null, "processes": [] }));
         };
@@ -2378,13 +2549,18 @@ impl Node {
             let st = self.inner.store_for(row.harness);
             match row.session_id.as_deref() {
                 Some(sid) => {
-                    let (repo, sid, since) = (row.repo.clone(), sid.to_owned(), row.last_spawned_at);
-                    tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default()
+                    let (repo, sid, since) =
+                        (row.repo.clone(), sid.to_owned(), row.last_spawned_at);
+                    tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since))
+                        .await
+                        .unwrap_or_default()
                 }
                 None => Vec::new(),
             }
         };
-        let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(pid)).await.unwrap_or_default();
+        let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(pid))
+            .await
+            .unwrap_or_default();
         let list: Vec<serde_json::Value> = procs
             .iter()
             .map(|p| {
@@ -2403,24 +2579,53 @@ impl Node {
 
     /// Stop a background activity by terminating the process its script
     /// runs in, or a bare child process by pid. Returns what was stopped.
-    pub async fn stop_process(&self, name: &str, activity_id: Option<&str>, pid: Option<u32>) -> Result<serde_json::Value> {
-        let sess = self.inner.live(name).ok_or_else(|| anyhow!("no running agent named @{name}"))?;
-        let root = sess.handle.pid().ok_or_else(|| anyhow!("the session's process id is not known"))?;
-        let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(root)).await.unwrap_or_default();
+    pub async fn stop_process(
+        &self,
+        name: &str,
+        activity_id: Option<&str>,
+        pid: Option<u32>,
+    ) -> Result<serde_json::Value> {
+        let sess = self
+            .inner
+            .live(name)
+            .ok_or_else(|| anyhow!("no running agent named @{name}"))?;
+        let root = sess
+            .handle
+            .pid()
+            .ok_or_else(|| anyhow!("the session's process id is not known"))?;
+        let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(root))
+            .await
+            .unwrap_or_default();
         let target = if let Some(pid) = pid {
-            procs.iter().find(|p| p.pid == pid).cloned().ok_or_else(|| anyhow!("pid {pid} is not a child of this session"))?
+            procs
+                .iter()
+                .find(|p| p.pid == pid)
+                .cloned()
+                .ok_or_else(|| anyhow!("pid {pid} is not a child of this session"))?
         } else {
             let id = activity_id.ok_or_else(|| anyhow!("an activity id or a pid is needed"))?;
             let row = self.agent_row(name)?;
             let st = self.inner.store_for(row.harness);
-            let sid = row.session_id.clone().ok_or_else(|| anyhow!("no session"))?;
+            let sid = row
+                .session_id
+                .clone()
+                .ok_or_else(|| anyhow!("no session"))?;
             let (repo, since) = (row.repo.clone(), row.last_spawned_at);
-            let acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since)).await.unwrap_or_default();
+            let acts = tokio::task::spawn_blocking(move || st.activities(&repo, &sid, since))
+                .await
+                .unwrap_or_default();
             let act = acts
                 .iter()
-                .find(|a| a.get("id").and_then(|i| i.as_str()) == Some(id) || a.get("tool_use_id").and_then(|i| i.as_str()) == Some(id))
+                .find(|a| {
+                    a.get("id").and_then(|i| i.as_str()) == Some(id)
+                        || a.get("tool_use_id").and_then(|i| i.as_str()) == Some(id)
+                })
                 .ok_or_else(|| anyhow!("no activity {id}"))?;
-            let script = act.get("detail").and_then(|d| d.get("command")).and_then(|c| c.as_str()).ok_or_else(|| anyhow!("that activity has no script to match a process by"))?;
+            let script = act
+                .get("detail")
+                .and_then(|d| d.get("command"))
+                .and_then(|c| c.as_str())
+                .ok_or_else(|| anyhow!("that activity has no script to match a process by"))?;
             procs
                 .iter()
                 .find(|p| crate::procs::matches_script(&p.cmdline, script))
@@ -2430,7 +2635,10 @@ impl Node {
         let tpid = target.pid;
         tokio::task::spawn_blocking(move || crate::procs::terminate(tpid)).await??;
         if let Some(id) = activity_id {
-            sess.stopped_acts.lock().unwrap().insert(id.to_owned(), crate::store::now_epoch());
+            sess.stopped_acts
+                .lock()
+                .unwrap()
+                .insert(id.to_owned(), crate::store::now_epoch());
         }
         let _ = self.inner.store.record_event(name, "process_stopped", serde_json::json!({ "pid": target.pid, "cmdline": target.cmdline, "activity": activity_id }));
         Ok(serde_json::json!({ "ok": true, "pid": target.pid, "cmdline": target.cmdline }))
@@ -2467,7 +2675,15 @@ impl Node {
         updated_input: Option<serde_json::Value>,
         updated_permissions: Option<serde_json::Value>,
     ) -> Result<()> {
-        self.answer_permission_with(name, request_id, allow, message, updated_input, updated_permissions, None)
+        self.answer_permission_with(
+            name,
+            request_id,
+            allow,
+            message,
+            updated_input,
+            updated_permissions,
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2556,7 +2772,8 @@ async fn pump(
                     continue;
                 }
                 SessionEvent::AssistantMessage { raw, .. } => {
-                    if let Some(blocks) = raw.pointer("/message/content").and_then(|c| c.as_array()) {
+                    if let Some(blocks) = raw.pointer("/message/content").and_then(|c| c.as_array())
+                    {
                         let mut cap = sess.recap.lock().unwrap();
                         if let Some(c) = cap.as_mut() {
                             for b in blocks {
@@ -2667,8 +2884,15 @@ async fn pump(
                         let sid2 = sid.clone();
                         let since = Some(sess.spawned_at);
                         tokio::task::spawn_blocking(move || {
-                            let ids = crate::notify::running_ids(&inner2, harness, &repo, sid2.as_deref(), since);
-                            let counts = activity_counts(&inner2, harness, &repo, sid2.as_deref(), since);
+                            let ids = crate::notify::running_ids(
+                                &inner2,
+                                harness,
+                                &repo,
+                                sid2.as_deref(),
+                                since,
+                            );
+                            let counts =
+                                activity_counts(&inner2, harness, &repo, sid2.as_deref(), since);
                             (ids, counts)
                         })
                         .await
@@ -2703,12 +2927,19 @@ async fn pump(
             SessionEvent::AssistantMessage { raw, .. } => {
                 // The runtime names the model on every message; "default"
                 // in the select resolves to this.
-                if let Some(m) = raw.pointer("/message/model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()) {
+                if let Some(m) = raw
+                    .pointer("/message/model")
+                    .and_then(|m| m.as_str())
+                    .filter(|m| !m.is_empty())
+                {
                     sess.summary.lock().unwrap().model = Some(m.to_owned());
                 }
             }
             SessionEvent::ToolUse {
-                tool_name, input, tool_kind, ..
+                tool_name,
+                input,
+                tool_kind,
+                ..
             } => {
                 // A subagent/task/workflow started mid-turn: refresh the
                 // cached activity counts (throttled; off the workers) so
@@ -2728,9 +2959,18 @@ async fn pump(
                         let inner2 = inner.clone();
                         let sess2 = sess.clone();
                         tokio::spawn(async move {
-                            let sid = inner2.store.agents().ok().and_then(|rows| rows.into_iter().find(|a| a.name == sess2.name)).and_then(|a| a.session_id);
-                            let (harness, repo, since) = (sess2.harness, sess2.repo.clone(), Some(sess2.spawned_at));
-                            let counts = tokio::task::spawn_blocking(move || activity_counts(&inner2, harness, &repo, sid.as_deref(), since)).await;
+                            let sid = inner2
+                                .store
+                                .agents()
+                                .ok()
+                                .and_then(|rows| rows.into_iter().find(|a| a.name == sess2.name))
+                                .and_then(|a| a.session_id);
+                            let (harness, repo, since) =
+                                (sess2.harness, sess2.repo.clone(), Some(sess2.spawned_at));
+                            let counts = tokio::task::spawn_blocking(move || {
+                                activity_counts(&inner2, harness, &repo, sid.as_deref(), since)
+                            })
+                            .await;
                             if let Ok(c) = counts {
                                 *sess2.activity_counts.lock().unwrap() = c;
                             }
@@ -2767,7 +3007,9 @@ async fn pump(
                 sess.mark_busy();
                 *sess.last_tool.lock().unwrap() = Some(tool_name.clone());
             }
-            SessionEvent::PermissionAsked { tool_name, input, .. } => {
+            SessionEvent::PermissionAsked {
+                tool_name, input, ..
+            } => {
                 let _ = inner.store.record_event(
                     &sess.name,
                     "prompt",
@@ -2818,7 +3060,9 @@ async fn pump(
                     *cur = servers.clone();
                 }
             }
-            SessionEvent::Status { raw } if raw.get("type").and_then(|t| t.as_str()) == Some("mcp_startup") => {
+            SessionEvent::Status { raw }
+                if raw.get("type").and_then(|t| t.as_str()) == Some("mcp_startup") =>
+            {
                 schedule_mcp_refresh(&inner, &sess, 800);
             }
             SessionEvent::RuntimeInit { raw, .. } => {

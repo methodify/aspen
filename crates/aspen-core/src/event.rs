@@ -85,7 +85,9 @@ pub enum SessionEvent {
         usage: Value,
     },
     /// The MCP picture changed (PROPOSALS-MCP.md): the whole current list.
-    McpChanged { servers: Vec<crate::harness::McpServerState> },
+    McpChanged {
+        servers: Vec<crate::harness::McpServerState>,
+    },
     /// Runtime status traffic worth mirroring (mode changes, compaction…).
     Status { raw: Value },
     /// A line from the runtime's stderr — the debug channel.

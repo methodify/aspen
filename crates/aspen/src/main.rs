@@ -430,7 +430,10 @@ async fn main() -> Result<()> {
         // Detached daemons log to a file: no color codes there.
         // No colour into a file: detached (aspen.log) or under a supervisor
         // (the unit appends to the same file).
-        .with_ansi(std::env::var_os("ASPEN_DETACHED").is_none() && std::env::var_os("ASPEN_SUPERVISOR").is_none())
+        .with_ansi(
+            std::env::var_os("ASPEN_DETACHED").is_none()
+                && std::env::var_os("ASPEN_SUPERVISOR").is_none(),
+        )
         .init();
 
     let _ = aspen_node::federation::VERSION.set((
@@ -508,7 +511,9 @@ async fn main() -> Result<()> {
         Command::Status => status::run(&cli.data_dir),
         Command::Autostart { command } => {
             let st = match command {
-                AutostartCommand::Enable { no_start } => autostart::enable(&cli.data_dir, !no_start)?,
+                AutostartCommand::Enable { no_start } => {
+                    autostart::enable(&cli.data_dir, !no_start)?
+                }
                 AutostartCommand::Disable => autostart::disable(&cli.data_dir)?,
                 AutostartCommand::Status => autostart::status(&cli.data_dir),
             };
@@ -619,8 +624,15 @@ async fn main() -> Result<()> {
             let node = match node {
                 Some(n) => n,
                 None => {
-                    let files = aspen_node::mesh::MeshFiles { data_dir: cli.data_dir.clone() };
-                    files.load_identity().ok().flatten().map(|i| i.node).unwrap_or_else(|| "local".into())
+                    let files = aspen_node::mesh::MeshFiles {
+                        data_dir: cli.data_dir.clone(),
+                    };
+                    files
+                        .load_identity()
+                        .ok()
+                        .flatten()
+                        .map(|i| i.node)
+                        .unwrap_or_else(|| "local".into())
                 }
             };
             let v = local_api_post(
@@ -645,7 +657,13 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&v)?);
                 Ok(())
             }
-            SessionCommand::New { template, name, repo, node, trust } => {
+            SessionCommand::New {
+                template,
+                name,
+                repo,
+                node,
+                trust,
+            } => {
                 let v = local_api_post(
                     &cli.data_dir,
                     &format!("/api/templates/{}/spawn", urlencoding::encode(&template)),
@@ -778,7 +796,10 @@ fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
         println!("starting daemon (via {sup}) …");
         autostart::supervised_start(data_dir, sup)?;
         if let Some(st) = read_daemon_state(data_dir) {
-            println!("daemon restarted (pid {}); previous sessions are being revived.", st["pid"]);
+            println!(
+                "daemon restarted (pid {}); previous sessions are being revived.",
+                st["pid"]
+            );
         }
         return Ok(());
     }
@@ -797,7 +818,13 @@ fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
 
 fn print_autostart(st: &autostart::Status) {
     if !st.supported {
-        println!("autostart: unsupported here{}", st.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default());
+        println!(
+            "autostart: unsupported here{}",
+            st.note
+                .as_deref()
+                .map(|n| format!(" — {n}"))
+                .unwrap_or_default()
+        );
         return;
     }
     let kind = st.kind.as_deref().unwrap_or("?");
@@ -811,11 +838,20 @@ fn print_autostart(st: &autostart::Status) {
         println!(
             "autostart: on — {how} {}{}",
             st.unit.as_deref().unwrap_or(""),
-            st.path.as_deref().map(|p| format!(" ({})", p.display())).unwrap_or_default()
+            st.path
+                .as_deref()
+                .map(|p| format!(" ({})", p.display()))
+                .unwrap_or_default()
         );
         println!(
             "daemon:    {}",
-            if st.supervised { "running under it" } else if read_daemon_state(&default_data_dir()).is_some() { "running, but started by hand (aspen restart brings it under the supervisor)" } else { "not running" }
+            if st.supervised {
+                "running under it"
+            } else if read_daemon_state(&default_data_dir()).is_some() {
+                "running, but started by hand (aspen restart brings it under the supervisor)"
+            } else {
+                "not running"
+            }
         );
     } else {
         println!("autostart: off — would use a {how}");
@@ -995,7 +1031,10 @@ fn config_command(
         "console-origins" => {
             if !clear {
                 for o in value.split(',').map(str::trim).filter(|o| !o.is_empty()) {
-                    if !(o.starts_with("https://") || o.starts_with("http://localhost") || o.starts_with("http://127.0.0.1")) {
+                    if !(o.starts_with("https://")
+                        || o.starts_with("http://localhost")
+                        || o.starts_with("http://127.0.0.1"))
+                    {
                         anyhow::bail!("console-origins takes origins like https://host, got {o:?}");
                     }
                 }
@@ -1050,16 +1089,40 @@ impl BridgeProvider {
         r
     }
     fn connect(api: String, token: Option<String>, agent: String) -> Result<Self> {
-        let mut me = Self { api, token, agent, tools: Vec::new() };
+        let mut me = Self {
+            api,
+            token,
+            agent,
+            tools: Vec::new(),
+        };
         let v: serde_json::Value = me
-            .request("GET", &format!("/api/bridge/tools?agent={}", urlencode(&me.agent)))
+            .request(
+                "GET",
+                &format!("/api/bridge/tools?agent={}", urlencode(&me.agent)),
+            )
             .call()
             .map_err(|e| anyhow::anyhow!("bridge: listing tools at {}: {e}", me.api))?
             .into_json()?;
-        for t in v.get("tools").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
-            let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_owned();
-            let desc = t.get("description").and_then(|n| n.as_str()).unwrap_or("").to_owned();
-            let schema = t.get("input_schema").cloned().unwrap_or(serde_json::json!({ "type": "object" }));
+        for t in v
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            let name = t
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let desc = t
+                .get("description")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let schema = t
+                .get("input_schema")
+                .cloned()
+                .unwrap_or(serde_json::json!({ "type": "object" }));
             if !name.is_empty() {
                 me.tools.push((name, desc, schema));
             }
@@ -1072,7 +1135,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -1095,8 +1160,14 @@ impl aspen_core::ToolProvider for BridgeProvider {
             .request("POST", "/api/bridge/call")
             .send_json(serde_json::json!({ "agent": self.agent, "tool": name, "args": args }))
             .map_err(|e| format!("bridge: the node did not answer: {e}"))?;
-        let v: serde_json::Value = resp.into_json().map_err(|e| format!("bridge: bad reply: {e}"))?;
-        let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_owned();
+        let v: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("bridge: bad reply: {e}"))?;
+        let text = v
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_owned();
         if v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
             Err(text)
         } else {
@@ -1107,9 +1178,13 @@ impl aspen_core::ToolProvider for BridgeProvider {
 
 /// `aspen mcp`: newline-delimited JSON-RPC (MCP over stdio) in, replies out.
 fn mcp_bridge() -> Result<()> {
-    let api = std::env::var("ASPEN_NODE_API").map_err(|_| anyhow::anyhow!("aspen mcp: ASPEN_NODE_API is not set"))?;
-    let agent = std::env::var("ASPEN_AGENT").map_err(|_| anyhow::anyhow!("aspen mcp: ASPEN_AGENT is not set"))?;
-    let token = std::env::var("ASPEN_NODE_TOKEN").ok().filter(|t| !t.is_empty());
+    let api = std::env::var("ASPEN_NODE_API")
+        .map_err(|_| anyhow::anyhow!("aspen mcp: ASPEN_NODE_API is not set"))?;
+    let agent = std::env::var("ASPEN_AGENT")
+        .map_err(|_| anyhow::anyhow!("aspen mcp: ASPEN_AGENT is not set"))?;
+    let token = std::env::var("ASPEN_NODE_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
     let provider = BridgeProvider::connect(api, token, agent)?;
     let server = aspen_claude::mcp::McpServer::from_provider(std::sync::Arc::new(provider));
     let stdin = std::io::stdin();
@@ -1121,7 +1196,9 @@ fn mcp_bridge() -> Result<()> {
         if n == 0 {
             return Ok(());
         }
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
         if msg.get("id").is_none() {
             continue; // a notification: nothing to send back over stdio
         }
@@ -1713,14 +1790,20 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             notify_daemon_reload(data_dir);
             Ok(())
         }
-        MeshCommand::Leave { discard_root, mesh: Some(m) } => {
+        MeshCommand::Leave {
+            discard_root,
+            mesh: Some(m),
+        } => {
             let d = meshops::leave_mesh(&files, &m)?;
             let _ = discard_root;
             println!("{}", d.summary);
             notify_daemon_reload(data_dir);
             Ok(())
         }
-        MeshCommand::Leave { discard_root, mesh: None } => {
+        MeshCommand::Leave {
+            discard_root,
+            mesh: None,
+        } => {
             let d = meshops::leave(&files, discard_root)?;
             println!("{}", d.summary);
             notify_daemon_reload(data_dir);
@@ -1953,10 +2036,21 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                             m.mesh,
                             m.policy_or("observe"),
                             m.peers.len(),
-                            if m.relay_urls().is_empty() { String::new() } else { format!(", relays {}", m.relay_urls().join(", ")) }
+                            if m.relay_urls().is_empty() {
+                                String::new()
+                            } else {
+                                format!(", relays {}", m.relay_urls().join(", "))
+                            }
                         );
                         for p in &m.peers {
-                            println!("  peer '{}'{}", p.cert.node, p.url.as_deref().map(|u| format!(" — dials {u}")).unwrap_or_default());
+                            println!(
+                                "  peer '{}'{}",
+                                p.cert.node,
+                                p.url
+                                    .as_deref()
+                                    .map(|u| format!(" — dials {u}"))
+                                    .unwrap_or_default()
+                            );
                         }
                     }
                 }

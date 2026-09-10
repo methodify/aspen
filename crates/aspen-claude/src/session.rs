@@ -12,8 +12,10 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use aspen_core::{AdapterCapabilities, Harness, PromptKind, RuntimeInfo, SessionEvent, SessionHandle, SessionId};
 pub use aspen_core::permission::PermissionPolicy;
+use aspen_core::{
+    AdapterCapabilities, Harness, PromptKind, RuntimeInfo, SessionEvent, SessionHandle, SessionId,
+};
 
 use crate::mcp::McpServer;
 use crate::normalize::normalize;
@@ -360,7 +362,11 @@ impl ClaudeSession {
                         kind,
                         prompt,
                         decisions: crate::adapter::decisions_for(prompt, &suggestions),
-                        questions: if prompt == PromptKind::Question { input.get("questions").cloned().unwrap_or(Value::Null) } else { Value::Null },
+                        questions: if prompt == PromptKind::Question {
+                            input.get("questions").cloned().unwrap_or(Value::Null)
+                        } else {
+                            Value::Null
+                        },
                         input,
                         suggestions,
                         raw: request,
@@ -415,8 +421,12 @@ impl ClaudeSession {
                 let session = self.clone();
                 let mcp = mcp.clone();
                 tokio::spawn(async move {
-                    let reply = tokio::task::spawn_blocking(move || mcp.handle(&message)).await.unwrap_or(Value::Null);
-                    session.respond_success(&request_id, json!({ "mcp_response": reply })).await;
+                    let reply = tokio::task::spawn_blocking(move || mcp.handle(&message))
+                        .await
+                        .unwrap_or(Value::Null);
+                    session
+                        .respond_success(&request_id, json!({ "mcp_response": reply }))
+                        .await;
                 });
             }
             "elicitation" => {
@@ -531,8 +541,16 @@ impl SessionHandle for ClaudeSession {
         RuntimeInfo {
             model: None,
             mode: None,
-            models: hs.get("models").and_then(|m| m.as_array()).cloned().unwrap_or_default(),
-            commands: hs.get("commands").and_then(|m| m.as_array()).cloned().unwrap_or_default(),
+            models: hs
+                .get("models")
+                .and_then(|m| m.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            commands: hs
+                .get("commands")
+                .and_then(|m| m.as_array())
+                .cloned()
+                .unwrap_or_default(),
             skills: Vec::new(),
             context_window: None,
             raw: hs,
@@ -556,7 +574,9 @@ impl SessionHandle for ClaudeSession {
     }
 
     async fn mcp_servers(&self) -> Result<Vec<aspen_core::McpServerState>> {
-        let v = self.request(json!({ "subtype": "mcp_status" }), Duration::from_secs(30)).await?;
+        let v = self
+            .request(json!({ "subtype": "mcp_status" }), Duration::from_secs(30))
+            .await?;
         Ok(v.get("mcpServers")
             .and_then(|a| a.as_array())
             .map(|a| a.iter().map(crate::adapter::mcp_state_from).collect())
@@ -566,32 +586,56 @@ impl SessionHandle for ClaudeSession {
     async fn mcp_reconnect(&self, name: &str) -> Result<()> {
         // A failed reconnect answers with a control error carrying the
         // reason ("Connection closed"): that text is the diagnosis.
-        self.request(json!({ "subtype": "mcp_reconnect", "serverName": name }), Duration::from_secs(60))
-            .await
-            .map(|_| ())
-            .map_err(|e| anyhow!("{}", e.to_string().trim_start_matches("control error: ")))
+        self.request(
+            json!({ "subtype": "mcp_reconnect", "serverName": name }),
+            Duration::from_secs(60),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| anyhow!("{}", e.to_string().trim_start_matches("control error: ")))
     }
 
     async fn mcp_toggle(&self, name: &str, enabled: bool) -> Result<()> {
-        self.request(json!({ "subtype": "mcp_toggle", "serverName": name, "enabled": enabled }), Duration::from_secs(30))
-            .await
-            .map(|_| ())
+        self.request(
+            json!({ "subtype": "mcp_toggle", "serverName": name, "enabled": enabled }),
+            Duration::from_secs(30),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn mcp_authenticate(&self, name: &str) -> Result<aspen_core::McpAuth> {
-        let v = self.request(json!({ "subtype": "mcp_authenticate", "serverName": name }), Duration::from_secs(60)).await?;
+        let v = self
+            .request(
+                json!({ "subtype": "mcp_authenticate", "serverName": name }),
+                Duration::from_secs(60),
+            )
+            .await?;
         Ok(aspen_core::McpAuth {
             url: v.get("authUrl").and_then(|u| u.as_str()).map(str::to_owned),
-            requires_user: v.get("requiresUserAction").and_then(|b| b.as_bool()).unwrap_or(true),
+            requires_user: v
+                .get("requiresUserAction")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(true),
         })
     }
 
     async fn mcp_add(&self, name: &str, config: Value) -> Result<()> {
         let v = self
-            .request(json!({ "subtype": "mcp_set_servers", "servers": { name: config } }), Duration::from_secs(60))
+            .request(
+                json!({ "subtype": "mcp_set_servers", "servers": { name: config } }),
+                Duration::from_secs(60),
+            )
             .await?;
-        if let Some(errs) = v.get("errors").and_then(|e| e.as_object()).filter(|e| !e.is_empty()) {
-            let text: Vec<String> = errs.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or(&v.to_string()))).collect();
+        if let Some(errs) = v
+            .get("errors")
+            .and_then(|e| e.as_object())
+            .filter(|e| !e.is_empty())
+        {
+            let text: Vec<String> = errs
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or(&v.to_string())))
+                .collect();
             anyhow::bail!("{}", text.join("; "));
         }
         Ok(())

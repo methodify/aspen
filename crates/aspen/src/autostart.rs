@@ -71,7 +71,8 @@ pub fn supervisor_of(data_dir: &Path) -> Option<String> {
 /// the dir so two nodes on one login do not collide.
 pub fn unit_name(data_dir: &Path) -> String {
     let canon = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
-    let default = std::fs::canonicalize(crate::default_data_dir()).unwrap_or_else(|_| crate::default_data_dir());
+    let default = std::fs::canonicalize(crate::default_data_dir())
+        .unwrap_or_else(|_| crate::default_data_dir());
     if canon == default {
         return "aspen".to_owned();
     }
@@ -88,12 +89,19 @@ pub fn status_quick(data_dir: &Path) -> Status {
     let kind = platform_kind();
     Status {
         supported: kind.is_some(),
-        kind: inst.as_ref().map(|i| i.kind.clone()).or_else(|| kind.map(str::to_owned)),
+        kind: inst
+            .as_ref()
+            .map(|i| i.kind.clone())
+            .or_else(|| kind.map(str::to_owned)),
         enabled: inst.is_some(),
         unit: inst.as_ref().map(|i| i.unit.clone()),
         path: inst.as_ref().and_then(|i| i.path.clone()),
         supervised,
-        note: if kind.is_none() { Some(unsupported_reason()) } else { None },
+        note: if kind.is_none() {
+            Some(unsupported_reason())
+        } else {
+            None
+        },
     }
 }
 
@@ -126,7 +134,12 @@ pub fn status(data_dir: &Path) -> Status {
 }
 
 fn write_marker(data_dir: &Path, kind: &str, unit: &str, path: Option<PathBuf>) -> Result<()> {
-    let m = Installed { kind: kind.to_owned(), unit: unit.to_owned(), path, at: aspen_node::store::now_epoch() };
+    let m = Installed {
+        kind: kind.to_owned(),
+        unit: unit.to_owned(),
+        path,
+        at: aspen_node::store::now_epoch(),
+    };
     std::fs::create_dir_all(data_dir).ok();
     std::fs::write(marker_path(data_dir), serde_json::to_string_pretty(&m)?)?;
     Ok(())
@@ -171,19 +184,30 @@ struct StartSpec {
 fn start_spec(data_dir: &Path) -> StartSpec {
     match crate::read_daemon_state(data_dir) {
         Some(st) => StartSpec {
-            listen: st["requested"].as_str().or(st["listen"].as_str()).map(str::to_owned),
+            listen: st["requested"]
+                .as_str()
+                .or(st["listen"].as_str())
+                .map(str::to_owned),
             headless: st["headless"].as_bool().unwrap_or(false),
             ui: st["ui"].as_str().map(str::to_owned),
         },
         None => {
             let cfg = aspen_node::settings::load(data_dir).daemon;
-            StartSpec { listen: cfg.listen.clone(), headless: cfg.headless.unwrap_or(false), ui: None }
+            StartSpec {
+                listen: cfg.listen.clone(),
+                headless: cfg.headless.unwrap_or(false),
+                ui: None,
+            }
         }
     }
 }
 
 fn up_args(data_dir: &Path, spec: &StartSpec, detach: bool) -> Vec<String> {
-    let mut a = vec!["--data-dir".to_owned(), data_dir.to_string_lossy().into_owned(), "up".to_owned()];
+    let mut a = vec![
+        "--data-dir".to_owned(),
+        data_dir.to_string_lossy().into_owned(),
+        "up".to_owned(),
+    ];
     if detach {
         a.push("-d".into());
     }
@@ -211,7 +235,8 @@ pub fn enable(data_dir: &Path, adopt: bool) -> Result<Status> {
     let exe = std::env::current_exe().context("locating this binary")?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let spec = start_spec(data_dir);
-    let running_by_hand = crate::read_daemon_state(data_dir).is_some() && supervisor_of(data_dir).is_none();
+    let running_by_hand =
+        crate::read_daemon_state(data_dir).is_some() && supervisor_of(data_dir).is_none();
     match kind {
         "systemd" => {
             let path = systemd::install(&unit, &exe, data_dir, &up_args(data_dir, &spec, false))?;
@@ -262,7 +287,9 @@ pub fn enable(data_dir: &Path, adopt: bool) -> Result<Status> {
 /// nothing).
 pub fn disable(data_dir: &Path) -> Result<Status> {
     let unit = unit_name(data_dir);
-    let kind = installed(data_dir).map(|i| i.kind).or_else(|| platform_kind().map(str::to_owned));
+    let kind = installed(data_dir)
+        .map(|i| i.kind)
+        .or_else(|| platform_kind().map(str::to_owned));
     match kind.as_deref() {
         Some("systemd") => systemd::uninstall(&unit)?,
         Some("launchd") => launchd::uninstall(&unit)?,
@@ -315,12 +342,19 @@ fn wait_up(data_dir: &Path, secs: u64) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     loop {
         if let Some(st) = crate::read_daemon_state(data_dir) {
-            if st.get("pid").and_then(|p| p.as_u64()).is_some_and(|p| crate::process_alive(p as u32)) {
+            if st
+                .get("pid")
+                .and_then(|p| p.as_u64())
+                .is_some_and(|p| crate::process_alive(p as u32))
+            {
                 return Ok(());
             }
         }
         if std::time::Instant::now() > deadline {
-            bail!("the daemon did not come up within {secs}s — see {}", data_dir.join("aspen.log").display());
+            bail!(
+                "the daemon did not come up within {secs}s — see {}",
+                data_dir.join("aspen.log").display()
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
@@ -330,14 +364,20 @@ fn run_ok(mut cmd: std::process::Command, what: &str) -> Result<()> {
     let out = cmd.output().with_context(|| format!("running {what}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let err = if err.trim().is_empty() { String::from_utf8_lossy(&out.stdout).into_owned() } else { err.into_owned() };
+        let err = if err.trim().is_empty() {
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        } else {
+            err.into_owned()
+        };
         bail!("{what} failed: {}", err.trim());
     }
     Ok(())
 }
 
 fn systemd_quote(s: &str) -> String {
-    if s.chars().any(|c| c.is_whitespace() || c == '"' || c == '\\') {
+    if s.chars()
+        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+    {
         format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
     } else {
         s.to_owned()
@@ -345,7 +385,9 @@ fn systemd_quote(s: &str) -> String {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 // ------------------------------------------------------------------ systemd
@@ -360,7 +402,8 @@ mod systemd {
             .map(|o| {
                 let s = String::from_utf8_lossy(&o.stdout);
                 // "running", "degraded" — anything but a failure to reach the manager.
-                !s.trim().is_empty() && !String::from_utf8_lossy(&o.stderr).contains("Failed to connect")
+                !s.trim().is_empty()
+                    && !String::from_utf8_lossy(&o.stderr).contains("Failed to connect")
             })
             .unwrap_or(false)
     }
@@ -419,7 +462,10 @@ mod systemd {
         );
         std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
         run_ok(cmd(&["daemon-reload"]), "systemctl --user daemon-reload")?;
-        run_ok(cmd(&["enable", &format!("{unit}.service")]), "systemctl --user enable")?;
+        run_ok(
+            cmd(&["enable", &format!("{unit}.service")]),
+            "systemctl --user enable",
+        )?;
         Ok(path)
     }
 
@@ -454,11 +500,17 @@ mod systemd {
     }
 
     pub fn start(unit: &str) -> Result<()> {
-        run_ok(cmd(&["start", &format!("{unit}.service")]), "systemctl --user start")
+        run_ok(
+            cmd(&["start", &format!("{unit}.service")]),
+            "systemctl --user start",
+        )
     }
 
     pub fn stop(unit: &str) -> Result<()> {
-        run_ok(cmd(&["stop", &format!("{unit}.service")]), "systemctl --user stop")
+        run_ok(
+            cmd(&["stop", &format!("{unit}.service")]),
+            "systemctl --user stop",
+        )
     }
 
     fn cmd(args: &[&str]) -> std::process::Command {
@@ -499,7 +551,10 @@ mod launchd {
         }
         let mut argv = vec![exe.to_string_lossy().into_owned()];
         argv.extend(args.iter().cloned());
-        let argv_xml: String = argv.iter().map(|a| format!("      <string>{}</string>\n", xml_escape(a))).collect();
+        let argv_xml: String = argv
+            .iter()
+            .map(|a| format!("      <string>{}</string>\n", xml_escape(a)))
+            .collect();
         let log = data_dir.join("aspen.log");
         let path_env = std::env::var("PATH").unwrap_or_default();
         let body = format!(
@@ -533,7 +588,9 @@ mod launchd {
 
     pub fn bootstrap(unit: &str, plist: &Path) -> Result<()> {
         // Re-bootstrapping an already loaded job fails; boot it out first.
-        let _ = quiet_command("launchctl").args(["bootout", &format!("{}/{}", domain(), label(unit))]).output();
+        let _ = quiet_command("launchctl")
+            .args(["bootout", &format!("{}/{}", domain(), label(unit))])
+            .output();
         let mut c = quiet_command("launchctl");
         c.args(["bootstrap", &domain()]).arg(plist);
         run_ok(c, "launchctl bootstrap")
@@ -541,7 +598,9 @@ mod launchd {
 
     pub fn uninstall(unit: &str) -> Result<()> {
         // Disable, not bootout: the running daemon is left alone.
-        let _ = quiet_command("launchctl").args(["disable", &format!("{}/{}", domain(), label(unit))]).output();
+        let _ = quiet_command("launchctl")
+            .args(["disable", &format!("{}/{}", domain(), label(unit))])
+            .output();
         let path = plist_file(unit);
         if path.exists() {
             std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
@@ -578,12 +637,23 @@ mod schtasks {
     use super::*;
 
     pub fn task_name(unit: &str) -> String {
-        if unit == "aspen" { "Aspen".to_owned() } else { format!("Aspen ({unit})") }
+        if unit == "aspen" {
+            "Aspen".to_owned()
+        } else {
+            format!("Aspen ({unit})")
+        }
     }
 
     fn ps(script: &str) -> std::process::Command {
         let mut c = quiet_command("powershell.exe");
-        c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
+        c.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ]);
         c
     }
 
@@ -596,7 +666,13 @@ mod schtasks {
         // in the interactive session would otherwise flash a window.
         let argument = std::iter::once(exe.to_string_lossy().into_owned())
             .chain(args.iter().cloned())
-            .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a })
+            .map(|a| {
+                if a.contains(' ') {
+                    format!("\"{a}\"")
+                } else {
+                    a
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ");
         let script = format!(
@@ -611,17 +687,26 @@ mod schtasks {
     }
 
     pub fn uninstall(unit: &str) -> Result<()> {
-        let script = format!("Unregister-ScheduledTask -TaskName {} -Confirm:$false -ErrorAction SilentlyContinue", ps_quote(&task_name(unit)));
+        let script = format!(
+            "Unregister-ScheduledTask -TaskName {} -Confirm:$false -ErrorAction SilentlyContinue",
+            ps_quote(&task_name(unit))
+        );
         run_ok(ps(&script), "Unregister-ScheduledTask")
     }
 
     pub fn exists(unit: &str) -> bool {
         let script = format!("if (Get-ScheduledTask -TaskName {} -ErrorAction SilentlyContinue) {{ 'yes' }} else {{ 'no' }}", ps_quote(&task_name(unit)));
-        ps(&script).output().map(|o| String::from_utf8_lossy(&o.stdout).trim() == "yes").unwrap_or(false)
+        ps(&script)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "yes")
+            .unwrap_or(false)
     }
 
     pub fn run(unit: &str) -> Result<()> {
-        let script = format!("Start-ScheduledTask -TaskName {}", ps_quote(&task_name(unit)));
+        let script = format!(
+            "Start-ScheduledTask -TaskName {}",
+            ps_quote(&task_name(unit))
+        );
         run_ok(ps(&script), "Start-ScheduledTask")
     }
 }

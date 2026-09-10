@@ -10,7 +10,11 @@ use aspen_core::{SessionEvent, ToolKind};
 
 /// The bash script inside `/bin/bash -lc '<script>'`, else the command.
 pub fn command_of(item: &Value) -> String {
-    let full = item.get("command").and_then(|c| c.as_str()).unwrap_or("").to_owned();
+    let full = item
+        .get("command")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_owned();
     // The app-server renders the argv as one string; the actions carry the
     // bare command when parsed.
     if let Some(first) = item
@@ -28,11 +32,19 @@ pub fn command_of(item: &Value) -> String {
 /// What a command execution does, from the app-server's own parse.
 pub fn shell_kind(item: &Value) -> ToolKind {
     let actions = item.get("commandActions").and_then(|a| a.as_array());
-    let Some(actions) = actions else { return ToolKind::Shell };
+    let Some(actions) = actions else {
+        return ToolKind::Shell;
+    };
     if actions.is_empty() {
         return ToolKind::Shell;
     }
-    let all = |t: &[&str]| actions.iter().all(|a| a.get("type").and_then(|x| x.as_str()).is_some_and(|x| t.contains(&x)));
+    let all = |t: &[&str]| {
+        actions.iter().all(|a| {
+            a.get("type")
+                .and_then(|x| x.as_str())
+                .is_some_and(|x| t.contains(&x))
+        })
+    };
     if all(&["read"]) {
         ToolKind::FileRead
     } else if all(&["read", "listFiles", "search"]) {
@@ -43,8 +55,16 @@ pub fn shell_kind(item: &Value) -> ToolKind {
 }
 
 fn changes_of(item: &Value) -> (Vec<Value>, Option<String>) {
-    let changes: Vec<Value> = item.get("changes").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-    let first = changes.first().and_then(|c| c.get("path")).and_then(|p| p.as_str()).map(str::to_owned);
+    let changes: Vec<Value> = item
+        .get("changes")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let first = changes
+        .first()
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .map(str::to_owned);
     (changes, first)
 }
 
@@ -52,7 +72,11 @@ fn changes_of(item: &Value) -> (Vec<Value>, Option<String>) {
 /// messages, reasoning, plans).
 pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
     let ty = item.get("type").and_then(|t| t.as_str())?;
-    let id = item.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+    let id = item
+        .get("id")
+        .and_then(|i| i.as_str())
+        .unwrap_or("")
+        .to_owned();
     match ty {
         "commandExecution" => {
             let cmd = command_of(item);
@@ -70,7 +94,12 @@ pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
         "fileChange" => {
             let (changes, first) = changes_of(item);
             let n = changes.len();
-            let kind = if changes.iter().all(|c| c.get("kind").and_then(|k| k.get("type")).and_then(|t| t.as_str()) == Some("add")) {
+            let kind = if changes.iter().all(|c| {
+                c.get("kind")
+                    .and_then(|k| k.get("type"))
+                    .and_then(|t| t.as_str())
+                    == Some("add")
+            }) {
                 ToolKind::FileWrite
             } else {
                 ToolKind::FileEdit
@@ -107,7 +136,11 @@ pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
         }
         "dynamicToolCall" => Some(SessionEvent::ToolUse {
             tool_use_id: id,
-            tool_name: item.get("tool").and_then(|s| s.as_str()).unwrap_or("tool").to_owned(),
+            tool_name: item
+                .get("tool")
+                .and_then(|s| s.as_str())
+                .unwrap_or("tool")
+                .to_owned(),
             input: item.get("arguments").cloned().unwrap_or(json!({})),
             parent_tool_use_id: None,
             tool_kind: ToolKind::Other,
@@ -121,7 +154,10 @@ pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
             input: json!({ "query": item.get("query") }),
             parent_tool_use_id: None,
             tool_kind: ToolKind::Web,
-            summary: item.get("query").and_then(|q| q.as_str()).map(str::to_owned),
+            summary: item
+                .get("query")
+                .and_then(|q| q.as_str())
+                .map(str::to_owned),
             path: None,
             command: None,
         }),
@@ -131,7 +167,10 @@ pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
             input: json!({ "tool": item.get("tool"), "prompt": item.get("prompt"), "receivers": item.get("receiverThreadIds") }),
             parent_tool_use_id: None,
             tool_kind: ToolKind::Agent,
-            summary: item.get("prompt").and_then(|p| p.as_str()).map(|p| p.chars().take(120).collect()),
+            summary: item
+                .get("prompt")
+                .and_then(|p| p.as_str())
+                .map(|p| p.chars().take(120).collect()),
             path: None,
             command: None,
         }),
@@ -141,7 +180,10 @@ pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
             input: json!({ "kind": item.get("kind"), "agent": item.get("agentPath") }),
             parent_tool_use_id: None,
             tool_kind: ToolKind::Agent,
-            summary: item.get("agentPath").and_then(|p| p.as_str()).map(str::to_owned),
+            summary: item
+                .get("agentPath")
+                .and_then(|p| p.as_str())
+                .map(str::to_owned),
             path: None,
             command: None,
         }),
@@ -162,11 +204,19 @@ pub fn tool_use_of(item: &Value) -> Option<SessionEvent> {
 /// `item/completed` → the tool result for tool-shaped items.
 pub fn tool_result_of(item: &Value) -> Option<SessionEvent> {
     let ty = item.get("type").and_then(|t| t.as_str())?;
-    let id = item.get("id").and_then(|i| i.as_str()).unwrap_or("").to_owned();
+    let id = item
+        .get("id")
+        .and_then(|i| i.as_str())
+        .unwrap_or("")
+        .to_owned();
     let status = item.get("status").and_then(|s| s.as_str()).unwrap_or("");
     let (text, is_error) = match ty {
         "commandExecution" => {
-            let out = item.get("aggregatedOutput").and_then(|o| o.as_str()).unwrap_or("").to_owned();
+            let out = item
+                .get("aggregatedOutput")
+                .and_then(|o| o.as_str())
+                .unwrap_or("")
+                .to_owned();
             let exit = item.get("exitCode").and_then(|e| e.as_i64());
             match (status, exit) {
                 ("declined", _) => ("declined by the operator".to_owned(), true),
@@ -180,8 +230,15 @@ pub fn tool_result_of(item: &Value) -> Option<SessionEvent> {
             let list: Vec<String> = changes
                 .iter()
                 .map(|c| {
-                    let k = c.get("kind").and_then(|k| k.get("type")).and_then(|t| t.as_str()).unwrap_or("update");
-                    format!("{k} {}", c.get("path").and_then(|p| p.as_str()).unwrap_or(""))
+                    let k = c
+                        .get("kind")
+                        .and_then(|k| k.get("type"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("update");
+                    format!(
+                        "{k} {}",
+                        c.get("path").and_then(|p| p.as_str()).unwrap_or("")
+                    )
                 })
                 .collect();
             match status {
@@ -192,7 +249,13 @@ pub fn tool_result_of(item: &Value) -> Option<SessionEvent> {
         }
         "mcpToolCall" => {
             if let Some(e) = item.get("error").filter(|e| !e.is_null()) {
-                (e.get("message").and_then(|m| m.as_str()).unwrap_or("error").to_owned(), true)
+                (
+                    e.get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("error")
+                        .to_owned(),
+                    true,
+                )
             } else {
                 let r = item.get("result").cloned().unwrap_or(Value::Null);
                 let text = r
@@ -214,12 +277,21 @@ pub fn tool_result_of(item: &Value) -> Option<SessionEvent> {
             let text = item
                 .get("contentItems")
                 .and_then(|c| c.as_array())
-                .map(|items| items.iter().filter_map(|b| b.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join("\n"))
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
                 .unwrap_or_default();
             (text, item.get("success") == Some(&Value::Bool(false)))
         }
         "webSearch" | "collabAgentToolCall" | "subAgentActivity" | "imageView" => (
-            item.get("status").and_then(|s| s.as_str()).unwrap_or("done").to_owned(),
+            item.get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("done")
+                .to_owned(),
             matches!(status, "failed" | "interrupted"),
         ),
         _ => return None,
@@ -273,7 +345,9 @@ mod tests {
         let run = json!({"type":"commandExecution","id":"e","command":"/bin/bash -lc 'make'","commandActions":[{"type":"unknown","command":"make"}]});
         assert_eq!(shell_kind(&run), ToolKind::Shell);
         match tool_use_of(&run) {
-            Some(SessionEvent::ToolUse { tool_kind, command, .. }) => {
+            Some(SessionEvent::ToolUse {
+                tool_kind, command, ..
+            }) => {
                 assert_eq!(tool_kind, ToolKind::Shell);
                 assert_eq!(command.as_deref(), Some("make"));
             }
@@ -285,7 +359,9 @@ mod tests {
     fn file_change_result() {
         let item = json!({"type":"fileChange","id":"f","changes":[{"path":"/r/a.txt","kind":{"type":"add"},"diff":"x"}],"status":"completed"});
         match tool_use_of(&item) {
-            Some(SessionEvent::ToolUse { tool_kind, path, .. }) => {
+            Some(SessionEvent::ToolUse {
+                tool_kind, path, ..
+            }) => {
                 assert_eq!(tool_kind, ToolKind::FileWrite);
                 assert_eq!(path.as_deref(), Some("/r/a.txt"));
             }

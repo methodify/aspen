@@ -79,7 +79,12 @@ pub async fn serve(
         .route("/replicas", get(get_replicas))
         .route("/memory/resolve", post(post_memory_resolve))
         .route("/mesh/{node}/evacuate", post(post_evacuate))
-        .route("/harness-defaults", get(get_harness_defaults).put(put_harness_default).delete(delete_harness_default))
+        .route(
+            "/harness-defaults",
+            get(get_harness_defaults)
+                .put(put_harness_default)
+                .delete(delete_harness_default),
+        )
         .route("/templates", get(get_templates))
         .route("/templates/{id}", put(put_template).delete(delete_template))
         .route("/templates/{id}/spawn", post(post_template_spawn))
@@ -147,7 +152,10 @@ pub async fn serve(
         .route("/search", get(get_search))
         .route("/agents/{name}/processes", get(get_processes))
         .route("/agents/{name}/processes/stop", post(post_process_stop))
-        .route("/agents/{name}/mcp/{server}/reconnect", post(post_mcp_reconnect))
+        .route(
+            "/agents/{name}/mcp/{server}/reconnect",
+            post(post_mcp_reconnect),
+        )
         .route("/agents/{name}/mcp/{server}/toggle", post(post_mcp_toggle))
         .route("/agents/{name}/mcp/{server}/auth", post(post_mcp_auth))
         .route("/agents/{name}/runtime", get(get_runtime))
@@ -181,10 +189,7 @@ pub async fn serve(
             "/update",
             get(get_update).post(post_update).delete(delete_update),
         )
-        .route(
-            "/node/autostart",
-            get(get_autostart).put(put_autostart),
-        )
+        .route("/node/autostart", get(get_autostart).put(put_autostart))
         .route("/update/check", post(post_update_check))
         .route("/update/policy", put(put_update_policy))
         .route(
@@ -205,8 +210,14 @@ pub async fn serve(
         .with_state(state.clone());
 
     let api = api
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), cors_middleware));
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            cors_middleware,
+        ));
     let mut app = Router::new().nest("/api", api);
     let ui_for_state = ui_dir.clone();
     if headless {
@@ -232,49 +243,65 @@ pub async fn serve(
     {
         let gw_router = app.clone();
         let gw_token = token.clone();
-        let gateway: aspen_node::node::HttpGateway = Arc::new(move |method: String, path: String, body: Option<String>, headers: std::collections::HashMap<String, String>| {
-            let router = gw_router.clone();
-            let tk = gw_token.clone();
-            Box::pin(async move {
-                use tower::ServiceExt;
-                let mut req = axum::http::Request::builder().method(method.as_str()).uri(path.as_str());
-                if let Some(t) = tk.as_deref() {
-                    req = req.header("x-aspen-token", t);
-                }
-                let mut has_ct = false;
-                for (k, v) in &headers {
-                    if k.eq_ignore_ascii_case("content-type") {
-                        has_ct = true;
+        let gateway: aspen_node::node::HttpGateway = Arc::new(
+            move |method: String,
+                  path: String,
+                  body: Option<String>,
+                  headers: std::collections::HashMap<String, String>| {
+                let router = gw_router.clone();
+                let tk = gw_token.clone();
+                Box::pin(async move {
+                    use tower::ServiceExt;
+                    let mut req = axum::http::Request::builder()
+                        .method(method.as_str())
+                        .uri(path.as_str());
+                    if let Some(t) = tk.as_deref() {
+                        req = req.header("x-aspen-token", t);
                     }
-                    req = req.header(k.as_str(), v.as_str());
-                }
-                if body.is_some() && !has_ct {
-                    req = req.header("content-type", "application/json");
-                }
-                let req = match req.body(axum::body::Body::from(body.unwrap_or_default())) {
-                    Ok(r) => r,
-                    Err(e) => return json!({ "status": 400, "body": format!("bad request: {e}") }),
-                };
-                match router.oneshot(req).await {
-                    Ok(resp) => {
-                        let status = resp.status().as_u16();
-                        let ct = resp
-                            .headers()
-                            .get("content-type")
-                            .and_then(|v| v.to_str().ok())
-                            .map(str::to_owned);
-                        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.unwrap_or_default();
-                        let texty = ct.as_deref().map(|c| c.starts_with("application/json") || c.starts_with("text/")).unwrap_or(true);
-                        if texty {
-                            json!({ "status": status, "content_type": ct, "body": String::from_utf8_lossy(&bytes) })
-                        } else {
-                            json!({ "status": status, "content_type": ct, "body_b64": aspen_wire::b64::encode(&bytes) })
+                    let mut has_ct = false;
+                    for (k, v) in &headers {
+                        if k.eq_ignore_ascii_case("content-type") {
+                            has_ct = true;
                         }
+                        req = req.header(k.as_str(), v.as_str());
                     }
-                    Err(e) => json!({ "status": 500, "body": format!("{e}") }),
-                }
-            })
-        });
+                    if body.is_some() && !has_ct {
+                        req = req.header("content-type", "application/json");
+                    }
+                    let req = match req.body(axum::body::Body::from(body.unwrap_or_default())) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return json!({ "status": 400, "body": format!("bad request: {e}") })
+                        }
+                    };
+                    match router.oneshot(req).await {
+                        Ok(resp) => {
+                            let status = resp.status().as_u16();
+                            let ct = resp
+                                .headers()
+                                .get("content-type")
+                                .and_then(|v| v.to_str().ok())
+                                .map(str::to_owned);
+                            let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024)
+                                .await
+                                .unwrap_or_default();
+                            let texty = ct
+                                .as_deref()
+                                .map(|c| {
+                                    c.starts_with("application/json") || c.starts_with("text/")
+                                })
+                                .unwrap_or(true);
+                            if texty {
+                                json!({ "status": status, "content_type": ct, "body": String::from_utf8_lossy(&bytes) })
+                            } else {
+                                json!({ "status": status, "content_type": ct, "body_b64": aspen_wire::b64::encode(&bytes) })
+                            }
+                        }
+                        Err(e) => json!({ "status": 500, "body": format!("{e}") }),
+                    }
+                })
+            },
+        );
         let _ = state.node.inner.http_gateway.set(gateway);
     }
 
@@ -293,7 +320,10 @@ pub async fn serve(
     // path is this node's own `bare@repo`. Boards and links carry the
     // fully qualified form from wherever they were made.
     let app = tower::ServiceBuilder::new()
-        .layer(axum::middleware::from_fn_with_state(state.clone(), self_name_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            self_name_middleware,
+        ))
         .service(app);
     let app = axum::ServiceExt::<axum::extract::Request>::into_make_service(app);
     axum::serve(listener, app)
@@ -586,7 +616,12 @@ async fn self_name_middleware(
             let decoded = seg.replace("%40", "@");
             let suffix = format!("@{me}");
             if decoded.matches('@').count() == 2 && decoded.ends_with(&suffix) {
-                let keep = seg.len() - (if seg.ends_with(&suffix) { suffix.len() } else { suffix.len() + 2 });
+                let keep = seg.len()
+                    - (if seg.ends_with(&suffix) {
+                        suffix.len()
+                    } else {
+                        suffix.len() + 2
+                    });
                 let new_path = format!("/api/agents/{}{}", &seg[..keep], tail);
                 let pq = match req.uri().query() {
                     Some(q) => format!("{new_path}?{q}"),
@@ -614,7 +649,11 @@ async fn cors_middleware(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let origin = req.headers().get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let origin = req
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let Some(origin) = origin else {
         return next.run(req).await;
     };
@@ -626,7 +665,10 @@ async fn cors_middleware(
         .map(aspen_node::settings::load)
         .and_then(|st| st.console_origins)
         .unwrap_or_else(|| aspen_node::settings::DEFAULT_CONSOLE_ORIGINS.to_owned());
-    let ok = allowed.split(',').map(str::trim).any(|o| !o.is_empty() && o.eq_ignore_ascii_case(&origin));
+    let ok = allowed
+        .split(',')
+        .map(str::trim)
+        .any(|o| !o.is_empty() && o.eq_ignore_ascii_case(&origin));
     if !ok {
         return next.run(req).await;
     }
@@ -634,10 +676,19 @@ async fn cors_middleware(
     let hv = |v: &str| axum::http::HeaderValue::from_str(v).unwrap();
     headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, hv(&origin));
     headers.insert(axum::http::header::VARY, hv("Origin"));
-    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS, hv("content-type, x-aspen-token"));
-    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, hv("GET, POST, PUT, DELETE, OPTIONS"));
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+        hv("content-type, x-aspen-token"),
+    );
+    headers.insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        hv("GET, POST, PUT, DELETE, OPTIONS"),
+    );
     headers.insert(axum::http::header::ACCESS_CONTROL_MAX_AGE, hv("600"));
-    if req.headers().contains_key("access-control-request-private-network") {
+    if req
+        .headers()
+        .contains_key("access-control-request-private-network")
+    {
         headers.insert("access-control-allow-private-network", hv("true"));
     }
     if req.method() == axum::http::Method::OPTIONS {
@@ -850,10 +901,22 @@ struct AutostartBody {
 /// it started, and the node's `autostart` reflects the result.
 async fn put_autostart(State(s): S, Json(b): Json<AutostartBody>) -> impl IntoResponse {
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
-        return proxy(&s, node, "node_autostart_set", "", json!({ "enabled": b.enabled })).await;
+        return proxy(
+            &s,
+            node,
+            "node_autostart_set",
+            "",
+            json!({ "enabled": b.enabled }),
+        )
+        .await;
     }
-    match aspen_node::servicing::launch_cli(&s.node.inner, &["autostart", if b.enabled { "enable" } else { "disable" }]) {
-        Ok(pid) => Json(json!({ "started": true, "pid": pid, "enabled": b.enabled })).into_response(),
+    match aspen_node::servicing::launch_cli(
+        &s.node.inner,
+        &["autostart", if b.enabled { "enable" } else { "disable" }],
+    ) {
+        Ok(pid) => {
+            Json(json!({ "started": true, "pid": pid, "enabled": b.enabled })).into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -1065,7 +1128,9 @@ async fn get_logs(State(s): S, Query(q): Query<NodeQuery>) -> impl IntoResponse 
         return err(StatusCode::NOT_FOUND, "node has no data dir").into_response();
     };
     let dir = dir.to_path_buf();
-    let out = tokio::task::spawn_blocking(move || aspen_node::servicing::tail_log(&dir, lines)).await.unwrap_or_default();
+    let out = tokio::task::spawn_blocking(move || aspen_node::servicing::tail_log(&dir, lines))
+        .await
+        .unwrap_or_default();
     Json(json!({ "lines": out })).into_response()
 }
 
@@ -1912,7 +1977,12 @@ async fn get_agent_replica(State(s): S, Path(name): Path<String>) -> impl IntoRe
     let Some((bare, node)) = remote_parts(&s, &name) else {
         return Json(json!({ "replica": null, "home_up": true })).into_response();
     };
-    let me = s.node.inner.mesh().map(|m| m.identity.node.clone()).unwrap_or_default();
+    let me = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_default();
     let up = s.node.inner.mesh().is_some_and(|m| m.link_up(&node));
     let r = aspen_node::replicate::find(&s.node.inner, &node, &bare)
         .map(|r| aspen_node::replicate::replica_json(&r, &me));
@@ -1933,9 +2003,10 @@ async fn get_usage(State(s): S, Query(q): Query<UsageQuery>) -> impl IntoRespons
     let to = q.to.unwrap_or(f64::MAX);
     let me = s.node.inner.mesh().map(|m| m.identity.node.clone());
     let inner = s.node.inner.clone();
-    let mut out: Vec<Value> = tokio::task::spawn_blocking(move || aspen_node::node::usage_rows(&inner, from, to, None))
-        .await
-        .unwrap_or_default();
+    let mut out: Vec<Value> =
+        tokio::task::spawn_blocking(move || aspen_node::node::usage_rows(&inner, from, to, None))
+            .await
+            .unwrap_or_default();
     for v in out.iter_mut() {
         v["node"] = json!(me);
     }
@@ -1947,7 +2018,13 @@ async fn get_usage(State(s): S, Query(q): Query<UsageQuery>) -> impl IntoRespons
                 let p = p.clone();
                 async move {
                     let r = mesh
-                        .api_call(&p, "usage", "", json!({ "from": from, "to": to }), REMOTE_TIMEOUT)
+                        .api_call(
+                            &p,
+                            "usage",
+                            "",
+                            json!({ "from": from, "to": to }),
+                            REMOTE_TIMEOUT,
+                        )
                         .await;
                     (p, r)
                 }
@@ -1968,16 +2045,22 @@ async fn get_usage(State(s): S, Query(q): Query<UsageQuery>) -> impl IntoRespons
     Json(out).into_response()
 }
 
-async fn get_agent_usage(State(s): S, Path(name): Path<String>, Query(q): Query<UsageQuery>) -> impl IntoResponse {
+async fn get_agent_usage(
+    State(s): S,
+    Path(name): Path<String>,
+    Query(q): Query<UsageQuery>,
+) -> impl IntoResponse {
     let from = q.from.unwrap_or(0.0);
     let to = q.to.unwrap_or(f64::MAX);
     if let Some((bare, node)) = remote_parts(&s, &name) {
         return proxy(&s, &node, "usage", &bare, json!({ "from": from, "to": to })).await;
     }
     let inner = s.node.inner.clone();
-    let rows = tokio::task::spawn_blocking(move || aspen_node::node::usage_rows(&inner, from, to, Some(&name)))
-        .await
-        .unwrap_or_default();
+    let rows = tokio::task::spawn_blocking(move || {
+        aspen_node::node::usage_rows(&inner, from, to, Some(&name))
+    })
+    .await
+    .unwrap_or_default();
     Json(json!(rows)).into_response()
 }
 
@@ -2013,7 +2096,12 @@ async fn get_notices(State(s): S, Query(q): Query<NoticesQuery>) -> impl IntoRes
     let mut heads: serde_json::Map<String, Value> = serde_json::Map::new();
     match cursors.get(&me) {
         Some(&since) => {
-            let rows = s.node.inner.store.notices_since(since, 200).unwrap_or_default();
+            let rows = s
+                .node
+                .inner
+                .store
+                .notices_since(since, 200)
+                .unwrap_or_default();
             let head = rows.last().map(|n| n.id).unwrap_or(since);
             heads.insert(me.clone(), json!(head));
             for n in &rows {
@@ -2085,7 +2173,12 @@ async fn get_subagent(State(s): S, Path((name, id)): Path<(String, String)>) -> 
     if id.contains(['/', '\\', '.']) {
         return err(StatusCode::BAD_REQUEST, "bad agent id").into_response();
     }
-    match s.node.inner.store_for(row.harness).subagent(&row.repo, sid, &id) {
+    match s
+        .node
+        .inner
+        .store_for(row.harness)
+        .subagent(&row.repo, sid, &id)
+    {
         Ok(items) => Json(items).into_response(),
         Err(_) => err(StatusCode::NOT_FOUND, "no transcript for that agent (yet)").into_response(),
     }
@@ -2602,10 +2695,16 @@ async fn get_transcript(
                     let st = s.node.inner.store_for(r.harness);
                     if let Some(after) = q.after.as_deref() {
                         let items = st.rehydrate_file(main).unwrap_or_default();
-                        let idx = items.iter().position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(after));
+                        let idx = items
+                            .iter()
+                            .position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(after));
                         return match idx {
-                            Some(i) => Json(json!({ "items": items[i + 1..], "after_found": true })).into_response(),
-                            None => Json(json!({ "items": items, "after_found": false })).into_response(),
+                            Some(i) => {
+                                Json(json!({ "items": items[i + 1..], "after_found": true }))
+                                    .into_response()
+                            }
+                            None => Json(json!({ "items": items, "after_found": false }))
+                                .into_response(),
                         };
                     }
                     return Json(st.rehydrate_file(main).unwrap_or_default()).into_response();
@@ -2636,7 +2735,9 @@ async fn get_transcript(
             _ => Json(json!({ "items": [], "after_found": false })).into_response(),
         };
     }
-    let r = tokio::task::spawn_blocking(move || st.rehydrate(&repo, &sid)).await.unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+    let r = tokio::task::spawn_blocking(move || st.rehydrate(&repo, &sid))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
     match r {
         Ok(items) => Json(items).into_response(),
         Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet
@@ -2657,7 +2758,11 @@ async fn ws_relay(State(s): S, ws: WebSocketUpgrade) -> impl IntoResponse {
         .into_response();
     };
     let host = s.relay.clone();
-    let meshes: Vec<(String, Vec<u8>)> = mesh.configs().into_iter().map(|c| (c.mesh, c.root_public)).collect();
+    let meshes: Vec<(String, Vec<u8>)> = mesh
+        .configs()
+        .into_iter()
+        .map(|c| (c.mesh, c.root_public))
+        .collect();
     let me = mesh.identity.node.clone();
     ws.on_upgrade(move |socket| crate::relayhost::serve(host, meshes, me, socket))
         .into_response()
@@ -2925,7 +3030,8 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
             }
         }
     }
-    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions, "memory": memory })).into_response()
+    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions, "memory": memory }))
+        .into_response()
 }
 
 // ---- session templates (PLUGINS.md §templates): stored here, synced
@@ -2937,7 +3043,12 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
 // flags" has an answer.
 
 async fn get_harness_defaults(State(s): S) -> impl IntoResponse {
-    let rows = s.node.inner.store.harness_defaults(false).unwrap_or_default();
+    let rows = s
+        .node
+        .inner
+        .store
+        .harness_defaults(false)
+        .unwrap_or_default();
     let me = s.node.inner.node_name();
     let mut nodes: Vec<String> = vec![me.clone()];
     if let Some(mesh) = s.node.inner.mesh() {
@@ -2947,7 +3058,13 @@ async fn get_harness_defaults(State(s): S) -> impl IntoResponse {
             }
         }
     }
-    let harnesses: Vec<String> = s.node.inner.adapters.keys().map(|h| h.as_str().to_owned()).collect();
+    let harnesses: Vec<String> = s
+        .node
+        .inner
+        .adapters
+        .keys()
+        .map(|h| h.as_str().to_owned())
+        .collect();
     let mut effective = Vec::new();
     for n in &nodes {
         for h in ["claude", "codex"] {
@@ -2956,7 +3073,11 @@ async fn get_harness_defaults(State(s): S) -> impl IntoResponse {
                 .iter()
                 .find(|r| r.scope == scope && r.harness == h)
                 .map(|r| (r.args.clone(), scope.clone()))
-                .or_else(|| rows.iter().find(|r| r.scope == "mesh" && r.harness == h).map(|r| (r.args.clone(), "mesh".to_owned())))
+                .or_else(|| {
+                    rows.iter()
+                        .find(|r| r.scope == "mesh" && r.harness == h)
+                        .map(|r| (r.args.clone(), "mesh".to_owned()))
+                })
                 .unwrap_or_default();
             effective.push(json!({ "node": n, "harness": h, "args": args, "source": if source.is_empty() { Value::Null } else { json!(source) } }));
         }
@@ -2985,7 +3106,11 @@ fn default_scope(scope: &str) -> String {
 
 async fn put_harness_default(State(s): S, Json(b): Json<HarnessDefaultBody>) -> impl IntoResponse {
     if aspen_core::Harness::parse(&b.harness).is_none() {
-        return err(StatusCode::BAD_REQUEST, format!("unknown harness {:?}", b.harness)).into_response();
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("unknown harness {:?}", b.harness),
+        )
+        .into_response();
     }
     // The same guard every node applies at spawn: protocol-owned flags refused here too.
     if let Err(e) = aspen_node::settings::split_args(b.args.trim(), None) {
@@ -3013,7 +3138,10 @@ struct HarnessDefaultDelete {
     harness: String,
 }
 
-async fn delete_harness_default(State(s): S, Json(b): Json<HarnessDefaultDelete>) -> impl IntoResponse {
+async fn delete_harness_default(
+    State(s): S,
+    Json(b): Json<HarnessDefaultDelete>,
+) -> impl IntoResponse {
     let d = aspen_node::store::HarnessDefault {
         scope: default_scope(&b.scope),
         harness: b.harness.trim().to_lowercase(),
@@ -3043,7 +3171,11 @@ struct TemplateBody {
     spec: Value,
 }
 
-async fn put_template(State(s): S, Path(id): Path<String>, Json(b): Json<TemplateBody>) -> impl IntoResponse {
+async fn put_template(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<TemplateBody>,
+) -> impl IntoResponse {
     let t = aspen_node::store::Template {
         id,
         name: b.name.trim().to_owned(),
@@ -3090,7 +3222,11 @@ struct TemplateSpawnBody {
 
 /// Start a session from a template, here or on a peer. The trust gate
 /// applies as for any spawn (428 with the autorun surface).
-async fn post_template_spawn(State(s): S, Path(id): Path<String>, body: Option<Json<TemplateSpawnBody>>) -> impl IntoResponse {
+async fn post_template_spawn(
+    State(s): S,
+    Path(id): Path<String>,
+    body: Option<Json<TemplateSpawnBody>>,
+) -> impl IntoResponse {
     let b = body.map(|b| b.0).unwrap_or_default();
     let overrides = json!({
         "name": b.name, "repo": b.repo, "charter": b.charter, "model": b.model,
@@ -3101,7 +3237,13 @@ async fn post_template_spawn(State(s): S, Path(id): Path<String>, body: Option<J
             return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
         };
         return match mesh
-            .api_call(node, "template_spawn", "", json!({ "id": id, "overrides": overrides }), REMOTE_TIMEOUT)
+            .api_call(
+                node,
+                "template_spawn",
+                "",
+                json!({ "id": id, "overrides": overrides }),
+                REMOTE_TIMEOUT,
+            )
             .await
         {
             Ok(mut v) => {
@@ -3111,19 +3253,41 @@ async fn post_template_spawn(State(s): S, Path(id): Path<String>, body: Option<J
                 v["node"] = json!(node);
                 Json(v).into_response()
             }
-            Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
+            Err(e) => {
+                err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response()
+            }
         };
     }
     // Trust gate: resolve the repo the way the node will, then check it.
     let repo_ref = b.repo.clone().or_else(|| {
-        s.node.inner.store.templates(false).ok()?.into_iter().find(|t| t.id == id || t.name == id)?.spec.get("repo")?.as_str().map(str::to_owned)
+        s.node
+            .inner
+            .store
+            .templates(false)
+            .ok()?
+            .into_iter()
+            .find(|t| t.id == id || t.name == id)?
+            .spec
+            .get("repo")?
+            .as_str()
+            .map(str::to_owned)
     });
     if let Some(r) = repo_ref.as_deref() {
         let path = if std::path::Path::new(r).is_absolute() {
             Some(PathBuf::from(r))
         } else {
             s.node.inner.store.repos().ok().and_then(|rs| {
-                rs.iter().find(|x| x.handle == r).or_else(|| rs.iter().find(|x| x.path.file_name().map(|n| n.to_string_lossy() == r).unwrap_or(false))).map(|x| x.path.clone())
+                rs.iter()
+                    .find(|x| x.handle == r)
+                    .or_else(|| {
+                        rs.iter().find(|x| {
+                            x.path
+                                .file_name()
+                                .map(|n| n.to_string_lossy() == r)
+                                .unwrap_or(false)
+                        })
+                    })
+                    .map(|x| x.path.clone())
             })
         };
         if let Some(p) = path {
@@ -3148,7 +3312,9 @@ async fn post_template_spawn(State(s): S, Path(id): Path<String>, body: Option<J
             v["node"] = json!(s.node_name);
             Json(v).into_response()
         }
-        Err(e) if e.to_string().contains("already running") => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+        Err(e) if e.to_string().contains("already running") => {
+            err(StatusCode::CONFLICT, format!("{e:#}")).into_response()
+        }
         Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
     }
 }
@@ -3159,10 +3325,21 @@ struct EvacuateBody {
 }
 
 /// Evacuate a node (SERVICING.md): every live session there moves to `to`.
-async fn post_evacuate(State(s): S, Path(node): Path<String>, Json(b): Json<EvacuateBody>) -> impl IntoResponse {
+async fn post_evacuate(
+    State(s): S,
+    Path(node): Path<String>,
+    Json(b): Json<EvacuateBody>,
+) -> impl IntoResponse {
     let by = format!("operator@{}", s.node_name);
     if !is_self_node(&s, &node) {
-        return proxy(&s, &node, "node_evacuate", "", json!({ "to": b.to, "by": by })).await;
+        return proxy(
+            &s,
+            &node,
+            "node_evacuate",
+            "",
+            json!({ "to": b.to, "by": by }),
+        )
+        .await;
     }
     match aspen_node::servicing::evacuate(&s.node.inner, &b.to, &by) {
         Ok(st) => Json(serde_json::to_value(st).unwrap_or_default()).into_response(),
@@ -3178,7 +3355,11 @@ struct PreflightQuery {
 /// What a move of `name` to `to` would involve, before anything happens:
 /// sizes and state from the source, counterpart and readiness from the
 /// target, and whether a replica is held on the target.
-async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Query<PreflightQuery>) -> impl IntoResponse {
+async fn get_move_preflight(
+    State(s): S,
+    Path(name): Path<String>,
+    Query(q): Query<PreflightQuery>,
+) -> impl IntoResponse {
     let source: Value = match remote_parts(&s, &name) {
         Some((bare, node)) => {
             if let Some(mesh) = s.node.inner.mesh() {
@@ -3187,9 +3368,14 @@ async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Que
                         .map(|r| aspen_node::replicate::replica_json(&r, &s.node_name));
                     return Json(json!({ "source_up": false, "replica": replica, "blockers": if replica.is_some() { Vec::<String>::new() } else { vec![format!("node {node} is unreachable and no replica is held here")] } })).into_response();
                 }
-                match mesh.api_call(&node, "session_preflight", &bare, json!({}), LIST_TIMEOUT).await {
+                match mesh
+                    .api_call(&node, "session_preflight", &bare, json!({}), LIST_TIMEOUT)
+                    .await
+                {
                     Ok(v) => v,
-                    Err(e) => return err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+                    Err(e) => {
+                        return err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response()
+                    }
                 }
             } else {
                 return err(StatusCode::NOT_FOUND, "not in a mesh").into_response();
@@ -3203,7 +3389,9 @@ async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Que
     let spec = source.get("agent").cloned().unwrap_or(Value::Null);
     let target: Value = if is_self_node(&s, &q.to) {
         let sp: Option<aspen_node::migrate::AgentSpec> = serde_json::from_value(spec.clone()).ok();
-        let counterpart = sp.as_ref().and_then(|sp| aspen_node::migrate::find_counterpart(&s.node.inner.store, sp));
+        let counterpart = sp
+            .as_ref()
+            .and_then(|sp| aspen_node::migrate::find_counterpart(&s.node.inner.store, sp));
         json!({
             "counterpart": counterpart.map(|p| p.to_string_lossy().into_owned()),
             "harness": s.node.inner.servicing.inventory.json()["claude_version"],
@@ -3211,7 +3399,16 @@ async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Que
             "accepting": s.node.inner.servicing.accepting_spawns(),
         })
     } else if let Some(mesh) = s.node.inner.mesh() {
-        match mesh.api_call(&q.to, "node_preflight_target", "", json!({ "spec": spec }), LIST_TIMEOUT).await {
+        match mesh
+            .api_call(
+                &q.to,
+                "node_preflight_target",
+                "",
+                json!({ "spec": spec }),
+                LIST_TIMEOUT,
+            )
+            .await
+        {
             Ok(v) => v,
             Err(e) => json!({ "error": e.to_string(), "accepting": false }),
         }
@@ -3220,14 +3417,25 @@ async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Que
     };
     let mut blockers: Vec<String> = Vec::new();
     if target.get("accepting").and_then(|a| a.as_bool()) == Some(false) {
-        blockers.push(format!("{} is {}", q.to, target.get("state").and_then(|x| x.as_str()).unwrap_or("not accepting sessions")));
+        blockers.push(format!(
+            "{} is {}",
+            q.to,
+            target
+                .get("state")
+                .and_then(|x| x.as_str())
+                .unwrap_or("not accepting sessions")
+        ));
     }
     if let Some(e) = target.get("error").and_then(|e| e.as_str()) {
         blockers.push(format!("{}: {e}", q.to));
     }
     let warnings: Vec<String> = {
         let mut w = Vec::new();
-        if target.get("counterpart").map(|c| c.is_null()).unwrap_or(true) {
+        if target
+            .get("counterpart")
+            .map(|c| c.is_null())
+            .unwrap_or(true)
+        {
             w.push("no counterpart repo found on the target — give a repo path".into());
         }
         let hs = source.get("harness").and_then(|h| h.as_str());
@@ -3238,7 +3446,10 @@ async fn get_move_preflight(State(s): S, Path(name): Path<String>, Query(q): Que
             }
         }
         if source.get("dirty").and_then(|d| d.as_u64()).unwrap_or(0) > 0 {
-            w.push(format!("{} uncommitted change(s) stay behind unless carried as a patch", source["dirty"]));
+            w.push(format!(
+                "{} uncommitted change(s) stay behind unless carried as a patch",
+                source["dirty"]
+            ));
         }
         if source.get("busy").and_then(|b| b.as_bool()) == Some(true) {
             w.push("the session is mid-turn; the move waits for the boundary".into());
@@ -3270,7 +3481,13 @@ async fn post_memory_resolve(State(s): S, Json(b): Json<MemoryResolveBody>) -> i
         )
         .await;
     }
-    match aspen_node::memory::resolve(&s.node.inner, std::path::Path::new(&b.repo), &b.rel, &b.copy, &b.choice) {
+    match aspen_node::memory::resolve(
+        &s.node.inner,
+        std::path::Path::new(&b.repo),
+        &b.rel,
+        &b.copy,
+        &b.choice,
+    ) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
     }
@@ -3537,7 +3754,11 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
     let remote = mesh.remote.lock().unwrap();
     let health = mesh.health.lock().unwrap();
     // Console peers (RELAY.md §11) are links, not members: listed apart.
-    let consoles: Vec<String> = links.keys().filter(|k| k.starts_with("console-")).cloned().collect();
+    let consoles: Vec<String> = links
+        .keys()
+        .filter(|k| k.starts_with("console-"))
+        .cloned()
+        .collect();
     let peers: Vec<Value> = mesh
         .peers()
         .iter()
@@ -4071,7 +4292,11 @@ struct SearchQuery {
 async fn get_search(State(s): S, Query(q): Query<SearchQuery>) -> impl IntoResponse {
     let needle = q.q.trim().to_owned();
     if needle.len() < 2 {
-        return err(StatusCode::BAD_REQUEST, anyhow::anyhow!("the query needs at least two characters")).into_response();
+        return err(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("the query needs at least two characters"),
+        )
+        .into_response();
     }
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let me = self_node_name(&s);
@@ -4080,11 +4305,20 @@ async fn get_search(State(s): S, Query(q): Query<SearchQuery>) -> impl IntoRespo
         let inner = s.node.inner.clone();
         let needle = needle.clone();
         let repo = q.repo.clone();
-        tokio::task::spawn_blocking(move || aspen_node::search::search_local(&inner, &needle, limit, repo.as_deref()))
-            .await
-            .unwrap_or_default()
+        tokio::task::spawn_blocking(move || {
+            aspen_node::search::search_local(&inner, &needle, limit, repo.as_deref())
+        })
+        .await
+        .unwrap_or_default()
     };
-    let mut sessions: Vec<Value> = local.sessions.into_iter().map(|mut v| { v["node"] = json!(me); v }).collect();
+    let mut sessions: Vec<Value> = local
+        .sessions
+        .into_iter()
+        .map(|mut v| {
+            v["node"] = json!(me);
+            v
+        })
+        .collect();
     let mut scanned = local.scanned;
     let mut nodes_asked = vec![me.clone()];
     let mut nodes_failed: Vec<String> = Vec::new();
@@ -4100,7 +4334,13 @@ async fn get_search(State(s): S, Query(q): Query<SearchQuery>) -> impl IntoRespo
                     async move {
                         let name = peer.cert.node.clone();
                         let r = mesh
-                            .api_call(&name, "search", "", json!({ "q": needle, "limit": limit }), std::time::Duration::from_secs(25))
+                            .api_call(
+                                &name,
+                                "search",
+                                "",
+                                json!({ "q": needle, "limit": limit }),
+                                std::time::Duration::from_secs(25),
+                            )
                             .await
                             .ok();
                         (name, r)
@@ -4113,11 +4353,18 @@ async fn get_search(State(s): S, Query(q): Query<SearchQuery>) -> impl IntoRespo
                     continue;
                 };
                 scanned += v.get("scanned").and_then(|n| n.as_u64()).unwrap_or(0) as usize;
-                for sv in v.get("sessions").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+                for sv in v
+                    .get("sessions")
+                    .and_then(|x| x.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                {
                     let mut sv = sv;
                     // A replica a peer holds of OUR session is ours: the
                     // live copy is here, and the local pass already saw it.
-                    if sv.get("replica").and_then(|b| b.as_bool()) == Some(true) && sv.get("home").and_then(|h| h.as_str()) == Some(me.as_str()) {
+                    if sv.get("replica").and_then(|b| b.as_bool()) == Some(true)
+                        && sv.get("home").and_then(|h| h.as_str()) == Some(me.as_str())
+                    {
                         continue;
                     }
                     sv["node"] = json!(name);
@@ -4133,16 +4380,35 @@ async fn get_search(State(s): S, Query(q): Query<SearchQuery>) -> impl IntoRespo
     sessions.sort_by(|a, b| {
         let ra = a.get("replica").and_then(|x| x.as_bool()).unwrap_or(false);
         let rb = b.get("replica").and_then(|x| x.as_bool()).unwrap_or(false);
-        ra.cmp(&rb).then_with(|| b["modified"].as_f64().unwrap_or(0.0).total_cmp(&a["modified"].as_f64().unwrap_or(0.0)))
+        ra.cmp(&rb).then_with(|| {
+            b["modified"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&a["modified"].as_f64().unwrap_or(0.0))
+        })
     });
     for sv in sessions {
-        let home = sv.get("home").and_then(|h| h.as_str()).or_else(|| sv.get("node").and_then(|h| h.as_str())).unwrap_or("").to_owned();
-        let sid = sv.get("session_id").and_then(|h| h.as_str()).unwrap_or("").to_owned();
+        let home = sv
+            .get("home")
+            .and_then(|h| h.as_str())
+            .or_else(|| sv.get("node").and_then(|h| h.as_str()))
+            .unwrap_or("")
+            .to_owned();
+        let sid = sv
+            .get("session_id")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_owned();
         if seen.insert((home, sid)) {
             out.push(sv);
         }
     }
-    out.sort_by(|a, b| b["modified"].as_f64().unwrap_or(0.0).total_cmp(&a["modified"].as_f64().unwrap_or(0.0)));
+    out.sort_by(|a, b| {
+        b["modified"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&a["modified"].as_f64().unwrap_or(0.0))
+    });
     out.truncate(limit);
     Json(json!({
         "q": needle,
@@ -4529,9 +4795,18 @@ struct ExposeBody {
 /// Set which meshes a repo is exposed to (MESHES.md §exposure).
 async fn post_repo_expose(State(s): S, Json(b): Json<ExposeBody>) -> impl IntoResponse {
     let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
-    let known = s.node.inner.mesh().map(|m| m.mesh_names()).unwrap_or_default();
+    let known = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.mesh_names())
+        .unwrap_or_default();
     if let Some(bad) = b.meshes.iter().find(|m| !known.contains(m)) {
-        return err(StatusCode::BAD_REQUEST, format!("this node is not in mesh '{bad}'")).into_response();
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("this node is not in mesh '{bad}'"),
+        )
+        .into_response();
     }
     match s.node.inner.store.set_exposure(&path, &b.meshes) {
         Ok(()) => {
@@ -4552,7 +4827,14 @@ struct RepoAddBody {
 
 async fn post_repo(State(s): S, Json(b): Json<RepoAddBody>) -> impl IntoResponse {
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
-        return proxy(&s, node, "node_repo_add", "", json!({ "path": b.path, "skip_permissions": b.skip_permissions })).await;
+        return proxy(
+            &s,
+            node,
+            "node_repo_add",
+            "",
+            json!({ "path": b.path, "skip_permissions": b.skip_permissions }),
+        )
+        .await;
     }
     // Register only real directories, stored in the one normalized form
     // every other entry point uses (see aspen_node::node::normalize_repo).
@@ -4589,18 +4871,32 @@ struct RepoHarnessBody {
 /// The repo's default harness for new sessions (HARNESSES.md §4).
 async fn post_repo_harness(State(s): S, Json(b): Json<RepoHarnessBody>) -> impl IntoResponse {
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
-        return proxy(&s, node, "node_repo_harness", "", json!({ "path": b.path, "harness": b.harness })).await;
+        return proxy(
+            &s,
+            node,
+            "node_repo_harness",
+            "",
+            json!({ "path": b.path, "harness": b.harness }),
+        )
+        .await;
     }
     let harness = match b.harness.as_deref().filter(|h| !h.is_empty()) {
         Some(h) => match aspen_core::Harness::parse(h) {
             Some(h) => Some(h),
-            None => return err(StatusCode::BAD_REQUEST, format!("unknown harness {h:?}")).into_response(),
+            None => {
+                return err(StatusCode::BAD_REQUEST, format!("unknown harness {h:?}"))
+                    .into_response()
+            }
         },
         None => None,
     };
     if let Some(h) = harness {
         if !s.node.inner.adapters.contains_key(&h) {
-            return err(StatusCode::CONFLICT, format!("{h} is not available on this node")).into_response();
+            return err(
+                StatusCode::CONFLICT,
+                format!("{h} is not available on this node"),
+            )
+            .into_response();
         }
     }
     let path = aspen_node::node::normalize_repo(std::path::Path::new(&b.path));
@@ -4726,11 +5022,26 @@ struct ProcessStopBody {
     pid: Option<u32>,
 }
 
-async fn post_process_stop(State(s): S, Path(name): Path<String>, Json(b): Json<ProcessStopBody>) -> impl IntoResponse {
+async fn post_process_stop(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<ProcessStopBody>,
+) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "process_stop", &bare, json!({ "activity": b.activity, "pid": b.pid })).await;
+        return proxy(
+            &s,
+            &node,
+            "process_stop",
+            &bare,
+            json!({ "activity": b.activity, "pid": b.pid }),
+        )
+        .await;
     }
-    match s.node.stop_process(&name, b.activity.as_deref(), b.pid).await {
+    match s
+        .node
+        .stop_process(&name, b.activity.as_deref(), b.pid)
+        .await
+    {
         Ok(v) => Json(v).into_response(),
         Err(e) => err(StatusCode::CONFLICT, e).into_response(),
     }
@@ -4746,7 +5057,11 @@ struct McpQuery {
     refresh: Option<String>,
 }
 
-async fn get_mcp(State(s): S, Path(name): Path<String>, Query(q): Query<McpQuery>) -> impl IntoResponse {
+async fn get_mcp(
+    State(s): S,
+    Path(name): Path<String>,
+    Query(q): Query<McpQuery>,
+) -> impl IntoResponse {
     let refresh = matches!(q.refresh.as_deref(), Some("1") | Some("true") | Some("yes"));
     if let Some((bare, node)) = remote_parts(&s, &name) {
         return proxy(&s, &node, "mcp_list", &bare, json!({ "refresh": refresh })).await;
@@ -4766,14 +5081,26 @@ async fn post_recap(State(s): S, Path(name): Path<String>) -> impl IntoResponse 
     }
     match s.node.recap(&name).await {
         Ok(v) => Json(v).into_response(),
-        Err(e) if e.to_string().starts_with("unsupported:") => err(StatusCode::NOT_IMPLEMENTED, e).into_response(),
+        Err(e) if e.to_string().starts_with("unsupported:") => {
+            err(StatusCode::NOT_IMPLEMENTED, e).into_response()
+        }
         Err(e) => err(StatusCode::CONFLICT, e).into_response(),
     }
 }
 
-async fn post_mcp_reconnect(State(s): S, Path((name, server)): Path<(String, String)>) -> impl IntoResponse {
+async fn post_mcp_reconnect(
+    State(s): S,
+    Path((name, server)): Path<(String, String)>,
+) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "mcp_reconnect", &bare, json!({ "server": server })).await;
+        return proxy(
+            &s,
+            &node,
+            "mcp_reconnect",
+            &bare,
+            json!({ "server": server }),
+        )
+        .await;
     }
     match s.node.mcp_reconnect(&name, &server).await {
         Ok(v) => Json(v).into_response(),
@@ -4786,9 +5113,20 @@ struct McpToggleBody {
     enabled: bool,
 }
 
-async fn post_mcp_toggle(State(s): S, Path((name, server)): Path<(String, String)>, Json(b): Json<McpToggleBody>) -> impl IntoResponse {
+async fn post_mcp_toggle(
+    State(s): S,
+    Path((name, server)): Path<(String, String)>,
+    Json(b): Json<McpToggleBody>,
+) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "mcp_toggle", &bare, json!({ "server": server, "enabled": b.enabled })).await;
+        return proxy(
+            &s,
+            &node,
+            "mcp_toggle",
+            &bare,
+            json!({ "server": server, "enabled": b.enabled }),
+        )
+        .await;
     }
     match s.node.mcp_toggle(&name, &server, b.enabled).await {
         Ok(v) => Json(v).into_response(),
@@ -4796,7 +5134,10 @@ async fn post_mcp_toggle(State(s): S, Path((name, server)): Path<(String, String
     }
 }
 
-async fn post_mcp_auth(State(s): S, Path((name, server)): Path<(String, String)>) -> impl IntoResponse {
+async fn post_mcp_auth(
+    State(s): S,
+    Path((name, server)): Path<(String, String)>,
+) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
         return proxy(&s, &node, "mcp_auth", &bare, json!({ "server": server })).await;
     }
@@ -4814,9 +5155,20 @@ struct McpAddBody {
     config: Value,
 }
 
-async fn post_mcp_add(State(s): S, Path(name): Path<String>, Json(b): Json<McpAddBody>) -> impl IntoResponse {
+async fn post_mcp_add(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<McpAddBody>,
+) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "mcp_add", &bare, json!({ "server": b.name, "config": b.config })).await;
+        return proxy(
+            &s,
+            &node,
+            "mcp_add",
+            &bare,
+            json!({ "server": b.name, "config": b.config }),
+        )
+        .await;
     }
     let server = b.name.trim().to_owned();
     if server.is_empty() {

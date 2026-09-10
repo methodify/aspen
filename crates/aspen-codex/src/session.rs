@@ -14,9 +14,12 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use aspen_core::permission::{BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest};
+use aspen_core::permission::{
+    BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest,
+};
 use aspen_core::{
-    AdapterCapabilities, DecisionOption, DecisionScope, Harness, PromptKind, RuntimeInfo, SessionEvent, SessionHandle, SessionId, ToolKind,
+    AdapterCapabilities, DecisionOption, DecisionScope, Harness, PromptKind, RuntimeInfo,
+    SessionEvent, SessionHandle, SessionId, ToolKind,
 };
 
 use crate::adapter::{mode, Mode};
@@ -76,7 +79,9 @@ fn sandbox_policy(mode: &Mode) -> Value {
     match mode.sandbox {
         "read-only" => json!({ "type": "readOnly", "networkAccess": false }),
         "danger-full-access" => json!({ "type": "dangerFullAccess" }),
-        _ => json!({ "type": "workspaceWrite", "writableRoots": [], "networkAccess": false, "excludeTmpdirEnvVar": false, "excludeSlashTmp": false }),
+        _ => {
+            json!({ "type": "workspaceWrite", "writableRoots": [], "networkAccess": false, "excludeTmpdirEnvVar": false, "excludeSlashTmp": false })
+        }
     }
 }
 
@@ -85,15 +90,25 @@ fn toml_str(s: &str) -> String {
 }
 
 impl CodexSession {
-    pub async fn start(cfg: CodexConfig, broker: Arc<dyn PermissionBroker>) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
-        let mode_now = mode(&cfg.mode).ok_or_else(|| anyhow!("unknown codex mode {:?}", cfg.mode))?;
+    pub async fn start(
+        cfg: CodexConfig,
+        broker: Arc<dyn PermissionBroker>,
+    ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
+        let mode_now =
+            mode(&cfg.mode).ok_or_else(|| anyhow!("unknown codex mode {:?}", cfg.mode))?;
         let cwd = cfg.repo.canonicalize().unwrap_or_else(|_| cfg.repo.clone());
         let cwd_str = cwd.to_string_lossy().into_owned();
 
         // Trust for the cwd is a command-line override, never a config.toml
         // write: Aspen's trust gate is the only trust decision.
-        let mut overrides = vec![(format!("projects.{}.trust_level", toml_str(&cwd_str)), toml_str("trusted"))];
-        let mut env = vec![("CODEX_INTERNAL_ORIGINATOR_OVERRIDE".to_owned(), "aspen".to_owned())];
+        let mut overrides = vec![(
+            format!("projects.{}.trust_level", toml_str(&cwd_str)),
+            toml_str("trusted"),
+        )];
+        let mut env = vec![(
+            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE".to_owned(),
+            "aspen".to_owned(),
+        )];
         env.extend(cfg.env.iter().cloned());
         if let Some(b) = &cfg.bridge {
             overrides.push(("mcp_servers.aspen.command".into(), toml_str(&b.aspen_bin)));
@@ -105,7 +120,10 @@ impl CodexSession {
             if let Some(t) = &b.token {
                 kv.push(format!("ASPEN_NODE_TOKEN = {}", toml_str(t)));
             }
-            overrides.push(("mcp_servers.aspen.env".into(), format!("{{ {} }}", kv.join(", "))));
+            overrides.push((
+                "mcp_servers.aspen.env".into(),
+                format!("{{ {} }}", kv.join(", ")),
+            ));
             // The bridge is a tiny process; do not wait long on it.
             overrides.push(("mcp_servers.aspen.startup_timeout_sec".into(), "20".into()));
         }
@@ -153,14 +171,20 @@ impl CodexSession {
             }
             (None, _) => "thread/start",
         };
-        let started = rpc.call(method, params, CALL_TIMEOUT).await.with_context(|| format!("codex {method}"))?;
+        let started = rpc
+            .call(method, params, CALL_TIMEOUT)
+            .await
+            .with_context(|| format!("codex {method}"))?;
         let thread_id = started
             .get("thread")
             .and_then(|t| t.get("id"))
             .and_then(|i| i.as_str())
             .ok_or_else(|| anyhow!("codex {method}: no thread id in response"))?
             .to_owned();
-        let model_now = started.get("model").and_then(|m| m.as_str()).map(str::to_owned);
+        let model_now = started
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(str::to_owned);
 
         let session = Arc::new(Self {
             id: cfg.session_id,
@@ -183,7 +207,14 @@ impl CodexSession {
         });
 
         // Inventory, best effort: models and skills.
-        if let Ok(models) = rpc.call("model/list", json!({ "includeHidden": false }), Duration::from_secs(20)).await {
+        if let Ok(models) = rpc
+            .call(
+                "model/list",
+                json!({ "includeHidden": false }),
+                Duration::from_secs(20),
+            )
+            .await
+        {
             if let Some(list) = models.get("data").and_then(|d| d.as_array()) {
                 session.runtime.lock().unwrap().models = list
                     .iter()
@@ -191,10 +222,27 @@ impl CodexSession {
                     .collect();
             }
         }
-        if let Ok(skills) = rpc.call("skills/list", json!({ "cwds": [cwd_str] }), Duration::from_secs(20)).await {
+        if let Ok(skills) = rpc
+            .call(
+                "skills/list",
+                json!({ "cwds": [cwd_str] }),
+                Duration::from_secs(20),
+            )
+            .await
+        {
             let mut out = Vec::new();
-            for entry in skills.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default() {
-                for s in entry.get("skills").and_then(|s| s.as_array()).cloned().unwrap_or_default() {
+            for entry in skills
+                .get("data")
+                .and_then(|d| d.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                for s in entry
+                    .get("skills")
+                    .and_then(|s| s.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                {
                     if s.get("enabled") == Some(&Value::Bool(false)) {
                         continue;
                     }
@@ -213,7 +261,11 @@ impl CodexSession {
             })
         };
         let _ = events_tx
-            .send(SessionEvent::RuntimeInit { session_id: thread_id.clone(), model: model_now, raw: init_raw })
+            .send(SessionEvent::RuntimeInit {
+                session_id: thread_id.clone(),
+                model: model_now,
+                raw: init_raw,
+            })
             .await;
 
         // The router: notifications normalized, requests brokered.
@@ -223,13 +275,19 @@ impl CodexSession {
             tokio::spawn(async move {
                 while let Some(msg) = inbound.recv().await {
                     match msg {
-                        Inbound::Notification { method, params } => session.on_notification(&method, params, &events_tx).await,
+                        Inbound::Notification { method, params } => {
+                            session.on_notification(&method, params, &events_tx).await
+                        }
                         Inbound::Request { id, method, params } => {
                             let session = session.clone();
                             let events_tx = events_tx.clone();
                             let broker = broker.clone();
                             // Decisions can take minutes; never block the router.
-                            tokio::spawn(async move { session.on_request(id, &method, params, &events_tx, &broker).await });
+                            tokio::spawn(async move {
+                                session
+                                    .on_request(id, &method, params, &events_tx, &broker)
+                                    .await
+                            });
                         }
                         Inbound::Stderr(line) => {
                             let _ = events_tx.send(SessionEvent::Stderr { line }).await;
@@ -250,29 +308,46 @@ impl CodexSession {
         self.thread_id.lock().unwrap().clone()
     }
 
-    async fn on_notification(self: &Arc<Self>, method: &str, params: Value, tx: &mpsc::Sender<SessionEvent>) {
+    async fn on_notification(
+        self: &Arc<Self>,
+        method: &str,
+        params: Value,
+        tx: &mpsc::Sender<SessionEvent>,
+    ) {
         let send = |ev: SessionEvent| async move {
             let _ = tx.send(ev).await;
         };
         match method {
             "item/agentMessage/delta" => {
                 if let Some(d) = params.get("delta").and_then(|d| d.as_str()) {
-                    send(SessionEvent::TextDelta { text: d.to_owned(), thinking: false }).await;
+                    send(SessionEvent::TextDelta {
+                        text: d.to_owned(),
+                        thinking: false,
+                    })
+                    .await;
                 }
             }
             "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
                 if let Some(d) = params.get("delta").and_then(|d| d.as_str()) {
-                    send(SessionEvent::TextDelta { text: d.to_owned(), thinking: true }).await;
+                    send(SessionEvent::TextDelta {
+                        text: d.to_owned(),
+                        thinking: true,
+                    })
+                    .await;
                 }
             }
             "item/started" => {
                 let item = params.get("item").cloned().unwrap_or(Value::Null);
                 let ty = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                    self.items.lock().unwrap().insert(id.to_owned(), item.clone());
+                    self.items
+                        .lock()
+                        .unwrap()
+                        .insert(id.to_owned(), item.clone());
                 }
                 match ty {
-                    "agentMessage" | "reasoning" | "userMessage" | "plan" | "hookPrompt" | "contextCompaction" => {}
+                    "agentMessage" | "reasoning" | "userMessage" | "plan" | "hookPrompt"
+                    | "contextCompaction" => {}
                     // Extensions (clock.sleep while a question waits, …) are
                     // status, not tool cards.
                     "extension" | "sleep" => {
@@ -290,7 +365,11 @@ impl CodexSession {
                 let ty = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 match ty {
                     "agentMessage" => {
-                        let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("").to_owned();
+                        let text = item
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_owned();
                         if !text.is_empty() {
                             *self.last_text.lock().unwrap() = Some(text);
                         }
@@ -300,12 +379,28 @@ impl CodexSession {
                         // the model asked in its message and now waits; the
                         // answer is ordinary user input. Surface it as a
                         // question prompt through the broker.
-                        if let Some(qs) = item.get("questions").and_then(|q| q.as_array()).filter(|q| !q.is_empty()) {
-                            self.async_question(item.get("id").and_then(|i| i.as_str()).unwrap_or("q").to_owned(), qs.clone());
+                        if let Some(qs) = item
+                            .get("questions")
+                            .and_then(|q| q.as_array())
+                            .filter(|q| !q.is_empty())
+                        {
+                            self.async_question(
+                                item.get("id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or("q")
+                                    .to_owned(),
+                                qs.clone(),
+                            );
                         }
                     }
-                    "plan" => send(SessionEvent::Status { raw: json!({ "type": "plan", "text": item.get("text") }) }).await,
-                    "userMessage" | "reasoning" | "hookPrompt" | "contextCompaction" | "extension" | "sleep" => {}
+                    "plan" => {
+                        send(SessionEvent::Status {
+                            raw: json!({ "type": "plan", "text": item.get("text") }),
+                        })
+                        .await
+                    }
+                    "userMessage" | "reasoning" | "hookPrompt" | "contextCompaction"
+                    | "extension" | "sleep" => {}
                     _ => {
                         if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
                             self.items.lock().unwrap().remove(id);
@@ -317,7 +412,11 @@ impl CodexSession {
                 }
             }
             "turn/started" => {
-                if let Some(id) = params.get("turn").and_then(|t| t.get("id")).and_then(|i| i.as_str()) {
+                if let Some(id) = params
+                    .get("turn")
+                    .and_then(|t| t.get("id"))
+                    .and_then(|i| i.as_str())
+                {
                     *self.current_turn.lock().unwrap() = Some(id.to_owned());
                 }
                 *self.last_text.lock().unwrap() = None;
@@ -326,10 +425,18 @@ impl CodexSession {
             "turn/completed" => {
                 *self.current_turn.lock().unwrap() = None;
                 let turn = params.get("turn").cloned().unwrap_or(Value::Null);
-                let status = turn.get("status").and_then(|s| s.as_str()).unwrap_or("completed").to_owned();
+                let status = turn
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("completed")
+                    .to_owned();
                 let duration_ms = turn.get("durationMs").and_then(|d| d.as_u64());
                 let mut result_text = self.last_text.lock().unwrap().clone();
-                if let Some(msg) = turn.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                if let Some(msg) = turn
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                {
                     result_text = Some(match result_text {
                         Some(t) => format!("{t}\n\n{msg}"),
                         None => msg.to_owned(),
@@ -356,38 +463,90 @@ impl CodexSession {
                     self.runtime.lock().unwrap().context_window = Some(w);
                 }
                 *self.last_usage.lock().unwrap() = tu.clone();
-                send(SessionEvent::Status { raw: json!({ "type": "token_usage", "tokenUsage": tu }) }).await;
+                send(SessionEvent::Status {
+                    raw: json!({ "type": "token_usage", "tokenUsage": tu }),
+                })
+                .await;
             }
             "error" => {
-                let msg = params.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("error");
-                let retry = params.get("willRetry").and_then(|r| r.as_bool()).unwrap_or(false);
-                send(SessionEvent::Stderr { line: format!("codex: {msg}{}", if retry { " (retrying)" } else { "" }) }).await;
-                send(SessionEvent::Status { raw: json!({ "type": "error", "message": msg, "will_retry": retry }) }).await;
+                let msg = params
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("error");
+                let retry = params
+                    .get("willRetry")
+                    .and_then(|r| r.as_bool())
+                    .unwrap_or(false);
+                send(SessionEvent::Stderr {
+                    line: format!("codex: {msg}{}", if retry { " (retrying)" } else { "" }),
+                })
+                .await;
+                send(SessionEvent::Status {
+                    raw: json!({ "type": "error", "message": msg, "will_retry": retry }),
+                })
+                .await;
             }
             "thread/settings/updated" => {
-                if let Some(m) = params.get("threadSettings").and_then(|s| s.get("model")).and_then(|m| m.as_str()) {
+                if let Some(m) = params
+                    .get("threadSettings")
+                    .and_then(|s| s.get("model"))
+                    .and_then(|m| m.as_str())
+                {
                     self.runtime.lock().unwrap().model = Some(m.to_owned());
                 }
-                send(SessionEvent::Status { raw: json!({ "type": "settings", "settings": params.get("threadSettings") }) }).await;
+                send(SessionEvent::Status {
+                    raw: json!({ "type": "settings", "settings": params.get("threadSettings") }),
+                })
+                .await;
             }
-            "thread/compacted" => send(SessionEvent::Status { raw: json!({ "type": "compacted" }) }).await,
+            "thread/compacted" => {
+                send(SessionEvent::Status {
+                    raw: json!({ "type": "compacted" }),
+                })
+                .await
+            }
             "mcpServer/startupStatus/updated" => {
                 // Push from Codex (PROPOSALS-MCP.md §2.2); the node re-lists
                 // on it so the picture carries tools and auth state.
                 send(SessionEvent::Status { raw: json!({ "type": "mcp_startup", "name": params.get("name"), "status": params.get("status"), "error": params.get("error") }) }).await;
             }
-            "model/rerouted" => send(SessionEvent::Status { raw: json!({ "type": "model_rerouted", "detail": params }) }).await,
+            "model/rerouted" => {
+                send(SessionEvent::Status {
+                    raw: json!({ "type": "model_rerouted", "detail": params }),
+                })
+                .await
+            }
             "warning" | "guardianWarning" | "configWarning" | "deprecationNotice" => {
-                let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or("").to_owned();
-                send(SessionEvent::Stderr { line: format!("codex {method}: {msg}") }).await;
+                let msg = params
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                send(SessionEvent::Stderr {
+                    line: format!("codex {method}: {msg}"),
+                })
+                .await;
             }
             // Output deltas, status flips, rate limits, diffs: kept, never
             // interpreted (the source view shows them).
-            _ => send(SessionEvent::Raw { raw: json!({ "method": method, "params": params }) }).await,
+            _ => {
+                send(SessionEvent::Raw {
+                    raw: json!({ "method": method, "params": params }),
+                })
+                .await
+            }
         }
     }
 
-    async fn on_request(&self, id: Value, method: &str, params: Value, tx: &mpsc::Sender<SessionEvent>, broker: &Arc<dyn PermissionBroker>) {
+    async fn on_request(
+        &self,
+        id: Value,
+        method: &str,
+        params: Value,
+        tx: &mpsc::Sender<SessionEvent>,
+        broker: &Arc<dyn PermissionBroker>,
+    ) {
         let request_id = match &id {
             Value::Number(n) => format!("codex-{n}"),
             Value::String(s) => s.clone(),
@@ -395,8 +554,18 @@ impl CodexSession {
         };
         match method {
             "item/commandExecution/requestApproval" => {
-                let item_id = params.get("itemId").and_then(|i| i.as_str()).unwrap_or("").to_owned();
-                let item = self.items.lock().unwrap().get(&item_id).cloned().unwrap_or(Value::Null);
+                let item_id = params
+                    .get("itemId")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let item = self
+                    .items
+                    .lock()
+                    .unwrap()
+                    .get(&item_id)
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let command = params
                     .get("command")
                     .and_then(|c| c.as_str())
@@ -411,11 +580,16 @@ impl CodexSession {
                     .and_then(|c| c.as_str())
                     .map(str::to_owned);
                 let shown = actions_cmd.unwrap_or(command);
-                let amendment = params.get("proposedExecpolicyAmendment").cloned().filter(|a| !a.is_null());
+                let amendment = params
+                    .get("proposedExecpolicyAmendment")
+                    .cloned()
+                    .filter(|a| !a.is_null());
                 let kind = if params.get("kind").and_then(|k| k.as_str()) == Some("network") {
                     ToolKind::Web
                 } else {
-                    normalize::shell_kind(&json!({ "commandActions": params.get("commandActions") }))
+                    normalize::shell_kind(
+                        &json!({ "commandActions": params.get("commandActions") }),
+                    )
                 };
                 let available: Vec<String> = params
                     .get("availableDecisions")
@@ -431,15 +605,34 @@ impl CodexSession {
                     })
                     .unwrap_or_default();
                 let has = |d: &str| available.is_empty() || available.iter().any(|a| a == d);
-                let mut decisions = vec![DecisionOption { id: "accept".into(), label: "allow".into(), allow: true, scope: DecisionScope::Once, payload: None }];
+                let mut decisions = vec![DecisionOption {
+                    id: "accept".into(),
+                    label: "allow".into(),
+                    allow: true,
+                    scope: DecisionScope::Once,
+                    payload: None,
+                }];
                 if has("acceptForSession") {
-                    decisions.push(DecisionOption { id: "acceptForSession".into(), label: "allow for this session".into(), allow: true, scope: DecisionScope::Session, payload: None });
+                    decisions.push(DecisionOption {
+                        id: "acceptForSession".into(),
+                        label: "allow for this session".into(),
+                        allow: true,
+                        scope: DecisionScope::Session,
+                        payload: None,
+                    });
                 }
                 if let Some(a) = &amendment {
                     if has("acceptWithExecpolicyAmendment") {
-                        let toks: Vec<&str> = a.as_array().map(|p| p.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                        let toks: Vec<&str> = a
+                            .as_array()
+                            .map(|p| p.iter().filter_map(|x| x.as_str()).collect())
+                            .unwrap_or_default();
                         // `/bin/bash -lc '<script>'` → show the script.
-                        let prefix = if toks.len() == 3 && toks[1] == "-lc" { toks[2].to_owned() } else { toks.join(" ") };
+                        let prefix = if toks.len() == 3 && toks[1] == "-lc" {
+                            toks[2].to_owned()
+                        } else {
+                            toks.join(" ")
+                        };
                         let prefix: String = prefix.chars().take(60).collect();
                         decisions.push(DecisionOption {
                             id: "acceptWithExecpolicyAmendment".into(),
@@ -450,7 +643,13 @@ impl CodexSession {
                         });
                     }
                 }
-                decisions.push(DecisionOption { id: "decline".into(), label: "deny".into(), allow: false, scope: DecisionScope::Once, payload: None });
+                decisions.push(DecisionOption {
+                    id: "decline".into(),
+                    label: "deny".into(),
+                    allow: false,
+                    scope: DecisionScope::Once,
+                    payload: None,
+                });
                 let req = PermissionRequest {
                     request_id: request_id.clone(),
                     tool_name: "commandExecution".into(),
@@ -463,14 +662,23 @@ impl CodexSession {
                     raw: params.clone(),
                 };
                 let (decision, by) = broker.decide(req).await;
-                self.settled(tx, &request_id, "commandExecution", &decision, by).await;
+                self.settled(tx, &request_id, "commandExecution", &decision, by)
+                    .await;
                 let result = match decision {
-                    BrokerDecision::Allow { decision_id, updated_permissions, .. } => match decision_id.as_deref() {
+                    BrokerDecision::Allow {
+                        decision_id,
+                        updated_permissions,
+                        ..
+                    } => match decision_id.as_deref() {
                         Some("acceptForSession") => json!("acceptForSession"),
-                        Some("acceptWithExecpolicyAmendment") | Some("always") => match updated_permissions.or(amendment) {
-                            Some(a) => json!({ "acceptWithExecpolicyAmendment": { "execpolicy_amendment": a } }),
-                            None => json!("acceptForSession"),
-                        },
+                        Some("acceptWithExecpolicyAmendment") | Some("always") => {
+                            match updated_permissions.or(amendment) {
+                                Some(a) => {
+                                    json!({ "acceptWithExecpolicyAmendment": { "execpolicy_amendment": a } })
+                                }
+                                None => json!("acceptForSession"),
+                            }
+                        }
                         _ => json!("accept"),
                     },
                     BrokerDecision::Deny { .. } => json!("decline"),
@@ -478,14 +686,47 @@ impl CodexSession {
                 let _ = self.rpc.respond(id, json!({ "decision": result })).await;
             }
             "item/fileChange/requestApproval" => {
-                let item_id = params.get("itemId").and_then(|i| i.as_str()).unwrap_or("").to_owned();
-                let item = self.items.lock().unwrap().get(&item_id).cloned().unwrap_or(Value::Null);
+                let item_id = params
+                    .get("itemId")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let item = self
+                    .items
+                    .lock()
+                    .unwrap()
+                    .get(&item_id)
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let changes = item.get("changes").cloned().unwrap_or(json!([]));
-                let first = changes.as_array().and_then(|a| a.first()).and_then(|c| c.get("path")).and_then(|p| p.as_str()).map(str::to_owned);
+                let first = changes
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|c| c.get("path"))
+                    .and_then(|p| p.as_str())
+                    .map(str::to_owned);
                 let decisions = vec![
-                    DecisionOption { id: "accept".into(), label: "allow".into(), allow: true, scope: DecisionScope::Once, payload: None },
-                    DecisionOption { id: "acceptForSession".into(), label: "allow for this session".into(), allow: true, scope: DecisionScope::Session, payload: None },
-                    DecisionOption { id: "decline".into(), label: "deny".into(), allow: false, scope: DecisionScope::Once, payload: None },
+                    DecisionOption {
+                        id: "accept".into(),
+                        label: "allow".into(),
+                        allow: true,
+                        scope: DecisionScope::Once,
+                        payload: None,
+                    },
+                    DecisionOption {
+                        id: "acceptForSession".into(),
+                        label: "allow for this session".into(),
+                        allow: true,
+                        scope: DecisionScope::Session,
+                        payload: None,
+                    },
+                    DecisionOption {
+                        id: "decline".into(),
+                        label: "deny".into(),
+                        allow: false,
+                        scope: DecisionScope::Once,
+                        payload: None,
+                    },
                 ];
                 let req = PermissionRequest {
                     request_id: request_id.clone(),
@@ -499,9 +740,14 @@ impl CodexSession {
                     raw: params.clone(),
                 };
                 let (decision, by) = broker.decide(req).await;
-                self.settled(tx, &request_id, "fileChange", &decision, by).await;
+                self.settled(tx, &request_id, "fileChange", &decision, by)
+                    .await;
                 let result = match decision {
-                    BrokerDecision::Allow { decision_id, .. } if decision_id.as_deref() == Some("acceptForSession") => "acceptForSession",
+                    BrokerDecision::Allow { decision_id, .. }
+                        if decision_id.as_deref() == Some("acceptForSession") =>
+                    {
+                        "acceptForSession"
+                    }
                     BrokerDecision::Allow { .. } => "accept",
                     BrokerDecision::Deny { .. } => "decline",
                 };
@@ -511,7 +757,11 @@ impl CodexSession {
                 // Codex questions → the console's question card shape (the
                 // Claude `questions[]` form), answers keyed by question text
                 // back to Codex ids.
-                let qs = params.get("questions").and_then(|q| q.as_array()).cloned().unwrap_or_default();
+                let qs = params
+                    .get("questions")
+                    .and_then(|q| q.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let questions: Vec<Value> = qs
                     .iter()
                     .map(|q| {
@@ -533,12 +783,19 @@ impl CodexSession {
                     prompt: PromptKind::Question,
                     input: json!({ "questions": questions }),
                     suggestions: Value::Null,
-                    decisions: vec![DecisionOption { id: "answer".into(), label: "answer".into(), allow: true, scope: DecisionScope::Once, payload: None }],
+                    decisions: vec![DecisionOption {
+                        id: "answer".into(),
+                        label: "answer".into(),
+                        allow: true,
+                        scope: DecisionScope::Once,
+                        payload: None,
+                    }],
                     questions: json!(questions),
                     raw: params.clone(),
                 };
                 let (decision, by) = broker.decide(req).await;
-                self.settled(tx, &request_id, "requestUserInput", &decision, by).await;
+                self.settled(tx, &request_id, "requestUserInput", &decision, by)
+                    .await;
                 let mut answers = serde_json::Map::new();
                 if let BrokerDecision::Allow { updated_input, .. } = &decision {
                     let given = updated_input.get("answers").and_then(|a| a.as_object());
@@ -548,7 +805,10 @@ impl CodexSession {
                         let v = given.and_then(|g| g.get(qtext).or_else(|| g.get(qid)));
                         let list: Vec<String> = match v {
                             Some(Value::String(s)) => vec![s.clone()],
-                            Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect(),
+                            Some(Value::Array(a)) => a
+                                .iter()
+                                .filter_map(|x| x.as_str().map(str::to_owned))
+                                .collect(),
                             _ => Vec::new(),
                         };
                         if !list.is_empty() {
@@ -567,15 +827,34 @@ impl CodexSession {
                     input: json!({ "permissions": params.get("permissions"), "reason": params.get("reason"), "cwd": params.get("cwd") }),
                     suggestions: Value::Null,
                     decisions: vec![
-                        DecisionOption { id: "accept".into(), label: "grant for this turn".into(), allow: true, scope: DecisionScope::Once, payload: None },
-                        DecisionOption { id: "acceptForSession".into(), label: "grant for this session".into(), allow: true, scope: DecisionScope::Session, payload: None },
-                        DecisionOption { id: "decline".into(), label: "deny".into(), allow: false, scope: DecisionScope::Once, payload: None },
+                        DecisionOption {
+                            id: "accept".into(),
+                            label: "grant for this turn".into(),
+                            allow: true,
+                            scope: DecisionScope::Once,
+                            payload: None,
+                        },
+                        DecisionOption {
+                            id: "acceptForSession".into(),
+                            label: "grant for this session".into(),
+                            allow: true,
+                            scope: DecisionScope::Session,
+                            payload: None,
+                        },
+                        DecisionOption {
+                            id: "decline".into(),
+                            label: "deny".into(),
+                            allow: false,
+                            scope: DecisionScope::Once,
+                            payload: None,
+                        },
                     ],
                     questions: Value::Null,
                     raw: params.clone(),
                 };
                 let (decision, by) = broker.decide(req).await;
-                self.settled(tx, &request_id, "permissions", &decision, by).await;
+                self.settled(tx, &request_id, "permissions", &decision, by)
+                    .await;
                 let result = match decision {
                     BrokerDecision::Allow { decision_id, .. } => {
                         let mut granted = serde_json::Map::new();
@@ -586,7 +865,11 @@ impl CodexSession {
                                 }
                             }
                         }
-                        let scope = if decision_id.as_deref() == Some("acceptForSession") { "session" } else { "turn" };
+                        let scope = if decision_id.as_deref() == Some("acceptForSession") {
+                            "session"
+                        } else {
+                            "turn"
+                        };
                         json!({ "permissions": granted, "scope": scope })
                     }
                     BrokerDecision::Deny { .. } => json!({ "permissions": {}, "scope": "turn" }),
@@ -595,32 +878,69 @@ impl CodexSession {
             }
             "mcpServer/elicitation/request" => {
                 let meta = params.get("_meta").cloned().unwrap_or(Value::Null);
-                let server = params.get("serverName").and_then(|s| s.as_str()).unwrap_or("mcp").to_owned();
-                if meta.get("codex_approval_kind").and_then(|k| k.as_str()) == Some("mcp_tool_call") {
+                let server = params
+                    .get("serverName")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("mcp")
+                    .to_owned();
+                if meta.get("codex_approval_kind").and_then(|k| k.as_str()) == Some("mcp_tool_call")
+                {
                     // Codex asks for MCP tool calls through an elicitation
                     // (CODEX_RUNTIME_REFERENCE.md §6.4). Named like Claude's
                     // MCP tools so the bus tools auto-allow by name.
-                    let tool = meta.get("tool_name").and_then(|t| t.as_str()).map(str::to_owned).or_else(|| {
-                        params
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .and_then(|m| m.split('"').nth(1))
-                            .map(str::to_owned)
-                    });
+                    let tool = meta
+                        .get("tool_name")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            params
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .and_then(|m| m.split('"').nth(1))
+                                .map(str::to_owned)
+                        });
                     let tool = tool.unwrap_or_else(|| "tool".into());
                     let persist: Vec<String> = meta
                         .get("persist")
                         .and_then(|p| p.as_array())
-                        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_owned))
+                                .collect()
+                        })
                         .unwrap_or_default();
-                    let mut decisions = vec![DecisionOption { id: "accept".into(), label: "allow".into(), allow: true, scope: DecisionScope::Once, payload: None }];
+                    let mut decisions = vec![DecisionOption {
+                        id: "accept".into(),
+                        label: "allow".into(),
+                        allow: true,
+                        scope: DecisionScope::Once,
+                        payload: None,
+                    }];
                     if persist.iter().any(|p| p == "session") {
-                        decisions.push(DecisionOption { id: "session".into(), label: "allow for this session".into(), allow: true, scope: DecisionScope::Session, payload: None });
+                        decisions.push(DecisionOption {
+                            id: "session".into(),
+                            label: "allow for this session".into(),
+                            allow: true,
+                            scope: DecisionScope::Session,
+                            payload: None,
+                        });
                     }
                     if persist.iter().any(|p| p == "always") {
-                        decisions.push(DecisionOption { id: "always".into(), label: "always allow".into(), allow: true, scope: DecisionScope::Always, payload: None });
+                        decisions.push(DecisionOption {
+                            id: "always".into(),
+                            label: "always allow".into(),
+                            allow: true,
+                            scope: DecisionScope::Always,
+                            payload: None,
+                        });
                     }
-                    decisions.push(DecisionOption { id: "decline".into(), label: "deny".into(), allow: false, scope: DecisionScope::Once, payload: None });
+                    decisions.push(DecisionOption {
+                        id: "decline".into(),
+                        label: "deny".into(),
+                        allow: false,
+                        scope: DecisionScope::Once,
+                        payload: None,
+                    });
                     let name = format!("mcp__{server}__{tool}");
                     let req = PermissionRequest {
                         request_id: request_id.clone(),
@@ -649,18 +969,29 @@ impl CodexSession {
                             }
                             json!({ "action": "accept", "content": {}, "_meta": Value::Object(m) })
                         }
-                        BrokerDecision::Deny { .. } => json!({ "action": "decline", "content": null, "_meta": null }),
+                        BrokerDecision::Deny { .. } => {
+                            json!({ "action": "decline", "content": null, "_meta": null })
+                        }
                     };
                     let _ = self.rpc.respond(id, result).await;
                 } else {
                     // A server's own form/url elicitation: not surfaced yet
                     // (PROPOSALS-HARNESSES.md §5) — decline honestly.
-                    let _ = self.rpc.respond(id, json!({ "action": "decline", "content": null, "_meta": null })).await;
+                    let _ = self
+                        .rpc
+                        .respond(
+                            id,
+                            json!({ "action": "decline", "content": null, "_meta": null }),
+                        )
+                        .await;
                     let _ = tx.send(SessionEvent::Status { raw: json!({ "type": "elicitation_declined", "server": server, "mode": params.get("mode") }) }).await;
                 }
             }
             other => {
-                let _ = self.rpc.respond_error(id, &format!("aspen: unsupported server request {other:?}")).await;
+                let _ = self
+                    .rpc
+                    .respond_error(id, &format!("aspen: unsupported server request {other:?}"))
+                    .await;
             }
         }
     }
@@ -692,36 +1023,63 @@ impl CodexSession {
                 prompt: PromptKind::Question,
                 input: json!({ "questions": questions }),
                 suggestions: Value::Null,
-                decisions: vec![DecisionOption { id: "answer".into(), label: "answer".into(), allow: true, scope: DecisionScope::Once, payload: None }],
+                decisions: vec![DecisionOption {
+                    id: "answer".into(),
+                    label: "answer".into(),
+                    allow: true,
+                    scope: DecisionScope::Once,
+                    payload: None,
+                }],
                 questions: json!(questions),
                 raw: json!({ "item": id, "questions": qs }),
             };
             let (decision, by) = session.broker.decide(req).await;
-            session.settled(&session.events, &request_id, "question", &decision, by).await;
+            session
+                .settled(&session.events, &request_id, "question", &decision, by)
+                .await;
             if let BrokerDecision::Allow { updated_input, .. } = decision {
                 let mut lines = Vec::new();
                 if let Some(ans) = updated_input.get("answers").and_then(|a| a.as_object()) {
                     for (q, v) in ans {
                         let text = match v {
                             Value::String(s) => s.clone(),
-                            Value::Array(a) => a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
+                            Value::Array(a) => a
+                                .iter()
+                                .filter_map(|x| x.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
                             other => other.to_string(),
                         };
                         lines.push(format!("{q}: {text}"));
                     }
                 }
-                if let Some(r) = updated_input.get("response").and_then(|r| r.as_str()).filter(|r| !r.trim().is_empty()) {
+                if let Some(r) = updated_input
+                    .get("response")
+                    .and_then(|r| r.as_str())
+                    .filter(|r| !r.trim().is_empty())
+                {
                     lines.push(r.to_owned());
                 }
                 if lines.is_empty() {
                     lines.push("(no answer given)".into());
                 }
-                let _ = session.start_or_steer(json!([{ "type": "text", "text": lines.join("\n"), "text_elements": [] }])).await;
+                let _ = session
+                    .start_or_steer(
+                        json!([{ "type": "text", "text": lines.join("\n"), "text_elements": [] }]),
+                    )
+                    .await;
             }
         });
     }
 
-    async fn settled(&self, tx: &mpsc::Sender<SessionEvent>, request_id: &str, tool: &str, decision: &BrokerDecision, by: DecidedBy) {
+    async fn settled(
+        &self,
+        tx: &mpsc::Sender<SessionEvent>,
+        request_id: &str,
+        tool: &str,
+        decision: &BrokerDecision,
+        by: DecidedBy,
+    ) {
         let _ = tx
             .send(SessionEvent::PermissionSettled {
                 request_id: request_id.to_owned(),
@@ -738,14 +1096,23 @@ impl CodexSession {
         let skills = self.runtime.lock().unwrap().skills.clone();
         let mut blocks = vec![json!({ "type": "text", "text": text, "text_elements": [] })];
         for tok in text.split_whitespace() {
-            let Some(name) = tok.strip_prefix('$') else { continue };
-            let name = name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+            let Some(name) = tok.strip_prefix('$') else {
+                continue;
+            };
+            let name =
+                name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
             if name.is_empty() {
                 continue;
             }
-            if let Some(sk) = skills.iter().find(|s| s.get("name").and_then(|n| n.as_str()) == Some(name)) {
+            if let Some(sk) = skills
+                .iter()
+                .find(|s| s.get("name").and_then(|n| n.as_str()) == Some(name))
+            {
                 if let Some(path) = sk.get("path").and_then(|p| p.as_str()) {
-                    if !blocks.iter().any(|b| b.get("type") == Some(&json!("skill")) && b.get("name") == Some(&json!(name))) {
+                    if !blocks.iter().any(|b| {
+                        b.get("type") == Some(&json!("skill"))
+                            && b.get("name") == Some(&json!(name))
+                    }) {
                         blocks.push(json!({ "type": "skill", "name": name, "path": path }));
                     }
                 }
@@ -787,7 +1154,11 @@ impl CodexSession {
         let mut params = self.turn_params(input);
         params["clientUserMessageId"] = json!(uuid);
         let resp = self.rpc.call("turn/start", params, CALL_TIMEOUT).await?;
-        if let Some(id) = resp.get("turn").and_then(|t| t.get("id")).and_then(|i| i.as_str()) {
+        if let Some(id) = resp
+            .get("turn")
+            .and_then(|t| t.get("id"))
+            .and_then(|i| i.as_str())
+        {
             *self.current_turn.lock().unwrap() = Some(id.to_owned());
         }
         Ok(uuid)
@@ -846,7 +1217,11 @@ impl SessionHandle for CodexSession {
             return Ok(());
         };
         self.rpc
-            .call("turn/interrupt", json!({ "threadId": self.thread(), "turnId": turn }), Duration::from_secs(30))
+            .call(
+                "turn/interrupt",
+                json!({ "threadId": self.thread(), "turnId": turn }),
+                Duration::from_secs(30),
+            )
             .await
             .map(|_| ())
     }
@@ -856,7 +1231,11 @@ impl SessionHandle for CodexSession {
         if let Some(turn) = turn {
             let _ = self
                 .rpc
-                .call("turn/interrupt", json!({ "threadId": self.thread(), "turnId": turn }), Duration::from_secs(5))
+                .call(
+                    "turn/interrupt",
+                    json!({ "threadId": self.thread(), "turnId": turn }),
+                    Duration::from_secs(5),
+                )
                 .await;
         }
         self.rpc.kill();
@@ -864,7 +1243,9 @@ impl SessionHandle for CodexSession {
     }
 
     async fn set_model(&self, model: Option<&str>) -> Result<()> {
-        let m = model.filter(|m| !m.is_empty() && *m != "default").map(str::to_owned);
+        let m = model
+            .filter(|m| !m.is_empty() && *m != "default")
+            .map(str::to_owned);
         *self.model.lock().unwrap() = m.clone();
         if let Some(m) = m {
             self.runtime.lock().unwrap().model = Some(m);
@@ -873,7 +1254,16 @@ impl SessionHandle for CodexSession {
     }
 
     async fn set_mode(&self, mode_id: &str) -> Result<()> {
-        let m = mode(mode_id).ok_or_else(|| anyhow!("unknown codex mode {mode_id:?}; one of {}", crate::adapter::MODES.iter().map(|m| m.id).collect::<Vec<_>>().join(", ")))?;
+        let m = mode(mode_id).ok_or_else(|| {
+            anyhow!(
+                "unknown codex mode {mode_id:?}; one of {}",
+                crate::adapter::MODES
+                    .iter()
+                    .map(|m| m.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
         *self.mode.lock().unwrap() = m;
         self.runtime.lock().unwrap().mode = Some(m.id.into());
         Ok(())
@@ -886,7 +1276,11 @@ impl SessionHandle for CodexSession {
     async fn mcp_servers(&self) -> Result<Vec<aspen_core::McpServerState>> {
         let v = self
             .rpc
-            .call("mcpServerStatus/list", json!({ "threadId": self.thread(), "detail": "toolsAndAuthOnly" }), Duration::from_secs(30))
+            .call(
+                "mcpServerStatus/list",
+                json!({ "threadId": self.thread(), "detail": "toolsAndAuthOnly" }),
+                Duration::from_secs(30),
+            )
             .await?;
         Ok(v.get("data")
             .and_then(|d| d.as_array())
@@ -896,13 +1290,32 @@ impl SessionHandle for CodexSession {
 
     async fn mcp_reconnect(&self, _name: &str) -> Result<()> {
         // Codex reloads all servers from config; there is no per-server call.
-        self.rpc.call("config/mcpServer/reload", json!({}), Duration::from_secs(60)).await.map(|_| ())
+        self.rpc
+            .call(
+                "config/mcpServer/reload",
+                json!({}),
+                Duration::from_secs(60),
+            )
+            .await
+            .map(|_| ())
     }
 
     async fn mcp_authenticate(&self, name: &str) -> Result<aspen_core::McpAuth> {
-        let v = self.rpc.call("mcpServer/oauth/login", json!({ "name": name }), Duration::from_secs(60)).await?;
+        let v = self
+            .rpc
+            .call(
+                "mcpServer/oauth/login",
+                json!({ "name": name }),
+                Duration::from_secs(60),
+            )
+            .await?;
         Ok(aspen_core::McpAuth {
-            url: v.get("authorizationUrl").or_else(|| v.get("authUrl")).or_else(|| v.get("url")).and_then(|u| u.as_str()).map(str::to_owned),
+            url: v
+                .get("authorizationUrl")
+                .or_else(|| v.get("authUrl"))
+                .or_else(|| v.get("url"))
+                .and_then(|u| u.as_str())
+                .map(str::to_owned),
             requires_user: true,
         })
     }
@@ -911,7 +1324,12 @@ impl SessionHandle for CodexSession {
         let tu = self.last_usage.lock().unwrap().clone();
         let window = tu.get("modelContextWindow").and_then(|w| w.as_u64());
         let last = tu.get("last").cloned().unwrap_or(Value::Null);
-        let used = last.get("inputTokens").and_then(|v| v.as_u64()).map(|i| i + last.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0));
+        let used = last.get("inputTokens").and_then(|v| v.as_u64()).map(|i| {
+            i + last
+                .get("outputTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        });
         Ok(json!({
             "harness": "codex",
             "usedTokens": used,
@@ -938,7 +1356,11 @@ fn codex_mcp_state(v: &Value) -> aspen_core::McpServerState {
         Some("disabled") => McpStatus::Disabled,
         _ => McpStatus::Pending,
     };
-    let tools: Vec<String> = v.get("tools").and_then(|t| t.as_object()).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+    let tools: Vec<String> = v
+        .get("tools")
+        .and_then(|t| t.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
     let server = v.get("serverInfo").and_then(|i| {
         let n = i.get("name").and_then(|x| x.as_str())?;
         Some(match i.get("version").and_then(|x| x.as_str()) {
@@ -950,7 +1372,10 @@ fn codex_mcp_state(v: &Value) -> aspen_core::McpServerState {
         name: s("name").unwrap_or_default(),
         status,
         error: s("toolsError"),
-        scope: v.get("pluginId").and_then(|p| p.as_str()).map(|_| "plugin".to_owned()),
+        scope: v
+            .get("pluginId")
+            .and_then(|p| p.as_str())
+            .map(|_| "plugin".to_owned()),
         transport: None,
         command: None,
         server,

@@ -6,8 +6,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   binaries:
@@ -98,16 +96,10 @@ jobs:
             --generate-notes \
             dist/*
 
-  # The hosted console (docs/CONSOLE_APP.md): the same UI built for
-  # methodify.github.io/aspen — hash routes, connections to nodes and
-  # relays — published to GitHub Pages from the tagged commit, and zipped
-  # into the release for anyone who hosts it themselves. Needs the
-  # repository's Pages source set to "GitHub Actions" (one-time).
+  # The hosted console (docs/CONSOLE_APP.md), zipped into the release for
+  # anyone who hosts it themselves. The Pages deployment is pages.yml.
   console:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -128,8 +120,3 @@ jobs:
             gh release upload "${{ github.ref_name }}" console.zip --repo "${{ github.repository }}" --clobber && break
             sleep 30
           done
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ui/dist-hosted
-      - id: deploy
-        uses: actions/deploy-pages@v4

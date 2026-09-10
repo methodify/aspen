@@ -716,11 +716,18 @@ impl BusStore {
         .and_then(|h| aspen_core::Harness::parse(&h))
     }
 
-    pub fn set_repo_default_harness(&self, path: &Path, harness: Option<aspen_core::Harness>) -> Result<()> {
+    pub fn set_repo_default_harness(
+        &self,
+        path: &Path,
+        harness: Option<aspen_core::Harness>,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE repos SET default_harness=?2 WHERE path=?1",
-            params![path.to_string_lossy(), harness.map(|h| h.as_str().to_owned())],
+            params![
+                path.to_string_lossy(),
+                harness.map(|h| h.as_str().to_owned())
+            ],
         )?;
         Ok(())
     }
@@ -865,26 +872,31 @@ impl BusStore {
 
     pub fn exposure_rows(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        Ok(conn.query_row("SELECT COUNT(*) FROM repo_meshes", [], |r| r.get::<_, i64>(0))? as usize)
+        Ok(conn.query_row("SELECT COUNT(*) FROM repo_meshes", [], |r| {
+            r.get::<_, i64>(0)
+        })? as usize)
     }
 
     pub fn templates(&self, with_deleted: bool) -> Result<Vec<Template>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, spec, updated_at, deleted FROM templates ORDER BY name",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, spec, updated_at, deleted FROM templates ORDER BY name")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(Template {
                     id: r.get(0)?,
                     name: r.get(1)?,
-                    spec: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::Value::Null),
+                    spec: serde_json::from_str(&r.get::<_, String>(2)?)
+                        .unwrap_or(serde_json::Value::Null),
                     updated_at: r.get(3)?,
                     deleted: r.get::<_, i64>(4)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().filter(|t| with_deleted || !t.deleted).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|t| with_deleted || !t.deleted)
+            .collect())
     }
 
     /// Write a template if newer than what we hold (LWW per row).
@@ -892,7 +904,11 @@ impl BusStore {
         self.hlc_observe(t.updated_at);
         let conn = self.conn.lock().unwrap();
         let cur: Option<f64> = conn
-            .query_row("SELECT updated_at FROM templates WHERE id=?1", params![t.id], |r| r.get(0))
+            .query_row(
+                "SELECT updated_at FROM templates WHERE id=?1",
+                params![t.id],
+                |r| r.get(0),
+            )
             .ok();
         if cur.is_some_and(|c| c >= t.updated_at) {
             return Ok(false);
@@ -900,7 +916,13 @@ impl BusStore {
         conn.execute(
             "INSERT INTO templates(id, name, spec, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET name=?2, spec=?3, updated_at=?4, deleted=?5",
-            params![t.id, t.name, t.spec.to_string(), t.updated_at, t.deleted as i64],
+            params![
+                t.id,
+                t.name,
+                t.spec.to_string(),
+                t.updated_at,
+                t.deleted as i64
+            ],
         )?;
         Ok(true)
     }
@@ -929,7 +951,10 @@ impl BusStore {
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().filter(|d| with_deleted || !d.deleted).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|d| with_deleted || !d.deleted)
+            .collect())
     }
 
     /// Write a default if newer than what we hold (LWW per row).
@@ -937,7 +962,11 @@ impl BusStore {
         self.hlc_observe(d.updated_at);
         let conn = self.conn.lock().unwrap();
         let cur: Option<f64> = conn
-            .query_row("SELECT updated_at FROM harness_defaults WHERE scope=?1 AND harness=?2", params![d.scope, d.harness], |r| r.get(0))
+            .query_row(
+                "SELECT updated_at FROM harness_defaults WHERE scope=?1 AND harness=?2",
+                params![d.scope, d.harness],
+                |r| r.get(0),
+            )
             .ok();
         if cur.is_some_and(|c| c >= d.updated_at) {
             return Ok(false);
@@ -958,14 +987,24 @@ impl BusStore {
         if let Some(r) = rows.iter().find(|r| r.scope == me && r.harness == harness) {
             return Some((r.args.clone(), me));
         }
-        rows.iter().find(|r| r.scope == "mesh" && r.harness == harness).map(|r| (r.args.clone(), "mesh".to_owned()))
+        rows.iter()
+            .find(|r| r.scope == "mesh" && r.harness == harness)
+            .map(|r| (r.args.clone(), "mesh".to_owned()))
     }
 
     pub fn harness_defaults_digest(&self) -> String {
         let conn = self.conn.lock().unwrap();
         let mut h: u64 = 0xcbf29ce484222325;
-        if let Ok(mut stmt) = conn.prepare("SELECT scope, harness, updated_at FROM harness_defaults ORDER BY scope, harness") {
-            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))) {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT scope, harness, updated_at FROM harness_defaults ORDER BY scope, harness",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            }) {
                 for (sc, hn, t) in rows.flatten() {
                     for b in format!("{sc}/{hn}{t:.3}").bytes() {
                         h ^= b as u64;
@@ -981,7 +1020,9 @@ impl BusStore {
         let conn = self.conn.lock().unwrap();
         let mut h: u64 = 0xcbf29ce484222325;
         if let Ok(mut stmt) = conn.prepare("SELECT id, updated_at FROM templates ORDER BY id") {
-            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))) {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            {
                 for (id, t) in rows.flatten() {
                     for b in format!("{id}{t:.3}").bytes() {
                         h ^= b as u64;
@@ -993,10 +1034,13 @@ impl BusStore {
         format!("{h:016x}")
     }
 
-    pub fn memory_base(&self, repo: &str) -> Result<std::collections::BTreeMap<String, MemoryBase>> {
+    pub fn memory_base(
+        &self,
+        repo: &str,
+    ) -> Result<std::collections::BTreeMap<String, MemoryBase>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT rel, content, deleted, updated_at FROM memory_base WHERE repo=?1")?;
+        let mut stmt = conn
+            .prepare("SELECT rel, content, deleted, updated_at FROM memory_base WHERE repo=?1")?;
         let rows = stmt.query_map(params![repo], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -2547,12 +2591,36 @@ mod tests {
     #[test]
     fn channel_membership_via_agent_registry() {
         let s = BusStore::open_in_memory().unwrap();
-        s.register_agent("a", Path::new("/r/proj"), "proj", "sid-a", None, None, aspen_core::Harness::Claude)
-            .unwrap();
-        s.register_agent("b", Path::new("/r/proj"), "proj", "sid-b", None, None, aspen_core::Harness::Claude)
-            .unwrap();
-        s.register_agent("c", Path::new("/r/other"), "other", "sid-c", None, None, aspen_core::Harness::Claude)
-            .unwrap();
+        s.register_agent(
+            "a",
+            Path::new("/r/proj"),
+            "proj",
+            "sid-a",
+            None,
+            None,
+            aspen_core::Harness::Claude,
+        )
+        .unwrap();
+        s.register_agent(
+            "b",
+            Path::new("/r/proj"),
+            "proj",
+            "sid-b",
+            None,
+            None,
+            aspen_core::Harness::Claude,
+        )
+        .unwrap();
+        s.register_agent(
+            "c",
+            Path::new("/r/other"),
+            "other",
+            "sid-c",
+            None,
+            None,
+            aspen_core::Harness::Claude,
+        )
+        .unwrap();
         assert_eq!(s.channel_members("proj").unwrap(), vec!["a", "b"]);
     }
 }

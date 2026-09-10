@@ -120,14 +120,43 @@ pub enum Capability {
 /// Classify a mesh op. Anything not listed as a read is control.
 pub fn op_capability(op: &str) -> Capability {
     match op {
-        "transcript" | "activities" | "subagent" | "artifacts" | "file_stat" | "file_read"
-        | "runtime" | "context" | "bookmarks" | "plugins_effective" | "boards"
-        | "plugin_registry" | "plugins_registry_view" | "templates" | "needs" | "node_repos"
-        | "node_sessions" | "history" | "node_update_status" | "node_autostart" | "node_logs" | "adoptions"
-        | "usage" | "fleet_activities" | "notices" | "memory_files" | "memory_conflicts"
-        | "replica_offsets" | "session_spec" | "session_preflight" | "node_preflight_target"
-        | "harness_defaults" | "mcp_list" | "processes" | "search"
-        | "sub" | "http" => Capability::Observe,
+        "transcript"
+        | "activities"
+        | "subagent"
+        | "artifacts"
+        | "file_stat"
+        | "file_read"
+        | "runtime"
+        | "context"
+        | "bookmarks"
+        | "plugins_effective"
+        | "boards"
+        | "plugin_registry"
+        | "plugins_registry_view"
+        | "templates"
+        | "needs"
+        | "node_repos"
+        | "node_sessions"
+        | "history"
+        | "node_update_status"
+        | "node_autostart"
+        | "node_logs"
+        | "adoptions"
+        | "usage"
+        | "fleet_activities"
+        | "notices"
+        | "memory_files"
+        | "memory_conflicts"
+        | "replica_offsets"
+        | "session_spec"
+        | "session_preflight"
+        | "node_preflight_target"
+        | "harness_defaults"
+        | "mcp_list"
+        | "processes"
+        | "search"
+        | "sub"
+        | "http" => Capability::Observe,
         "spawn" | "template_spawn" => Capability::Spawn,
         "adoption" | "node_repo_skip" | "node_repo_add" => Capability::Trust,
         _ => Capability::Control,
@@ -425,7 +454,10 @@ impl MeshState {
         self.link_mesh.lock().unwrap().get(node).cloned()
     }
     pub fn root_for(&self, mesh: &str) -> Option<Vec<u8>> {
-        self.configs().into_iter().find(|c| c.mesh == mesh).map(|c| c.root_public)
+        self.configs()
+            .into_iter()
+            .find(|c| c.mesh == mesh)
+            .map(|c| c.root_public)
     }
     /// "full" | "observe" for a mesh (MESHES.md §capabilities).
     pub fn policy_of(&self, mesh: &str) -> String {
@@ -501,7 +533,12 @@ impl MeshState {
     /// held `remote` while taking `links` deadlocked against it — two
     /// console polls, minutes apart in the wild (DESIGN.md, v0.23.4).
     pub fn remote_snapshot(&self) -> Vec<(String, Vec<RemoteAgent>)> {
-        self.remote.lock().unwrap().iter().map(|(n, a)| (n.clone(), a.clone())).collect()
+        self.remote
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(n, a)| (n.clone(), a.clone()))
+            .collect()
     }
 
     /// Where a bare agent name is homed remotely, if anywhere.
@@ -573,7 +610,8 @@ pub fn advertised(inner: &Arc<NodeInner>) -> Advertised {
     // Interface enumeration, a hostname lookup and (Windows) a child
     // process: cached, because the roster ticker and every received
     // roster ask, on runtime workers.
-    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Advertised)>> = std::sync::Mutex::new(None);
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Advertised)>> =
+        std::sync::Mutex::new(None);
     if let Some((at, a)) = CACHE.lock().unwrap().as_ref() {
         if at.elapsed() < std::time::Duration::from_secs(120) {
             return a.clone();
@@ -880,7 +918,9 @@ pub async fn run_link(
     let mut chosen: Option<(NodeCert, String)> = None;
     let mut last_err: Option<anyhow::Error> = None;
     for c in &offered {
-        let Some(root) = mesh.root_for(&c.mesh) else { continue };
+        let Some(root) = mesh.root_for(&c.mesh) else {
+            continue;
+        };
         match c.verify_against(&root) {
             Ok(()) => {
                 chosen = Some((c.clone(), c.mesh.clone()));
@@ -895,7 +935,11 @@ pub async fn run_link(
             Some(e) => format!("cert from '{who}' does not verify against this mesh's root: {e}"),
             None => format!(
                 "'{who}' is in mesh {} — this node is in {}",
-                offered.iter().map(|c| c.mesh.as_str()).collect::<Vec<_>>().join("/"),
+                offered
+                    .iter()
+                    .map(|c| c.mesh.as_str())
+                    .collect::<Vec<_>>()
+                    .join("/"),
                 mesh.mesh_names().join("/")
             ),
         };
@@ -999,7 +1043,12 @@ pub async fn run_link(
     // while `link_up` took `links` — against teardown's links → link_kind —
     // could deadlock two runtime workers and, with them, the daemon.
     let direct_already_up = kind != "direct"
-        && mesh.link_kind.lock().unwrap().get(&peer).is_some_and(|k| k == "direct")
+        && mesh
+            .link_kind
+            .lock()
+            .unwrap()
+            .get(&peer)
+            .is_some_and(|k| k == "direct")
         && mesh.link_up(&peer);
     if kind == "direct" {
         let sessions = mesh.relay_sessions.lock().unwrap();
@@ -1026,7 +1075,10 @@ pub async fn run_link(
         h.last_error = None;
         h.last_error_at = None;
     });
-    let _ = mesh.send_to(&peer, &roster_payload_for(&inner, mesh.mesh_of_peer(&peer).as_deref()));
+    let _ = mesh.send_to(
+        &peer,
+        &roster_payload_for(&inner, mesh.mesh_of_peer(&peer).as_deref()),
+    );
     // Anything pending for agents homed there can move now.
     let homed: Vec<String> = mesh
         .remote
@@ -1103,7 +1155,12 @@ async fn link_loop(
         // roster every 10s, so silence past LINK_SILENCE_SECS means the
         // peer is gone (laptop sleep, a relay that replaced the socket)
         // and the link must come down so the dialer tries again.
-        let frame = match tokio::time::timeout(std::time::Duration::from_secs(LINK_SILENCE_SECS), in_rx.recv()).await {
+        let frame = match tokio::time::timeout(
+            std::time::Duration::from_secs(LINK_SILENCE_SECS),
+            in_rx.recv(),
+        )
+        .await
+        {
             Ok(Some(f)) => f,
             Ok(None) => break,
             Err(_) => bail!("link silent for {LINK_SILENCE_SECS}s; closing so it is redialed"),
@@ -1252,7 +1309,10 @@ async fn link_loop(
                             });
                         }
                     }
-                    if let Some(d) = payload.get("harness_defaults_digest").and_then(|d| d.as_str()) {
+                    if let Some(d) = payload
+                        .get("harness_defaults_digest")
+                        .and_then(|d| d.as_str())
+                    {
                         if d != inner.store.harness_defaults_digest() {
                             let inner2 = inner.clone();
                             let peer2 = peer.to_owned();
@@ -1411,11 +1471,20 @@ async fn link_loop(
                 // node (`bare@node`): subscribe there on its behalf and
                 // relay the frames (RELAY.md §11).
                 if inner.live(&agent).is_none() {
-                    if let Some((bare, home)) = agent.rsplit_once('@').filter(|(_, h)| mesh.peers().iter().any(|p| p.cert.node == *h)) {
+                    if let Some((bare, home)) = agent
+                        .rsplit_once('@')
+                        .filter(|(_, h)| mesh.peers().iter().any(|p| p.cert.node == *h))
+                    {
                         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
                         let up_id = uuid::Uuid::new_v4().to_string();
-                        mesh.remote_subs.lock().unwrap().insert(up_id.clone(), (home.to_owned(), tx));
-                        if mesh.send_to(home, &json!({ "t": "sub", "id": up_id, "agent": bare })).is_err() {
+                        mesh.remote_subs
+                            .lock()
+                            .unwrap()
+                            .insert(up_id.clone(), (home.to_owned(), tx));
+                        if mesh
+                            .send_to(home, &json!({ "t": "sub", "id": up_id, "agent": bare }))
+                            .is_err()
+                        {
                             mesh.remote_subs.lock().unwrap().remove(&up_id);
                             let _ = mesh.send_to(peer, &json!({ "t": "sub_end", "id": id, "reason": format!("no live link to {home}") }));
                             continue;
@@ -1518,8 +1587,16 @@ async fn link_loop(
 /// in an unexposed repo; a spawn into one; mesh-wide tables from a mesh
 /// that is not the primary (boards, plugins, templates, memory never
 /// cross meshes). With one mesh nothing is filtered.
-fn exposure_precheck(inner: &Arc<NodeInner>, peer_mesh: &str, op: &str, agent: &str, body: &Value) -> Result<()> {
-    let Some(mesh) = inner.mesh() else { return Ok(()) };
+fn exposure_precheck(
+    inner: &Arc<NodeInner>,
+    peer_mesh: &str,
+    op: &str,
+    agent: &str,
+    body: &Value,
+) -> Result<()> {
+    let Some(mesh) = inner.mesh() else {
+        return Ok(());
+    };
     if !mesh.is_multi() {
         return Ok(());
     }
@@ -1527,19 +1604,43 @@ fn exposure_precheck(inner: &Arc<NodeInner>, peer_mesh: &str, op: &str, agent: &
     if peer_mesh != primary
         && matches!(
             op,
-            "boards" | "plugin_registry" | "plugins_sync" | "plugins_registry_view" | "templates"
-                | "template_spawn" | "memory_files" | "memory_conflicts" | "memory_resolve"
-                | "inbox_read" | "link_add" | "link_del" | "node_update" | "node_update_cancel"
-                | "node_update_policy" | "node_evacuate" | "adoption" | "adoptions" | "node_logs"
+            "boards"
+                | "plugin_registry"
+                | "plugins_sync"
+                | "plugins_registry_view"
+                | "templates"
+                | "template_spawn"
+                | "memory_files"
+                | "memory_conflicts"
+                | "memory_resolve"
+                | "inbox_read"
+                | "link_add"
+                | "link_del"
+                | "node_update"
+                | "node_update_cancel"
+                | "node_update_policy"
+                | "node_evacuate"
+                | "adoption"
+                | "adoptions"
+                | "node_logs"
         )
     {
-        return Err(anyhow!("{op}: mesh-wide state and node servicing belong to this node's primary mesh"));
+        return Err(anyhow!(
+            "{op}: mesh-wide state and node servicing belong to this node's primary mesh"
+        ));
     }
     if !agent.is_empty() && !crate::node::agent_exposed(inner, agent, peer_mesh) {
         return Err(anyhow!("@{agent} is not exposed to mesh '{peer_mesh}'"));
     }
-    if matches!(op, "spawn" | "node_sessions" | "node_repo_skip" | "node_repo_rename" | "node_repo_forget") {
-        if let Some(r) = body.get("repo").or_else(|| body.get("path")).and_then(|r| r.as_str()) {
+    if matches!(
+        op,
+        "spawn" | "node_sessions" | "node_repo_skip" | "node_repo_rename" | "node_repo_forget"
+    ) {
+        if let Some(r) = body
+            .get("repo")
+            .or_else(|| body.get("path"))
+            .and_then(|r| r.as_str())
+        {
             let path = crate::node::normalize_repo(std::path::Path::new(r));
             if !crate::node::repo_exposed(inner, &path, peer_mesh) {
                 return Err(anyhow!("{r} is not exposed to mesh '{peer_mesh}'"));
@@ -1708,13 +1809,56 @@ async fn serve_api_req(
         }
         "reload" => node.reload_plugins(agent).await,
         "processes" => node.processes(agent).await,
-        "process_stop" => node.stop_process(agent, body.get("activity").and_then(|v| v.as_str()), body.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32)).await,
-        "mcp_list" => node.mcp_list(agent, body.get("refresh").and_then(|r| r.as_bool()).unwrap_or(false)).await,
+        "process_stop" => {
+            node.stop_process(
+                agent,
+                body.get("activity").and_then(|v| v.as_str()),
+                body.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32),
+            )
+            .await
+        }
+        "mcp_list" => {
+            node.mcp_list(
+                agent,
+                body.get("refresh")
+                    .and_then(|r| r.as_bool())
+                    .unwrap_or(false),
+            )
+            .await
+        }
         "recap" => node.recap(agent).await,
-        "mcp_reconnect" => node.mcp_reconnect(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or("")).await,
-        "mcp_toggle" => node.mcp_toggle(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or(""), body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)).await,
-        "mcp_auth" => node.mcp_auth(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or("")).await,
-        "mcp_add" => node.mcp_add(agent, body.get("server").and_then(|v| v.as_str()).unwrap_or(""), body.get("config").cloned().unwrap_or(Value::Null)).await,
+        "mcp_reconnect" => {
+            node.mcp_reconnect(
+                agent,
+                body.get("server").and_then(|v| v.as_str()).unwrap_or(""),
+            )
+            .await
+        }
+        "mcp_toggle" => {
+            node.mcp_toggle(
+                agent,
+                body.get("server").and_then(|v| v.as_str()).unwrap_or(""),
+                body.get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
+            )
+            .await
+        }
+        "mcp_auth" => {
+            node.mcp_auth(
+                agent,
+                body.get("server").and_then(|v| v.as_str()).unwrap_or(""),
+            )
+            .await
+        }
+        "mcp_add" => {
+            node.mcp_add(
+                agent,
+                body.get("server").and_then(|v| v.as_str()).unwrap_or(""),
+                body.get("config").cloned().unwrap_or(Value::Null),
+            )
+            .await
+        }
         "runtime" => node.runtime_info(agent),
         "artifacts" => Ok(json!(node.artifacts(agent)?)),
         "fleet_activities" => Ok(json!(crate::node::fleet_activities(&node.inner))),
@@ -1727,8 +1871,16 @@ async fn serve_api_req(
                 .get()
                 .cloned()
                 .ok_or_else(|| anyhow!("no http gateway on this node (headless?)"))?;
-            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("GET").to_owned();
-            let path = body.get("path").and_then(|p| p.as_str()).unwrap_or("/").to_owned();
+            let method = body
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("GET")
+                .to_owned();
+            let path = body
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("/")
+                .to_owned();
             if !path.starts_with("/api/") {
                 return Err(anyhow!("http op serves /api/ paths only"));
             }
@@ -1742,19 +1894,28 @@ async fn serve_api_req(
         "templates" => Ok(json!(node.inner.store.templates(true)?)),
         "harness_defaults" => Ok(json!(node.inner.store.harness_defaults(true)?)),
         "template_spawn" => {
-            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let id = body
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
             let overrides = body.get("overrides").cloned().unwrap_or(Value::Null);
             node.spawn_from_template(&id, &overrides).await
         }
         "replica_offsets" => crate::replicate::offsets(&node.inner, peer, agent),
         "memory_files" => {
-            let key = body.get("key").and_then(|k| k.as_str()).unwrap_or("").to_owned();
+            let key = body
+                .get("key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_owned();
             let inner = node.inner.clone();
             tokio::task::spawn_blocking(move || crate::memory::files_for_key(&inner, &key)).await?
         }
         "memory_conflicts" => Ok(json!(crate::memory::conflicts(&node.inner))),
         "memory_resolve" => {
-            let repo = std::path::PathBuf::from(body.get("repo").and_then(|v| v.as_str()).unwrap_or(""));
+            let repo =
+                std::path::PathBuf::from(body.get("repo").and_then(|v| v.as_str()).unwrap_or(""));
             let rel = body.get("rel").and_then(|v| v.as_str()).unwrap_or("");
             let copy = body.get("copy").and_then(|v| v.as_str()).unwrap_or("");
             let choice = body.get("choice").and_then(|v| v.as_str()).unwrap_or("");
@@ -1765,7 +1926,10 @@ async fn serve_api_req(
             let inner = node.inner.clone();
             let peer = peer.to_owned();
             let agent = agent.to_owned();
-            tokio::task::spawn_blocking(move || crate::replicate::append(&inner, &peer, &agent, &body)).await?
+            tokio::task::spawn_blocking(move || {
+                crate::replicate::append(&inner, &peer, &agent, &body)
+            })
+            .await?
         }
         "usage" => {
             let from = body.get("from").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -1779,7 +1943,10 @@ async fn serve_api_req(
                 return Ok(json!({ "head": node.inner.store.notices_head(), "notices": [] }));
             }
             let rows = node.inner.store.notices_since(since, 200)?;
-            let out: Vec<Value> = rows.iter().map(|n| crate::notify::notice_json(n, None)).collect();
+            let out: Vec<Value> = rows
+                .iter()
+                .map(|n| crate::notify::notice_json(n, None))
+                .collect();
             Ok(json!({ "head": rows.last().map(|n| n.id).unwrap_or(since), "notices": out }))
         }
         "activities" => Ok(json!(node.activities(agent).await?)),
@@ -1800,7 +1967,11 @@ async fn serve_api_req(
             if id.contains(['/', '\\', '.']) {
                 return Err(anyhow!("bad agent id"));
             }
-            Ok(json!(node.inner.store_for(row.harness).subagent(&row.repo, sid, id).unwrap_or_default()))
+            Ok(json!(node
+                .inner
+                .store_for(row.harness)
+                .subagent(&row.repo, sid, id)
+                .unwrap_or_default()))
         }
         "boards" => Ok(json!(node.inner.store.boards(true)?)),
         "plugin_registry" => Ok(json!({
@@ -1994,7 +2165,9 @@ async fn serve_api_req(
                 .ok_or_else(|| anyhow!("no session on record"))?;
             let st = node.inner.store_for(row.harness);
             if let Some(after) = body.get("after").and_then(|a| a.as_str()) {
-                let (items, found) = st.rehydrate_after(&row.repo, sid, after).unwrap_or_default();
+                let (items, found) = st
+                    .rehydrate_after(&row.repo, sid, after)
+                    .unwrap_or_default();
                 return Ok(json!({ "items": items, "after_found": found }));
             }
             let items = st.rehydrate(&row.repo, sid).unwrap_or_default();
@@ -2099,7 +2272,11 @@ async fn serve_api_req(
                 Err(e) => return Err(anyhow!("{path}: {e} (on this node)")),
             };
             node.inner.store.add_repo(&p, skip)?;
-            let row = node.inner.store.repo(&p)?.ok_or_else(|| anyhow!("added but not found"))?;
+            let row = node
+                .inner
+                .store
+                .repo(&p)?
+                .ok_or_else(|| anyhow!("added but not found"))?;
             Ok(json!({ "ok": true, "path": row.path.to_string_lossy(), "handle": row.handle }))
         }
         "node_repo_skip" => {
@@ -2209,8 +2386,14 @@ async fn serve_api_req(
                     .get("resume_choice")
                     .and_then(|a| a.as_str())
                     .map(str::to_owned),
-                harness: body.get("harness").and_then(|h| h.as_str()).and_then(aspen_core::Harness::parse),
-                posture: body.get("posture").and_then(|h| h.as_str()).and_then(aspen_core::Posture::parse),
+                harness: body
+                    .get("harness")
+                    .and_then(|h| h.as_str())
+                    .and_then(aspen_core::Harness::parse),
+                posture: body
+                    .get("posture")
+                    .and_then(|h| h.as_str())
+                    .and_then(aspen_core::Posture::parse),
                 ..Default::default()
             };
             let ack = body.get("acknowledge_trust").and_then(|a| a.as_bool()) == Some(true);
@@ -2266,7 +2449,8 @@ async fn serve_api_req(
         "session_preflight" => node.session_preflight(agent),
         "node_preflight_target" => {
             // Can this node receive the session described by `spec`?
-            let spec: crate::migrate::AgentSpec = serde_json::from_value(body.get("spec").cloned().unwrap_or(Value::Null))?;
+            let spec: crate::migrate::AgentSpec =
+                serde_json::from_value(body.get("spec").cloned().unwrap_or(Value::Null))?;
             let counterpart = crate::migrate::find_counterpart(&inner.store, &spec);
             let adapter = inner.adapters.get(&spec.harness);
             Ok(json!({
@@ -2302,15 +2486,32 @@ async fn serve_api_req(
         "node_update_status" => Ok(crate::servicing::status_json(inner)),
         "node_autostart" => Ok(crate::servicing::autostart_json(inner)),
         "node_autostart_set" => {
-            let enabled = body.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
-            let pid = crate::servicing::launch_cli(inner, &["autostart", if enabled { "enable" } else { "disable" }])?;
+            let enabled = body
+                .get("enabled")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(true);
+            let pid = crate::servicing::launch_cli(
+                inner,
+                &["autostart", if enabled { "enable" } else { "disable" }],
+            )?;
             Ok(json!({ "started": true, "pid": pid, "enabled": enabled }))
         }
         "search" => {
-            let q = body.get("q").and_then(|q| q.as_str()).unwrap_or("").to_owned();
-            let limit = body.get("limit").and_then(|l| l.as_u64()).unwrap_or(200).clamp(1, 1000) as usize;
+            let q = body
+                .get("q")
+                .and_then(|q| q.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let limit = body
+                .get("limit")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(200)
+                .clamp(1, 1000) as usize;
             let inner2 = inner.clone();
-            let r = tokio::task::spawn_blocking(move || crate::search::search_local(&inner2, &q, limit, None)).await?;
+            let r = tokio::task::spawn_blocking(move || {
+                crate::search::search_local(&inner2, &q, limit, None)
+            })
+            .await?;
             Ok(json!({ "sessions": r.sessions, "scanned": r.scanned }))
         }
         "adoptions" => Ok(json!(inner
@@ -2655,7 +2856,13 @@ async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
 async fn sync_templates_from(inner: &Arc<NodeInner>, peer: &str) {
     let Some(mesh) = inner.mesh() else { return };
     let Ok(v) = mesh
-        .api_call(peer, "templates", "", json!({}), std::time::Duration::from_secs(20))
+        .api_call(
+            peer,
+            "templates",
+            "",
+            json!({}),
+            std::time::Duration::from_secs(20),
+        )
         .await
     else {
         return;
@@ -2679,7 +2886,13 @@ async fn sync_templates_from(inner: &Arc<NodeInner>, peer: &str) {
 async fn sync_harness_defaults_from(inner: &Arc<NodeInner>, peer: &str) {
     let Some(mesh) = inner.mesh() else { return };
     let Ok(v) = mesh
-        .api_call(peer, "harness_defaults", "", json!({}), std::time::Duration::from_secs(20))
+        .api_call(
+            peer,
+            "harness_defaults",
+            "",
+            json!({}),
+            std::time::Duration::from_secs(20),
+        )
         .await
     else {
         return;
@@ -2877,8 +3090,15 @@ async fn relay_session(inner: &Arc<NodeInner>, relay_url: &str, dial: &str) -> R
 }
 
 /// Is there a link (or an attempt) to this peer riding this relay?
-fn relay_link_in_flight(peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>, peer: &str) -> bool {
-    peer_ins.lock().unwrap().get(peer).is_some_and(|tx| !tx.is_closed())
+fn relay_link_in_flight(
+    peer_ins: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    peer: &str,
+) -> bool {
+    peer_ins
+        .lock()
+        .unwrap()
+        .get(peer)
+        .is_some_and(|tx| !tx.is_closed())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2933,7 +3153,11 @@ async fn relay_read_loop(
                     .map(|s| s.present.iter().cloned().collect())
                     .unwrap_or_default();
                 for p in present {
-                    if me < p && !p.starts_with("console-") && !relay_link_in_flight(&peer_ins, &p) && !mesh.link_up(&p) {
+                    if me < p
+                        && !p.starts_with("console-")
+                        && !relay_link_in_flight(&peer_ins, &p)
+                        && !mesh.link_up(&p)
+                    {
                         tracing::info!(peer = %p, "present on the relay with no link; starting one");
                         start_relay_link(&inner, &me, &p, &relay_url, &relay_tx, &peer_ins);
                     }
@@ -2995,7 +3219,10 @@ async fn relay_read_loop(
                     s.host = host;
                 }
                 for p in peers {
-                    if me < p.as_str() && !p.starts_with("console-") && !relay_link_in_flight(peer_ins, &p) {
+                    if me < p.as_str()
+                        && !p.starts_with("console-")
+                        && !relay_link_in_flight(peer_ins, &p)
+                    {
                         start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
                     }
                 }
@@ -3321,16 +3548,27 @@ mod capability_tests {
     fn policy_and_console_grants() {
         let root = aspen_wire::identity::MeshRoot::create("home");
         let mut me = NodeIdentity::create("me");
-        me.install_cert(root.certify(&me.join_request()).unwrap()).unwrap();
+        me.install_cert(root.certify(&me.join_request()).unwrap())
+            .unwrap();
         let work_root = aspen_wire::identity::MeshRoot::create("work");
         let peer = NodeIdentity::create("w1");
         let peer_cert = work_root.certify(&peer.join_request()).unwrap();
-        let cfg = MeshConfig { mesh: "home".into(), root_public: root.root_public.clone(), peers: vec![], relay: None, relays: vec![], policy: None };
+        let cfg = MeshConfig {
+            mesh: "home".into(),
+            root_public: root.root_public.clone(),
+            peers: vec![],
+            relay: None,
+            relays: vec![],
+            policy: None,
+        };
         let st = MeshState::new(me, cfg);
         st.extra.write().unwrap().push(MeshConfig {
             mesh: "work".into(),
             root_public: work_root.root_public.clone(),
-            peers: vec![crate::mesh::PeerConfig { cert: peer_cert, url: None }],
+            peers: vec![crate::mesh::PeerConfig {
+                cert: peer_cert,
+                url: None,
+            }],
             relay: None,
             relays: vec![],
             policy: None,

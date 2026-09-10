@@ -40,11 +40,12 @@ served for an API path. What it gives:
 
 ## 3. Hosted (D-3)
 
-The release workflow builds the console with `VITE_HOSTED=1` (base
-`/aspen/`, hash routes because a static host has no SPA fallback,
-`__ASPEN_HOSTED__` true), publishes it to GitHub Pages from the tagged
-commit, and attaches `console.zip` to the release for anyone hosting it
-themselves. One-time repository setting: Pages source = GitHub Actions.
+The console is built with `VITE_HOSTED=1` (base `/aspen/`, hash routes
+because a static host has no SPA fallback, `__ASPEN_HOSTED__` true).
+`pages.yml` publishes it to GitHub Pages on every release tag and on
+demand (`gh workflow run pages.yml`); the release workflow attaches
+`console.zip` for anyone hosting it themselves. One-time repository
+setting: Pages source = GitHub Actions.
 
 **Connections** (`ui/src/connections.ts`). Hosted, the console keeps a
 named list, one active:

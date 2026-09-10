@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-
 use crate::node::{NodeInner, TurnState};
 
 const BUS_SEND_DESC: &str = "Send a message to a peer agent, a repo channel, or the human operator \
@@ -25,23 +24,24 @@ const BUS_STATUS_DESC: &str = "Who is on this bus: every agent, their repo chann
 session is running, whether they are mid-turn or idle, and how many messages are pending for \
 them. Check here when a peer seems unresponsive before concluding a message was lost — \
 silence usually means mid-turn or not running; it never means the bus dropped something.";
-const BUS_INBOX_DESC: &str = "Read messages addressed to you that have not been delivered yet. You \
+const BUS_INBOX_DESC: &str =
+    "Read messages addressed to you that have not been delivered yet. You \
 rarely need this: gating messages interrupt you and everything else arrives at your turn \
 boundaries. Reach for it to drain deliberately — e.g. before reporting status, so you are not \
 reporting against a ruling you have not read.";
 
 fn bus_send_schema() -> Value {
     json!({
-                "type": "object",
-                "properties": {
-                    "to": { "type": "string", "description": "'@agent', '#channel', or '@operator'. bus_status lists who exists." },
-                    "body": { "type": "string", "description": "The whole message." },
-                    "urgency": { "type": "string", "enum": ["gating", "normal", "notice"], "default": "normal" },
-                    "thread": { "type": "string", "description": "Optional thread id grouping an exchange; no effect on delivery." },
-                    "record": { "type": "string", "description": "Durable record this is about (issue id, doc path), if any — the message is the notification; the record is where it lives." }
-                },
-                "required": ["to", "body"]
-            })
+        "type": "object",
+        "properties": {
+            "to": { "type": "string", "description": "'@agent', '#channel', or '@operator'. bus_status lists who exists." },
+            "body": { "type": "string", "description": "The whole message." },
+            "urgency": { "type": "string", "enum": ["gating", "normal", "notice"], "default": "normal" },
+            "thread": { "type": "string", "description": "Optional thread id grouping an exchange; no effect on delivery." },
+            "record": { "type": "string", "description": "Durable record this is about (issue id, doc path), if any — the message is the notification; the record is where it lives." }
+        },
+        "required": ["to", "body"]
+    })
 }
 
 /// The bus tools as a harness-neutral provider (aspen-core `ToolProvider`):
@@ -85,7 +85,6 @@ impl aspen_core::ToolProvider for BusTools {
         }
     }
 }
-
 
 fn bus_send(inner: &Arc<NodeInner>, me: &str, args: Value) -> Result<String, String> {
     let to = args

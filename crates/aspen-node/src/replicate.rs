@@ -70,13 +70,15 @@ pub struct SourceState {
     pub target: Option<String>,
 }
 
-
 /// The replicator: every few seconds, push what has grown.
 pub fn spawn_replicator(inner: Arc<NodeInner>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
-            if inner.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            if inner
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 break;
             }
             if let Err(e) = tick(&inner).await {
@@ -132,7 +134,13 @@ async fn tick(inner: &Arc<NodeInner>) -> Result<()> {
             continue;
         }
         // Learn what the target holds, once per agent per link-life.
-        let known = inner.replication.lock().unwrap().sent.get(&row.name).cloned();
+        let known = inner
+            .replication
+            .lock()
+            .unwrap()
+            .sent
+            .get(&row.name)
+            .cloned();
         let mut offsets = match known {
             Some(k) => k,
             None => {
@@ -163,10 +171,16 @@ async fn tick(inner: &Arc<NodeInner>) -> Result<()> {
             if budget == 0 {
                 break;
             }
-            let Ok(meta) = std::fs::metadata(&path) else { continue };
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
             let size = meta.len();
             let have = offsets.get(&rel).copied().unwrap_or(0);
-            let (mut offset, truncate) = if size < have { (0, true) } else { (have, false) };
+            let (mut offset, truncate) = if size < have {
+                (0, true)
+            } else {
+                (have, false)
+            };
             if size == have && !truncate {
                 continue;
             }
@@ -192,7 +206,10 @@ async fn tick(inner: &Arc<NodeInner>) -> Result<()> {
                     )
                     .await?;
                 budget -= 1;
-                let acked = v.get("bytes").and_then(|b| b.as_u64()).unwrap_or(offset + len);
+                let acked = v
+                    .get("bytes")
+                    .and_then(|b| b.as_u64())
+                    .unwrap_or(offset + len);
                 offset = acked;
                 offsets.insert(rel.clone(), acked);
                 inner
@@ -244,7 +261,13 @@ pub fn replica_dir(data_dir: &Path, node: &str, agent: &str) -> PathBuf {
 
 fn safe(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '@') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '@') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -261,7 +284,10 @@ fn safe_rel(rel: &str) -> Result<PathBuf> {
 
 /// `replica_offsets`: how much of each of this agent's files we hold.
 pub fn offsets(inner: &Arc<NodeInner>, from: &str, agent: &str) -> Result<Value> {
-    let dd = inner.data_dir.clone().ok_or_else(|| anyhow!("no data dir"))?;
+    let dd = inner
+        .data_dir
+        .clone()
+        .ok_or_else(|| anyhow!("no data dir"))?;
     if !crate::settings::load(&dd).replication.accepts() {
         return Err(anyhow!("this node does not accept replicas"));
     }
@@ -278,13 +304,22 @@ pub fn offsets(inner: &Arc<NodeInner>, from: &str, agent: &str) -> Result<Value>
 
 /// `replica_append`: append (or restart) one file.
 pub fn append(inner: &Arc<NodeInner>, from: &str, agent: &str, body: &Value) -> Result<Value> {
-    let dd = inner.data_dir.clone().ok_or_else(|| anyhow!("no data dir"))?;
+    let dd = inner
+        .data_dir
+        .clone()
+        .ok_or_else(|| anyhow!("no data dir"))?;
     if !crate::settings::load(&dd).replication.accepts() {
         return Err(anyhow!("this node does not accept replicas"));
     }
-    let rel = body.get("rel").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("rel required"))?;
+    let rel = body
+        .get("rel")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("rel required"))?;
     let offset = body.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-    let truncate = body.get("truncate").and_then(|v| v.as_bool()).unwrap_or(false);
+    let truncate = body
+        .get("truncate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let data = aspen_wire::b64::decode(body.get("data").and_then(|v| v.as_str()).unwrap_or(""))?;
     let dir = replica_dir(&dd, from, agent);
     let path = dir.join(safe_rel(rel)?);
@@ -310,9 +345,20 @@ pub fn append(inner: &Arc<NodeInner>, from: &str, agent: &str, body: &Value) -> 
     inner.store.upsert_replica(&crate::store::ReplicaRow {
         node: from.to_owned(),
         agent: agent.to_owned(),
-        session_id: body.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-        repo: body.get("repo").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-        title: body.get("title").and_then(|v| v.as_str()).map(str::to_owned),
+        session_id: body
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        repo: body
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        title: body
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
         ctx: body.get("ctx").cloned().unwrap_or(Value::Null),
         rel: rel.to_owned(),
         bytes,
@@ -430,8 +476,12 @@ pub fn prune(inner: &Arc<NodeInner>) -> Result<()> {
 /// `PathCtx` so paths translate the same way a real export would.
 pub fn stage_bundle(data_dir: &Path, r: &Replica) -> Result<PathBuf> {
     use crate::migrate::{BundleFile, Manifest, PathCtx};
-    let ctx: PathCtx = serde_json::from_value(r.ctx.clone())
-        .map_err(|_| anyhow!("replica of @{} carries no path context; it predates v0.16", r.agent))?;
+    let ctx: PathCtx = serde_json::from_value(r.ctx.clone()).map_err(|_| {
+        anyhow!(
+            "replica of @{} carries no path context; it predates v0.16",
+            r.agent
+        )
+    })?;
     let bundle_id = uuid::Uuid::new_v4().to_string();
     let dir = crate::migrate::staging_root(data_dir).join(format!("replica-{bundle_id}"));
     std::fs::create_dir_all(&dir)?;
@@ -454,10 +504,15 @@ pub fn stage_bundle(data_dir: &Path, r: &Replica) -> Result<PathBuf> {
         if let Some(p) = out.parent() {
             std::fs::create_dir_all(p)?;
         }
-        let texty = rel.ends_with(".jsonl") || rel.ends_with(".json") || rel.ends_with(".md") || rel.ends_with(".txt");
+        let texty = rel.ends_with(".jsonl")
+            || rel.ends_with(".json")
+            || rel.ends_with(".md")
+            || rel.ends_with(".txt");
         if texty {
             let text = std::fs::read_to_string(&src).unwrap_or_default();
-            let canon = crate::migrate::rewrite_jsonl(&text, &|s| crate::migrate::canonicalize_str(s, &ctx));
+            let canon = crate::migrate::rewrite_jsonl(&text, &|s| {
+                crate::migrate::canonicalize_str(s, &ctx)
+            });
             std::fs::write(&out, canon)?;
         } else {
             std::fs::copy(&src, &out)?;
@@ -465,7 +520,13 @@ pub fn stage_bundle(data_dir: &Path, r: &Replica) -> Result<PathBuf> {
         files.push(BundleFile {
             tier: tier.into(),
             rel: out_rel,
-            kind: if rel.ends_with(".jsonl") { "jsonl".into() } else if texty { "text".into() } else { "binary".into() },
+            kind: if rel.ends_with(".jsonl") {
+                "jsonl".into()
+            } else if texty {
+                "text".into()
+            } else {
+                "binary".into()
+            },
             dest: dest.into(),
             canon_path: None,
             size: bytes,
@@ -499,7 +560,10 @@ pub fn stage_bundle(data_dir: &Path, r: &Replica) -> Result<PathBuf> {
             r.node
         )],
     };
-    std::fs::write(dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
     Ok(dir)
 }
 
@@ -508,11 +572,17 @@ fn files_in(dir: &Path) -> Result<Vec<(String, u64)>> {
     let mut out = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
     while let Some((d, prefix)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
-            let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
             if p.is_dir() {
                 stack.push((p, rel));
             } else if let Ok(m) = p.metadata() {
@@ -545,7 +615,13 @@ mod tests {
         std::fs::write(d.path().join("s/subagents/agent-1.jsonl"), b"123").unwrap();
         let mut v = files_in(d.path()).unwrap();
         v.sort();
-        assert_eq!(v, vec![("s.jsonl".to_owned(), 5), ("s/subagents/agent-1.jsonl".to_owned(), 3)]);
+        assert_eq!(
+            v,
+            vec![
+                ("s.jsonl".to_owned(), 5),
+                ("s/subagents/agent-1.jsonl".to_owned(), 3)
+            ]
+        );
     }
 
     #[test]

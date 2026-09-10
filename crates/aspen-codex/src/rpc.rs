@@ -31,8 +31,15 @@ pub struct ProcessSpec {
 /// A message from the server: a notification or a request we must answer.
 #[derive(Debug, Clone)]
 pub enum Inbound {
-    Notification { method: String, params: Value },
-    Request { id: Value, method: String, params: Value },
+    Notification {
+        method: String,
+        params: Value,
+    },
+    Request {
+        id: Value,
+        method: String,
+        params: Value,
+    },
     /// A stderr line.
     Stderr(String),
     /// The process exited.
@@ -65,15 +72,22 @@ impl RpcClient {
             .env_remove("ASPEN_DETACHED")
             .kill_on_drop(true);
         for (k, v) in &spec.extra_env {
-            if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !v.is_empty() {
+            if !k.is_empty()
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !v.is_empty()
+            {
                 cmd.env(k, v);
             }
         }
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000);
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawning {} app-server in {}", spec.codex_bin, spec.cwd.display()))?;
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "spawning {} app-server in {}",
+                spec.codex_bin,
+                spec.cwd.display()
+            )
+        })?;
         let stdin = child.stdin.take().context("child stdin missing")?;
         let stdout = child.stdout.take().context("child stdout missing")?;
         let stderr = child.stderr.take().context("child stderr missing")?;
@@ -94,7 +108,9 @@ impl RpcClient {
         tokio::spawn(async move {
             let mut stdin = stdin;
             while let Some(line) = stdin_rx.recv().await {
-                if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
+                if stdin.write_all(line.as_bytes()).await.is_err()
+                    || stdin.write_all(b"\n").await.is_err()
+                {
                     break;
                 }
                 let _ = stdin.flush().await;
@@ -128,7 +144,10 @@ impl RpcClient {
                         }
                         (Some(method), None) => {
                             let _ = inbound_tx
-                                .send(Inbound::Notification { method, params: v.get("params").cloned().unwrap_or(Value::Null) })
+                                .send(Inbound::Notification {
+                                    method,
+                                    params: v.get("params").cloned().unwrap_or(Value::Null),
+                                })
                                 .await;
                         }
                         (None, Some(id)) => {
@@ -187,7 +206,10 @@ impl RpcClient {
 
     async fn write(&self, v: Value) -> Result<()> {
         let line = serde_json::to_string(&v)?;
-        self.stdin_tx.send(line).await.map_err(|_| anyhow!("app-server stdin closed"))
+        self.stdin_tx
+            .send(line)
+            .await
+            .map_err(|_| anyhow!("app-server stdin closed"))
     }
 
     /// One request, awaited with a timeout (a dead child must not leak
@@ -219,17 +241,21 @@ impl RpcClient {
 
     /// A notification to the server (no response).
     pub async fn notify(&self, method: &str, params: Value) -> Result<()> {
-        self.write(json!({ "jsonrpc": "2.0", "method": method, "params": params })).await
+        self.write(json!({ "jsonrpc": "2.0", "method": method, "params": params }))
+            .await
     }
 
     /// Answer a server→client request.
     pub async fn respond(&self, id: Value, result: Value) -> Result<()> {
-        self.write(json!({ "jsonrpc": "2.0", "id": id, "result": result })).await
+        self.write(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            .await
     }
 
     pub async fn respond_error(&self, id: Value, message: &str) -> Result<()> {
-        self.write(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": message } }))
-            .await
+        self.write(
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": message } }),
+        )
+        .await
     }
 
     /// Kill the child (idempotent).

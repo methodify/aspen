@@ -25,7 +25,11 @@ pub enum PermissionPolicy {
 /// The silent tier: what a policy decides without anyone being asked. None
 /// means "no opinion" (prompt-worthy); adapters add their own name-based
 /// exceptions (the bus tools, a question tool) before consulting this.
-pub fn policy_opinion(policy: PermissionPolicy, kind: ToolKind, prompt: PromptKind) -> Option<bool> {
+pub fn policy_opinion(
+    policy: PermissionPolicy,
+    kind: ToolKind,
+    prompt: PromptKind,
+) -> Option<bool> {
     match policy {
         PermissionPolicy::AllowAll => Some(true),
         PermissionPolicy::ReadOnlyAuto => {

@@ -66,7 +66,12 @@ pub trait SessionStore: Send + Sync {
     /// The whole conversation as rehydrated items (the console's HistoryItem shape).
     fn rehydrate(&self, repo: &Path, session_id: &str) -> Result<Vec<Value>>;
     /// Items after the user message with this ref, and whether it was found.
-    fn rehydrate_after(&self, repo: &Path, session_id: &str, after: &str) -> Result<(Vec<Value>, bool)>;
+    fn rehydrate_after(
+        &self,
+        repo: &Path,
+        session_id: &str,
+        after: &str,
+    ) -> Result<(Vec<Value>, bool)>;
     /// Rehydrate any transcript file of this harness's format (a replica,
     /// a subagent's).
     fn rehydrate_file(&self, path: &Path) -> Result<Vec<Value>>;

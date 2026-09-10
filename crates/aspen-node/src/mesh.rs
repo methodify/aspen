@@ -101,7 +101,8 @@ impl MeshFiles {
         self.data_dir.join("meshes")
     }
     fn extra_path(&self, mesh: &str) -> PathBuf {
-        self.extras_dir().join(format!("{}.json", mesh.replace(['/', '\\'], "_")))
+        self.extras_dir()
+            .join(format!("{}.json", mesh.replace(['/', '\\'], "_")))
     }
 
     /// Additional meshes this node belongs to (docs/MESHES.md), peers
@@ -203,7 +204,12 @@ impl MeshFiles {
             cert.verify_against(&mesh.root_public)
                 .context("peer cert does not verify against this mesh's root")?;
             // A re-record without a URL keeps the one on file.
-            let url = url.or_else(|| mesh.peers.iter().find(|p| p.cert.node == cert.node).and_then(|p| p.url.clone()));
+            let url = url.or_else(|| {
+                mesh.peers
+                    .iter()
+                    .find(|p| p.cert.node == cert.node)
+                    .and_then(|p| p.url.clone())
+            });
             mesh.peers.retain(|p| p.cert.node != cert.node);
             mesh.peers.push(PeerConfig { cert, url });
             return self.save_mesh(&mesh);
@@ -219,7 +225,12 @@ impl MeshFiles {
         };
         cert.verify_against(&m.root_public)
             .context("peer cert does not verify against that mesh's root")?;
-        let url = url.or_else(|| m.peers.iter().find(|p| p.cert.node == cert.node).and_then(|p| p.url.clone()));
+        let url = url.or_else(|| {
+            m.peers
+                .iter()
+                .find(|p| p.cert.node == cert.node)
+                .and_then(|p| p.url.clone())
+        });
         m.peers.retain(|p| p.cert.node != cert.node);
         m.peers.push(PeerConfig { cert, url });
         let m = m.clone();

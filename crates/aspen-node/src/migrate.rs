@@ -416,7 +416,14 @@ pub fn export(
                 if sources.iter().any(|(sp, ..)| sp == &p) {
                     continue;
                 }
-                sources.push((p, format!("rollout/{rel}"), "A".into(), "jsonl".into(), "rollout".into(), None));
+                sources.push((
+                    p,
+                    format!("rollout/{rel}"),
+                    "A".into(),
+                    "jsonl".into(),
+                    "rollout".into(),
+                    None,
+                ));
             }
         }
     } else {

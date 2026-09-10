@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use aspen_core::{
-    AgentAdapter, DecisionOption, DecisionScope, Harness, HarnessCapabilities, PermissionMode, Posture,
-    ProjectDirs, PromptKind, SessionEvent, SessionHandle, SessionInfo, SessionOrigin, SessionStore,
-    SpawnSpec, ToolKind,
+    AgentAdapter, DecisionOption, DecisionScope, Harness, HarnessCapabilities, PermissionMode,
+    Posture, ProjectDirs, PromptKind, SessionEvent, SessionHandle, SessionInfo, SessionOrigin,
+    SessionStore, SpawnSpec, ToolKind,
 };
 
 use crate::session::{ClaudeConfig, ClaudeSession};
@@ -27,7 +27,9 @@ pub fn classify(tool_name: &str, input: &Value) -> ToolKind {
         "Read" | "NotebookRead" | "TaskOutput" => ToolKind::FileRead,
         "Glob" | "Grep" | "LS" => ToolKind::Search,
         "WebSearch" | "WebFetch" => ToolKind::Web,
-        "Agent" | "Task" | "Workflow" | "ScheduleWakeup" | "CronCreate" | "Monitor" => ToolKind::Agent,
+        "Agent" | "Task" | "Workflow" | "ScheduleWakeup" | "CronCreate" | "Monitor" => {
+            ToolKind::Agent
+        }
         "AskUserQuestion" => ToolKind::Question,
         n if n.starts_with("mcp__") => ToolKind::Mcp,
         _ => {
@@ -41,19 +43,45 @@ pub fn classify(tool_name: &str, input: &Value) -> ToolKind {
 }
 
 /// The adapter's one-line reading of a call: summary, path, command.
-pub fn describe(tool_name: &str, input: &Value) -> (Option<String>, Option<String>, Option<String>) {
+pub fn describe(
+    tool_name: &str,
+    input: &Value,
+) -> (Option<String>, Option<String>, Option<String>) {
     let path = ["file_path", "notebook_path", "path"]
         .iter()
         .find_map(|k| input.get(k).and_then(|v| v.as_str()))
         .map(str::to_owned);
-    let command = input.get("command").and_then(|v| v.as_str()).map(str::to_owned);
+    let command = input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     let summary = command
         .clone()
         .or_else(|| path.clone())
-        .or_else(|| input.get("pattern").and_then(|v| v.as_str()).map(str::to_owned))
-        .or_else(|| input.get("query").and_then(|v| v.as_str()).map(str::to_owned))
-        .or_else(|| input.get("description").and_then(|v| v.as_str()).map(str::to_owned))
-        .or_else(|| input.get("prompt").and_then(|v| v.as_str()).map(|p| p.chars().take(120).collect()));
+        .or_else(|| {
+            input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            input
+                .get("query")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            input
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .map(|p| p.chars().take(120).collect())
+        });
     let _ = tool_name;
     (summary, path, command)
 }
@@ -62,9 +90,21 @@ pub fn describe(tool_name: &str, input: &Value) -> (Option<String>, Option<Strin
 /// suggested rules) / deny.
 pub fn decisions_for(kind: PromptKind, suggestions: &Value) -> Vec<DecisionOption> {
     if kind == PromptKind::Question {
-        return vec![DecisionOption { id: "answer".into(), label: "answer".into(), allow: true, scope: DecisionScope::Once, payload: None }];
+        return vec![DecisionOption {
+            id: "answer".into(),
+            label: "answer".into(),
+            allow: true,
+            scope: DecisionScope::Once,
+            payload: None,
+        }];
     }
-    let mut v = vec![DecisionOption { id: "allow".into(), label: "allow".into(), allow: true, scope: DecisionScope::Once, payload: None }];
+    let mut v = vec![DecisionOption {
+        id: "allow".into(),
+        label: "allow".into(),
+        allow: true,
+        scope: DecisionScope::Once,
+        payload: None,
+    }];
     if suggestions.as_array().is_some_and(|a| !a.is_empty()) {
         v.push(DecisionOption {
             id: "always".into(),
@@ -74,7 +114,13 @@ pub fn decisions_for(kind: PromptKind, suggestions: &Value) -> Vec<DecisionOptio
             payload: Some(suggestions.clone()),
         });
     }
-    v.push(DecisionOption { id: "deny".into(), label: "deny".into(), allow: false, scope: DecisionScope::Once, payload: None });
+    v.push(DecisionOption {
+        id: "deny".into(),
+        label: "deny".into(),
+        allow: false,
+        scope: DecisionScope::Once,
+        payload: None,
+    });
     v
 }
 
@@ -88,7 +134,11 @@ pub struct ClaudeAdapter {
 
 impl ClaudeAdapter {
     pub fn new() -> Self {
-        let me = Self { bin: "claude".into(), store: Arc::new(ClaudeStore), version: Default::default() };
+        let me = Self {
+            bin: "claude".into(),
+            store: Arc::new(ClaudeStore),
+            version: Default::default(),
+        };
         me.probe_version();
         me
     }
@@ -172,8 +222,16 @@ pub fn mcp_state_from(v: &Value) -> aspen_core::McpServerState {
         .get("command")
         .and_then(|c| c.as_str())
         .map(|c| {
-            let args: Vec<&str> = cfg.get("args").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-            if args.is_empty() { c.to_owned() } else { format!("{c} {}", args.join(" ")) }
+            let args: Vec<&str> = cfg
+                .get("args")
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            if args.is_empty() {
+                c.to_owned()
+            } else {
+                format!("{c} {}", args.join(" "))
+            }
         })
         .or_else(|| cfg.get("url").and_then(|u| u.as_str()).map(str::to_owned));
     let server = v.get("serverInfo").and_then(|i| {
@@ -186,10 +244,18 @@ pub fn mcp_state_from(v: &Value) -> aspen_core::McpServerState {
     let tools = v
         .get("tools")
         .and_then(|t| t.as_array())
-        .map(|a| a.iter().filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
     let scope = s("scope");
-    let plugin = scope.as_deref().and_then(|sc| sc.strip_prefix("plugin:").map(str::to_owned)).or_else(|| s("pluginName")).or_else(|| s("plugin"));
+    let plugin = scope
+        .as_deref()
+        .and_then(|sc| sc.strip_prefix("plugin:").map(str::to_owned))
+        .or_else(|| s("pluginName"))
+        .or_else(|| s("plugin"));
     aspen_core::McpServerState {
         name: s("name").unwrap_or_default(),
         status,
@@ -213,11 +279,36 @@ impl AgentAdapter for ClaudeAdapter {
     }
     fn permission_modes(&self) -> Vec<PermissionMode> {
         vec![
-            PermissionMode { id: "default".into(), label: "default".into(), hint: "prompt for writes and commands".into(), posture: Some(Posture::Ask) },
-            PermissionMode { id: "acceptEdits".into(), label: "accept edits".into(), hint: "edits go through; commands prompt".into(), posture: Some(Posture::Edits) },
-            PermissionMode { id: "plan".into(), label: "plan".into(), hint: "read-only exploration".into(), posture: Some(Posture::Plan) },
-            PermissionMode { id: "bypassPermissions".into(), label: "bypass permissions".into(), hint: "no prompts at all".into(), posture: Some(Posture::Auto) },
-            PermissionMode { id: "dontAsk".into(), label: "don't ask".into(), hint: "deny anything that would prompt".into(), posture: None },
+            PermissionMode {
+                id: "default".into(),
+                label: "default".into(),
+                hint: "prompt for writes and commands".into(),
+                posture: Some(Posture::Ask),
+            },
+            PermissionMode {
+                id: "acceptEdits".into(),
+                label: "accept edits".into(),
+                hint: "edits go through; commands prompt".into(),
+                posture: Some(Posture::Edits),
+            },
+            PermissionMode {
+                id: "plan".into(),
+                label: "plan".into(),
+                hint: "read-only exploration".into(),
+                posture: Some(Posture::Plan),
+            },
+            PermissionMode {
+                id: "bypassPermissions".into(),
+                label: "bypass permissions".into(),
+                hint: "no prompts at all".into(),
+                posture: Some(Posture::Auto),
+            },
+            PermissionMode {
+                id: "dontAsk".into(),
+                label: "don't ask".into(),
+                hint: "deny anything that would prompt".into(),
+                posture: None,
+            },
         ]
     }
     fn mode_for_posture(&self, posture: Posture) -> Option<String> {
@@ -229,7 +320,13 @@ impl AgentAdapter for ClaudeAdapter {
             Posture::Guarded => None,
         }
     }
-    async fn spawn(&self, spec: SpawnSpec) -> Result<(Arc<dyn SessionHandle>, tokio::sync::mpsc::Receiver<SessionEvent>)> {
+    async fn spawn(
+        &self,
+        spec: SpawnSpec,
+    ) -> Result<(
+        Arc<dyn SessionHandle>,
+        tokio::sync::mpsc::Receiver<SessionEvent>,
+    )> {
         let mut cfg = ClaudeConfig::new(spec.repo.clone());
         cfg.session_id = spec.session_id;
         cfg.claude_bin = self.bin.clone();
@@ -237,10 +334,11 @@ impl AgentAdapter for ClaudeAdapter {
         cfg.resume = spec.resume.clone();
         cfg.fork = spec.fork;
         cfg.resume_at = spec.resume_at.clone();
-        cfg.permission_mode = spec
-            .mode
-            .clone()
-            .or_else(|| spec.posture.and_then(|p| self.mode_for_posture(p)).filter(|m| m != "default"));
+        cfg.permission_mode = spec.mode.clone().or_else(|| {
+            spec.posture
+                .and_then(|p| self.mode_for_posture(p))
+                .filter(|m| m != "default")
+        });
         cfg.policy = spec.policy;
         cfg.charter = spec.charter.clone();
         cfg.extra_args = spec.extra_args.clone();
@@ -325,16 +423,24 @@ impl SessionStore for ClaudeStore {
         if main.is_file() {
             out.push((format!("{sid}.jsonl"), main.clone()));
         }
-        let Some(project) = main.parent() else { return out };
+        let Some(project) = main.parent() else {
+            return out;
+        };
         let sub = project.join(sid);
         if sub.is_dir() {
             let mut stack = vec![(sub.clone(), String::new())];
             while let Some((dir, prefix)) = stack.pop() {
-                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                let Ok(rd) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
                 for e in rd.flatten() {
                     let p = e.path();
                     let name = e.file_name().to_string_lossy().to_string();
-                    let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+                    let rel = if prefix.is_empty() {
+                        name
+                    } else {
+                        format!("{prefix}/{name}")
+                    };
                     if p.is_dir() {
                         stack.push((p, rel));
                     } else if p.is_file() {
@@ -365,7 +471,9 @@ impl SessionStore for ClaudeStore {
         serde_json::to_value(c).unwrap_or(Value::Null)
     }
     fn subagent(&self, repo: &Path, sid: &str, agent_id: &str) -> Result<Vec<Value>> {
-        crate::transcript::rehydrate_file(&crate::activity::subagent_transcript(repo, sid, agent_id))
+        crate::transcript::rehydrate_file(&crate::activity::subagent_transcript(
+            repo, sid, agent_id,
+        ))
     }
     fn project_dirs(&self, repo: &Path) -> ProjectDirs {
         let home = crate::transcript::claude_home();
@@ -373,7 +481,11 @@ impl SessionStore for ClaudeStore {
         let project_dir = home.join("projects").join(&encoded);
         ProjectDirs {
             memory_dir: Some(project_dir.join("memory")),
-            artifact_roots: vec![project_dir.clone(), home.join("image-cache"), home.join("plans")],
+            artifact_roots: vec![
+                project_dir.clone(),
+                home.join("image-cache"),
+                home.join("plans"),
+            ],
             project_dir: Some(project_dir),
             encoded: Some(encoded),
             home: Some(home),

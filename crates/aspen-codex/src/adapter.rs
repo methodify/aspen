@@ -8,7 +8,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use aspen_core::{AgentAdapter, Harness, HarnessCapabilities, PermissionMode, Posture, SessionEvent, SessionHandle, SessionStore, SpawnSpec};
+use aspen_core::{
+    AgentAdapter, Harness, HarnessCapabilities, PermissionMode, Posture, SessionEvent,
+    SessionHandle, SessionStore, SpawnSpec,
+};
 
 use crate::session::{CodexConfig, CodexSession};
 use crate::store::CodexStore;
@@ -58,11 +61,51 @@ pub struct Mode {
 }
 
 pub const MODES: &[Mode] = &[
-    Mode { id: "on-request", label: "on request", hint: "workspace writes go through; anything outside the sandbox asks", approval: "on-request", sandbox: "workspace-write", reviewer: "user", posture: Some(Posture::Ask) },
-    Mode { id: "untrusted", label: "untrusted", hint: "every command not on the trusted list asks", approval: "untrusted", sandbox: "workspace-write", reviewer: "user", posture: None },
-    Mode { id: "read-only", label: "read only", hint: "read-only sandbox; writes ask", approval: "on-request", sandbox: "read-only", reviewer: "user", posture: Some(Posture::Plan) },
-    Mode { id: "full-access", label: "full access", hint: "no sandbox, no prompts", approval: "never", sandbox: "danger-full-access", reviewer: "user", posture: Some(Posture::Auto) },
-    Mode { id: "auto-review", label: "auto review", hint: "Codex's reviewer answers the prompts", approval: "on-request", sandbox: "workspace-write", reviewer: "auto_review", posture: Some(Posture::Guarded) },
+    Mode {
+        id: "on-request",
+        label: "on request",
+        hint: "workspace writes go through; anything outside the sandbox asks",
+        approval: "on-request",
+        sandbox: "workspace-write",
+        reviewer: "user",
+        posture: Some(Posture::Ask),
+    },
+    Mode {
+        id: "untrusted",
+        label: "untrusted",
+        hint: "every command not on the trusted list asks",
+        approval: "untrusted",
+        sandbox: "workspace-write",
+        reviewer: "user",
+        posture: None,
+    },
+    Mode {
+        id: "read-only",
+        label: "read only",
+        hint: "read-only sandbox; writes ask",
+        approval: "on-request",
+        sandbox: "read-only",
+        reviewer: "user",
+        posture: Some(Posture::Plan),
+    },
+    Mode {
+        id: "full-access",
+        label: "full access",
+        hint: "no sandbox, no prompts",
+        approval: "never",
+        sandbox: "danger-full-access",
+        reviewer: "user",
+        posture: Some(Posture::Auto),
+    },
+    Mode {
+        id: "auto-review",
+        label: "auto review",
+        hint: "Codex's reviewer answers the prompts",
+        approval: "on-request",
+        sandbox: "workspace-write",
+        reviewer: "auto_review",
+        posture: Some(Posture::Guarded),
+    },
 ];
 
 pub fn mode(id: &str) -> Option<&'static Mode> {
@@ -78,7 +121,11 @@ pub struct CodexAdapter {
 
 impl CodexAdapter {
     pub fn new() -> Self {
-        let me = Self { bin: "codex".into(), store: Arc::new(CodexStore::new()), version: Default::default() };
+        let me = Self {
+            bin: "codex".into(),
+            store: Arc::new(CodexStore::new()),
+            version: Default::default(),
+        };
         me.probe_version();
         me
     }
@@ -89,11 +136,18 @@ impl CodexAdapter {
         let cell = self.version.clone();
         let bin = self.bin.clone();
         std::thread::spawn(move || {
-            let v = aspen_core::quiet_command(&bin).arg("--version").output().ok().and_then(|out| {
-                let s = String::from_utf8_lossy(&out.stdout);
-                // "codex-cli 0.153.4"
-                s.split_whitespace().last().map(str::to_owned).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
-            });
+            let v = aspen_core::quiet_command(&bin)
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|out| {
+                    let s = String::from_utf8_lossy(&out.stdout);
+                    // "codex-cli 0.153.4"
+                    s.split_whitespace()
+                        .last()
+                        .map(str::to_owned)
+                        .filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                });
             let _ = cell.set(v);
         });
     }
@@ -142,7 +196,12 @@ impl AgentAdapter for CodexAdapter {
     fn permission_modes(&self) -> Vec<PermissionMode> {
         MODES
             .iter()
-            .map(|m| PermissionMode { id: m.id.into(), label: m.label.into(), hint: m.hint.into(), posture: m.posture })
+            .map(|m| PermissionMode {
+                id: m.id.into(),
+                label: m.label.into(),
+                hint: m.hint.into(),
+                posture: m.posture,
+            })
             .collect()
     }
     fn mode_for_posture(&self, posture: Posture) -> Option<String> {
@@ -154,7 +213,10 @@ impl AgentAdapter for CodexAdapter {
         };
         Some(id.into())
     }
-    async fn spawn(&self, spec: SpawnSpec) -> Result<(Arc<dyn SessionHandle>, mpsc::Receiver<SessionEvent>)> {
+    async fn spawn(
+        &self,
+        spec: SpawnSpec,
+    ) -> Result<(Arc<dyn SessionHandle>, mpsc::Receiver<SessionEvent>)> {
         let mode_id = spec
             .mode
             .clone()
@@ -177,7 +239,10 @@ impl AgentAdapter for CodexAdapter {
             bridge: spec.node_api.clone().map(|api| crate::session::Bridge {
                 node_api: api,
                 token: spec.bridge_token.clone(),
-                aspen_bin: std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "aspen".into()),
+                aspen_bin: std::env::current_exe()
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "aspen".into()),
                 tools: spec.tools.clone(),
             }),
         };

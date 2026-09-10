@@ -47,7 +47,9 @@ pub fn block_profiles_blocking() -> &'static [String] {
 
 #[cfg(windows)]
 fn probe() -> Vec<String> {
-    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     if exe.is_empty() {
         return Vec::new();
     }
