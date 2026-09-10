@@ -94,10 +94,22 @@ kinds), the rest opt-in per device. One subscription per endpoint,
 re-registered when the kinds change. A subscription the push service
 reports gone (404/410) is forgotten; other failures are kept on the row
 (`last_error`) and shown by `GET /api/push/subscriptions`. **test** sends
-one now. Pushes come from the node subscribed on: subscribe on each node
-whose notices you want, or on the one you attach to through a relay.
-The node needs outbound HTTPS; relaying a push through a peer that has it
-is not built.
+one now. **Across the mesh (v0.27.2).** A notice raised on any node reaches every
+device subscribed anywhere: the raising node pushes to its own
+subscribers and sends the notice (`{t: "notice"}`, sealed like every
+frame) to every linked peer, and each peer pushes to the devices
+subscribed on it that asked for that kind. So the operator subscribes
+once, on the node they talk to, and gets the fleet — the notification
+says which node. A node whose link to the raising node is down misses
+that notice (there is no store-and-forward for pushes); the mailbox
+relay carries bus mail, not notices. The subscribed-on node needs
+outbound HTTPS to the push service.
+
+**Getting the permission prompt.** The browser asks when **push to this
+device** is turned on in the bell's panel — never on its own. Android
+Chrome asks in the tab. On iPhone and iPad, Safari offers Web Push only
+to an app added to the Home Screen (Share → Add to Home Screen, then open
+it from there); in a plain tab the panel says so instead of the toggle.
 
 Verified 2026-09-10 on the rig from the hosted console attached through a
 relay: subscribe registered the browser's push service endpoint on the

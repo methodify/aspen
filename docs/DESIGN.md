@@ -1107,3 +1107,12 @@ cleaner lane for roster updates than user-message headers.
   handler; the precache and update prompt are unchanged. Decision: a
   gone subscription (404/410) is forgotten silently, any other failure
   stays on the row where the operator can see it.
+- **2026-09-10 — v0.27.2, pushes across the mesh.** The operator's
+  objection to "subscribe on each node": the mesh exists so one
+  connection sees the fleet. The subscription cannot move (a push
+  service binds it to the VAPID key it was made with), so the notice
+  moves instead — the raising node sends it to every linked peer and
+  the subscribed-on node pushes. Simple, one hop, no store-and-forward;
+  a down link loses the notice, which the doc says. iOS needs the app on
+  the Home Screen before Safari offers push at all; the panel says so
+  rather than hiding the toggle.

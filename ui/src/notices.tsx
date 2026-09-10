@@ -437,7 +437,16 @@ function PushRow() {
   useEffect(() => {
     pushCurrent().then(setSub).catch(() => setSub(null));
   }, []);
-  if (!pushSupported()) return null;
+  if (!pushSupported()) {
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    return (
+      <div className="row mono-meta" title="Web Push needs a service worker, a push manager and the Notification API">
+        {ios
+          ? "push to this device: on iPhone and iPad, first add Aspen to the Home Screen (Share → Add to Home Screen) and open it from there — Safari allows Web Push only for installed apps"
+          : "push to this device: this browser has no Web Push"}
+      </div>
+    );
+  }
   const saveKinds = async (next: string[]) => {
     setKinds(next);
     try {

@@ -1189,6 +1189,15 @@ async fn link_loop(
             }
         };
         match payload.get("t").and_then(|t| t.as_str()).unwrap_or("") {
+            // A notice raised on a peer (NOTIFICATIONS.md §6): pushed to
+            // every device subscribed HERE that asked for its kind — the
+            // operator subscribes on the one node they talk to, and the
+            // mesh brings the rest of the fleet's notices to it.
+            "notice" if !peer.starts_with("console-") => {
+                if let Some(n) = payload.get("notice") {
+                    crate::push::send_for_notice(inner, n);
+                }
+            }
             "bus" if !mesh.allows(peer, Capability::Control) => {
                 tracing::info!(peer, "bus row from an observe-only peer dropped");
             }

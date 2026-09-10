@@ -31,11 +31,23 @@ pub fn raise(
     let Some(data_dir) = inner.data_dir.clone() else {
         return;
     };
-    // Web Push (push.rs): every subscribed console that asked for this
-    // kind, independent of the webhook/command hook below.
+    // Web Push (push.rs): every device subscribed here that asked for this
+    // kind — and every linked peer gets the notice too, for the devices
+    // subscribed there (NOTIFICATIONS.md §6). Independent of the
+    // webhook/command hook below.
     {
         let node = inner.mesh().map(|m| m.identity.node.clone());
-        crate::push::send_for_notice(inner, &notice_json(&notice, node.as_deref()));
+        let n = notice_json(&notice, node.as_deref());
+        crate::push::send_for_notice(inner, &n);
+        if let Some(mesh) = inner.mesh() {
+            let frame = serde_json::json!({ "t": "notice", "notice": n });
+            for p in mesh.up_peers() {
+                if p.starts_with("console-") {
+                    continue;
+                }
+                let _ = mesh.send_to(&p, &frame);
+            }
+        }
     }
     let settings = crate::settings::load(&data_dir).notify;
     if !settings.configured() || !settings.fires(kind) {
