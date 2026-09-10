@@ -4,9 +4,11 @@
 # repository's Pages source set to "GitHub Actions" (one-time).
 name: pages
 
+# The github-pages environment deploys from `main` only (its default
+# protection rule refuses tags), so the release workflow dispatches this
+# on main once the tag is cut; `gh workflow run pages.yml --ref main`
+# does the same by hand.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:

@@ -42,8 +42,9 @@ served for an API path. What it gives:
 
 The console is built with `VITE_HOSTED=1` (base `/aspen/`, hash routes
 because a static host has no SPA fallback, `__ASPEN_HOSTED__` true).
-`pages.yml` publishes it to GitHub Pages on every release tag and on
-demand (`gh workflow run pages.yml`); the release workflow attaches
+`pages.yml` publishes it to GitHub Pages; the release workflow dispatches
+it on `main` after each tag (the Pages environment deploys from `main`
+only), and `gh workflow run pages.yml --ref main` does the same by hand; the release workflow attaches
 `console.zip` for anyone hosting it themselves. One-time repository
 setting: Pages source = GitHub Actions.
 

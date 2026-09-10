@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   binaries:
@@ -120,3 +121,9 @@ jobs:
             gh release upload "${{ github.ref_name }}" console.zip --repo "${{ github.repository }}" --clobber && break
             sleep 30
           done
+      # Pages deploys from main only (environment rule); main is this tag's
+      # commit at release time.
+      - name: deploy the hosted console
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main --repo "${{ github.repository }}"
