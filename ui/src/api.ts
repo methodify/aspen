@@ -1399,20 +1399,43 @@ export const api = {
     post<MoveReport>(`/api/agents/${enc(name)}/move`, body),
   fileStat: (name: string, path: string) =>
     request<FileStat>(`/api/agents/${enc(name)}/file?path=${enc(path)}&stat=1`),
-  /** The file's text (viewer); the request carries the token header. */
-  fileText: async (name: string, path: string): Promise<string> => {
+  /** The file's bytes (viewer), as a Blob with its media type — through
+   *  the tunnel when attached (a plain fetch would leave for whatever
+   *  origin served this page), else straight from the node. */
+  fileBlob: async (name: string, path: string): Promise<Blob> => {
+    const p = `/api/agents/${enc(name)}/file?path=${enc(path)}`;
+    if (tunnel.enabled) {
+      const r = await tunnel.http("GET", p);
+      if (r.status < 200 || r.status >= 300) throw new ApiError(r.status, r.body ?? `${r.status}`);
+      const type = r.content_type ?? "application/octet-stream";
+      if (r.body_b64) {
+        const bin = atob(r.body_b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type });
+      }
+      return new Blob([r.body ?? ""], { type });
+    }
     const token = nodeToken();
     const headers = new Headers();
     if (token) headers.set("X-Aspen-Token", token);
-    const res = await fetch(`${apiBase()}/api/agents/${enc(name)}/file?path=${enc(path)}`, { headers });
+    const res = await fetch(`${apiBase()}${p}`, { headers });
     if (!res.ok) throw new ApiError(res.status, (await res.text()) || res.statusText);
-    return res.text();
+    return res.blob();
   },
-  /** A URL for <img>/<iframe>/<a>: carries the token as a query param. */
+  /** The file's text (viewer). */
+  fileText: async (name: string, path: string): Promise<string> => {
+    const b = await api.fileBlob(name, path);
+    return b.text();
+  },
+  /** A URL for <img>/<iframe>/<a>: carries the token as a query param.
+   *  Not reachable through a relay — the viewer uses fileBlob there. */
   fileUrl: (name: string, path: string, opts?: { download?: boolean }): string => {
     const token = nodeToken();
-    return `/api/agents/${enc(name)}/file?path=${enc(path)}${opts?.download ? "&download=1" : ""}${token ? `&token=${enc(token)}` : ""}`;
+    return `${apiBase()}/api/agents/${enc(name)}/file?path=${enc(path)}${opts?.download ? "&download=1" : ""}${token ? `&token=${enc(token)}` : ""}`;
   },
+  /** True when file URLs cannot be linked directly (attached through a relay). */
+  filesViaTunnel: (): boolean => tunnel.enabled,
   reloadAgent: (name: string) =>
     post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
   sessions: (repo: string, node?: string) =>

@@ -45,7 +45,30 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
 
   const node = name.includes("@") ? name.split("@").pop() : null;
   const kind = stat && stat.exists ? kindOf(stat.media_type ?? "", stat.name ?? "") : null;
-  const raw = api.fileUrl(name, path);
+  // Through a relay there is no URL a browser can open for the file: the
+  // bytes come over the tunnel and a blob URL stands in for raw/download
+  // and for the images a rendered document refers to.
+  const viaTunnel = api.filesViaTunnel();
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!viaTunnel) return;
+    let url: string | null = null;
+    let cancelled = false;
+    api
+      .fileBlob(name, path)
+      .then((b) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(b);
+        setBlobUrl(url);
+      })
+      .catch(() => setBlobUrl(null));
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [name, path, viaTunnel]);
+  const raw = viaTunnel ? (blobUrl ?? "") : api.fileUrl(name, path);
+  const downloadUrl = viaTunnel ? (blobUrl ?? "") : api.fileUrl(name, path, { download: true });
 
   useEffect(() => {
     let cancelled = false;
@@ -142,7 +165,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
         return (
           <div className="dim">
             {stat.media_type ?? "binary"} — no inline view.{" "}
-            <a href={api.fileUrl(name, path, { download: true })}>download {stat.name}</a>
+            <a href={downloadUrl} download={stat.name ?? undefined}>download {stat.name}</a>
           </div>
         );
     }
@@ -179,10 +202,10 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
         )}
         {stat?.exists && (
           <>
-            <a className="btn sm" href={raw} target="_blank" rel="noreferrer">
+            <a className="btn sm" href={raw} target="_blank" rel="noreferrer" title={viaTunnel ? "the bytes came through the relay; this opens a local copy" : undefined}>
               raw ↗
             </a>
-            <a className="btn sm" href={api.fileUrl(name, path, { download: true })}>
+            <a className="btn sm" href={downloadUrl} download={viaTunnel ? (stat.name ?? undefined) : undefined}>
               download
             </a>
           </>

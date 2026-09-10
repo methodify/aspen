@@ -382,7 +382,9 @@ function TunnelPill() {
   useEffect(() => tunnel.onChange(() => setTick((n) => n + 1)), []);
   const nav = useNavigate();
   const conn = activeConnection();
-  if (conn?.kind === "direct") {
+  // An attached tunnel is what requests ride, whatever connection is
+  // marked active: say that first.
+  if (conn?.kind === "direct" && !tunnel.enabled) {
     return (
       <button className="btn ghost sm mono" onClick={() => nav("/attach")} title={`talking to ${conn.url} directly`}>
         {conn.name}

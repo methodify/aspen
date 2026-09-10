@@ -71,6 +71,11 @@ every route back to Connect until a connection was saved by hand). A
 node that hosts a relay is present on it, so it can be the node you
 attach to (RELAY.md §11).
 
+Files (the artifact viewer) come over the tunnel too (v0.26.3): the
+bytes arrive base64 in the `http` op's answer and become a blob URL for
+the image, the raw link and the download; images a rendered document
+refers to by relative path are not fetched through the tunnel yet.
+
 `api.ts` prefixes every request and the events WebSocket with the active
 direct connection's URL; a relay connection turns the tunnel on. With no
 active connection the hosted console opens on the connect page. The
