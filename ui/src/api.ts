@@ -587,6 +587,17 @@ export interface GitState {
   checked_at: number;
 }
 
+/** A Web Push subscription as the node keeps it (keys withheld). */
+export interface PushSubInfo {
+  id: number;
+  console: string;
+  endpoint: string;
+  kinds: string[];
+  created_at: number;
+  last_ok: number | null;
+  last_error: string | null;
+}
+
 /** One entry in the fleet event log (GET /api/history). */
 export interface FleetEvent {
   id: number;
@@ -1348,6 +1359,14 @@ export const api = {
   usage: (from: number) => request<UsageRow[]>(`/api/usage?from=${from}`),
   agentUsage: (name: string) => request<UsageRow[]>(`/api/agents/${enc(name)}/usage`),
   notices: (since: string) => request<NoticesPage>(`/api/notices?since=${encodeURIComponent(since)}`),
+  /** Web Push (CONSOLE_APP.md §5): the node's VAPID key, subscribe/unsubscribe, a test. */
+  pushVapid: () => request<{ public_key: string }>("/api/push/vapid"),
+  pushSubscribe: (subscription: unknown, consoleName: string, kinds: string[]) =>
+    post<{ ok: boolean; kinds: string[] }>("/api/push/subscribe", { subscription, console: consoleName, kinds }),
+  pushUnsubscribe: (endpoint: string) =>
+    request<{ ok: boolean; found: boolean }>("/api/push/subscribe", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint }) }),
+  pushTest: (endpoint: string) => post<{ ok: boolean }>("/api/push/test", { endpoint }),
+  pushSubscriptions: () => request<{ subscriptions: PushSubInfo[] }>("/api/push/subscriptions"),
   subagent: (name: string, id: string) => request<HistoryItem[]>(`/api/agents/${enc(name)}/subagent/${enc(id)}`),
   plugins: () => request<PluginRegistry>("/api/plugins"),
   pluginsSync: (marketplace?: string) =>

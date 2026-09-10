@@ -69,3 +69,52 @@ export function setBadge(n: number) {
     /* unsupported */
   }
 }
+
+// ── Web Push (PROPOSALS-2026-09-D.md §4) ───────────────────────────────
+
+import { api } from "./api";
+
+function b64urlToBytes(s: string): Uint8Array {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const bin = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+export function pushSupported(): boolean {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+/** This browser's subscription with the push service, if any. */
+export async function pushCurrent(): Promise<PushSubscription | null> {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+/** Ask permission, subscribe with the node's VAPID key, register with the
+ *  node. `console` names this browser to the node. */
+export async function pushSubscribe(consoleName: string, kinds: string[]): Promise<PushSubscription> {
+  if (!pushSupported()) throw new Error("this browser has no Web Push");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error(perm === "denied" ? "notifications are blocked for this site" : "permission was not granted");
+  const { public_key } = await api.pushVapid();
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(public_key) as BufferSource });
+  }
+  await api.pushSubscribe(sub.toJSON(), consoleName, kinds);
+  return sub;
+}
+
+export async function pushUnsubscribe(): Promise<void> {
+  const sub = await pushCurrent();
+  if (!sub) return;
+  try {
+    await api.pushUnsubscribe(sub.endpoint);
+  } finally {
+    await sub.unsubscribe();
+  }
+}

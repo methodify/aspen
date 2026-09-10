@@ -75,6 +75,13 @@ pub async fn serve(
         .route("/agents/{name}/activities", get(get_activities))
         .route("/activities", get(get_fleet_activities))
         .route("/notices", get(get_notices))
+        .route("/push/vapid", get(get_push_vapid))
+        .route("/push/subscriptions", get(get_push_subs))
+        .route(
+            "/push/subscribe",
+            post(post_push_subscribe).delete(delete_push_subscribe),
+        )
+        .route("/push/test", post(post_push_test))
         .route("/usage", get(get_usage))
         .route("/replicas", get(get_replicas))
         .route("/memory/resolve", post(post_memory_resolve))
@@ -2083,6 +2090,103 @@ struct NoticesQuery {
     since: String,
     #[serde(default)]
     mesh: Option<bool>,
+}
+
+// ------------------------------------------------------------- Web Push
+// (PROPOSALS-2026-09-D.md §4, CONSOLE_APP.md): this node's VAPID public
+// key, the subscriptions consoles registered, subscribe/unsubscribe, and a
+// test push. Reached through the tunnel like any other request.
+
+async fn get_push_vapid(State(s): S) -> impl IntoResponse {
+    match aspen_node::push::vapid(&s.node.inner) {
+        Ok(v) => Json(json!({ "public_key": v.public_key })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn get_push_subs(State(s): S) -> impl IntoResponse {
+    match s.node.inner.store.push_subs() {
+        Ok(v) => Json(json!({ "subscriptions": v })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PushSubscribeBody {
+    /// The browser's `PushSubscription.toJSON()`.
+    subscription: Value,
+    /// The console's name (its mesh identity, or a browser id).
+    console: Option<String>,
+    /// Notice kinds to push; absent = the needs-you kinds.
+    kinds: Option<Vec<String>>,
+}
+
+async fn post_push_subscribe(State(s): S, Json(b): Json<PushSubscribeBody>) -> impl IntoResponse {
+    let endpoint = b
+        .subscription
+        .get("endpoint")
+        .and_then(|e| e.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let p256dh = b
+        .subscription
+        .pointer("/keys/p256dh")
+        .and_then(|e| e.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let auth = b
+        .subscription
+        .pointer("/keys/auth")
+        .and_then(|e| e.as_str())
+        .unwrap_or("")
+        .to_owned();
+    if endpoint.is_empty() || p256dh.is_empty() || auth.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "a subscription needs endpoint, keys.p256dh and keys.auth",
+        )
+        .into_response();
+    }
+    let kinds: Vec<String> = match b.kinds {
+        Some(k) if !k.is_empty() => k,
+        _ => aspen_node::push::DEFAULT_KINDS
+            .iter()
+            .map(|k| k.to_string())
+            .collect(),
+    };
+    let console = b.console.unwrap_or_else(|| "console".into());
+    match s
+        .node
+        .inner
+        .store
+        .push_sub_upsert(&console, &endpoint, &p256dh, &auth, &kinds)
+    {
+        Ok(()) => Json(json!({ "ok": true, "kinds": kinds })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PushEndpointBody {
+    endpoint: String,
+}
+
+async fn delete_push_subscribe(State(s): S, Json(b): Json<PushEndpointBody>) -> impl IntoResponse {
+    match s.node.inner.store.push_sub_delete(&b.endpoint) {
+        Ok(found) => Json(json!({ "ok": true, "found": found })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn post_push_test(State(s): S, Json(b): Json<PushEndpointBody>) -> impl IntoResponse {
+    let inner = s.node.inner.clone();
+    match tokio::task::spawn_blocking(move || aspen_node::push::send_test(&inner, &b.endpoint))
+        .await
+    {
+        Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 /// Notices (NOTIFICATIONS.md) since the given cursors, this node's and

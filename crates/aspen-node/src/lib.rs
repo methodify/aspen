@@ -23,6 +23,7 @@ pub mod pending;
 pub mod permit;
 pub mod plugins;
 pub mod procs;
+pub mod push;
 pub mod release;
 pub mod replicate;
 pub mod search;

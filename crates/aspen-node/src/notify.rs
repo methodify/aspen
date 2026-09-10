@@ -31,6 +31,12 @@ pub fn raise(
     let Some(data_dir) = inner.data_dir.clone() else {
         return;
     };
+    // Web Push (push.rs): every subscribed console that asked for this
+    // kind, independent of the webhook/command hook below.
+    {
+        let node = inner.mesh().map(|m| m.identity.node.clone());
+        crate::push::send_for_notice(inner, &notice_json(&notice, node.as_deref()));
+    }
     let settings = crate::settings::load(&data_dir).notify;
     if !settings.configured() || !settings.fires(kind) {
         return;

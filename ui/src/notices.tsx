@@ -10,6 +10,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api, serverNow, type Notice, type NoticeKind } from "./api";
+import { pushCurrent, pushSubscribe, pushSupported, pushUnsubscribe } from "./pwa";
+import { loadIdentity } from "./tunnel";
 
 export const NOTICE_KINDS: { kind: NoticeKind; label: string; hint: string }[] = [
   { kind: "question", label: "questions", hint: "a session asked you something" },
@@ -329,6 +331,7 @@ export function NoticesBell() {
                 </label>
               ))}
             </div>
+            <PushRow />
             {nodes.length > 0 && (
               <div className="row notices-kinds">
                 <span className="mono-meta">nodes:</span>
@@ -393,4 +396,116 @@ export function NoticesBell() {
 function relTime(epochSeconds: number): string {
   const s = Math.max(0, Math.round(serverNow() - epochSeconds));
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
+}
+
+/** This browser's name to the node it subscribes on: the console
+ *  identity when there is one, else an id kept in this browser. */
+function consoleName(): string {
+  const id = loadIdentity();
+  if (id?.node) return id.node;
+  try {
+    let v = localStorage.getItem("aspen.console.id");
+    if (!v) {
+      v = `browser-${Math.random().toString(36).slice(2, 8)}`;
+      localStorage.setItem("aspen.console.id", v);
+    }
+    return v;
+  } catch {
+    return "browser";
+  }
+}
+
+const PUSH_KINDS_KEY = "aspen.push.kinds";
+const PUSH_DEFAULT = ["question", "permission"];
+function loadPushKinds(): string[] {
+  try {
+    const raw = localStorage.getItem(PUSH_KINDS_KEY);
+    return raw ? (JSON.parse(raw) as string[]) : PUSH_DEFAULT;
+  } catch {
+    return PUSH_DEFAULT;
+  }
+}
+
+/** Web Push (CONSOLE_APP.md §5): notices as OS notifications with the
+ *  console closed, from the node this console talks to. Off by default;
+ *  needs-you kinds by default. */
+function PushRow() {
+  const [sub, setSub] = useState<PushSubscription | null>(null);
+  const [kinds, setKinds] = useState<string[]>(loadPushKinds);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => {
+    pushCurrent().then(setSub).catch(() => setSub(null));
+  }, []);
+  if (!pushSupported()) return null;
+  const saveKinds = async (next: string[]) => {
+    setKinds(next);
+    try {
+      localStorage.setItem(PUSH_KINDS_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    if (sub) {
+      try {
+        await api.pushSubscribe(sub.toJSON(), consoleName(), next);
+      } catch (e) {
+        setNote(e instanceof Error ? e.message : "could not update");
+      }
+    }
+  };
+  const toggle = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      if (sub) {
+        await pushUnsubscribe();
+        setSub(null);
+        setNote("this device will not be pushed");
+      } else {
+        const s = await pushSubscribe(consoleName(), kinds);
+        setSub(s);
+        setNote("subscribed on this node");
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "push failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const test = async () => {
+    if (!sub) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      await api.pushTest(sub.endpoint);
+      setNote("sent — the push service accepted it");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "test failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="row notices-kinds" style={{ alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+      <label className="mono-meta" title="OS notifications with the console closed, sent by the node this console talks to; blocked sites need the browser's site settings">
+        <input type="checkbox" checked={!!sub} disabled={busy} onChange={() => void toggle()} /> push to this device
+      </label>
+      {sub && (
+        <>
+          {NOTICE_KINDS.map((k) => (
+            <label key={k.kind} className={`chip kind-toggle${kinds.includes(k.kind) ? "" : " off"}`} title={`push ${k.hint}`}>
+              <input
+                type="checkbox"
+                checked={kinds.includes(k.kind)}
+                onChange={(e) => void saveKinds(e.target.checked ? [...kinds, k.kind] : kinds.filter((x) => x !== k.kind))}
+              />
+              {k.label}
+            </label>
+          ))}
+          <button className="btn ghost sm" disabled={busy} onClick={() => void test()} title="send a test notification to this device">test</button>
+        </>
+      )}
+      {note && <span className="mono-meta">{note}</span>}
+    </div>
+  );
 }

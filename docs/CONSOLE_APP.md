@@ -108,3 +108,10 @@ the CORS and private-network headers confirmed on the preflight;
 manifest and worker served by the node with the right content types;
 the worker registered and offered install. Phone layout checked at
 400 px. GitHub Pages deployment runs on the next tag.
+
+## 6. Push (D-4, v0.27)
+
+NOTIFICATIONS.md §6. The service worker is our own (`ui/src/sw.ts`,
+`injectManifest`): the precache and navigation fallback as before, plus
+`push` and `notificationclick`. The bell's panel has the toggle, the
+per-device kinds and a test.

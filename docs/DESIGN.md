@@ -1098,3 +1098,12 @@ cleaner lane for roster updates than user-message headers.
   The rule that made it invisible on the rig: the rig's node names all
   sort after "console-". Lesson written down: name-order rules need a
   test peer on each side of every special name.
+- **2026-09-10 — v0.27, Web Push.** The node is the push sender: a VAPID
+  pair in the data dir, the `web-push` crate's builders for the JWT and
+  the RFC 8291 payload, `ureq` to the browser's push service — no
+  account with anyone. Subscriptions are per browser and per node, with
+  kinds chosen on the device (needs-you by default, the operator's
+  call). The service worker became our own file to hold the push
+  handler; the precache and update prompt are unchanged. Decision: a
+  gone subscription (404/410) is forgotten silently, any other failure
+  stays on the row where the operator can see it.

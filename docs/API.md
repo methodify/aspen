@@ -47,6 +47,11 @@ whoever messaged you are always allowed.
 | `DELETE /api/mesh/pending/{id}` | — | `{ ok }` | withdraw a proposal (`id=outcomes` clears the outcome list) |
 | `POST /api/mesh/reload` | `{}` | `{ ok, summary }` | apply mesh files to the running daemon (join live / pick up peers+relay); the mesh CLI calls it after every mutation |
 | (cross-origin) | — | — | CORS + Private Network Access headers for origins in `aspen config console-origins` (default the hosted console); token in `X-Aspen-Token` (CONSOLE_APP.md §3, v0.26) |
+| `GET /api/push/vapid` | — | `{ public_key }` | the node's VAPID public key (NOTIFICATIONS.md §6) |
+| `POST /api/push/subscribe` | `{ subscription, console?, kinds? }` | `{ ok, kinds }` | register a browser's push subscription; kinds default to question+permission |
+| `DELETE /api/push/subscribe` | `{ endpoint }` | `{ ok, found }` | forget one |
+| `POST /api/push/test` | `{ endpoint }` | `{ ok }` | send a test push now (502 with the push service's answer on failure) |
+| `GET /api/push/subscriptions` | — | `{ subscriptions: [{ id, console, endpoint, kinds, created_at, last_ok, last_error }] }` | what is registered here |
 | `GET /api/history?from=&to=&agent=&n=&mesh=` | — | `{ from, to, self, events: FleetEvent[], messages }` | the fleet timeline: events (`ask` with from=operator/bus, `turn` with duration/cost/reply, `tool`, `prompt`, `exit`, `spawn`/`revive`/`branch`) plus bus rows in the window, this node and reachable peers, each tagged with `node`; defaults to the last 24h |
 | (any `/api/agents/{name}…`) | — | — | `bare@repo@<this node's mesh identity>` collapses to `bare@repo` before routing (v0.25.1): a board or link made on another node names agents fully qualified |
 | `POST /api/agents/{name}/recap` | `{}` | `{ text, took_ms, at }` | the harness's own one-line recap (Claude `/recap`), nothing entering the conversation; 409 mid-turn or with one in flight, 501 for a harness without one (CATCH_UP_AND_SEARCH.md) |

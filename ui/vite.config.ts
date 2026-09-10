@@ -42,6 +42,13 @@ export default defineConfig({
     // reload rather than taking over.
     VitePWA({
       registerType: "prompt",
+      // Our own worker (src/sw.ts): the precache plus the push handler.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      injectManifest: {
+        globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
+      },
       includeAssets: ["aspen-mark.svg", "icons/*.png"],
       manifest: {
         name: "Aspen",
@@ -65,13 +72,6 @@ export default defineConfig({
           { name: "Boards", url: route("/boards"), description: "your boards" },
         ],
         protocol_handlers: [{ protocol: "web+aspen", url: route("/open?u=%s") }],
-      },
-      workbox: {
-        globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
-        // Never serve the shell for an API path, and never cache one.
-        navigateFallbackDenylist: [/^\/api\//, /\/api\//],
-        runtimeCaching: [],
-        cleanupOutdatedCaches: true,
       },
     }),
   ],

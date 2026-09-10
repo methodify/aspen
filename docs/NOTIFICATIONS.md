@@ -71,3 +71,28 @@ appended each notice's JSON to a file.
 
 Digest mode (one summary per quiet period); per-session mute; a
 `needs` notice when a bus message goes unanswered; sound.
+
+## 6. Web Push (v0.27, PROPOSALS-2026-09-D.md §4)
+
+Notices as OS notifications with the console closed — a phone in a
+pocket. The node holds a VAPID key pair (`push_vapid.json` in the data
+dir, made on first use); a console that turns on **push to this device**
+in the bell's panel asks the browser's permission, subscribes with the
+node's public key, and registers the subscription on the node it talks
+to (`POST /api/push/subscribe`, through the tunnel when attached). When
+a notice of a subscribed kind is raised, `push.rs` encrypts it (RFC 8291,
+`aes128gcm`, the `web-push` crate's builders) and POSTs it to the
+browser's push service with a VAPID JWT — Google, Mozilla or Apple,
+plain HTTPS, no other party. The service worker (`ui/src/sw.ts`) shows
+the notification, sets the dock badge, and a click focuses or opens the
+console at the notice's link.
+
+Defaults: off; when on, `question` and `permission` (the needs-you
+kinds), the rest opt-in per device. One subscription per endpoint,
+re-registered when the kinds change. A subscription the push service
+reports gone (404/410) is forgotten; other failures are kept on the row
+(`last_error`) and shown by `GET /api/push/subscriptions`. **test** sends
+one now. Pushes come from the node subscribed on: subscribe on each node
+whose notices you want, or on the one you attach to through a relay.
+The node needs outbound HTTPS; relaying a push through a peer that has it
+is not built.

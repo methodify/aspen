@@ -171,6 +171,17 @@ CREATE TABLE IF NOT EXISTS harness_defaults(
   deleted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(scope, harness)
 );
+CREATE TABLE IF NOT EXISTS push_subs(
+  id INTEGER PRIMARY KEY,
+  console TEXT NOT NULL,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  kinds TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  last_ok REAL,
+  last_error TEXT
+);
 CREATE TABLE IF NOT EXISTS memory_base(
   repo TEXT NOT NULL,
   rel TEXT NOT NULL,
@@ -320,6 +331,23 @@ pub struct ReplicaRow {
 }
 
 /// A notice (PROPOSALS-B §3): a moment the operator may want told about.
+/// A browser's Web Push subscription, registered by a console
+/// (PROPOSALS-2026-09-D.md §4).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PushSub {
+    pub id: i64,
+    pub console: String,
+    pub endpoint: String,
+    #[serde(skip_serializing)]
+    pub p256dh: String,
+    #[serde(skip_serializing)]
+    pub auth: String,
+    pub kinds: Vec<String>,
+    pub created_at: f64,
+    pub last_ok: Option<f64>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Notice {
     pub id: i64,
@@ -1150,6 +1178,68 @@ impl BusStore {
         )
         .map(|n| n > 0)
         .unwrap_or(false)
+    }
+
+    // ---- Web Push subscriptions (PROPOSALS-2026-09-D.md §4)
+
+    pub fn push_subs(&self) -> Result<Vec<PushSub>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare("SELECT id, console, endpoint, p256dh, auth, kinds, created_at, last_ok, last_error FROM push_subs ORDER BY created_at")?;
+        let rows = st.query_map([], |r| {
+            let kinds: String = r.get(5)?;
+            Ok(PushSub {
+                id: r.get(0)?,
+                console: r.get(1)?,
+                endpoint: r.get(2)?,
+                p256dh: r.get(3)?,
+                auth: r.get(4)?,
+                kinds: serde_json::from_str(&kinds).unwrap_or_default(),
+                created_at: r.get(6)?,
+                last_ok: r.get(7)?,
+                last_error: r.get(8)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// One subscription per endpoint; a repeat subscribe updates the
+    /// console name and the kinds.
+    pub fn push_sub_upsert(
+        &self,
+        console: &str,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+        kinds: &[String],
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO push_subs(console, endpoint, p256dh, auth, kinds, created_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(endpoint) DO UPDATE SET console=?1, p256dh=?3, auth=?4, kinds=?5",
+            params![console, endpoint, p256dh, auth, serde_json::to_string(kinds)?, now_epoch()],
+        )?;
+        Ok(())
+    }
+
+    pub fn push_sub_delete(&self, endpoint: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM push_subs WHERE endpoint=?1", params![endpoint])? > 0)
+    }
+
+    pub fn push_sub_outcome(&self, endpoint: &str, ok: bool, error: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if ok {
+            conn.execute(
+                "UPDATE push_subs SET last_ok=?2, last_error=NULL WHERE endpoint=?1",
+                params![endpoint, now_epoch()],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE push_subs SET last_error=?2 WHERE endpoint=?1",
+                params![endpoint, error],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn add_notice(
