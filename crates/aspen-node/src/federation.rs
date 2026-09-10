@@ -1195,7 +1195,17 @@ async fn link_loop(
             // mesh brings the rest of the fleet's notices to it.
             "notice" if !peer.starts_with("console-") => {
                 if let Some(n) = payload.get("notice") {
-                    crate::push::send_for_notice(inner, n);
+                    // The link was written on the raising node with the
+                    // local name; from here that agent is `name@node`.
+                    let mut n = n.clone();
+                    if let Some(link) = n.get("link").and_then(|l| l.as_str()) {
+                        if let Some(rest) = link.strip_prefix("/session/") {
+                            if crate::addr::node_of(rest).is_none() {
+                                n["link"] = json!(format!("/session/{rest}@{peer}"));
+                            }
+                        }
+                    }
+                    crate::push::send_for_notice(inner, &n);
                 }
             }
             "bus" if !mesh.allows(peer, Capability::Control) => {
