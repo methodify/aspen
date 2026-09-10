@@ -539,6 +539,7 @@ export default function BoardPage() {
 
   return (
     <div className="board-page">
+      <div className="phone-note">Boards are side-by-side panes; on a phone, open one session at a time from Now.</div>
       <div className="board-head">
         <Link className="mono-meta" to="/boards">boards</Link>
         <span className="mono-meta">/</span>

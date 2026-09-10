@@ -10,6 +10,10 @@ use std::path::Path;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// The console origins a node answers cross-origin by default: the
+/// hosted console (PROPOSALS-2026-09-D.md §3).
+pub const DEFAULT_CONSOLE_ORIGINS: &str = "https://methodify.github.io";
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Per-harness defaults, keyed by harness name ("claude").
@@ -32,6 +36,11 @@ pub struct Settings {
     /// name, a port-forward…), comma-separated. Rides the roster.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advertise: Option<String>,
+    /// Console origins allowed to call this node's API cross-origin
+    /// (PROPOSALS-2026-09-D.md §3): the hosted console on Pages by
+    /// default; comma-separated. `-` clears to the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_origins: Option<String>,
     /// Outbound notifications (docs/NOTIFICATIONS.md).
     #[serde(default)]
     pub notify: NotifySettings,

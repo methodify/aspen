@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
+import { activate, activeConnection, addConnection, directUrlProblem, hosted, listConnections, removeConnection, type Connection } from "../connections";
 import { ErrorBar } from "../components";
 
 export default function Attach() {
@@ -45,10 +46,11 @@ export default function Attach() {
   return (
     <>
       <div className="stage-head">
-        <span className="t-display">Attach through a relay</span>
-        <span className="mono-meta">this browser as a mesh peer — no local node needed</span>
+        <span className="t-display">{hosted ? "Connect" : "Attach through a relay"}</span>
+        <span className="mono-meta">{hosted ? "this console talks to the node or relay you point it at" : "this browser as a mesh peer — no local node needed"}</span>
       </div>
       <div className="stage-body attach-page">
+        <Connections relay={cfg.relay} node={cfg.node} certified={!!id?.cert} />
         <p className="dim" style={{ maxWidth: "80ch" }}>
           Reach a node you cannot dial directly. This browser keeps its own keypair; the mesh root certifies it once; then every console request rides the relay to the node you attach to, sealed end to end (the relay reads nothing). A console peer may read and control sessions, never spawn or trust.
         </p>
@@ -153,5 +155,78 @@ export default function Attach() {
         )}
       </div>
     </>
+  );
+}
+
+/** The named connections this console keeps (connections.ts): a node on
+ *  this machine reached directly, or a node reached through a relay as
+ *  a mesh peer. Hosted, this is the front door; served by a node, it is
+ *  a way to look at another node from this page. */
+function Connections({ relay, node, certified }: { relay: string; node: string; certified: boolean }) {
+  const [list, setList] = useState<Connection[]>(() => listConnections());
+  const active = activeConnection();
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("http://127.0.0.1:7420");
+  const [token, setToken] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const refresh = () => setList(listConnections());
+  const problem = directUrlProblem(url.trim());
+  return (
+    <section className="strip attach-step">
+      <span className="label">Connections</span>
+      {list.length === 0 && <p className="dim">{hosted ? "None yet. Add the node on this machine below, or attach through a relay (steps 1–3) and save it as a connection." : "None saved. This page is served by a node and talks to it; a saved connection points it elsewhere."}</p>}
+      {list.map((c) => (
+        <div className="attach-row" key={c.id}>
+          <span className={`chip mono ${active?.id === c.id ? "op" : ""}`}>{active?.id === c.id ? "active" : c.kind}</span>
+          <span className="mono">{c.name}</span>
+          <span className="mono-meta">{c.kind === "direct" ? c.url : `via ${c.relay} → ${c.node}`}</span>
+          <span style={{ flex: 1 }} />
+          {active?.id !== c.id && (
+            <button className="btn sm" onClick={() => activate(c.id)} title="use this connection (the page reloads)">use</button>
+          )}
+          {active?.id === c.id && hosted && (
+            <button className="btn ghost sm" onClick={() => activate(null)} title="disconnect">stop</button>
+          )}
+          <button className="btn ghost sm" onClick={() => { removeConnection(c.id); refresh(); }} title="forget this connection">×</button>
+        </div>
+      ))}
+      <div className="attach-row" style={{ flexWrap: "wrap", gap: 8 }}>
+        <input className="mono" placeholder="name" value={name} onChange={(e) => setName(e.target.value)} style={{ width: 140 }} />
+        <input className="mono" placeholder="http://127.0.0.1:7420" value={url} onChange={(e) => setUrl(e.target.value)} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
+        <input className="mono" placeholder="token (from `aspen status`, if the node needs one)" value={token} onChange={(e) => setToken(e.target.value)} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
+        <button
+          className="btn primary sm"
+          disabled={!name.trim() || !url.trim() || !!problem}
+          onClick={() => {
+            setErr(null);
+            const c = addConnection({ name: name.trim(), kind: "direct", url: url.trim(), token: token.trim() || null });
+            setName("");
+            setToken("");
+            refresh();
+            if (!active) activate(c.id);
+          }}
+          title="add a node reached directly"
+        >
+          add node
+        </button>
+        {relay && node && certified && (
+          <button
+            className="btn sm"
+            onClick={() => {
+              const c = addConnection({ name: name.trim() || `${node} via relay`, kind: "relay", relay, node });
+              setName("");
+              refresh();
+              if (!active) activate(c.id);
+            }}
+            title="save the relay and node from steps 1–3 as a connection"
+          >
+            save relay → {node}
+          </button>
+        )}
+      </div>
+      {problem && url.trim() && <span className="mono-meta" style={{ color: "var(--sig-gate)" }}>{problem}</span>}
+      {hosted && <p className="dim">A node on another machine has no certificate a browser trusts, so this page cannot call it directly; reach it through a relay, or open the console that node serves itself.</p>}
+      <ErrorBar error={err} />
+    </section>
   );
 }

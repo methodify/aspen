@@ -19,6 +19,8 @@ import Palette from "./Palette";
 import { NoticesBell, NoticesProvider } from "./notices";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
 import { evictStaleTranscripts } from "./transcript";
+import { pwa, setBadge } from "./pwa";
+import { activeConnection, hosted } from "./connections";
 
 export interface AppData {
   agents: Agent[];
@@ -266,6 +268,17 @@ function MeshColumn() {
   );
 }
 
+/** The oldest node this console works against (hosted builds). */
+const MIN_NODE_VERSION = "0.25.0";
+function cmpVersion(a: string, b: string): number {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
+  }
+  return 0;
+}
+
 /** Daemon (API) version next to the UI's own build stamp. They come from the
  *  same workspace version, so a difference means this page is stale — a
  *  cached bundle after `aspen update --restart` — and needs a reload. */
@@ -276,6 +289,22 @@ function VersionBadge({ node }: { node: NodeInfo | null }) {
   const { refreshNode } = useAppData();
   const [checking, setChecking] = useState<null | "…" | string>(null);
   if (!node) return null;
+  // Hosted: the console and the node are on separate release trains
+  // (PROPOSALS-2026-09-D.md §3); skew is normal, too old is a banner.
+  if (hosted) {
+    const old = cmpVersion(node.version, MIN_NODE_VERSION) < 0;
+    return (
+      <button
+        type="button"
+        className="btn ghost sm"
+        onClick={() => nav("/mesh?view=list#nodes")}
+        title={old ? `this node runs v${node.version}; this console needs v${MIN_NODE_VERSION} or newer — update the node` : `node v${node.version} · console v${ui} (${uiSha})`}
+        style={old ? { color: "var(--sig-gate)" } : undefined}
+      >
+        {old ? `node v${node.version} — too old for this console` : `node v${node.version} · console v${ui}`}
+      </button>
+    );
+  }
   async function checkNow() {
     setChecking("…");
     try {
@@ -352,6 +381,14 @@ function TunnelPill() {
   const [, setTick] = useState(0);
   useEffect(() => tunnel.onChange(() => setTick((n) => n + 1)), []);
   const nav = useNavigate();
+  const conn = activeConnection();
+  if (conn?.kind === "direct") {
+    return (
+      <button className="btn ghost sm mono" onClick={() => nav("/attach")} title={`talking to ${conn.url} directly`}>
+        {conn.name}
+      </button>
+    );
+  }
   if (!tunnel.enabled && tunnel.state === "off") return null;
   const color = tunnel.state === "up" ? "var(--live)" : tunnel.state === "down" ? "var(--sig-gate)" : "var(--sig-normal)";
   return (
@@ -369,7 +406,7 @@ function StatusBar() {
   const off = agents.filter((a) => !a.live).length;
   return (
     <header className="statusbar">
-      <span className="brand"><img className="brand-mark" src="/aspen-mark.svg" alt="" width="18" height="18" />ASP<b>E</b>N</span>
+      <span className="brand"><img className="brand-mark" src={`${import.meta.env.BASE_URL}aspen-mark.svg`} alt="" width="18" height="18" />ASP<b>E</b>N</span>
       <span className="mono-meta">{node ? `node ${node.node}` : "connecting…"}</span>
       <span className="spacer" />
       <VersionBadge node={node} />
@@ -377,6 +414,7 @@ function StatusBar() {
       <span className="micro" style={{ color: "var(--idle)" }}>{idle} IDLE</span>
       <span className="micro" style={{ color: "var(--offline)" }}>{off} OFF</span>
       <TunnelPill />
+      <PwaPill />
       <NoticesBell />
       <button className="btn ghost sm" onClick={toggleTheme} title={`theme: ${theme}`} aria-label="toggle theme">
         {theme === "dark" ? "◑" : theme === "light" ? "◐" : "◒"}
@@ -385,10 +423,62 @@ function StatusBar() {
   );
 }
 
+/** The service worker's word (pwa.ts): a new console build is ready, or
+ *  the app can be installed. */
+function PwaPill() {
+  const [, setTick] = useState(0);
+  useEffect(() => pwa.onChange(() => setTick((n) => n + 1)), []);
+  if (pwa.needRefresh) {
+    return (
+      <button className="btn sm" onClick={() => pwa.reload()} title="a newer console build is ready; reload to take it">
+        new console — reload
+      </button>
+    );
+  }
+  if (pwa.canInstall) {
+    return (
+      <button className="btn ghost sm" onClick={() => void pwa.install()} title="install Aspen as an app: its own window, a dock icon with the needs-you count">
+        install
+      </button>
+    );
+  }
+  return null;
+}
+
+/** `web+aspen://…` links (the manifest's protocol handler) land here as
+ *  `/open?u=`: session/<agent> opens the session; connect?relay=&node=
+ *  goes to the attach page with those filled in. */
+function OpenLink() {
+  const nav = useNavigate();
+  const { search } = useLocation();
+  useEffect(() => {
+    const u = new URLSearchParams(search).get("u") ?? "";
+    const m = /^web\+aspen:\/\/([^/?]+)\/?([^?]*)(\?.*)?$/.exec(u);
+    if (!m) {
+      nav("/", { replace: true });
+      return;
+    }
+    const [, kind, rest, qs] = m;
+    if (kind === "session" && rest) nav(`/session/${encodeURIComponent(decodeURIComponent(rest))}`, { replace: true });
+    else if (kind === "connect") nav(`/attach${qs ?? ""}`, { replace: true });
+    else nav("/", { replace: true });
+  }, [search, nav]);
+  return null;
+}
+
 export default function App() {
   const agentsPoll = usePoll(api.agents, 2000);
   const inboxPoll = usePoll(api.inbox, 5000);
   const nodePoll = usePoll(api.node, 15000);
+  // The dock badge is the needs-you count (PROPOSALS-2026-09-D.md §1).
+  const needsCount = inboxPoll.data?.length ?? 0;
+  useEffect(() => setBadge(needsCount), [needsCount]);
+  // Hosted with nothing to talk to: the front door is the connect page.
+  const loc = useLocation();
+  const navTo = useNavigate();
+  useEffect(() => {
+    if (hosted && !activeConnection() && loc.pathname !== "/attach" && loc.pathname !== "/open") navTo("/attach", { replace: true });
+  }, [loc.pathname, navTo]);
 
   const data: AppData = {
     agents: agentsPoll.data ?? [],
@@ -428,6 +518,7 @@ export default function App() {
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />
               <Route path="/search" element={<Search />} />
+              <Route path="/open" element={<OpenLink />} />
               {/* old surfaces → their new homes */}
               <Route path="/command" element={<Navigate to="/" replace />} />
               <Route path="/sessions" element={<Navigate to="/" replace />} />

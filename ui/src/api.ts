@@ -1166,6 +1166,8 @@ export class ApiError extends Error {
 const TOKEN_KEY = "aspen.token";
 export function nodeToken(): string | null {
   try {
+    const fromConnection = connectionToken();
+    if (fromConnection) return fromConnection;
     const fromUrl = new URLSearchParams(window.location.search).get("token");
     if (fromUrl) {
       sessionStorage.setItem(TOKEN_KEY, fromUrl);
@@ -1196,6 +1198,8 @@ function noteServerDate(res: Response): void {
 /** The console-as-peer tunnel (tunnel.ts): when on, every request goes
  *  through the relay to the attached node instead of this origin. */
 import { tunnel } from "./tunnel";
+/** Hosted console: a direct connection prefixes every request (connections.ts). */
+import { apiBase, connectionToken } from "./connections";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (tunnel.enabled) {
@@ -1233,7 +1237,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const token = nodeToken();
     const headers = new Headers(init?.headers ?? {});
     if (token) headers.set("X-Aspen-Token", token);
-    res = await fetch(path, { ...init, headers });
+    res = await fetch(apiBase() + path, { ...init, headers });
     noteServerDate(res);
   } catch (e) {
     throw new ApiError(0, e instanceof Error ? e.message : "network error");
@@ -1400,7 +1404,7 @@ export const api = {
     const token = nodeToken();
     const headers = new Headers();
     if (token) headers.set("X-Aspen-Token", token);
-    const res = await fetch(`/api/agents/${enc(name)}/file?path=${enc(path)}`, { headers });
+    const res = await fetch(`${apiBase()}/api/agents/${enc(name)}/file?path=${enc(path)}`, { headers });
     if (!res.ok) throw new ApiError(res.status, (await res.text()) || res.statusText);
     return res.text();
   },
@@ -1613,7 +1617,9 @@ export function openSessionEvents(
 }
 
 export function sessionEventsUrl(name: string): string {
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  const base = apiBase();
+  const origin = base ? new URL(base) : window.location;
+  const proto = origin.protocol === "https:" ? "wss" : "ws";
   const token = nodeToken();
-  return `${proto}://${window.location.host}/api/agents/${enc(name)}/events${token ? `?token=${enc(token)}` : ""}`;
+  return `${proto}://${origin.host}/api/agents/${enc(name)}/events${token ? `?token=${enc(token)}` : ""}`;
 }

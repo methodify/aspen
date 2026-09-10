@@ -1,0 +1,62 @@
+/* The console on a phone (PROPOSALS-2026-09-D.md, D-10). One column: the
+   rail becomes a bottom bar of the main surfaces, the status bar keeps
+   the mark, the version pill and the bell, controls strips scroll
+   sideways, cards stack. Boards, the map and the library stay desktop
+   surfaces and say so (.phone-note). */
+@media (max-width: 720px) {
+  :root { --mesh-w: 0px; }
+  .body-grid { grid-template-columns: 1fr !important; }
+  .stage { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+  .stage-head { padding: var(--sp-3) var(--sp-3); flex-wrap: wrap; gap: var(--sp-2); position: static; }
+  .stage-body { padding: var(--sp-3); }
+
+  /* status bar: the essentials */
+  .statusbar { gap: var(--sp-2); padding: 0 var(--sp-3); overflow-x: auto; scrollbar-width: none; }
+  .statusbar::-webkit-scrollbar { display: none; }
+  .statusbar .btn, .statusbar .brand { white-space: nowrap; flex: 0 0 auto; }
+  .statusbar .brand { letter-spacing: 0.12em; }
+  .statusbar .micro, .statusbar > .mono-meta { display: none; }
+
+  /* the rail → a bottom bar */
+  .mesh-col, .mesh-col.narrow {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    height: calc(56px + env(safe-area-inset-bottom));
+    padding: 0 0 env(safe-area-inset-bottom);
+    flex-direction: row; align-items: stretch; justify-content: space-around; gap: 0;
+    border-right: 0; border-top: var(--seam); overflow: visible;
+  }
+  .mesh-col .rail-toggle, .mesh-col .nav-section, .mesh-col .rail-scroll { display: none !important; }
+  .mesh-col .nav-item {
+    flex: 1 1 0; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 6px 2px; border-left: 0; border-top: 2px solid transparent;
+    font-size: 0.68rem; position: relative;
+  }
+  .mesh-col .nav-item.active { border-top-color: var(--sig-normal); }
+  .mesh-col .nav-item .nav-key { width: auto !important; font-size: 0.8rem; color: var(--text-hi) !important; }
+  .mesh-col .nav-item[title="Plugins"], .mesh-col .nav-item[title="Usage"] { display: none; }
+  .mesh-col .nav-item .badge-count { position: absolute; top: 2px; right: 10%; margin: 0; }
+
+  /* session */
+  .session-head { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
+  .session-head h1 { font-size: 0.9rem; }
+  .session-controls { overflow-x: auto; flex-wrap: nowrap; padding: var(--sp-2) var(--sp-3); scrollbar-width: none; }
+  .session-controls::-webkit-scrollbar { display: none; }
+  .session-controls > * { flex: 0 0 auto; }
+  .composer { padding: var(--sp-2) var(--sp-3); }
+  .ac-pop { left: var(--sp-3); right: var(--sp-3); }
+  .tool-card, .bubble { max-width: 100%; }
+  .catchup { padding: 6px var(--sp-3); }
+  .catchup-row { flex-wrap: wrap; }
+
+  /* fleet, search, overlays */
+  .work-grid { grid-template-columns: minmax(0, 1fr); }
+  .search-form { max-width: none; flex-wrap: wrap; }
+  .search-session-head { gap: 6px; }
+  .toast-stack { bottom: calc(64px + env(safe-area-inset-bottom)); width: auto; left: 14px; right: 14px; }
+  .trust-panel, .pal-panel { width: 100vw; max-width: 100vw; max-height: 88vh; }
+  .artifacts-menu { width: calc(100vw - 16px) !important; left: 8px !important; }
+
+  /* desktop surfaces say so */
+  .phone-note { display: block; }
+}
+.phone-note { display: none; margin: 0 0 var(--sp-3); padding: 8px 10px; border: 1px solid var(--line); background: var(--bg-strip-2); color: var(--text-mid); font-size: 0.8rem; }

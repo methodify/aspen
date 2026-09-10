@@ -29,5 +29,10 @@ export default function Mesh() {
       ))}
     </div>
   );
-  return view === "map" ? <MeshMap toggle={toggle} /> : <MeshList toggle={toggle} />;
+  return (
+    <>
+      <div className="phone-note">The mesh views are dense: they work here, but they are laid out for a wider screen.</div>
+      {view === "map" ? <MeshMap toggle={toggle} /> : <MeshList toggle={toggle} />}
+    </>
+  );
 }

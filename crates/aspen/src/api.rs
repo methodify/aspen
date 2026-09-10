@@ -204,10 +204,9 @@ pub async fn serve(
         .route("/federation/relay", get(ws_relay))
         .with_state(state.clone());
 
-    let api = api.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        auth_middleware,
-    ));
+    let api = api
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), cors_middleware));
     let mut app = Router::new().nest("/api", api);
     let ui_for_state = ui_dir.clone();
     if headless {
@@ -602,6 +601,53 @@ async fn self_name_middleware(
         }
     }
     next.run(req).await
+}
+
+/// Cross-origin calls from a console that was not served by this node
+/// (PROPOSALS-2026-09-D.md §3): the hosted console at methodify.github.io
+/// by default, plus `aspen config console-origins`. Only listed origins
+/// get the headers; the token still travels in `X-Aspen-Token`. Chrome's
+/// Private Network Access preflight (a public page reaching 127.0.0.1)
+/// is answered too.
+async fn cors_middleware(
+    State(s): S,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let origin = req.headers().get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let Some(origin) = origin else {
+        return next.run(req).await;
+    };
+    let allowed = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .map(aspen_node::settings::load)
+        .and_then(|st| st.console_origins)
+        .unwrap_or_else(|| aspen_node::settings::DEFAULT_CONSOLE_ORIGINS.to_owned());
+    let ok = allowed.split(',').map(str::trim).any(|o| !o.is_empty() && o.eq_ignore_ascii_case(&origin));
+    if !ok {
+        return next.run(req).await;
+    }
+    let mut headers = axum::http::HeaderMap::new();
+    let hv = |v: &str| axum::http::HeaderValue::from_str(v).unwrap();
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, hv(&origin));
+    headers.insert(axum::http::header::VARY, hv("Origin"));
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS, hv("content-type, x-aspen-token"));
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, hv("GET, POST, PUT, DELETE, OPTIONS"));
+    headers.insert(axum::http::header::ACCESS_CONTROL_MAX_AGE, hv("600"));
+    if req.headers().contains_key("access-control-request-private-network") {
+        headers.insert("access-control-allow-private-network", hv("true"));
+    }
+    if req.method() == axum::http::Method::OPTIONS {
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        r.headers_mut().extend(headers);
+        return r;
+    }
+    let mut r = next.run(req).await;
+    r.headers_mut().extend(headers);
+    r
 }
 
 async fn auth_middleware(

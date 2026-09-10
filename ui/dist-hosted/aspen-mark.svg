@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Aspen">
+  <!--
+    Aspen: a grove is one organism. Three slender trunks stand apart above
+    ground; below it, one root system joins them — the mesh. The leaves
+    are the aspen's near-round leaf, one per trunk, catching light at
+    different angles the way a grove trembles. Reads at 16px as three
+    stems on a root, at 64px as trees on a shared root.
+  -->
+  <defs>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9c46a"/>
+      <stop offset="1" stop-color="#c9932b"/>
+    </linearGradient>
+  </defs>
+  <!-- ground line -->
+  <path d="M6 43.5 H58" stroke="#b7b2a8" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- roots: one system under three trunks -->
+  <g fill="none" stroke="#8a8378" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 43.5 C20 50 26 52 32 52 C38 52 44 50 44 43.5"/>
+    <path d="M32 43.5 V52"/>
+    <path d="M14 43.5 C14 49 18 55 32 55 C46 55 50 49 50 43.5"/>
+  </g>
+  <!-- root nodes -->
+  <g fill="#8a8378">
+    <circle cx="32" cy="52" r="2.2"/>
+    <circle cx="20" cy="49.5" r="1.6"/>
+    <circle cx="44" cy="49.5" r="1.6"/>
+  </g>
+  <!-- trunks: pale bark, the aspen's signature -->
+  <g stroke="#f4f1ea" stroke-width="3.6" stroke-linecap="round">
+    <path d="M20 43.5 V22"/>
+    <path d="M32 43.5 V14"/>
+    <path d="M44 43.5 V22"/>
+  </g>
+  <g stroke="#7a746a" stroke-width="1.2" stroke-linecap="round">
+    <path d="M20 43.5 V22"/>
+    <path d="M32 43.5 V14"/>
+    <path d="M44 43.5 V22"/>
+  </g>
+  <!-- bark eyes -->
+  <g stroke="#7a746a" stroke-width="1" stroke-linecap="round" opacity="0.7">
+    <path d="M18.6 33 h2.8"/>
+    <path d="M30.6 30 h2.8"/>
+    <path d="M42.6 35 h2.8"/>
+  </g>
+  <!-- leaves: near-round with a point, tilted like a trembling grove -->
+  <g fill="url(#leaf)" stroke="#a97d1f" stroke-width="0.8">
+    <path transform="translate(20 15) rotate(-14)" d="M0 -8 C4.6 -8 7.4 -4.2 7.4 0 C7.4 4.6 4 7.6 0 8.6 C-4 7.6 -7.4 4.6 -7.4 0 C-7.4 -4.2 -4.6 -8 0 -8 Z"/>
+    <path transform="translate(44 15) rotate(16)" d="M0 -8 C4.6 -8 7.4 -4.2 7.4 0 C7.4 4.6 4 7.6 0 8.6 C-4 7.6 -7.4 4.6 -7.4 0 C-7.4 -4.2 -4.6 -8 0 -8 Z"/>
+    <path transform="translate(32 7) rotate(2)" d="M0 -8.6 C5 -8.6 8 -4.6 8 0 C8 5 4.4 8.2 0 9.4 C-4.4 8.2 -8 5 -8 0 C-8 -4.6 -5 -8.6 0 -8.6 Z"/>
+  </g>
+  <!-- leaf veins -->
+  <g stroke="#a97d1f" stroke-width="0.7" stroke-linecap="round" opacity="0.8">
+    <path transform="translate(20 15) rotate(-14)" d="M0 -6 V7"/>
+    <path transform="translate(44 15) rotate(16)" d="M0 -6 V7"/>
+    <path transform="translate(32 7) rotate(2)" d="M0 -6.5 V8"/>
+  </g>
+</svg>

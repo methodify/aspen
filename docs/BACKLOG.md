@@ -26,8 +26,24 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | N-3 | sessions + servicing | **Scheduled sessions.** A template plus a cron: "every morning, run triage in repo X on node Y." | PLUGINS.md §templates |
 | N-4 | console + sessions | **Budgets.** Usage is measured; nothing acts on it. A ceiling per repo or mesh with a notice at 80% and a stop at 100%. | USAGE.md |
 | N-5 | protocol + console | **A second operator.** Everything on the bus says "operator"; with a colleague on the mesh: identity, per-person names, and a watch / spawn permission split (console-as-peer certs carry most of it). | RELAY.md §11, MESHES.md |
+| D-4 | console + sessions | **Web Push.** VAPID keys on the node, subscriptions per console, notices as OS notifications with the app closed (default `needs_you` only), badge from the worker; relay through the mesh for nodes without outbound internet. | PROPOSALS-2026-09-D.md §4 |
+| D-5 | console + protocol | **Consoles as first-class + QR onboarding.** Named consoles on disk, `aspen consoles`, revoke; a QR on the Mesh panel encoding the connect deep link and a one-time enrol token. | PROPOSALS-2026-09-D.md §5 |
+| D-6 | console | **Non-extractable console identity.** WebCrypto `CryptoKey`s (Ed25519/X25519) instead of raw bytes in localStorage; migrate on first run. | PROPOSALS-2026-09-D.md §3 |
+| D-7 | servicing | **Relay-hosted console.** The hosted bundle served by the Cloudflare worker as its `/`. | PROPOSALS-2026-09-D.md §3 |
+| D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
+| D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
+| D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-09: the console as an app (D-1, D-2, D-3, D-10, v0.26)
+
+Design: [PROPOSALS-2026-09-D.md](PROPOSALS-2026-09-D.md); as built:
+[CONSOLE_APP.md](CONSOLE_APP.md). Installable with a dock badge and
+shortcuts (D-1); a service worker for the shell and the console's own
+update (D-2); the console hosted on GitHub Pages with connections to a
+local node or a relay, node CORS for listed origins (D-3); a phone layout
+(D-10). D-4..D-9 and D-11 above are what it left open.
 
 ## Shipped — 2026-09-09: catch me up, search, auto-start (T-1, T-2, T-3, v0.25)
 

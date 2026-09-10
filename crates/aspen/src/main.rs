@@ -92,7 +92,7 @@ enum Command {
     /// and the update policy.
     Config {
         /// Setting name: headless | listen | topology | claude-args |
-        /// advertise | update | update-window | update-soak | update-skip |
+        /// advertise | console-origins | update | update-window | update-soak | update-skip |
         /// update-check.
         /// Omit to list all.
         key: Option<String>,
@@ -885,6 +885,10 @@ fn config_command(
             s.advertise.clone().unwrap_or_else(|| "(none)".into())
         );
         println!(
+            "console-origins {}   (origins allowed to call the API cross-origin: the hosted console; comma-separated)",
+            s.console_origins.clone().unwrap_or_else(|| format!("{} (default)", aspen_node::settings::DEFAULT_CONSOLE_ORIGINS))
+        );
+        println!(
             "memory-sync {}   (converge project memory with peers that also have it on)",
             if s.memory.on() { "on" } else { "off" }
         );
@@ -988,6 +992,16 @@ fn config_command(
             }
             s.advertise = if clear { None } else { Some(value.clone()) };
         }
+        "console-origins" => {
+            if !clear {
+                for o in value.split(',').map(str::trim).filter(|o| !o.is_empty()) {
+                    if !(o.starts_with("https://") || o.starts_with("http://localhost") || o.starts_with("http://127.0.0.1")) {
+                        anyhow::bail!("console-origins takes origins like https://host, got {o:?}");
+                    }
+                }
+            }
+            s.console_origins = if clear { None } else { Some(value.clone()) };
+        }
         "update-check" => {
             s.update.check = if clear {
                 None
@@ -1001,7 +1015,7 @@ fn config_command(
         }
         other => {
             anyhow::bail!(
-                "unknown setting '{other}' (headless | listen | topology | claude-args | advertise | replicate | memory-sync | update | update-window | update-soak | update-skip | update-check)"
+                "unknown setting '{other}' (headless | listen | topology | claude-args | advertise | console-origins | replicate | memory-sync | update | update-window | update-soak | update-skip | update-check)"
             )
         }
     }

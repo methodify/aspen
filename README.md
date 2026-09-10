@@ -143,6 +143,12 @@ aspen down       # stop it (clean shutdown)
 aspen autostart enable   # start it at your login, as you (docs/AUTOSTART.md)
 ```
 
+The console is also an installable app and a hosted one: **install** in
+the status bar gives it a window and a dock badge with the needs-you
+count, and `https://methodify.github.io/aspen/` is the same console as a
+static site — point it at the node on your machine or at your relay
+(docs/CONSOLE_APP.md). It works on a phone.
+
 The **Library** shows repositories grouped by node — this node and every
 reachable peer. You can trigger repo discovery on a peer, browse its
 sessions, and start or resume a session there; the work runs on the owning

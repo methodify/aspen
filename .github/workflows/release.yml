@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   binaries:
@@ -95,3 +97,39 @@ jobs:
             --title "aspen ${{ github.ref_name }}" \
             --generate-notes \
             dist/*
+
+  # The hosted console (docs/CONSOLE_APP.md): the same UI built for
+  # methodify.github.io/aspen — hash routes, connections to nodes and
+  # relays — published to GitHub Pages from the tagged commit, and zipped
+  # into the release for anyone who hosts it themselves. Needs the
+  # repository's Pages source set to "GitHub Actions" (one-time).
+  console:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: build hosted console
+        run: npm ci && VITE_HOSTED=1 npx vite build --outDir dist-hosted
+        working-directory: ui
+      - name: zip for the release
+        run: cd ui/dist-hosted && zip -qr ../../console.zip .
+      - name: attach console.zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            gh release upload "${{ github.ref_name }}" console.zip --repo "${{ github.repository }}" --clobber && break
+            sleep 30
+          done
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ui/dist-hosted
+      - id: deploy
+        uses: actions/deploy-pages@v4

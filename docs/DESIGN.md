@@ -1068,3 +1068,15 @@ cleaner lane for roster updates than user-message headers.
   the latest reply — live from the node's work summary (`summary.model`,
   set on every assistant message), else from the transcript. The two can
   differ for one turn after a switch; the title says so.
+- **2026-09-09 — v0.26, the console as an app** (PROPOSALS-2026-09-D.md;
+  CONSOLE_APP.md). The origin problem shaped it: an install is per
+  origin, and an https page cannot fetch a plain-http LAN address, so
+  the hosted console's front door is the relay and "direct" means the
+  node on this machine, with CORS and the private-network preflight on
+  the node for listed origins only. The service worker precaches the
+  shell and nothing under /api — a stale fleet is worse than none — and
+  earns its place by surviving a node restart, offering the console's
+  own update, and being where push (D-4) will land. Hosted and node
+  versions are separate trains now: a minimum, a badge, gating on
+  capabilities. A phone layout is CSS over the same components; boards
+  and the mesh views say they are desktop surfaces rather than pretend.
