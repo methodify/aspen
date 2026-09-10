@@ -3251,7 +3251,17 @@ async fn relay_read_loop(
                     // an offline→online pair (the relay replaced the
                     // peer's socket) arrives while the old link is still
                     // tearing down, and `link_up` would say "already up".
-                    if me < node.as_str() && !relay_link_in_flight(peer_ins, &node) {
+                    // A console always dials us (RELAY.md §11), whatever its
+                    // name sorts as: a node named before "console-" that
+                    // started a link here sent a hello the console never
+                    // asked for, and the console's own hello then replaced
+                    // that link with a fresh nonce the console's proof no
+                    // longer matched — "peer failed nonce proof", every time,
+                    // for every node whose name sorts before "console-".
+                    if me < node.as_str()
+                        && !node.starts_with("console-")
+                        && !relay_link_in_flight(peer_ins, &node)
+                    {
                         start_relay_link(inner, me, &node, relay_url, relay_tx, peer_ins);
                     }
                 } else {

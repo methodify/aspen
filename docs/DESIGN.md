@@ -1091,3 +1091,10 @@ cleaner lane for roster updates than user-message headers.
   Connecting now saves the connection, and an attached tunnel counts.
   Rule from both: a state the status bar shows as good must be the same
   state the rest of the console acts on.
+- **2026-09-09 — v0.26.2, the console nobody may dial.** The hosted
+  console's tunnel came up "up" and then no request was answered — only
+  against nodes named before "console-" in sort order. One of three
+  presence-driven link starts lacked the console exception (RELAY.md).
+  The rule that made it invisible on the rig: the rig's node names all
+  sort after "console-". Lesson written down: name-order rules need a
+  test peer on each side of every special name.

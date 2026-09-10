@@ -386,3 +386,12 @@ now registers on its own relay over loopback (`self_relay`, set when the
 listener binds; `ensure_dialers` treats it as a discovered relay), so
 "attach to the node whose relay this is" works, which on a laptop with a
 local node is the natural first thing to do.
+
+**Consoles are dialed by nobody (v0.26.2).** Three places start a relay
+link toward a peer that appears present when our name sorts lower; two
+excepted consoles, the presence-online handler did not. A node whose
+name sorts before `console-` (anindor, anindor-wsl) started a link the
+moment a console registered and sent it a hello; the console's own hello
+then replaced that link with a fresh nonce, and the console's proof of
+the first nonce failed — "peer failed nonce proof", then a handshake
+timeout, on every attempt, while nodes named j1/j2/r never showed it.
