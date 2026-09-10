@@ -166,6 +166,17 @@ enum Delivery {
     Failed(String),
 }
 
+/// One push, RFC 8030 + RFC 8291 + RFC 8292, in pure Rust (the `web-push`
+/// crate's encryption backend needs OpenSSL, which neither the Windows
+/// build nor the glibc-2.28 cross build has):
+///
+/// 1. VAPID: an ES256 JWT over `{aud: scheme://host, exp: +12h, sub}`,
+///    sent as `Authorization: vapid t=<jwt>, k=<public key>`.
+/// 2. Content: ECDH between a fresh P-256 key and the subscription's
+///    `p256dh`, HKDF with the subscription's `auth` secret into a
+///    content key and nonce, AES-128-GCM over the payload plus the
+///    0x02 delimiter, framed as one `aes128gcm` record with the salt,
+///    record size and our public key in the header.
 fn deliver(
     vapid: &Vapid,
     endpoint: &str,
@@ -173,49 +184,165 @@ fn deliver(
     auth: &str,
     payload: &str,
 ) -> std::result::Result<(), Delivery> {
-    use web_push::{
-        ContentEncoding, SubscriptionInfo, VapidSignatureBuilder, WebPushMessageBuilder,
+    let failed = |m: String| Delivery::Failed(m);
+    let url: url::Url = endpoint
+        .parse()
+        .map_err(|e| failed(format!("endpoint: {e}")))?;
+    let aud = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
+
+    // 1. VAPID.
+    let jwt = {
+        use jwt_simple::prelude::*;
+        let key_bytes = b64d(&vapid.private_key).map_err(|e| failed(format!("vapid key: {e}")))?;
+        let key =
+            ES256KeyPair::from_bytes(&key_bytes).map_err(|e| failed(format!("vapid key: {e}")))?;
+        let mut custom = std::collections::BTreeMap::<String, serde_json::Value>::new();
+        custom.insert(
+            "sub".into(),
+            serde_json::Value::String("https://github.com/methodify/aspen".into()),
+        );
+        let claims =
+            Claims::with_custom_claims(custom, Duration::from_hours(12)).with_audience(aud);
+        key.sign(claims)
+            .map_err(|e| failed(format!("vapid sign: {e}")))?
     };
-    let info = SubscriptionInfo::new(endpoint, p256dh, auth);
-    let mut sig =
-        VapidSignatureBuilder::from_base64(&vapid.private_key, base64_013::URL_SAFE_NO_PAD, &info)
-            .map_err(|e| Delivery::Failed(format!("vapid key: {e}")))?;
-    // A contact the push service may use about this sender: required by
-    // some services, so always present.
-    sig.add_claim("sub", "https://github.com/methodify/aspen");
-    let sig = sig
-        .build()
-        .map_err(|e| Delivery::Failed(format!("vapid signature: {e}")))?;
-    let mut b = WebPushMessageBuilder::new(&info);
-    b.set_ttl(24 * 3600);
-    b.set_payload(ContentEncoding::Aes128Gcm, payload.as_bytes());
-    b.set_vapid_signature(sig);
-    let msg = b
-        .build()
-        .map_err(|e| Delivery::Failed(format!("payload: {e}")))?;
-    let url = msg.endpoint.to_string();
-    let mut req = ureq::post(&url)
+    let authorization = format!("vapid t={jwt}, k={}", vapid.public_key);
+
+    // 2. Content encryption.
+    let ua_public = b64d(p256dh).map_err(|e| failed(format!("p256dh: {e}")))?;
+    let auth_secret = b64d(auth).map_err(|e| failed(format!("auth: {e}")))?;
+    let ua_key =
+        p256::PublicKey::from_sec1_bytes(&ua_public).map_err(|e| failed(format!("p256dh: {e}")))?;
+    let as_secret = p256::ecdh::EphemeralSecret::random(&mut rand_core::OsRng);
+    let as_public = p256::EncodedPoint::from(as_secret.public_key())
+        .as_bytes()
+        .to_vec();
+    let shared = as_secret.diffie_hellman(&ua_key);
+    let mut key_info = b"WebPush: info\0".to_vec();
+    key_info.extend_from_slice(&ua_public);
+    key_info.extend_from_slice(&as_public);
+    let mut ikm = [0u8; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(Some(&auth_secret), shared.raw_secret_bytes())
+        .expand(&key_info, &mut ikm)
+        .map_err(|_| failed("hkdf ikm".into()))?;
+    let mut salt = [0u8; 16];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut salt);
+    let prk = hkdf::Hkdf::<sha2::Sha256>::new(Some(&salt), &ikm);
+    let mut cek = [0u8; 16];
+    prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+        .map_err(|_| failed("hkdf cek".into()))?;
+    let mut nonce = [0u8; 12];
+    prk.expand(b"Content-Encoding: nonce\0", &mut nonce)
+        .map_err(|_| failed("hkdf nonce".into()))?;
+    let mut plain = payload.as_bytes().to_vec();
+    plain.push(0x02);
+    let ciphertext = {
+        use aes_gcm::aead::{Aead, KeyInit};
+        let cipher =
+            aes_gcm::Aes128Gcm::new_from_slice(&cek).map_err(|_| failed("aes key".into()))?;
+        cipher
+            .encrypt(aes_gcm::Nonce::from_slice(&nonce), plain.as_slice())
+            .map_err(|_| failed("aes-gcm".into()))?
+    };
+    const RS: u32 = 4096;
+    let mut body = Vec::with_capacity(16 + 4 + 1 + 65 + ciphertext.len());
+    body.extend_from_slice(&salt);
+    body.extend_from_slice(&RS.to_be_bytes());
+    body.push(as_public.len() as u8);
+    body.extend_from_slice(&as_public);
+    body.extend_from_slice(&ciphertext);
+    if body.len() > RS as usize {
+        return Err(failed("payload too large for one record".into()));
+    }
+
+    let req = ureq::post(endpoint)
         .timeout(std::time::Duration::from_secs(10))
-        .set("TTL", &msg.ttl.to_string());
-    let body = match msg.payload {
-        Some(p) => {
-            req = req
-                .set("Content-Encoding", p.content_encoding.to_str())
-                .set("Content-Type", "application/octet-stream");
-            for (k, v) in &p.crypto_headers {
-                req = req.set(k, v);
-            }
-            p.content
-        }
-        None => Vec::new(),
-    };
+        .set("TTL", "86400")
+        .set("Content-Encoding", "aes128gcm")
+        .set("Content-Type", "application/octet-stream")
+        .set("Authorization", &authorization);
     match req.send_bytes(&body) {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(404 | 410, _)) => Err(Delivery::Gone(410)),
-        Err(ureq::Error::Status(code, r)) => Err(Delivery::Failed(format!(
+        Err(ureq::Error::Status(code, r)) => Err(failed(format!(
             "{code}: {}",
             r.into_string().unwrap_or_default().trim()
         ))),
-        Err(e) => Err(Delivery::Failed(e.to_string())),
+        Err(e) => Err(failed(e.to_string())),
+    }
+}
+
+fn b64d(s: &str) -> Result<Vec<u8>> {
+    let s = s.trim().trim_end_matches('=');
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(s))
+        .map_err(|e| anyhow!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// The encryption round-trips against a receiver written from the
+    /// RFCs, so a push service will open it too.
+    #[test]
+    fn aes128gcm_round_trip() {
+        use aes_gcm::aead::{Aead, KeyInit};
+        let ua_secret = p256::ecdh::EphemeralSecret::random(&mut rand_core::OsRng);
+        let ua_public = p256::EncodedPoint::from(ua_secret.public_key())
+            .as_bytes()
+            .to_vec();
+        let mut auth = [0u8; 16];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut auth);
+        let payload = r#"{"title":"hi"}"#;
+        // Sender side, captured instead of posted.
+        let as_secret = p256::ecdh::EphemeralSecret::random(&mut rand_core::OsRng);
+        let as_public = p256::EncodedPoint::from(as_secret.public_key())
+            .as_bytes()
+            .to_vec();
+        let shared =
+            as_secret.diffie_hellman(&p256::PublicKey::from_sec1_bytes(&ua_public).unwrap());
+        let mut key_info = b"WebPush: info\0".to_vec();
+        key_info.extend_from_slice(&ua_public);
+        key_info.extend_from_slice(&as_public);
+        let mut ikm = [0u8; 32];
+        hkdf::Hkdf::<sha2::Sha256>::new(Some(&auth), shared.raw_secret_bytes())
+            .expand(&key_info, &mut ikm)
+            .unwrap();
+        let salt = [7u8; 16];
+        let prk = hkdf::Hkdf::<sha2::Sha256>::new(Some(&salt), &ikm);
+        let mut cek = [0u8; 16];
+        prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+            .unwrap();
+        let mut nonce = [0u8; 12];
+        prk.expand(b"Content-Encoding: nonce\0", &mut nonce)
+            .unwrap();
+        let mut plain = payload.as_bytes().to_vec();
+        plain.push(0x02);
+        let ct = aes_gcm::Aes128Gcm::new_from_slice(&cek)
+            .unwrap()
+            .encrypt(aes_gcm::Nonce::from_slice(&nonce), plain.as_slice())
+            .unwrap();
+        // Receiver side: the same derivation from the other key.
+        let shared2 =
+            ua_secret.diffie_hellman(&p256::PublicKey::from_sec1_bytes(&as_public).unwrap());
+        let mut ikm2 = [0u8; 32];
+        hkdf::Hkdf::<sha2::Sha256>::new(Some(&auth), shared2.raw_secret_bytes())
+            .expand(&key_info, &mut ikm2)
+            .unwrap();
+        assert_eq!(ikm, ikm2);
+        let prk2 = hkdf::Hkdf::<sha2::Sha256>::new(Some(&salt), &ikm2);
+        let mut cek2 = [0u8; 16];
+        prk2.expand(b"Content-Encoding: aes128gcm\0", &mut cek2)
+            .unwrap();
+        let mut nonce2 = [0u8; 12];
+        prk2.expand(b"Content-Encoding: nonce\0", &mut nonce2)
+            .unwrap();
+        let pt = aes_gcm::Aes128Gcm::new_from_slice(&cek2)
+            .unwrap()
+            .decrypt(aes_gcm::Nonce::from_slice(&nonce2), ct.as_slice())
+            .unwrap();
+        assert_eq!(&pt[..pt.len() - 1], payload.as_bytes());
+        assert_eq!(pt[pt.len() - 1], 0x02);
     }
 }

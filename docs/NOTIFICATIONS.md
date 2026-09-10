@@ -80,8 +80,10 @@ dir, made on first use); a console that turns on **push to this device**
 in the bell's panel asks the browser's permission, subscribes with the
 node's public key, and registers the subscription on the node it talks
 to (`POST /api/push/subscribe`, through the tunnel when attached). When
-a notice of a subscribed kind is raised, `push.rs` encrypts it (RFC 8291,
-`aes128gcm`, the `web-push` crate's builders) and POSTs it to the
+a notice of a subscribed kind is raised, `push.rs` encrypts it (RFC 8291
+`aes128gcm`, in pure Rust: `p256` ECDH, `hkdf`, `aes-gcm`; the VAPID JWT
+via `jwt-simple` — the `web-push` crate's backend needs OpenSSL, which
+the Windows and glibc-2.28 cross builds do not have) and POSTs it to the
 browser's push service with a VAPID JWT — Google, Mozilla or Apple,
 plain HTTPS, no other party. The service worker (`ui/src/sw.ts`) shows
 the notification, sets the dock badge, and a click focuses or opens the
