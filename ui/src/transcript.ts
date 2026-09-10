@@ -38,6 +38,8 @@ export interface AssistantBubbleItem {
   open: boolean;
   /** The transcript line's uuid when rehydrated — a search hit's target. */
   uuid?: string | null;
+  /** The model that produced it, when the transcript says. */
+  model?: string | null;
 }
 
 export interface UserBubbleItem {
@@ -229,6 +231,7 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
           messageId: null,
           open: false,
           uuid: typeof h.uuid === "string" ? h.uuid : null,
+          model: typeof h.model === "string" ? h.model : null,
         });
       }
       for (const t of h.tools ?? []) {

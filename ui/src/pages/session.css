@@ -536,3 +536,4 @@
 .catchup-auto { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .item-anchor { display: contents; }
 .bubble.flash { outline: 2px solid var(--sig-notice); outline-offset: 2px; transition: outline-color 1.5s ease 0.8s; }
+.ctl-model-inuse { margin-left: 6px; color: var(--text-mid); }

@@ -219,3 +219,11 @@ through its store and names the harness in the manifest:
   store, not a Claude call.
 - **Templates on peers**: the harness in a template's spec reaches the
   peer's spawn (the template spawn reads it on whichever node runs it).
+
+## 9. Which model (v0.25.3)
+
+`WorkSummary.model` is the model named in the latest assistant message
+(`message.model`, both harnesses); rehydrated items carry `model` too. The
+console shows it beside the model select, and resolves the select's
+"default" through the harness's model list (Claude: the entry with
+`value: "default"` carries `resolvedModel`).

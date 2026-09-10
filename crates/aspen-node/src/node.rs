@@ -46,6 +46,9 @@ pub struct WorkSummary {
     /// request) and the model's window when reported.
     pub context_tokens: Option<u64>,
     pub context_window: Option<u64>,
+    /// The model named in the latest assistant message — what the
+    /// session is actually running on, whatever the select says.
+    pub model: Option<String>,
     /// Files this session has edited/written (tool inputs with a path).
     pub files_touched: std::collections::BTreeSet<String>,
     pub tool_calls: u32,
@@ -524,6 +527,7 @@ pub fn summary_json(s: &ManagedSession) -> serde_json::Value {
         "busy_since": busy_since,
         "last_tool": last_tool,
         "cost_usd": w.cost_usd,
+        "model": w.model,
         "context_tokens": w.context_tokens,
         "context_window": w.context_window,
         "files_touched": files.len(),
@@ -2695,6 +2699,13 @@ async fn pump(
             }
             SessionEvent::TextDelta { .. } => {
                 sess.mark_busy();
+            }
+            SessionEvent::AssistantMessage { raw, .. } => {
+                // The runtime names the model on every message; "default"
+                // in the select resolves to this.
+                if let Some(m) = raw.pointer("/message/model").and_then(|m| m.as_str()).filter(|m| !m.is_empty()) {
+                    sess.summary.lock().unwrap().model = Some(m.to_owned());
+                }
             }
             SessionEvent::ToolUse {
                 tool_name, input, tool_kind, ..

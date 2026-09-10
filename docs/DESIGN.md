@@ -1058,3 +1058,13 @@ cleaner lane for roster updates than user-message headers.
   registers it (`node_repo_add`, a trust-class op) — and a repo has its
   handle from registration, not from the first spawn. The list's
   per-node groups remember which were open.
+- **2026-09-09 — v0.25.3, what "default" means.** The model select said
+  "default" and nothing else, and no surface said which model that was.
+  Two facts were already on hand: Claude's init frame lists its models
+  with the default entry naming its `resolvedModel`, and every assistant
+  message (both harnesses, live and on disk) names the model that wrote
+  it. So: the default option reads "default · claude-opus-5[1m]" from
+  the harness's own list, and beside the select sits the model named in
+  the latest reply — live from the node's work summary (`summary.model`,
+  set on every assistant message), else from the transcript. The two can
+  differ for one turn after a switch; the title says so.

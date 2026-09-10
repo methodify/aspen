@@ -520,6 +520,8 @@ export interface HistoryItem {
   images?: HistoryImage[];
   uuid?: string;
   timestamp?: string;
+  /** assistant items: the model that produced the message. */
+  model?: string | null;
 }
 
 export interface SessionInfo {
@@ -572,6 +574,8 @@ export interface WorkSummary {
   files_touched: number;
   files: string[];
   tool_calls: number;
+  /** The model named in the latest assistant message (what actually runs). */
+  model?: string | null;
 }
 
 /** Repo git state (branch, dirty count, ahead/behind), refreshed by the node. */

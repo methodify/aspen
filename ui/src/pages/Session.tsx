@@ -2134,6 +2134,27 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     return opts;
   }, [runtime, modelValue]);
 
+  // What "default" resolves to, per the harness's own model list (Claude
+  // names the resolved model on the default entry), and what the session
+  // is really running on: the model named in the latest reply — live from
+  // the node's summary, else from the transcript.
+  const defaultResolves = useMemo(() => {
+    const list = runtime?.handshake?.models;
+    if (!Array.isArray(list)) return null;
+    const d = list.find((m) => m && typeof m === "object" && (m as Record<string, unknown>)["value"] === "default") as Record<string, unknown> | undefined;
+    const r = d?.["resolvedModel"];
+    return typeof r === "string" && r ? r : null;
+  }, [runtime]);
+  const modelInUse = useMemo(() => {
+    const live = agent?.summary?.model;
+    if (live) return live;
+    for (let i = transcript.items.length - 1; i >= 0; i--) {
+      const it = transcript.items[i]!;
+      if (it.kind === "assistant" && it.model) return it.model;
+    }
+    return null;
+  }, [agent?.summary?.model, transcript.items]);
+
   // --- rendering ---
 
   function renderConsoleItem(item: TranscriptItem) {
@@ -2535,15 +2556,23 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             value={modelValue}
             disabled={exited !== null}
             onChange={(e) => void changeModel(e.target.value)}
-            title="switch model — takes effect next turn"
+            title={`switch model — takes effect next turn${modelInUse ? `; the latest reply came from ${modelInUse}` : ""}`}
           >
-            <option value="default">default</option>
+            <option value="default">{defaultResolves ? `default · ${defaultResolves}` : "default"}</option>
             {modelOptions.map((o) => (
               <option key={o.id} value={o.id} title={o.description}>
                 {o.label}
               </option>
             ))}
           </select>
+          {modelInUse && (
+            <span
+              className="mono-meta ctl-model-inuse"
+              title={`the model named in the latest reply${agent?.summary?.model ? "" : " (from the transcript on disk)"}${modelValue !== "default" && !modelInUse.startsWith(modelValue) ? " — the selection takes effect on the next turn" : ""}`}
+            >
+              {modelInUse}
+            </span>
+          )}
         </span>
         <span className="ctl-group">
           <span className="ctl-label">mode</span>
