@@ -30,6 +30,7 @@ runtime is an adapter, not a rewrite.
 - Proposals (parked, revisit): [`docs/proposals/`](docs/proposals/)
 - Rendezvous: [`rendezvous/README.md`](rendezvous/README.md)
 - Protocol ground truth: [`docs/reference/`](docs/reference/)
+- Driving Codex headless, for any project: [`docs/CODEX_HEADLESS_GUIDE.md`](docs/CODEX_HEADLESS_GUIDE.md)
 
 ## Workspace
 

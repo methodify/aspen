@@ -114,7 +114,8 @@ fields.
 
 ## 6. The Codex adapter (v0.21)
 
-`crates/aspen-codex` (CODEX_RUNTIME_REFERENCE.md is the field-verified
+`crates/aspen-codex` (CODEX_HEADLESS_GUIDE.md is the standalone guide for
+anyone driving Codex headless; CODEX_RUNTIME_REFERENCE.md is the field-verified
 wire and disk reference). Registered by the node when the `codex` binary
 resolves on PATH (`ASPEN_CODEX_BIN` overrides the name); `GET /api/node`
 lists it with its version, capabilities and modes.

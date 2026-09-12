@@ -1,5 +1,9 @@
 # Codex runtime reference (field-verified)
 
+> For a self-contained guide to driving Codex headless from any host —
+> the same facts organised for someone who is not building Aspen — see
+> CODEX_HEADLESS_GUIDE.md.
+
 **Status:** verified against `codex-cli 0.153.4` on 2026-09-07 with a
 real account, through `crates/aspen-codex`. Like the Claude reference,
 every shape here was observed on the wire or on disk, not read from
