@@ -408,3 +408,7 @@ kept working. Any frame over 192 KiB (`ASPEN_FRAG_BYTES`) is now sent as
 tunnel, put them back together before opening the envelope. Relays
 forward pieces like any frame. Direct links fragment too — one path, one
 test. Pieces of a frame that never completes are dropped after 120 s.
+A console built before v0.27.3 attached to a newer node sees a fragment
+as a bad frame and goes down until it reloads; the "new console —
+reload" prompt is the fix, and at the default size only a transcript or
+a very large answer ever fragments.
