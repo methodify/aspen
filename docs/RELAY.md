@@ -395,3 +395,16 @@ moment a console registered and sent it a hello; the console's own hello
 then replaced that link with a fresh nonce, and the console's proof of
 the first nonce failed — "peer failed nonce proof", then a handshake
 timeout, on every attempt, while nodes named j1/j2/r never showed it.
+
+## 12. Big frames travel in pieces (v0.27.3)
+
+A relay caps a WebSocket message — Cloudflare's Durable Objects at
+1 MiB — and a transcript answer (`api_res` for the `transcript` op)
+sealed and base64'd passes that for any long session. The relay dropped
+the message, the caller timed out, and the console said "remote call to
+… timed out (live stream only)" while the live stream (small frames)
+kept working. Any frame over 192 KiB (`ASPEN_FRAG_BYTES`) is now sent as
+`{"frag": {id, i, n, d}}` pieces; the receiving link, and the console
+tunnel, put them back together before opening the envelope. Relays
+forward pieces like any frame. Direct links fragment too — one path, one
+test. Pieces of a frame that never completes are dropped after 120 s.

@@ -225,6 +225,28 @@ class Tunnel {
   get enabled(): boolean {
     return this.config.enabled && !!this.config.relay && !!this.config.node;
   }
+  private frags = new Map<string, { n: number; pieces: (string | null)[]; at: number }>();
+  /** Put a fragmented frame back together; null until every piece is in. */
+  private reassemble(data: string): string | null {
+    let f: { id: string; i: number; n: number; d: string };
+    try {
+      f = (JSON.parse(data) as { frag: { id: string; i: number; n: number; d: string } }).frag;
+    } catch {
+      return null;
+    }
+    if (!f || !f.n || f.i >= f.n) return null;
+    const now = Date.now();
+    for (const [k, v] of this.frags) if (now - v.at > 120000) this.frags.delete(k);
+    let e = this.frags.get(f.id);
+    if (!e) {
+      e = { n: f.n, pieces: new Array<string | null>(f.n).fill(null), at: now };
+      this.frags.set(f.id, e);
+    }
+    e.pieces[f.i] = f.d;
+    if (e.pieces.some((p) => p === null)) return null;
+    this.frags.delete(f.id);
+    return e.pieces.join("");
+  }
   onChange(f: () => void): () => void {
     this.listeners.add(f);
     return () => this.listeners.delete(f);
@@ -350,8 +372,15 @@ class Tunnel {
         }
         if (t === "route") {
           const from = String(f["from"] ?? "");
-          const data = String(f["data"] ?? "");
+          let data = String(f["data"] ?? "");
           if (from !== this.config.node) return;
+          // A piece of a bigger frame (RELAY.md §12): a transcript sealed
+          // and base64'd is more than a relay passes in one message.
+          if (data.startsWith('{"frag":')) {
+            const whole = this.reassemble(data);
+            if (whole === null) return;
+            data = whole;
+          }
           if (phase === "hello") {
             const h = JSON.parse(data) as { hello: NodeCert; nonce: string; certs?: NodeCert[] };
             const offered = [h.hello, ...(h.certs ?? [])];

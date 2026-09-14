@@ -582,8 +582,131 @@ impl MeshState {
         let tx = links
             .get(node)
             .ok_or_else(|| anyhow!("no live link to node {node:?}"))?;
-        tx.send(frame)
-            .map_err(|_| anyhow!("link to {node:?} closed"))
+        // Big frames travel in fragments (RELAY.md §12): a relay caps a
+        // WebSocket message (Cloudflare: 1 MiB), and a transcript sealed
+        // and base64'd passes that easily. Small frames go as they are.
+        for piece in fragment(&frame) {
+            tx.send(piece)
+                .map_err(|_| anyhow!("link to {node:?} closed"))?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------- fragments
+// (RELAY.md §12). A frame over FRAG_BYTES is sent as
+// `{"frag":{"id","i","n","d"}}` pieces and put back together by the
+// receiver before anything looks inside. Relays forward pieces as they
+// forward any frame; the console tunnel reassembles the same way.
+
+/// Largest single frame sent whole. Cloudflare's Durable Object limit is
+/// 1 MiB per message; the relay's `route` wrapper and JSON escaping add a
+/// little, so stay well under. `ASPEN_FRAG_BYTES` overrides (tests).
+pub fn frag_bytes() -> usize {
+    std::env::var("ASPEN_FRAG_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(192 * 1024)
+}
+
+pub fn fragment(frame: &str) -> Vec<String> {
+    let max = frag_bytes();
+    if frame.len() <= max {
+        return vec![frame.to_owned()];
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut pieces: Vec<&str> = Vec::new();
+    let mut start = 0;
+    while start < frame.len() {
+        let mut end = (start + max).min(frame.len());
+        while !frame.is_char_boundary(end) {
+            end -= 1;
+        }
+        pieces.push(&frame[start..end]);
+        start = end;
+    }
+    let n = pieces.len();
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| json!({ "frag": { "id": id, "i": i, "n": n, "d": d } }).to_string())
+        .collect()
+}
+
+/// Per-link reassembly: pieces by id until all `n` are in. A frame that
+/// is not a fragment passes straight through.
+#[derive(Default)]
+pub struct Reassembler {
+    parts: HashMap<String, (usize, Vec<Option<String>>, std::time::Instant)>,
+}
+
+impl Reassembler {
+    /// `Some(frame)` when a whole frame is available (the input itself, or
+    /// a completed reassembly); `None` while pieces are still arriving.
+    pub fn feed(&mut self, frame: String) -> Option<String> {
+        if !frame.starts_with("{\"frag\":") {
+            return Some(frame);
+        }
+        let v: Value = serde_json::from_str(&frame).ok()?;
+        let f = v.get("frag")?;
+        let id = f.get("id")?.as_str()?.to_owned();
+        let i = f.get("i")?.as_u64()? as usize;
+        let n = f.get("n")?.as_u64()? as usize;
+        let d = f.get("d")?.as_str()?.to_owned();
+        if n == 0 || i >= n {
+            return None;
+        }
+        // Forget assemblies nobody finished (a link that dropped mid-frame).
+        self.parts
+            .retain(|_, (_, _, at)| at.elapsed() < std::time::Duration::from_secs(120));
+        let entry = self
+            .parts
+            .entry(id.clone())
+            .or_insert_with(|| (n, vec![None; n], std::time::Instant::now()));
+        if entry.1.len() == n {
+            entry.1[i] = Some(d);
+        }
+        if entry.1.iter().all(|p| p.is_some()) {
+            let (_, pieces, _) = self.parts.remove(&id)?;
+            return Some(
+                pieces
+                    .into_iter()
+                    .map(|p| p.unwrap_or_default())
+                    .collect::<String>(),
+            );
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod frag_tests {
+    use super::*;
+
+    #[test]
+    fn fragments_round_trip() {
+        std::env::set_var("ASPEN_FRAG_BYTES", "100");
+        let frame: String = (0..1000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
+        let pieces = fragment(&frame);
+        assert!(pieces.len() >= 10);
+        let mut r = Reassembler::default();
+        let mut out = None;
+        // Out of order, with a stray small frame in between.
+        let mut order: Vec<usize> = (0..pieces.len()).collect();
+        order.reverse();
+        assert_eq!(
+            r.feed("{\"t\":\"x\"}".into()).as_deref(),
+            Some("{\"t\":\"x\"}")
+        );
+        for i in order {
+            if let Some(f) = r.feed(pieces[i].clone()) {
+                out = Some(f);
+            }
+        }
+        assert_eq!(out.as_deref(), Some(frame.as_str()));
+        std::env::remove_var("ASPEN_FRAG_BYTES");
     }
 }
 
@@ -1150,6 +1273,7 @@ async fn link_loop(
     peer_cert: &NodeCert,
     in_rx: &mut mpsc::UnboundedReceiver<String>,
 ) -> Result<()> {
+    let mut reasm = Reassembler::default();
     loop {
         // Liveness for every link kind (RELAY.md §8): a live peer sends a
         // roster every 10s, so silence past LINK_SILENCE_SECS means the
@@ -1164,6 +1288,10 @@ async fn link_loop(
             Ok(Some(f)) => f,
             Ok(None) => break,
             Err(_) => bail!("link silent for {LINK_SILENCE_SECS}s; closing so it is redialed"),
+        };
+        // A piece of a bigger frame (RELAY.md §12): wait for the rest.
+        let Some(frame) = reasm.feed(frame) else {
+            continue;
         };
         // A hello on a live link: the peer started over (its process
         // restarted) and is asking for a fresh handshake. Take this link
