@@ -66,7 +66,9 @@ import {
   mergeAfter,
 } from "./../transcript";
 import { useAppData } from "./../App";
-import { Meter, presenceOf, relTime } from "./../components";
+import { relTime } from "./../components";
+import { BarVerb, MenuField, MenuGroup, MenuRow, PresenceGlyph, SessionMenu, barPresence } from "./../sessionBar";
+import { clearSessionCommands, setSessionCommands, type SessionCommand } from "./../sessionCommands";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
 import { ToolBody, resultHint } from "./../toolViews";
@@ -720,6 +722,15 @@ function fmtElapsed(startIso: string | null, endIso: string | null): string {
 /** "activity ▾": the session's ledger (PROPOSALS §8) — background tasks,
  *  subagents, workflows, monitors — running first; agents open their own
  *  transcript. */
+/** Where a row's panel opens: under the row when it is on screen, else
+ *  (the row lives in the ⋯ menu, which may be closed when the status
+ *  line opens the panel by signal) under the top bar, right-aligned. */
+function anchorFor(el: HTMLElement | null, width: number): { top: number; left: number } {
+  const r = el?.getBoundingClientRect();
+  if (r && r.width > 0) return { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) };
+  return { top: 52, left: Math.max(8, window.innerWidth - width - 16) };
+}
+
 function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: ActivityCounts | null; openSignal?: number }) {
   const [open, setOpen] = useState(false);
   const [acts, setActs] = useState<Activity[] | null>(null);
@@ -733,8 +744,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
   // The status line's count opens this menu (PROPOSALS-MCP.md §6.4).
   useEffect(() => {
     if (!openSignal) return;
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+    setAt(anchorFor(btnRef.current, 580));
     setOpen(true);
   }, [openSignal]);
   useEffect(() => {
@@ -890,8 +900,7 @@ function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { tot
   }, [agent]);
   useEffect(() => {
     if (!openSignal) return;
-    const r = btnRef.current?.getBoundingClientRect();
-    if (r) setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+    setAt(anchorFor(btnRef.current, 580));
     setOpen(true);
     load(false);
   }, [openSignal, load]);
@@ -1284,6 +1293,14 @@ export interface PaneMode {
   compact?: boolean;
   onFocus?: () => void;
   onSent?: (text: string) => void;
+  /** The board's pane number, first on the bar. */
+  leading?: ReactNode;
+  /** The board's chips (needs you, broadcast, paired), after the name. */
+  chips?: ReactNode;
+  /** The board's layout buttons, after a hairline at the end of the bar. */
+  trailing?: ReactNode;
+  /** Drag-to-swap and the like: spread onto the bar element. */
+  barProps?: React.HTMLAttributes<HTMLDivElement>;
 }
 
 export function SessionView({ name, pane, subagent }: { name: string; pane?: PaneMode; subagent?: string }) {
@@ -1477,6 +1494,16 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [activitySignal, setActivitySignal] = useState(0);
   const [ctlNote, setCtlNote] = useState<string | null>(null);
   const [ctlError, setCtlError] = useState<string | null>(null);
+  // The ⋯ menu (PROPOSALS-2026-09-G.md): the controls, folded.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAt, setMenuAt] = useState<{ top: number; left: number; right: number } | null>(null);
+  const menuBtnRef = useRef<HTMLButtonElement | null>(null);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  function openMenu() {
+    const r = menuBtnRef.current?.getBoundingClientRect();
+    if (r) setMenuAt({ top: r.bottom + 4, left: r.left, right: Math.max(8, window.innerWidth - r.right) });
+    setMenuOpen((o) => !o);
+  }
   const [statusNote, setStatusNote] = useState<string | null>(null);
   const [localLastTool, setLocalLastTool] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -2546,18 +2573,49 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
 
   const ctxPct = ctx?.percent !== null && ctx?.percent !== undefined ? Math.round(ctx.percent) : null;
 
+  // What the folded menu would otherwise hide: badges on its button.
+  const menuBadges: { key: string; text: string; title: string; live?: boolean; warn?: boolean }[] = [];
+  {
+    const running = agent?.activities?.running ?? 0;
+    if (running > 0) menuBadges.push({ key: "act", text: `${running} bg`, title: `${running} background ${running === 1 ? "activity" : "activities"} running`, live: true });
+    const updates = agent?.plugin_updates?.length ?? 0;
+    if (updates > 0) menuBadges.push({ key: "plug", text: "↑", title: `${updates} plugin ${updates === 1 ? "update" : "updates"} available` });
+    const down = (agent?.mcp?.failed ?? 0) + (agent?.mcp?.needs_auth ?? 0);
+    if (down > 0) menuBadges.push({ key: "mcp", text: `mcp ${down}`, title: `${down} MCP ${down === 1 ? "server" : "servers"} down or needing auth`, warn: true });
+  }
+
+  // The menu's rows in the palette too (sessionCommands.ts): the page's
+  // session, or a board's focused pane.
+  useEffect(() => {
+    if (pane && !pane.focused) return;
+    const cmds: SessionCommand[] = [
+      { id: "stop", group: "verb", label: "stop session", hint: "asks to confirm", run: () => setConfirmStop(true) },
+      { id: "branch", group: "verb", label: "branch here", hint: "bookmark and fork", run: () => setBranchLabel("") },
+      { id: "reload", group: "setup", label: "reload plugins & skills", run: () => void reload() },
+      { id: "charter", group: "inspect", label: "charter", run: () => setCharterOpen((o) => !o) },
+      { id: "history", group: "inspect", label: "history", hint: "lineage and bookmarks", run: () => { setHistoryOpen(true); void loadHistory(); } },
+      { id: "move", group: "move", label: "move or copy to another node…", run: () => { setMoveOpen(true); setMoveErr(null); void loadNodes(); } },
+      { id: "menu", group: "setup", label: "session menu", hint: "model, mode, render, plugins, MCP, artifacts, activity, boards", run: () => openMenu() },
+    ];
+    if (busy) cmds.unshift({ id: "interrupt", group: "verb", label: "interrupt the running turn", run: () => void interrupt() });
+    setSessionCommands(name, cmds);
+    return () => clearSessionCommands(name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, pane?.focused, busy]);
+
   return (
     <div className={pane ? `session in-pane${pane.compact ? " compact" : ""}` : "session"} onMouseDownCapture={pane?.onFocus}>
-      <header className="session-head">
-        {agent && <Meter presence={presenceOf(agent.live, agent.turn_state)} />}
-        <h1>
-          <span className="mono">@{name}</span>
-        </h1>
+      <div className={`session-bar${pane ? " in-pane" : ""}`} {...(pane?.barProps ?? {})}>
+        {pane?.leading}
+        <PresenceGlyph presence={barPresence(agent, wsState, exited !== null, !!subagent)} />
+        <span className="mono session-name" title={`@${name}${agent ? ` · ${agent.repo ?? `node ${agent.node}`} · #${agent.channel}` : ""}${title ? ` · ${title}` : ""}`}>@{name}</span>
         {agent?.harness && (
-          <span className="chip mono harness-chip" title={`this session runs on ${agent.harness}`}>
+          <span className="chip mono harness-chip" title={`this session runs on ${agent.harness}${modelInUse ? ` · latest reply from ${modelInUse}` : ""}`}>
             {agent.harness}
           </span>
         )}
+        {!pane && (
+          <>
         {titleEditing ? (
           <input
             autoFocus
@@ -2583,23 +2641,76 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             {title ?? "add title"}
           </span>
         )}
-        {agent && (
-          <span className="dim mono session-repo">
-            {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
-          </span>
+            {agent && (
+              <span className="dim mono session-repo">
+                {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
+              </span>
+            )}
+          </>
         )}
+        {pane?.chips}
         <span className="spacer" />
-        {reloadNote ? (
-          <span className="ok-inline mono reload-note">{reloadNote}</span>
-        ) : (
-          <button
-            className="btn-reload"
-            onClick={() => void reload()}
-            disabled={reloading || exited !== null}
-            title="reload this session's plugins/skills/commands"
+        {reloadNote && <span className="ok-inline mono reload-note">{reloadNote}</span>}
+        {ctlNote && <span className="ctl-note">{ctlNote}</span>}
+        {ctlError && <span className="ctl-error">{ctlError}</span>}
+        {ctx && (ctxPct !== null || ctx.categories.length > 0) && (
+          <div
+            className="ctx-meter"
+            onClick={() => setCtxOpen((o) => !o)}
+            title="context usage — click for breakdown"
           >
-            {reloading ? "reloading…" : "reload"}
-          </button>
+            <span className="ctl-label">ctx</span>
+            {ctxPct !== null && (
+              <>
+                <span className="ctx-bar">
+                  <span
+                    className={
+                      ctxPct >= 90 ? "ctx-fill hot" : ctxPct >= 70 ? "ctx-fill warm" : "ctx-fill"
+                    }
+                    style={{ width: `${ctxPct}%` }}
+                  />
+                </span>
+                <span className="ctx-pct">{ctxPct}%</span>
+              </>
+            )}
+            {ctxOpen && (
+              <div className="ctx-pop" onClick={(e) => e.stopPropagation()}>
+                {ctx.categories.slice(0, 8).map((c) => (
+                  <div className="ctx-row" key={c.name}>
+                    <span>{c.name}</span>
+                    <b>{fmtTokens(c.tokens)}</b>
+                  </div>
+                ))}
+                {(ctx.usedTokens !== null || ctx.maxTokens !== null) && (
+                  <div className="ctx-row ctx-row-total">
+                    <span>used / max</span>
+                    <b>
+                      {ctx.usedTokens !== null ? fmtTokens(ctx.usedTokens) : "—"} /{" "}
+                      {ctx.maxTokens !== null ? fmtTokens(ctx.maxTokens) : "—"}
+                    </b>
+                  </div>
+                )}
+                {ctx.autoCompactThreshold !== null && (
+                  <div className="ctx-row">
+                    <span>auto-compact at</span>
+                    <b>{fmtTokens(ctx.autoCompactThreshold)}</b>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+          {modelInUse && (
+            <span
+              className="mono-meta ctl-model-inuse"
+              title={`the model named in the latest reply${agent?.summary?.model ? "" : " (from the transcript on disk)"}${modelValue !== "default" && !modelInUse.startsWith(modelValue) ? " — the selection takes effect on the next turn" : ""}`}
+            >
+              {modelInUse}
+            </span>
+          )}
+        {busy && exited === null && !subagent && (
+          <BarVerb glyph="⏸" title="interrupt the running turn (i)" onClick={() => void interrupt()} disabled={interrupting} className="verb-interrupt" />
         )}
         {exited === null &&
           (branchLabel !== null ? (
@@ -2638,14 +2749,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
               </button>
             </span>
           ) : (
-            <button
-              className="btn-reload"
-              onClick={() => setBranchLabel("")}
-              disabled={branching}
-              title="branch here: bookmark this point and continue on a fork — come back to the bookmark any time (also: type /branch [label])"
-            >
-              branch
-            </button>
+            <BarVerb glyph="⎇" title="branch here: bookmark this point and continue on a fork — come back to the bookmark any time (also: /branch [label])" onClick={() => setBranchLabel("")} disabled={branching} className="verb-branch" />
           ))}
         {exited === null &&
           (confirmStop ? (
@@ -2662,26 +2766,31 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
               </button>
             </span>
           ) : (
-            <button
-              className="btn-reload btn-stop"
-              onClick={() => setConfirmStop(true)}
-              title="stop this session — the claude process exits cleanly; the conversation stays on disk and can be resumed"
-            >
-              stop
-            </button>
+            <BarVerb glyph="■" title="stop session (x) — the process exits cleanly; the conversation stays on disk and can be resumed" onClick={() => setConfirmStop(true)} danger className="verb-stop" />
           ))}
-        <span className={`ws-state ws-${wsState}`}>
-          <span
-            className={wsState === "open" ? "dot dot-idle" : "dot dot-down"}
-            aria-hidden="true"
-          />
-          {subagent ? "read-only" : exited ? "not running" : wsState === "open" ? "live" : wsState}
-        </span>
-      </header>
-
-      <div className="session-controls">
-        <span className="ctl-group">
-          <span className="ctl-label">model</span>
+        <button
+          type="button"
+          ref={menuBtnRef}
+          className={`bar-menu-btn${menuOpen ? " open" : ""}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          title="session menu: setup, inspect, move (also in the palette)"
+          onClick={() => openMenu()}
+        >
+          ⋯
+          {menuBadges.map((b) => (
+            <span key={b.key} className={`menu-btn-badge mono${b.live ? " live" : ""}${b.warn ? " warn" : ""}`} title={b.title}>{b.text}</span>
+          ))}
+        </button>
+        {pane?.trailing && <span className="bar-trailing">{pane.trailing}</span>}
+      </div>
+      <SessionMenu open={menuOpen} onClose={closeMenu} anchor={menuAt}>
+        <div className="menu-head">
+          <span className="mono">@{name}</span>
+          <span className="mono-meta">{[agent?.harness, modelInUse].filter(Boolean).join(" · ")}</span>
+        </div>
+        <MenuGroup label="setup">
+          <MenuField label="model" hint={`switch model — takes effect next turn${modelInUse ? `; the latest reply came from ${modelInUse}` : ""}`}>
           <select
             className="ctl-select"
             value={modelValue}
@@ -2696,17 +2805,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
               </option>
             ))}
           </select>
-          {modelInUse && (
-            <span
-              className="mono-meta ctl-model-inuse"
-              title={`the model named in the latest reply${agent?.summary?.model ? "" : " (from the transcript on disk)"}${modelValue !== "default" && !modelInUse.startsWith(modelValue) ? " — the selection takes effect on the next turn" : ""}`}
-            >
-              {modelInUse}
-            </span>
-          )}
-        </span>
-        <span className="ctl-group">
-          <span className="ctl-label">mode</span>
+          </MenuField>
+          <MenuField label="mode" hint="permission mode">
           <select
             className="ctl-select"
             value={modeValue}
@@ -2723,7 +2823,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
               </option>
             ))}
           </select>
-        </span>
+          </MenuField>
+          <MenuField label="render">
         <div className="seg" role="group" aria-label="render mode">
           {(["chat", "console", "source"] as const).map((m) => (
             <button
@@ -2736,25 +2837,22 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             </button>
           ))}
         </div>
-        <button
-          className="charter-toggle"
-          aria-expanded={charterOpen}
-          onClick={() => setCharterOpen((o) => !o)}
-        >
-          charter {charterOpen ? "▴" : "▾"}
-        </button>
-        <button
-          className="charter-toggle"
-          aria-expanded={historyOpen}
-          onClick={() => {
-            const next = !historyOpen;
-            setHistoryOpen(next);
-            if (next) void loadHistory();
-          }}
-          title="this name's lineage and bookmarks"
-        >
-          history {historyOpen ? "▴" : "▾"}
-        </button>
+          </MenuField>
+          <MenuRow label={reloading ? "reloading…" : "reload plugins & skills"} hint="reload this session's plugins/skills/commands" onClick={() => { closeMenu(); void reload(); }} disabled={reloading || exited !== null} />
+          <PluginsMenu
+            agent={name}
+            bare={name.split("@").length >= 3 ? name.replace(/@[^@]+$/, "") : name}
+            running={agent?.plugins ?? []}
+            updates={agent?.plugin_updates ?? []}
+            harnessPlugins={harnessPluginsOf(runtime)}
+            onRestart={restartForPlugins}
+            restarting={restarting}
+          />
+          <McpMenu agent={name} summary={agent?.mcp ?? null} openSignal={mcpSignal} />
+        </MenuGroup>
+        <MenuGroup label="inspect">
+          <MenuRow label={`charter${charterOpen ? " ▴" : ""}`} hint="the session's charter, below the bar" onClick={() => { closeMenu(); setCharterOpen((o) => !o); }} />
+          <MenuRow label={`history${historyOpen ? " ▴" : ""}`} hint="this name's lineage and bookmarks" onClick={() => { closeMenu(); const next = !historyOpen; setHistoryOpen(next); if (next) void loadHistory(); }} />
         <span className="artifacts-wrap">
           <button
             className="charter-toggle"
@@ -2792,45 +2890,19 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             document.body,
           )}
         </span>
-        {!agent?.moved_to && (
-          <button
-            className="charter-toggle"
-            onClick={() => {
-              setMoveOpen(true);
-              setMoveErr(null);
-              void loadNodes();
-            }}
-            title="move this session to another node (it resumes there with its context), or copy it there as a fork"
-          >
-            move…
-          </button>
-        )}
-        {!agent?.moved_to && name.split("@").length >= 3 && (
-          <button
-            className="charter-toggle"
-            onClick={() => {
-              setMoveMode("move");
-              setMoveErr(null);
-              setMoveOpen(true);
-              void loadNodes(true);
-            }}
-            title="move this session to this console's node, with the counterpart repo"
-          >
-            bring here
-          </button>
-        )}
-        <AddToBoard agent={name} />
-        <PluginsMenu
-          agent={name}
-          bare={name.split("@").length >= 3 ? name.replace(/@[^@]+$/, "") : name}
-          running={agent?.plugins ?? []}
-          updates={agent?.plugin_updates ?? []}
-          harnessPlugins={harnessPluginsOf(runtime)}
-          onRestart={restartForPlugins}
-          restarting={restarting}
-        />
-        <McpMenu agent={name} summary={agent?.mcp ?? null} openSignal={mcpSignal} />
-        <ActivityMenu agent={name} counts={agent?.activities ?? null} openSignal={activitySignal} />
+          <ActivityMenu agent={name} counts={agent?.activities ?? null} openSignal={activitySignal} />
+        </MenuGroup>
+        <MenuGroup label="move">
+          {!agent?.moved_to && (
+            <MenuRow label="move or copy to another node…" hint="move this session to another node (it resumes there with its context), or copy it there as a fork" onClick={() => { closeMenu(); setMoveOpen(true); setMoveErr(null); void loadNodes(); }} />
+          )}
+          {!agent?.moved_to && name.split("@").length >= 3 && (
+            <MenuRow label="bring here" hint="move this session to this console's node, with the counterpart repo" onClick={() => { closeMenu(); setMoveMode("move"); setMoveErr(null); setMoveOpen(true); void loadNodes(true); }} />
+          )}
+          {!pane && <AddToBoard agent={name} />}
+        </MenuGroup>
+        <div className="menu-foot mono-meta">every row here is also in the palette (⌘K / ctrl+K)</div>
+      </SessionMenu>
         {moveOpen &&
           createPortal(
             <div className="trust-backdrop" onClick={() => !moveBusy && setMoveOpen(false)} role="presentation">
@@ -2910,58 +2982,6 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             </div>,
             document.body,
           )}
-        {ctlNote && <span className="ctl-note">{ctlNote}</span>}
-        {ctlError && <span className="ctl-error">{ctlError}</span>}
-        <span className="spacer" />
-        {ctx && (ctxPct !== null || ctx.categories.length > 0) && (
-          <div
-            className="ctx-meter"
-            onClick={() => setCtxOpen((o) => !o)}
-            title="context usage — click for breakdown"
-          >
-            <span className="ctl-label">ctx</span>
-            {ctxPct !== null && (
-              <>
-                <span className="ctx-bar">
-                  <span
-                    className={
-                      ctxPct >= 90 ? "ctx-fill hot" : ctxPct >= 70 ? "ctx-fill warm" : "ctx-fill"
-                    }
-                    style={{ width: `${ctxPct}%` }}
-                  />
-                </span>
-                <span className="ctx-pct">{ctxPct}%</span>
-              </>
-            )}
-            {ctxOpen && (
-              <div className="ctx-pop" onClick={(e) => e.stopPropagation()}>
-                {ctx.categories.slice(0, 8).map((c) => (
-                  <div className="ctx-row" key={c.name}>
-                    <span>{c.name}</span>
-                    <b>{fmtTokens(c.tokens)}</b>
-                  </div>
-                ))}
-                {(ctx.usedTokens !== null || ctx.maxTokens !== null) && (
-                  <div className="ctx-row ctx-row-total">
-                    <span>used / max</span>
-                    <b>
-                      {ctx.usedTokens !== null ? fmtTokens(ctx.usedTokens) : "—"} /{" "}
-                      {ctx.maxTokens !== null ? fmtTokens(ctx.maxTokens) : "—"}
-                    </b>
-                  </div>
-                )}
-                {ctx.autoCompactThreshold !== null && (
-                  <div className="ctx-row">
-                    <span>auto-compact at</span>
-                    <b>{fmtTokens(ctx.autoCompactThreshold)}</b>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
       {historyOpen && (
         <div className="charter-drawer">
           {history === null ? (

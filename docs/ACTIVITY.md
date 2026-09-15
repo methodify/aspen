@@ -39,10 +39,12 @@ notification will never come. Counts (`running`, `agents`, `tasks`,
 
 ## 3. Surfaces
 
-- **Signal**: a Now card, a board pane bar, and the session header show
-  an activity chip (`2 agents · 1 task`) while anything runs; the chip
-  pulses. Dynamic boards accept `has activity` as a state.
-- **Drawer** (*activity ▾* on the session page, also in a pane): the
+- **Signal**: a Now card shows an activity chip (`2 agents · 1 task`)
+  while anything runs, and the session bar's ⋯ button carries a pulsing
+  `N bg` badge (SESSION_BAR.md). Dynamic boards accept `has activity` as
+  a state.
+- **Drawer** (*activity* in the session bar's ⋯ menu, page or pane; the
+  status line's count opens it too): the
   ledger newest first, running first, each with kind, label, elapsed or
   duration, status, and detail — a task's command and summary, an
   agent's type and prompt, a workflow's run id, a monitor's schedule.

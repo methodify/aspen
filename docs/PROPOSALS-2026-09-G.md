@@ -1,7 +1,7 @@
 # Proposal: the top of a session — one row, one menu
 
-**Status:** draft for discussion, 2026-09-15. The operator's ask plus a UX
-review (below). Nothing built yet.
+**Status:** approved 2026-09-15 (§6); shipped as v0.31 (U-1..U-4).
+Reference: SESSION_BAR.md.
 
 ## 0. The ask
 
@@ -122,3 +122,11 @@ adds a palette entry (and a slash alias where it makes sense) for free.
 3. Should the ⋯ menu *replace* the strip outright, or should the strip
    remain reachable as an expanded state ("show controls")? (Recommended:
    replace; the menu is the controls.)
+
+## 6. Decisions (2026-09-15)
+
+1. Icons with tooltips for the verbs.
+2. The model in use is a readout on the bar; where space is short it
+   tucks into the ⋯ menu's head and the harness chip's tooltip — both,
+   as the operator allowed.
+3. The menu replaces the strip: the menu is the controls.

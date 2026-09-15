@@ -94,8 +94,9 @@ arithmetic.
 bottom bar of Now, Flow, Mesh, History, Search and Boards (Plugins and
 Usage stay reachable by URL and the palette); the status bar keeps the
 mark, the version badge, the connection pill and the bell; the session
-page's controls strip scrolls sideways and the composer sits above the
-bar; cards stack; dialogs and the palette fill the width; toasts sit
+page's bar keeps the name, the context %, the verbs and the ⋯ menu,
+which opens as a bottom sheet (SESSION_BAR.md), and the composer sits
+above the bar; cards stack; dialogs and the palette fill the width; toasts sit
 above the bar. Boards and the mesh views carry a note that they are laid
 out for a wider screen.
 

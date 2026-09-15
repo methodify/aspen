@@ -36,9 +36,11 @@
 
 /* the session view inside a pane: tighter header, smaller type */
 .pane .session { font-size: 12.5px; }
-.pane .session-head h1 { font-size: 13px; }
-.pane .session-head { padding: 4px 8px; }
-.pane .session-head .charter-toggle, .pane .session-head .btn { font-size: 11px; padding: 2px 6px; }
+.pane .session-bar { cursor: grab; user-select: none; }
+.pane .session-bar:active { cursor: grabbing; }
+.pane .session-bar .bar-verb, .pane .session-bar .bar-menu-btn { height: 24px; }
+.pane .session-bar .bar-verb { width: 24px; }
+.pane.attention .session-bar { background: rgba(221,51,51,.08); }
 .pane .transcript { padding: 6px 8px; }
 .pane .bubble { max-width: 96%; }
 .pane .composer textarea { font-size: 12.5px; }

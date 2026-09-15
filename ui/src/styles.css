@@ -430,14 +430,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
    Session view — the interactive stage (transcript, tools, permissions)
    ═══════════════════════════════════════════════════════════════════════ */
 .session { display: flex; flex-direction: column; height: calc(100% - 0px); min-height: 0; }
-.session-head {
-  display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-6);
-  border-bottom: var(--seam); background: var(--bg-base);
-}
-.session-head h1 { margin: 0; font: 600 1.05rem/1 var(--font-display); letter-spacing: 0.02em; }
 .session-repo { color: var(--text-dim); }
-.session-head .spacer { flex: 1; }
 
 .ws-state { display: inline-flex; align-items: center; gap: 6px; font: 400 0.72rem/1 var(--font-mono); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--offline); }

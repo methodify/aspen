@@ -40,6 +40,17 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
+## Shipped — 2026-09-15: the top of a session — one row, one menu (U-1..U-4, v0.31)
+
+PROPOSALS-2026-09-G.md; SESSION_BAR.md. One session bar shared by the
+page and a board pane (`ui/src/sessionBar.tsx`): presence as one glyph,
+name, harness chip; the context meter and the model in use as readouts;
+interrupt, branch and stop as icons; one ⋯ menu — setup, inspect, move —
+with badges for what it folds away, Esc/outside-click/arrow keys, a
+bottom sheet on phones. Every menu row is a palette command from the
+same registry (`sessionCommands.ts`). The board's pane bar is gone for
+session panes; the pane's number and layout buttons ride the bar.
+
 ## Shipped — 2026-09-15: the drain gate defends work, not idleness (v0.30)
 
 SERVICING.md §4, §7. The quiet gate waited for every session to have

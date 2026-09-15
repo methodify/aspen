@@ -1155,3 +1155,15 @@ cleaner lane for roster updates than user-message headers.
   And the rollout marked this node done at the drain request, which read
   as "everyone updated but me"; it now stays current until the updater
   stops the daemon.
+- **2026-09-15 — v0.31, the top of a session: one row, one menu**
+  (PROPOSALS-2026-09-G.md). Three rows of chrome above a board pane,
+  three copies of "is it alive", eleven word-buttons scrolling sideways.
+  Decisions: the bucket, not the feature's age, decides where a control
+  lives — identity/presence left, two readouts and three icon verbs
+  right, everything else in one ⋯ menu grouped by purpose; the menu is
+  the controls, not a shortcut to a strip that still exists; page and
+  pane render the same bar, the board handing its number and layout
+  buttons in; the bar has a slot budget (three verbs, two readouts) and
+  the next feature ships as a menu entry that is also a palette command
+  from the same spec. Model in use: readout on the bar, and in the menu
+  head and the harness chip's tooltip where it is hidden.

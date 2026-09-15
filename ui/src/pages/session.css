@@ -23,16 +23,82 @@
   width: 22ch;
 }
 
-/* ── Controls strip under the header ────────────────────────────────── */
-.session-controls {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-6);
-  border-bottom: var(--seam);
-  background: var(--bg-panel);
-  flex-wrap: wrap;
+/* ── The bar (PROPOSALS-2026-09-G.md §2): identity left, readouts and
+   verbs right, one ⋯ menu — shared by the page and a board pane ──── */
+.session-bar {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-6); min-height: 40px;
+  border-bottom: var(--seam); background: var(--bg-base);
 }
+.session-bar .spacer { flex: 1; }
+/* room goes name > title > repo: the name never shrinks, the repo path
+   gives way first */
+.session-bar .session-name { font: 600 0.95rem/1 var(--font-display); color: var(--text-hi); letter-spacing: 0.02em; white-space: nowrap; flex: 0 0 auto; }
+.session-bar .session-repo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 6ch; max-width: 48ch; flex: 0 1 auto; direction: rtl; text-align: left; }
+.session-bar .session-title { flex: 0 1 auto; min-width: 6ch; }
+.session-bar .ctl-model-inuse { white-space: nowrap; }
+.session-bar .harness-chip { flex: 0 0 auto; }
+.session-bar .reload-note, .session-bar .ctl-note, .session-bar .ctl-error { white-space: nowrap; }
+.presence-glyph { font-size: 0.95rem; line-height: 1; width: 16px; text-align: center; flex: 0 0 auto; }
+.presence-glyph.p-live { color: var(--idle); }
+.presence-glyph.p-busy { color: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+.presence-glyph.p-reconnecting { color: var(--sig-normal); animation: pulse 1.2s ease-in-out infinite; }
+.presence-glyph.p-exited { color: var(--offline); }
+.presence-glyph.p-readonly { color: var(--text-dim); }
+.bar-verb {
+  border: 1px solid var(--line); background: transparent; color: var(--text-mid); cursor: pointer;
+  font: 500 0.85rem/1 var(--font-mono); width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  position: relative; flex: 0 0 auto;
+}
+.bar-verb::after { content: ""; position: absolute; inset: -4px; } /* 36 px hit area */
+.bar-verb:hover { background: var(--bg-strip); color: var(--text-hi); }
+.bar-verb:disabled { opacity: 0.4; cursor: default; }
+.bar-verb.danger { border-color: var(--sig-gate); color: var(--sig-gate); }
+.bar-verb.danger:hover { background: var(--sig-gate-dim); }
+.bar-verb.verb-interrupt { border-color: var(--live); color: var(--live); }
+.bar-menu-btn {
+  border: 1px solid var(--line); background: transparent; color: var(--text-mid); cursor: pointer;
+  font: 700 0.95rem/1 var(--font-mono); height: 28px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+}
+.bar-menu-btn:hover, .bar-menu-btn.open { background: var(--bg-strip); color: var(--text-hi); }
+.menu-btn-badge { font-size: 0.62rem; font-weight: 500; padding: 1px 5px; border: 1px solid var(--line-hi); color: var(--text-mid); }
+.menu-btn-badge.live { color: var(--live); border-color: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+.menu-btn-badge.warn { color: var(--sig-gate); border-color: var(--sig-gate); }
+.bar-trailing { display: inline-flex; align-items: center; gap: 2px; padding-left: 8px; margin-left: 2px; border-left: 1px solid var(--line); flex: 0 0 auto; }
+.session-bar .stop-confirm { flex-wrap: wrap; }
+
+/* the ⋯ menu */
+.session-menu {
+  position: fixed; z-index: 60; width: 340px; max-width: calc(100vw - 16px); max-height: calc(100vh - 80px); overflow: auto;
+  background: var(--bg-panel); border: 1px solid var(--line-hi); box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  display: flex; flex-direction: column; padding: 4px 0;
+}
+.session-menu .menu-head { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 6px; border-bottom: 1px solid var(--line); }
+.session-menu .menu-foot { padding: 6px 12px; border-top: 1px solid var(--line); }
+.menu-group { display: flex; flex-direction: column; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.menu-group:last-of-type { border-bottom: none; }
+.menu-label { font: 600 0.6rem/1 var(--font-display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim); padding: 6px 12px 4px; }
+.menu-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 12px;
+  border: 0; background: transparent; color: var(--text-hi); font: 500 0.8rem/1.2 var(--font-body); cursor: pointer;
+}
+.menu-row:hover, .menu-row:focus-visible { background: var(--bg-strip); outline: none; }
+.menu-row:disabled { opacity: 0.4; cursor: default; }
+.menu-row.live { color: var(--live); }
+.menu-row-label { flex: 1; }
+.menu-badge { font-size: 0.68rem; color: var(--text-mid); }
+.menu-field { cursor: default; }
+.menu-field .menu-row-label { flex: 0 0 64px; color: var(--text-mid); }
+.menu-field-ctl { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.menu-field .ctl-select { max-width: none; width: 100%; }
+/* rows that own a panel (plugins, mcp, activity, artifacts, boards): the
+   existing trigger buttons, restyled as rows */
+.session-menu .artifacts-wrap { display: block; }
+.session-menu .charter-toggle {
+  display: flex; width: 100%; text-align: left; padding: 6px 12px; border: 0; background: transparent;
+  color: var(--text-hi); font: 500 0.8rem/1.2 var(--font-body); white-space: nowrap;
+}
+.session-menu .charter-toggle:hover, .session-menu .charter-toggle:focus-visible { background: var(--bg-strip); outline: none; }
 .ctl-group { display: inline-flex; align-items: center; gap: 6px; }
 .ctl-label {
   font: 600 0.6rem/1 var(--font-display);
@@ -48,7 +114,6 @@
 }
 .ctl-note { color: var(--live); font: 400 0.72rem/1 var(--font-mono); }
 .ctl-error { color: var(--sig-gate); font: 400 0.72rem/1 var(--font-mono); }
-.session-controls .spacer { flex: 1; }
 
 /* Segmented render-mode control (echoes .class-select) */
 .seg { display: inline-flex; border: 1px solid var(--line-hi); }
@@ -457,29 +522,15 @@
 .move-form select, .move-form input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-panel, #fff); color: var(--text-hi); }
 /* session inside a board pane */
 .session.in-pane { height: 100%; min-height: 0; }
-.session.in-pane.compact .session-head h1 { font-size: 13px; }
 .view-embedded .view-head { padding: 4px 8px; }
 
-/* compact pane: the header keeps model/mode/render and stop; the rest waits for zoom or the page */
-.session.in-pane.compact .session-head .charter-toggle,
-.session.in-pane.compact .session-head .artifacts-wrap,
-.session.in-pane.compact .session-head .session-title-input { display: none; }
-.session.in-pane.compact .session-head h1 { font-size: 12.5px; }
-
-/* compact pane chrome: the pane bar carries identity and state, so the
-   session header collapses to its actions, and the controls fit one row */
-.session.in-pane.compact .session-head { padding: 2px 8px; min-height: 0; gap: 6px; }
-.session.in-pane.compact .session-head h1,
-.session.in-pane.compact .session-head .session-title,
-.session.in-pane.compact .session-head .session-repo,
-.session.in-pane.compact .session-head .meter { display: none; }
-.session.in-pane.compact .session-head .btn,
-.session.in-pane.compact .session-head [class^="btn-"] { font-size: 10.5px; padding: 1px 5px; }
-.session.in-pane.compact .session-controls { padding: 2px 8px; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-.session.in-pane.compact .session-controls::-webkit-scrollbar { display: none; }
-.session.in-pane.compact .ctl-label { display: none; }
-.session.in-pane.compact .ctl-select { max-width: 96px; font-size: 11px; padding: 1px 2px; }
-.session.in-pane.compact .ctx-meter { display: none; }
+/* compact pane: the bar is the pane bar (PROPOSALS-2026-09-G.md) — one
+   class, no per-control hiding; the menu holds the rest */
+.session.in-pane .session-bar { padding: 3px 8px; font-size: 12px; min-height: 0; gap: 6px; }
+.session.in-pane .session-bar .session-name { font-size: 12.5px; }
+.session.in-pane .ctx-bar { width: 40px; }
+.session.in-pane.compact .ctl-model-inuse { display: none; }
+.session.in-pane.compact .ctx-bar { display: none; }
 .session.in-pane.compact .composer textarea { min-height: 0; }
 .session.in-pane.compact .exited-banner { padding: 4px 8px; font-size: 11.5px; gap: 6px; flex-wrap: wrap; }
 .session.in-pane.compact .charter-toggle { white-space: nowrap; }

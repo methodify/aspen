@@ -37,11 +37,13 @@
   .mesh-col .nav-item .badge-count { position: absolute; top: 2px; right: 10%; margin: 0; }
 
   /* session */
-  .session-head { flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
-  .session-head h1 { font-size: 0.9rem; }
-  .session-controls { overflow-x: auto; flex-wrap: nowrap; padding: var(--sp-2) var(--sp-3); scrollbar-width: none; }
-  .session-controls::-webkit-scrollbar { display: none; }
-  .session-controls > * { flex: 0 0 auto; }
+  .session-bar { gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
+  .session-bar .session-name { font-size: 0.85rem; max-width: 34vw; }
+  .session-bar .session-title, .session-bar .session-repo, .session-bar .ctl-model-inuse, .session-bar .ctx-bar { display: none; }
+  .session-bar .harness-chip { display: none; }
+  /* the ⋯ menu is a bottom sheet */
+  .session-menu { top: auto !important; left: 0 !important; right: 0 !important; bottom: 0; width: auto; max-width: none; max-height: 70vh; border-radius: 10px 10px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+  .session-menu .menu-row, .session-menu .charter-toggle { padding: 10px 14px; }
   .composer { padding: var(--sp-2) var(--sp-3); }
   .ac-pop { left: var(--sp-3); right: var(--sp-3); }
   .tool-card, .bubble { max-width: 100%; }

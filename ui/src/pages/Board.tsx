@@ -413,7 +413,68 @@ export default function BoardPage() {
   const renderPane = (p: BoardPane, index: number) => {
     const focused = p.id === focus;
     const needs = p.kind === "session" && !!p.agent && attention.has(p.agent);
-    const agent = p.kind === "session" ? agents.find((a) => a.name === p.agent) : undefined;
+    // The bar's pieces (PROPOSALS-2026-09-G.md §2): a session pane hands
+    // them to its own bar; a view or empty pane keeps the pane bar.
+    const barProps = {
+      draggable: !dynamic,
+      onDragStart: (e: React.DragEvent<HTMLDivElement>) => {
+        e.dataTransfer.setData("text/aspen-pane", p.id);
+        e.dataTransfer.effectAllowed = "move";
+      },
+      title: "drag onto another pane to swap",
+    };
+    const leading = <span className="mono-meta pane-index">{index + 1}</span>;
+    const chips = (
+      <>
+        {needs && <span className="chip chip-error">needs you</span>}
+        {broadcast && p.kind === "session" && <span className="chip chip-busy" title="broadcast is on: messages sent in any pane go to this one too">bcast</span>}
+        {p.kind === "session" && partnerOf(p.id) && (
+          <span className="chip mono pair-chip" title="paired: the two sessions share a bus thread (strip below)">⇄ @{partnerOf(p.id)!.pane.agent?.split("@")[0]}</span>
+        )}
+      </>
+    );
+    const trailing = (
+      <>
+        {!dynamic && p.kind === "session" && p.agent && (
+          partnerOf(p.id) ? (
+            <button className="pane-btn" onClick={() => { const pr = pairs.find(([a, b]) => a === p.id || b === p.id); if (pr) void unpair(pr[0], pr[1]); }} title="unpair">⇄×</button>
+          ) : pairFrom === p.id ? (
+            <button className="pane-btn on" onClick={() => setPairFrom(null)} title="click ⇄ on another session pane to pair; click again to cancel">⇄…</button>
+          ) : (
+            <button
+              className="pane-btn"
+              onClick={() => {
+                if (pairFrom && pairFrom !== p.id) {
+                  void pair(pairFrom, p.id);
+                  setPairFrom(null);
+                } else setPairFrom(p.id);
+              }}
+              title={pairFrom ? "pair with the pane you picked" : "pair this session with another pane's (a shared bus thread + a link)"}
+            >
+              ⇄
+            </button>
+          )
+        )}
+        {p.kind === "session" && p.agent && (
+          <Link className="pane-btn" to={`/session/${encodeURIComponent(p.agent)}`} title="open as a page">↗</Link>
+        )}
+        <button className="pane-btn" onClick={() => setZoom((z) => (z === p.id ? null : p.id))} title="zoom (alt+z)">{zoom === p.id ? "⤡" : "⤢"}</button>
+        {!dynamic && (
+          <>
+            <button className="pane-btn" onClick={() => setPicker(p.id)} title="change what this pane shows">⇅</button>
+            <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "row") }))} title="split right">⫿</button>
+            <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "col") }))} title="split down">⫽</button>
+            <button
+              className="pane-btn"
+              onClick={() => update((b) => ({ ...b, layout: removePane(b.layout, p.id) ?? emptyPane() }))}
+              title="close pane"
+            >
+              ×
+            </button>
+          </>
+        )}
+      </>
+    );
     const body = (() => {
       switch (p.kind) {
         case "session":
@@ -421,7 +482,7 @@ export default function BoardPage() {
             <SessionView
               key={p.agent}
               name={p.agent}
-              pane={{ id: `${board.id}:${p.id}`, focused, compact: zoom !== p.id, onFocus: () => setFocus(p.id), onSent: (t) => onSent(p.id, t) }}
+              pane={{ id: `${board.id}:${p.id}`, focused, compact: zoom !== p.id, onFocus: () => setFocus(p.id), onSent: (t) => onSent(p.id, t), leading, chips, trailing, barProps }}
             />
           ) : null;
         case "view":
@@ -456,70 +517,15 @@ export default function BoardPage() {
           }
         }}
       >
-        <div
-          className="pane-bar"
-          draggable={!dynamic}
-          onDragStart={(e) => {
-            e.dataTransfer.setData("text/aspen-pane", p.id);
-            e.dataTransfer.effectAllowed = "move";
-          }}
-          title="drag onto another pane to swap"
-        >
-          <span className="mono-meta pane-index">{index + 1}</span>
-          <span className="mono pane-title">
-            {p.kind === "session" && p.agent ? `@${p.agent}` : p.kind === "view" ? p.path?.split("/").pop() : "empty"}
-          </span>
-          {agent && (
-            <span className={`dot ${agent.live ? (agent.turn_state === "busy" ? "dot-busy" : "dot-idle") : "dot-down"}`} />
-          )}
-          {needs && <span className="chip chip-error">needs you</span>}
-          {(agent?.activities?.running ?? 0) > 0 && (
-            <span className="chip mono activity-chip" title="background work">{agent!.activities!.running} bg</span>
-          )}
-          {broadcast && p.kind === "session" && <span className="chip chip-busy" title="broadcast is on: messages sent in any pane go to this one too">bcast</span>}
-          {p.kind === "session" && partnerOf(p.id) && (
-            <span className="chip mono pair-chip" title="paired: the two sessions share a bus thread (strip below)">⇄ @{partnerOf(p.id)!.pane.agent?.split("@")[0]}</span>
-          )}
-          <span style={{ flex: 1 }} />
-          {!dynamic && p.kind === "session" && p.agent && (
-            partnerOf(p.id) ? (
-              <button className="pane-btn" onClick={() => { const pr = pairs.find(([a, b]) => a === p.id || b === p.id); if (pr) void unpair(pr[0], pr[1]); }} title="unpair">⇄×</button>
-            ) : pairFrom === p.id ? (
-              <button className="pane-btn on" onClick={() => setPairFrom(null)} title="click ⇄ on another session pane to pair; click again to cancel">⇄…</button>
-            ) : (
-              <button
-                className="pane-btn"
-                onClick={() => {
-                  if (pairFrom && pairFrom !== p.id) {
-                    void pair(pairFrom, p.id);
-                    setPairFrom(null);
-                  } else setPairFrom(p.id);
-                }}
-                title={pairFrom ? "pair with the pane you picked" : "pair this session with another pane's (a shared bus thread + a link)"}
-              >
-                ⇄
-              </button>
-            )
-          )}
-          {p.kind === "session" && p.agent && (
-            <Link className="pane-btn" to={`/session/${encodeURIComponent(p.agent)}`} title="open as a page">↗</Link>
-          )}
-          <button className="pane-btn" onClick={() => setZoom((z) => (z === p.id ? null : p.id))} title="zoom (alt+z)">{zoom === p.id ? "⤡" : "⤢"}</button>
-          {!dynamic && (
-            <>
-              <button className="pane-btn" onClick={() => setPicker(p.id)} title="change what this pane shows">⋯</button>
-              <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "row") }))} title="split right">⫿</button>
-              <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "col") }))} title="split down">⫽</button>
-              <button
-                className="pane-btn"
-                onClick={() => update((b) => ({ ...b, layout: removePane(b.layout, p.id) ?? emptyPane() }))}
-                title="close pane"
-              >
-                ×
-              </button>
-            </>
-          )}
-        </div>
+        {p.kind !== "session" && (
+          <div className="pane-bar" {...barProps}>
+            {leading}
+            <span className="mono pane-title">{p.kind === "view" ? p.path?.split("/").pop() : "empty"}</span>
+            {chips}
+            <span style={{ flex: 1 }} />
+            {trailing}
+          </div>
+        )}
         <div className="pane-body">{body}</div>
       </section>
     );

@@ -61,11 +61,12 @@ only writes; a delete propagates as a tombstone.
   board route; the board's live in the `board` scope and appear in the
   palette. `alt` was chosen over `ctrl`+digit, which browsers own.
 - **Compact panes.** Vertical space is the scarce thing in a pane, so
-  the session chrome collapses to two slim rows: the pane bar carries
-  identity and state (the session header keeps only reload/branch/stop),
-  and one scrolling control row holds model, mode, render mode and the
-  charter/history/artifacts/move/board menus. Zoom or open as a page
-  (↗) for the full chrome.
+  a session pane has one row: the session bar (SESSION_BAR.md) with the
+  pane's number first and the pane's layout buttons after a hairline at
+  the end — pair ⇄, open as a page ↗, zoom ⤢, change contents ⇅, split
+  ⫿ ⫽, close ×. The bar is what you drag to swap panes. Everything the
+  old control row held is in the bar's ⋯ menu. (v0.31; before that the
+  chrome was two rows plus a pane bar.)
 - **Cached transcripts.** A session view keeps its transcript state
   across mounts (zoom, navigation, the same session in two boards). On
   return it shows the cached state at once and fetches only the items

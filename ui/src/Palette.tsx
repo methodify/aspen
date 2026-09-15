@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "./api";
 import type { Channel, Repo, Template } from "./api";
 import { useAppData } from "./App";
+import { useSessionCommands } from "./sessionCommands";
 import { presenceOf } from "./components";
 import type { Presence } from "./components";
 import "./palette.css";
@@ -73,6 +74,7 @@ function Dot({ presence }: { presence: Presence }) {
 export default function Palette() {
   const nav = useNavigate();
   const { agents, refreshAgents } = useAppData();
+  const sessionCmds = useSessionCommands();
 
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -372,6 +374,31 @@ export default function Palette() {
     // ── default: rank navigation + sessions + channels ─────────────────
     const ranked: { s: number; order: number; item: Item }[] = [];
     let order = 0;
+
+    // The session in view: its ⋯ menu's rows (sessionCommands.ts).
+    if (sessionCmds) {
+      for (const c of sessionCmds.commands) {
+        const s = score(t, c.label);
+        if (s < 0) continue;
+        ranked.push({
+          s,
+          order: order++,
+          item: {
+            key: `session:${sessionCmds.agent}:${c.id}`,
+            section: `Session @${sessionCmds.agent}`,
+            node: (
+              <>
+                <span>{c.label}</span>
+                {c.hint && <span className="pal-sub">{c.hint}</span>}
+              </>
+            ),
+            run: () => {
+              c.run();
+            },
+          },
+        });
+      }
+    }
 
     for (const tp of templates) {
       const label = `new session from template ${tp.name}`;
