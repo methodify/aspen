@@ -1144,3 +1144,14 @@ cleaner lane for roster updates than user-message headers.
   deliver to it — the sender key became the console's own, handed to
   each node it subscribes on, with the node's key as the fallback for
   older rows.
+- **2026-09-15 — v0.30, the drain gate defends work, not idleness.**
+  The operator: "in practice it just waits until every session stops;
+  what we mean is a turn in flight or running tasks." The five-minute
+  idle and recent-spawn gates went; the gate is now busy turn / open
+  prompt / running shell task / running subagent. Found while building:
+  the harness records a background task's completion only at the next
+  turn, so the ledger alone would hold the gate on a ghost — a task
+  counts only while the session's process tree still runs its command.
+  And the rollout marked this node done at the drain request, which read
+  as "everyone updated but me"; it now stays current until the updater
+  stops the daemon.

@@ -40,6 +40,16 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
+## Shipped — 2026-09-15: the drain gate defends work, not idleness (v0.30)
+
+SERVICING.md §4, §7. The quiet gate waited for every session to have
+been idle five minutes and nothing spawned in that time — on a busy node
+some session had always just finished, so the operator always ended up
+at `aspen update --restart`. Now it waits only on a turn in flight, an
+open prompt, a shell task whose process still runs, or a running
+subagent. And *update fleet* no longer marks this node done at the
+request: it shows as current, draining, until the updater launches.
+
 ## Shipped — 2026-09-15: one console, several meshes (F-1..F-5, v0.29)
 
 PROPOSALS-2026-09-F.md; CONSOLE_APP.md §7. Profiles (one mesh as the

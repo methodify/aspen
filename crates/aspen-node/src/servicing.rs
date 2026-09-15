@@ -22,14 +22,6 @@ use crate::node::{NodeInner, TurnState};
 use crate::release::{self, ReleaseInfo};
 use crate::store::now_epoch;
 
-/// A session must have been idle this long (and nothing spawned this
-/// recently) before a restart is considered safe.
-pub fn quiet_secs() -> f64 {
-    std::env::var("ASPEN_QUIET_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(300.0)
-}
 fn check_interval_secs() -> u64 {
     std::env::var("ASPEN_CHECK_SECS")
         .ok()
@@ -214,7 +206,6 @@ pub struct Servicing {
     /// Versions already announced (event + hint), so each is once.
     announced: Mutex<HashSet<String>>,
     pub state: Mutex<NodeState>,
-    pub last_spawn: Mutex<Option<f64>>,
     pub last_outcome: Mutex<Option<Outcome>>,
     pub inventory: Inventory,
     /// The updater child while it runs — so a failure *before* it stops us
@@ -235,7 +226,6 @@ impl Servicing {
             last_check: Mutex::new(None),
             announced: Mutex::new(HashSet::new()),
             state: Mutex::new(NodeState::Ready),
-            last_spawn: Mutex::new(None),
             last_outcome: Mutex::new(None),
             inventory: Inventory {
                 os: std::env::consts::OS,
@@ -259,10 +249,6 @@ impl Servicing {
     /// New work is refused while an update is pending.
     pub fn accepting_spawns(&self) -> bool {
         matches!(self.state(), NodeState::Ready)
-    }
-
-    pub fn note_spawn(&self) {
-        *self.last_spawn.lock().unwrap() = Some(now_epoch());
     }
 
     /// The newest release we know of, if newer than what runs.
@@ -331,7 +317,6 @@ pub fn status_json(inner: &Arc<NodeInner>) -> Value {
         "policy_effective": {
             "auto": policy.auto(),
             "in_window": policy.in_window_now(),
-            "quiet_secs": quiet_secs(),
         },
         "waiting_on": if matches!(s.state(), NodeState::Ready) { quiet_gate(inner, false) } else { Vec::new() },
         "inventory": s.inventory.json(),
@@ -351,12 +336,18 @@ fn soaked(r: &ReleaseInfo, policy: &crate::settings::UpdateSettings) -> bool {
 
 /// Why a restart is not safe right now (empty = safe). `force` skips the
 /// session gates (the human said *now*).
+///
+/// What the gate defends (decision 2026-09-15): work in flight. A session
+/// mid-turn, a session with an open prompt (the answer would be lost), or
+/// a session whose background activities — subagents, tasks, workflows —
+/// are still running as of its last turn boundary. An *idle* session is
+/// not a reason to wait: a restart revives it exactly where it is. The
+/// earlier "idle for less than five minutes" and "spawned recently" gates
+/// made a busy node undrainable — some session had always just finished.
 pub fn quiet_gate(inner: &Arc<NodeInner>, force: bool) -> Vec<String> {
     if force {
         return Vec::new();
     }
-    let quiet = quiet_secs();
-    let now = now_epoch();
     let mut out = Vec::new();
     let sessions: Vec<Arc<crate::node::ManagedSession>> =
         inner.sessions.lock().unwrap().values().cloned().collect();
@@ -365,26 +356,95 @@ pub fn quiet_gate(inner: &Arc<NodeInner>, force: bool) -> Vec<String> {
             out.push(format!("{} busy", s.name));
             continue;
         }
-        let idle_since = s.summary.lock().unwrap().idle_since;
-        if let Some(since) = idle_since {
-            if now - since < quiet {
-                out.push(format!("{} idle only {:.0}s", s.name, now - since));
-            }
-        }
         if let Some(b) = &s.broker {
             if !b.open_prompts().is_empty() {
                 out.push(format!("{} has an open prompt", s.name));
+                continue;
             }
         }
-    }
-    if let Some(t) = *inner.servicing.last_spawn.lock().unwrap() {
-        if now - t < quiet {
-            out.push(format!("a session spawned {:.0}s ago", now - t));
+        let (tasks, agents) = running_work(inner, s);
+        if tasks > 0 || agents > 0 {
+            let mut parts = Vec::new();
+            if tasks > 0 {
+                parts.push(format!(
+                    "{tasks} running task{}",
+                    if tasks == 1 { "" } else { "s" }
+                ));
+            }
+            if agents > 0 {
+                parts.push(format!(
+                    "{agents} running subagent{}",
+                    if agents == 1 { "" } else { "s" }
+                ));
+            }
+            out.push(format!("{} has {}", s.name, parts.join(" and ")));
         }
     }
     out.sort();
     out.dedup();
     out
+}
+
+/// Background work still going for a session: (shell tasks, subagents).
+///
+/// The ledger (`running_acts`, derived at the last turn boundary) says
+/// what the harness *started*; it cannot see a background shell task
+/// finish while the session is idle — the harness records that only at
+/// the next turn. So a running task counts only while a child process of
+/// the session still runs its command (procs.rs), the same test the
+/// session's processes panel uses. Subagents run inside the harness
+/// process and have nothing to corroborate; the ledger is trusted.
+fn running_work(inner: &Arc<NodeInner>, s: &crate::node::ManagedSession) -> (usize, usize) {
+    let running: Vec<String> = s.running_acts.lock().unwrap().keys().cloned().collect();
+    if running.is_empty() {
+        return (0, 0);
+    }
+    let agents = running.iter().filter(|k| !k.starts_with("task:")).count();
+    let task_ids: Vec<&str> = running
+        .iter()
+        .filter_map(|k| k.strip_prefix("task:"))
+        .collect();
+    if task_ids.is_empty() {
+        return (0, agents);
+    }
+    let Some(pid) = s.handle.pid() else {
+        return (0, agents);
+    };
+    let procs = crate::procs::descendants(pid);
+    if procs.is_empty() {
+        return (0, agents);
+    }
+    let sid = inner
+        .store
+        .agents()
+        .ok()
+        .and_then(|rows| rows.into_iter().find(|a| a.name == s.name))
+        .and_then(|a| a.session_id);
+    let Some(sid) = sid else {
+        return (0, agents);
+    };
+    let acts = inner
+        .store_for(s.harness)
+        .activities(&s.repo, &sid, Some(s.spawned_at));
+    let tasks = acts
+        .iter()
+        .filter(|a| {
+            a.get("id")
+                .and_then(|i| i.as_str())
+                .is_some_and(|i| task_ids.contains(&i))
+        })
+        .filter(|a| {
+            a.get("detail")
+                .and_then(|d| d.get("command"))
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| {
+                    procs
+                        .iter()
+                        .any(|p| crate::procs::matches_script(&p.cmdline, c))
+                })
+        })
+        .count();
+    (tasks, agents)
 }
 
 /// Ask this node to update: drain, then go. `when` is "quiet" or "now".
@@ -1203,17 +1263,13 @@ async fn run_rollout(
         }
         rollout_update(&inner, |r| r.current = Some(node.clone()));
         if node == me {
-            // Last: ourselves. Request and return — the updater stops us.
-            match request(&inner, &when, "rollout") {
-                Ok(_) => {
-                    rollout_update(&inner, |r| {
-                        r.done.push(node.clone());
-                        r.finished = true;
-                        r.current = None;
-                        r.finished_at = Some(now_epoch());
-                    });
-                }
-                Err(e) => finish(&inner, false, Some((node, e.to_string()))),
+            // Last: ourselves. Request and return — the updater stops us,
+            // so the rollout stays "▶ me" (draining, with what it waits
+            // on) until then; it was wrongly marked done here before,
+            // which read as "the fleet updated but not this node" while
+            // this node sat draining.
+            if let Err(e) = request(&inner, &when, "rollout") {
+                finish(&inner, false, Some((node, e.to_string())));
             }
             return;
         }

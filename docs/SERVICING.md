@@ -86,16 +86,29 @@ The updater is one reason to drain.
 
 ## 4. The quiet gate
 
-Safe to restart means, **all of**:
+Safe to restart means, **all of** (rewritten 2026-09-15, v0.30):
 
-- every live session's turn state is idle, and has been for at least the
-  quiet interval (5 minutes; `ASPEN_QUIET_SECS` overrides for tests);
+- no live session is mid-turn;
 - no open permission prompt or question on any session (the human's answer
   would be lost across a restart);
-- no session spawned in the last quiet interval (someone is clearly about
-  to use it);
+- no session has background work still going: a shell task whose
+  process is still running under the session (the ledger says what was
+  started — `running_acts`, the same one that raises `activity_settled`
+  — and the process tree, procs.rs, says whether it is still going,
+  because the harness records a background task's end only at the next
+  turn, so a finished-but-unconsumed task would otherwise hold the gate
+  until someone spoke to the session); or a subagent the ledger shows
+  running (in-process, nothing to corroborate, the ledger is trusted);
 - if a window is set: now is inside it;
 - for policy-driven drains: the release has soaked (§2).
+
+An *idle* session is not a reason to wait: a restart revives it where it
+is. The first version of this gate also required every session to have
+been idle for five minutes and nothing to have spawned in that time,
+which on a node with a dozen chatty sessions meant *some* session had
+always just finished — the node was undrainable in practice and the
+operator ended up at `aspen update --restart` every time. Gone, with the
+`ASPEN_QUIET_SECS` knob.
 
 `when: now` skips the first three gates and restarts through whatever is
 running (sessions are revived; in-flight turns are lost). A drain that has
@@ -169,7 +182,11 @@ that a foreign-mesh peer never receives. That row is added to §8.1.
 by the node whose console asked:
 
 - one node at a time, in roster order, **this node last** so the console
-  you are watching from stays up until the end;
+  you are watching from stays up until the end. The last step is a drain
+  request to this node: the rollout shows it as current, with what it is
+  waiting on, until the updater launches and stops the daemon (v0.30 —
+  earlier it marked itself done at the request, which read as "the fleet
+  updated but not this node" while this node sat draining);
 - each node is sent `node_update { when }` and then watched (its roster
   version, or `/api/node` for self) until it reports the target version, or
   15 minutes pass, in which case the rollout **stops** and reports which
@@ -275,7 +292,8 @@ evacuating; evacuate first, update second, is the intended order.
 - **Peer-to-peer binary distribution** for air-gapped nodes — breaks §6's
   "peers never supply"; would need signed artifacts first.
 - **Parallel rollout** — serial is the point until releases are boring.
-- **A tunable quiet interval** — one constant until someone needs it.
+- **A tunable quiet interval** — removed in v0.30 with the interval
+  itself (§4).
 - **Harness update orchestration** — Claude Code updates itself; we report
   its version and skew, nothing more.
 

@@ -841,7 +841,6 @@ impl Node {
                 self.inner.servicing.state().name()
             ));
         }
-        self.inner.servicing.note_spawn();
 
         // Resolve skip-permissions: explicit request wins, else the repo's
         // stored default, else off.
