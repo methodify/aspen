@@ -48,7 +48,7 @@ whoever messaged you are always allowed.
 | `POST /api/mesh/reload` | `{}` | `{ ok, summary }` | apply mesh files to the running daemon (join live / pick up peers+relay); the mesh CLI calls it after every mutation |
 | (cross-origin) | — | — | CORS + Private Network Access headers for origins in `aspen config console-origins` (default the hosted console); token in `X-Aspen-Token` (CONSOLE_APP.md §3, v0.26) |
 | `GET /api/push/vapid` | — | `{ public_key }` | the node's VAPID public key (NOTIFICATIONS.md §6) |
-| `POST /api/push/subscribe` | `{ subscription, console?, kinds? }` | `{ ok, kinds }` | register a browser's push subscription; kinds default to question+permission |
+| `POST /api/push/subscribe` | `{ subscription, console?, kinds?, vapid? }` | `{ ok, kinds }` | register a browser's push subscription; kinds default to question+permission; `vapid` = `{ private_key, public_key }` (base64url) when the subscription was made with the console's own sender key (v0.29) |
 | `DELETE /api/push/subscribe` | `{ endpoint }` | `{ ok, found }` | forget one |
 | `POST /api/push/test` | `{ endpoint }` | `{ ok }` | send a test push now (502 with the push service's answer on failure) |
 | `GET /api/push/subscriptions` | — | `{ subscriptions: [{ id, console, endpoint, kinds, created_at, last_ok, last_error }] }` | what is registered here |

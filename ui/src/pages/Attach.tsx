@@ -8,7 +8,8 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
-import { activate, activeConnection, addConnection, directUrlProblem, hosted, listConnections, markActive, removeConnection, type Connection } from "../connections";
+import { activate, activeConnection, addConnection, connectionSummary, directUrlProblem, hosted, listConnections, markActive, probeMesh, removeConnection, type Connection } from "../connections";
+import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, readFrom, removeProfile, setProfileLabel, setProfileMesh, switchTo, type Profile } from "../profiles";
 import { ErrorBar } from "../components";
 
 export default function Attach() {
@@ -55,10 +56,12 @@ export default function Attach() {
   return (
     <>
       <div className="stage-head">
-        <span className="t-display">{hosted ? "Connect" : "Attach through a relay"}</span>
-        <span className="mono-meta">{hosted ? "this console talks to the node or relay you point it at" : "this browser as a mesh peer — no local node needed"}</span>
+        <span className="t-display">{hosted ? "Meshes" : "Attach through a relay"}</span>
+        <span className="mono-meta">{hosted ? "the meshes this console is connected to, and how" : "this browser as a mesh peer — no local node needed"}</span>
       </div>
       <div className="stage-body attach-page">
+        {hosted && <MeshCards />}
+        {hosted && <div className="stage-head" style={{ padding: 0 }}><span className="label">Setting up: {activeProfile() ? profileName(activeProfile()!) : "this mesh"}</span></div>}
         <Connections relay={cfg.relay} node={cfg.node} certified={!!id?.cert} />
         <p className="dim" style={{ maxWidth: "80ch" }}>
           Reach a node you cannot dial directly. This browser keeps its own keypair; the mesh root certifies it once; then every console request rides the relay to the node you attach to, sealed end to end (the relay reads nothing). A console peer may read and control sessions, never spawn or trust.
@@ -114,6 +117,7 @@ export default function Attach() {
                     const next = installBlob(id, blob);
                     setId(next);
                     setBlob("");
+                    if (next.cert) setProfileMesh(next.cert.mesh);
                     const first = Object.keys(next.known ?? {})[0];
                     apply({ relay: cfg.relay || next.relay || "", node: cfg.node || first || "" });
                   } catch (e) {
@@ -180,6 +184,38 @@ function Connections({ relay, node, certified }: { relay: string; node: string; 
   const [err, setErr] = useState<string | null>(null);
   const refresh = () => setList(listConnections());
   const problem = directUrlProblem(url.trim());
+  // Hosted, a direct node is filed under the mesh it says it is in
+  // (PROPOSALS-2026-09-F.md §2.3): a node from another mesh is refused
+  // here and belongs in a profile of its own.
+  async function addDirect() {
+    setErr(null);
+    const u = url.trim();
+    const t = token.trim() || null;
+    if (hosted) {
+      const p = activeProfile();
+      try {
+        const got = await probeMesh(u, t);
+        if (p?.mesh && got.mesh && got.mesh !== p.mesh) {
+          setErr(`${got.node || u} is in mesh ${got.mesh}; this is ${p.mesh}. Use "connect to another mesh" for it.`);
+          return;
+        }
+        if (p?.mesh && !got.mesh) {
+          setErr(`${got.node || u} is in no mesh; this console's ${p.mesh} is one. Use "connect to another mesh" for it.`);
+          return;
+        }
+        setProfileMesh(got.mesh, got.mesh ? undefined : got.node);
+      } catch (e) {
+        // Unreachable right now: keep it; the mesh is filled in when it
+        // answers (the switcher asks).
+        setErr(`${e instanceof Error ? e.message : "could not reach the node"} — saved anyway; its mesh is filled in when it answers`);
+      }
+    }
+    const c = addConnection({ name: name.trim(), kind: "direct", url: u, token: t });
+    setName("");
+    setToken("");
+    refresh();
+    if (!active) activate(c.id);
+  }
   return (
     <section className="strip attach-step">
       <span className="label">Connections</span>
@@ -206,14 +242,7 @@ function Connections({ relay, node, certified }: { relay: string; node: string; 
         <button
           className="btn primary sm"
           disabled={!name.trim() || !url.trim() || !!problem}
-          onClick={() => {
-            setErr(null);
-            const c = addConnection({ name: name.trim(), kind: "direct", url: url.trim(), token: token.trim() || null });
-            setName("");
-            setToken("");
-            refresh();
-            if (!active) activate(c.id);
-          }}
+          onClick={() => void addDirect()}
           title="add a node reached directly"
         >
           add node
@@ -236,6 +265,112 @@ function Connections({ relay, node, certified }: { relay: string; node: string; 
       {problem && url.trim() && <span className="mono-meta" style={{ color: "var(--sig-gate)" }}>{problem}</span>}
       {hosted && <p className="dim">A node on another machine has no certificate a browser trusts, so this page cannot call it directly; reach it through a relay, or open the console that node serves itself.</p>}
       <ErrorBar error={err} />
+    </section>
+  );
+}
+
+
+/** The meshes this console holds (PROPOSALS-2026-09-F.md §2.3): one
+ *  card each — its name, this console's identity there, how it gets in,
+ *  whether this device is pushed from it — with switch, rename and
+ *  remove; and the way to add another. The active one's setup steps
+ *  are the rest of this page. */
+function MeshCards() {
+  const [, setTick] = useState(0);
+  useEffect(() => onProfilesChange(() => setTick((n) => n + 1)), []);
+  const active = activeProfile();
+  const profiles = listProfiles();
+  const [confirm, setConfirm] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [label, setLabel] = useState("");
+  const identityOf = (p: Profile): { node: string; mesh: string | null } | null => {
+    try {
+      const raw = readFrom(p.id, "aspen.console.identity");
+      const id = raw ? (JSON.parse(raw) as { node: string; cert?: { mesh: string } | null }) : null;
+      return id ? { node: id.node, mesh: id.cert?.mesh ?? null } : null;
+    } catch {
+      return null;
+    }
+  };
+  return (
+    <section className="strip attach-step">
+      <span className="label">Meshes</span>
+      {profiles.map((p) => {
+        const isActive = p.id === active?.id;
+        const ident = identityOf(p);
+        const push = readFrom(p.id, "aspen.push.on") === "1";
+        return (
+          <div className="attach-row" key={p.id} style={{ alignItems: "baseline" }}>
+            <span className={`chip mono ${isActive ? "op" : ""}`}>{isActive ? "looking at" : "mesh"}</span>
+            {editing === p.id ? (
+              <input
+                className="mono"
+                autoFocus
+                value={label}
+                placeholder={p.mesh ?? "label"}
+                onChange={(e) => setLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setProfileLabel(p.id, label);
+                    setEditing(null);
+                  }
+                  if (e.key === "Escape") setEditing(null);
+                }}
+                onBlur={() => {
+                  setProfileLabel(p.id, label);
+                  setEditing(null);
+                }}
+                style={{ width: 160 }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="btn ghost sm mono"
+                style={{ padding: 0, fontSize: "inherit" }}
+                title="rename (a label for this console only; the mesh keeps its name)"
+                onClick={() => {
+                  setLabel(p.label ?? "");
+                  setEditing(p.id);
+                }}
+              >
+                {profileName(p)}
+                {p.label && p.mesh ? <span className="mono-meta"> · {p.mesh}</span> : null}
+              </button>
+            )}
+            <span className="mono-meta">
+              {ident ? `${ident.node}${ident.mesh ? " · certified" : " · not certified"}` : "no relay identity"} · {connectionSummary(p.id)}
+              {push ? " · push on" : ""}
+            </span>
+            <span style={{ flex: 1 }} />
+            {!isActive && (
+              <button className="btn sm" onClick={() => switchTo(p.id, "/attach")} title="look at this mesh (the page reloads)">
+                switch
+              </button>
+            )}
+            {confirm === p.id ? (
+              <>
+                <span className="mono-meta">forget this mesh and everything remembered about it here?</span>
+                <button className="btn sm" style={{ color: "var(--sig-gate)" }} onClick={() => removeProfile(p.id)}>
+                  forget
+                </button>
+                <button className="btn ghost sm" onClick={() => setConfirm(null)}>
+                  keep
+                </button>
+              </>
+            ) : (
+              <button className="btn ghost sm" onClick={() => setConfirm(p.id)} title="forget this mesh: its identity, connections and everything remembered about it in this browser">
+                ×
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <div className="attach-row">
+        <button className="btn sm" onClick={() => addProfile()} title="a new identity, certified by that mesh's root, or a node on this machine that is in it">
+          connect to another mesh
+        </button>
+        <span className="mono-meta">each mesh gets its own identity here; a node is in one mesh, this console may look at several</span>
+      </div>
     </section>
   );
 }

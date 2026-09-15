@@ -16,6 +16,7 @@
 
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
+import { scoped } from "./profiles";
 
 export interface NodeCert {
   mesh: string;
@@ -79,14 +80,14 @@ const Z = new Uint8Array([0]);
 
 export function loadIdentity(): ConsoleIdentity | null {
   try {
-    const raw = localStorage.getItem(ID_KEY);
+    const raw = localStorage.getItem(scoped(ID_KEY));
     return raw ? (JSON.parse(raw) as ConsoleIdentity) : null;
   } catch {
     return null;
   }
 }
 export function saveIdentity(id: ConsoleIdentity): void {
-  localStorage.setItem(ID_KEY, JSON.stringify(id));
+  localStorage.setItem(scoped(ID_KEY), JSON.stringify(id));
 }
 export function createIdentity(): ConsoleIdentity {
   const edSecret = ed25519.utils.randomPrivateKey();
@@ -147,7 +148,7 @@ export function installBlob(id: ConsoleIdentity, blob: string): ConsoleIdentity 
 
 export function loadConfig(): TunnelConfig {
   try {
-    const raw = localStorage.getItem(CFG_KEY);
+    const raw = localStorage.getItem(scoped(CFG_KEY));
     if (raw) return JSON.parse(raw) as TunnelConfig;
   } catch {
     // fall through
@@ -155,7 +156,7 @@ export function loadConfig(): TunnelConfig {
   return { enabled: false, relay: "", node: "" };
 }
 export function saveConfig(c: TunnelConfig): void {
-  localStorage.setItem(CFG_KEY, JSON.stringify(c));
+  localStorage.setItem(scoped(CFG_KEY), JSON.stringify(c));
 }
 
 // ── sealed envelopes ────────────────────────────────────────────────────

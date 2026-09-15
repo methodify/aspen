@@ -5,6 +5,7 @@
 // Repos and Skills pages — same endpoints, same flows, no native prompts.
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { scoped } from "../profiles";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError, type MeshRepoNode, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
@@ -31,7 +32,7 @@ const REPO_STORAGE_KEY = "aspen.skills.repo";
 
 function loadLastRepo(): string {
   try {
-    return window.localStorage.getItem(REPO_STORAGE_KEY) ?? "";
+    return window.localStorage.getItem(scoped(REPO_STORAGE_KEY)) ?? "";
   } catch {
     return "";
   }
@@ -39,7 +40,7 @@ function loadLastRepo(): string {
 
 function saveLastRepo(repo: string): void {
   try {
-    window.localStorage.setItem(REPO_STORAGE_KEY, repo);
+    window.localStorage.setItem(scoped(REPO_STORAGE_KEY), repo);
   } catch {
     // private mode / storage disabled — a convenience only, ignore.
   }
@@ -729,7 +730,7 @@ function RepositoriesSection({
   const OPEN_KEY = "aspen.mesh.openNodes";
   const [openNodes, setOpenNodes] = useState<Record<string, boolean>>(() => {
     try {
-      const raw = localStorage.getItem(OPEN_KEY);
+      const raw = localStorage.getItem(scoped(OPEN_KEY));
       return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
     } catch {
       return {};
@@ -737,7 +738,7 @@ function RepositoriesSection({
   });
   useEffect(() => {
     try {
-      localStorage.setItem(OPEN_KEY, JSON.stringify(openNodes));
+      localStorage.setItem(scoped(OPEN_KEY), JSON.stringify(openNodes));
     } catch {
       /* storage unavailable */
     }

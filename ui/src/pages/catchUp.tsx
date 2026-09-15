@@ -6,6 +6,7 @@
 // is a button here, and on return after a while away, automatic.
 
 import { useEffect, useState } from "react";
+import { scoped } from "../profiles";
 import { api } from "../api";
 import type { TranscriptItem } from "../transcript";
 
@@ -36,7 +37,7 @@ export interface CatchUp {
 /** Away this long and the bar shows even with nothing new — and the recap is asked. */
 export const AWAY_SECS = 5 * 60;
 
-const key = (name: string) => `aspen.seen.${name}`;
+const key = (name: string) => scoped(`aspen.seen.${name}`);
 
 export function readMarker(name: string): SeenMarker | null {
   try {

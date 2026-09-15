@@ -115,3 +115,66 @@ NOTIFICATIONS.md §6. The service worker is our own (`ui/src/sw.ts`,
 `injectManifest`): the precache and navigation fallback as before, plus
 `push` and `notificationclick`. The bell's panel has the toggle, the
 per-device kinds and a test.
+
+## 7. Several meshes (F-1..F-5, v0.29)
+
+PROPOSALS-2026-09-F.md. A node is in one mesh; the hosted console may
+look at several. `ui/src/profiles.ts`: a **profile** is one mesh as
+this console sees it — the mesh name (an optional label), this console's
+relay identity there (its own keypair and cert; one per mesh), the
+connections into it, and everything the browser remembers about that
+mesh. One is active; switching reloads the page, keeping the route when
+it is mesh-neutral (Now, Flow, Mesh, History, Search, Boards, Plugins,
+Usage) and going to Now otherwise.
+
+**Storage.** Every per-mesh key goes through `scoped()` and lives under
+`aspen.p.<profile>.…`; the transcript cache's IndexedDB keys carry the
+profile too. Browser-wide keys (theme, rail width, recap-on-return,
+render mode, the push sender key, the profile list) stay bare. Served
+by a node, `scoped()` is the identity function — that console is one
+node's window and nothing there changed. A console that predates
+profiles wakes with one, named by its cert's mesh, holding everything it
+had; bare keys move under it once.
+
+**The switcher.** The status bar always says which mesh (served by a
+node: the node's mesh, or *no mesh*) — *relaytest · node j2*. Hosted
+with more than one profile it is a menu: each mesh with how the console
+gets in (*via relay → j2*, *direct · 127.0.0.1:7420*), and *connect to
+another mesh…*, which makes a fresh profile and opens the Meshes page.
+A direct node that turns out to be in a different mesh than the profile
+is named in the label (*beta · node j2 (in relaytest)*), never used to
+rename the profile.
+
+**The Meshes page** (`/attach`, hosted): a card per mesh — its name
+(click to label it for this console), identity and certification
+state, how it gets in, whether this device is pushed from it — with
+*switch* and *×* (forget the mesh and everything remembered about it,
+transcripts included). Below, the usual setup steps for the active
+mesh: connections, identity, certify, relay and node. A direct node is
+asked which mesh it is in before it is saved: a node from another mesh
+is refused here ("j2 is in mesh relaytest; this is beta"), a node in no
+mesh names the profile after itself, and a node that does not answer is
+saved anyway and filed when it does. Certifying a fresh identity names
+the profile after the cert's mesh.
+
+**Push in every mesh.** NOTIFICATIONS.md §6. The bell's *push to this
+device* is per mesh; the browser subscription is shared, made with the
+console's own sender key so every mesh's node can deliver to it, and
+dropped only when the last mesh turns it off. The notification names
+the mesh (*on dev009 · work*), and its link carries `mesh=`; the app
+switches profile before it navigates, at load and on a hash change.
+
+**Not here.** Peek (needs-you counts for the meshes you are not looking
+at), live switch without reload, naming this console per mesh ahead of
+D-5: BACKLOG.md F-6..F-8.
+
+Verified 2026-09-15 on the rig from the hosted bundle: a console with
+one identity woke as one profile with its recents, cursors and
+connections intact; *connect to another mesh* plus a direct loopback
+node made a second profile the node named ("beta"); adding a relaytest
+node into beta was refused; push turned on in beta registered the
+console's key on a node that had never seen the browser and a test push
+was accepted; turning it on in relaytest through the relay too, then
+off there, left it on in beta with the browser subscription kept; a
+`?mesh=` link switched profiles both on load and on a hash change; the
+switcher kept `/mesh` across a switch.

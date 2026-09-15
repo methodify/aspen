@@ -28,16 +28,21 @@ interface PushNotice {
   agent?: string | null;
   node?: string | null;
   link?: string | null;
+  mesh?: string | null;
   ts?: number;
 }
 
 /** Where a notice's link opens: a hash route under the hosted base, a
- *  path under a node's own origin. The scope tells which. */
-function targetUrl(link: string | null | undefined): string {
+ *  path under a node's own origin. The scope tells which. Hosted, the
+ *  console may hold several meshes: the link names this one so the page
+ *  switches before it navigates (profiles.ts followMeshLink). */
+function targetUrl(link: string | null | undefined, mesh: string | null | undefined): string {
   const scope = self.registration.scope;
   const hosted = scope.endsWith("/aspen/");
   const path = link && link.startsWith("/") ? link : "/";
-  return hosted ? `${scope}#${path}` : new URL(path, scope).toString();
+  if (!hosted) return new URL(path, scope).toString();
+  const withMesh = mesh ? `${path}${path.includes("?") ? "&" : "?"}mesh=${encodeURIComponent(mesh)}` : path;
+  return `${scope}#${withMesh}`;
 }
 
 self.addEventListener("push", (event) => {
@@ -48,13 +53,14 @@ self.addEventListener("push", (event) => {
     n = { title: event.data?.text() ?? "Aspen" };
   }
   const title = n.title ?? "Aspen";
-  const body = [n.body ?? "", n.node ? `on ${n.node}` : ""].filter(Boolean).join(" · ");
+  const where = [n.node ? `on ${n.node}` : "", n.mesh ?? ""].filter(Boolean).join(" · ");
+  const body = [n.body ?? "", where].filter(Boolean).join(" · ");
   const show = self.registration.showNotification(title, {
     body,
     tag: `${n.kind ?? "notice"}:${n.agent ?? ""}:${n.ts ?? ""}`,
     icon: `${base}icons/aspen-192.png`,
     badge: `${base}icons/aspen-192.png`,
-    data: { url: targetUrl(n.link) },
+    data: { url: targetUrl(n.link, n.mesh) },
   });
   const badge = (self.navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void> }).setAppBadge?.();
   event.waitUntil(Promise.all([show, badge ?? Promise.resolve()]));

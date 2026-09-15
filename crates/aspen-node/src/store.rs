@@ -346,6 +346,12 @@ pub struct PushSub {
     pub created_at: f64,
     pub last_ok: Option<f64>,
     pub last_error: Option<String>,
+    /// The sender key the console gave with its subscription (JSON, a
+    /// `push::Vapid`), when it did: the subscription was made with that
+    /// key, so only it can deliver. Absent for subscriptions made with
+    /// the node's own key. Never serialized.
+    #[serde(skip_serializing)]
+    pub vapid: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -471,6 +477,7 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE agents ADD COLUMN harness TEXT",
         "ALTER TABLE repos ADD COLUMN default_harness TEXT",
         "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
+        "ALTER TABLE push_subs ADD COLUMN vapid TEXT",
     ] {
         if let Err(e) = conn.execute(stmt, []) {
             if !e.to_string().contains("duplicate column") {
@@ -1184,7 +1191,7 @@ impl BusStore {
 
     pub fn push_subs(&self) -> Result<Vec<PushSub>> {
         let conn = self.conn.lock().unwrap();
-        let mut st = conn.prepare("SELECT id, console, endpoint, p256dh, auth, kinds, created_at, last_ok, last_error FROM push_subs ORDER BY created_at")?;
+        let mut st = conn.prepare("SELECT id, console, endpoint, p256dh, auth, kinds, created_at, last_ok, last_error, vapid FROM push_subs ORDER BY created_at")?;
         let rows = st.query_map([], |r| {
             let kinds: String = r.get(5)?;
             Ok(PushSub {
@@ -1197,6 +1204,7 @@ impl BusStore {
                 created_at: r.get(6)?,
                 last_ok: r.get(7)?,
                 last_error: r.get(8)?,
+                vapid: r.get(9)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1211,12 +1219,13 @@ impl BusStore {
         p256dh: &str,
         auth: &str,
         kinds: &[String],
+        vapid: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO push_subs(console, endpoint, p256dh, auth, kinds, created_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(endpoint) DO UPDATE SET console=?1, p256dh=?3, auth=?4, kinds=?5",
-            params![console, endpoint, p256dh, auth, serde_json::to_string(kinds)?, now_epoch()],
+            "INSERT INTO push_subs(console, endpoint, p256dh, auth, kinds, created_at, vapid) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(endpoint) DO UPDATE SET console=?1, p256dh=?3, auth=?4, kinds=?5, vapid=?7",
+            params![console, endpoint, p256dh, auth, serde_json::to_string(kinds)?, now_epoch(), vapid],
         )?;
         Ok(())
     }

@@ -1,3 +1,4 @@
+import { scoped } from "../profiles";
 import {
   memo,
   useEffect,
@@ -1318,7 +1319,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [actionError, setActionError] = useState<string | null>(null);
   // The composer draft survives leaving the view (PROPOSALS §1): per
   // agent, per browser, cleared on send.
-  const draftKey = pane ? `aspen.draft.${name}.${pane.id}` : `aspen.draft.${name}`;
+  const draftKey = scoped(pane ? `aspen.draft.${name}.${pane.id}` : `aspen.draft.${name}`);
   const [draft, setDraft] = useState(() => {
     try {
       return localStorage.getItem(draftKey) ?? "";
@@ -1456,7 +1457,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [mcpSignal, setMcpSignal] = useState(0);
   // The spawn note (how this process started) is dismissable; the
   // dismissal is remembered per session and note in this browser.
-  const noteKey = `aspen.note.${name}`;
+  const noteKey = scoped(`aspen.note.${name}`);
   const [noteDismissed, setNoteDismissed] = useState(false);
   useEffect(() => {
     try {

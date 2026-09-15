@@ -1361,8 +1361,8 @@ export const api = {
   notices: (since: string) => request<NoticesPage>(`/api/notices?since=${encodeURIComponent(since)}`),
   /** Web Push (CONSOLE_APP.md §5): the node's VAPID key, subscribe/unsubscribe, a test. */
   pushVapid: () => request<{ public_key: string }>("/api/push/vapid"),
-  pushSubscribe: (subscription: unknown, consoleName: string, kinds: string[]) =>
-    post<{ ok: boolean; kinds: string[] }>("/api/push/subscribe", { subscription, console: consoleName, kinds }),
+  pushSubscribe: (subscription: unknown, consoleName: string, kinds: string[], vapid?: { private_key: string; public_key: string }) =>
+    post<{ ok: boolean; kinds: string[] }>("/api/push/subscribe", { subscription, console: consoleName, kinds, vapid }),
   pushUnsubscribe: (endpoint: string) =>
     request<{ ok: boolean; found: boolean }>("/api/push/subscribe", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint }) }),
   pushTest: (endpoint: string) => post<{ ok: boolean }>("/api/push/test", { endpoint }),

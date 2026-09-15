@@ -119,3 +119,17 @@ target; `last_ok` moved on the row. Note when testing with `question`:
 a session in bypass-permissions mode answers `AskUserQuestion` itself, so
 no prompt reaches the node and no notice is raised — use a session that
 asks.
+
+**Several meshes (v0.29, PROPOSALS-2026-09-F.md §2.5).** A browser has
+one push subscription, bound to the sender key it was made with; a
+console that holds several meshes registers that one subscription on a
+node in each. So the sender key is the console's own (WebCrypto P-256,
+browser-wide), the subscription is made with its public half, and
+`POST /api/push/subscribe` carries the pair as `vapid`; the node keeps
+it on the row and signs with it, falling back to its own `push_vapid.json`
+for rows without one. The payload carries `mesh`, the notification says
+it, and the link's `mesh=` makes the console switch before opening. The
+bell's box is per mesh; the browser subscription goes only when the
+last mesh turns it off. A node that still holds a row for a subscription
+made with its own key (before v0.29) forgets it on the first *gone*
+answer from the push service.

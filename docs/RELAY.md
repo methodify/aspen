@@ -119,6 +119,11 @@ with `wrangler dev` against real nodes: two loopback nodes linked through
 it, and a message stored while the peer was down landed on its return and
 was acked back.
 
+One worker serves as many meshes as it has root keys for (one Durable
+Object each): a console that holds several meshes (CONSOLE_APP.md §7)
+registers in each as a separate peer, which is exactly what two nodes
+would be.
+
 `/healthz?mesh=NAME` (2026-09-08) answers whether that mesh's root key is
 set on the live deployment and decodes to 32 bytes — the diagnosis for a
 403 — without revealing it; the object logs the same reason. A pasted key

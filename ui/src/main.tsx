@@ -6,6 +6,12 @@ import "./styles.css";
 import "./phone.css";
 import { tunnel } from "./tunnel";
 import { pwa } from "./pwa";
+import { followMeshLink } from "./profiles";
+
+// A notification tapped while another mesh is active: switch first
+// (docs/PROPOSALS-2026-09-F.md §2.5).
+followMeshLink();
+window.addEventListener("hashchange", followMeshLink);
 
 // Attached through a relay (docs/RELAY.md §11)? Bring the tunnel up
 // before the first request; requests await it.

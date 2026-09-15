@@ -32,6 +32,18 @@ fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// The sender key for one subscription: the key the console gave when
+/// it subscribed (one browser subscription, registered in every mesh the
+/// console holds — PROPOSALS-2026-09-F.md §2.5), else the node's own.
+fn sender_key(inner: &Arc<NodeInner>, sub: &crate::store::PushSub) -> Result<Vapid> {
+    if let Some(v) = sub.vapid.as_deref() {
+        if let Ok(v) = serde_json::from_str::<Vapid>(v) {
+            return Ok(v);
+        }
+    }
+    vapid(inner)
+}
+
 /// The node's VAPID key pair, made on first use.
 pub fn vapid(inner: &Arc<NodeInner>) -> Result<Vapid> {
     let dd = inner
@@ -85,20 +97,25 @@ pub fn send_for_notice(inner: &Arc<NodeInner>, notice: &Value) {
     if wanted.is_empty() {
         return;
     }
-    let Ok(vapid) = vapid(inner) else { return };
+    // The mesh, so a console holding several opens the link in the right
+    // one (PROPOSALS-2026-09-F.md §2.5).
+    let mesh = inner.mesh().map(|m| m.mesh_name());
     let payload = json!({
         "title": notice.get("title"),
         "body": notice.get("body"),
         "kind": kind,
         "agent": notice.get("agent"),
         "node": notice.get("node"),
+        "mesh": mesh,
         "link": notice.get("link"),
         "ts": notice.get("ts"),
     })
     .to_string();
     for sub in wanted {
         let inner = inner.clone();
-        let vapid = vapid.clone();
+        let Ok(vapid) = sender_key(&inner, &sub) else {
+            continue;
+        };
         let payload = payload.clone();
         tokio::spawn(async move {
             let endpoint = sub.endpoint.clone();
@@ -132,13 +149,14 @@ pub fn send_test(inner: &Arc<NodeInner>, endpoint: &str) -> Result<()> {
         .into_iter()
         .find(|s| s.endpoint == endpoint)
         .ok_or_else(|| anyhow!("no such subscription"))?;
-    let vapid = vapid(inner)?;
+    let vapid = sender_key(inner, &sub)?;
     let node = inner.mesh().map(|m| m.identity.node.clone());
     let payload = json!({
         "title": "Aspen can reach this device",
         "body": format!("push from {}", node.as_deref().unwrap_or("this node")),
         "kind": "test",
         "node": node,
+        "mesh": inner.mesh().map(|m| m.mesh_name()),
         "link": "/",
         "ts": crate::store::now_epoch(),
     })

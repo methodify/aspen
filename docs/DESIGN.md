@@ -1129,3 +1129,18 @@ cleaner lane for roster updates than user-message headers.
   current is content-hashed for in-checkout sources; a spawn syncs
   first, bounded to 20 s. A running session still never changes under
   the operator's feet.
+- **2026-09-15 — v0.29, one console, several meshes**
+  (PROPOSALS-2026-09-F.md). A node is in one mesh (MESHES.md, kept); the
+  hosted console is a reader that propagates nothing, so it may hold a
+  cert in several. Decisions: the unit is the mesh, not the connection
+  (a profile per mesh; the word "profile" never reaches the UI); a
+  keypair per mesh, so no mesh root can correlate this console with
+  another mesh's list; every mesh-related stored item carries the
+  profile in its key — localStorage and the IndexedDB transcript cache
+  — so nothing leaks between meshes whether a switch reloads (now) or
+  not (F-7); switching reloads this round; the node-served console stays
+  one node's window. Found while building: a push subscription is bound
+  to the sender key it was made with, so a second mesh's node could not
+  deliver to it — the sender key became the console's own, handed to
+  each node it subscribes on, with the node's key as the fallback for
+  older rows.

@@ -33,9 +33,21 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
+| F-6 | console | **Peek.** Needs-you counts for the meshes the console is not looking at, via a background tunnel per profile. | PROPOSALS-2026-09-F.md §4 |
+| F-7 | console | **Live mesh switch** without a reload: stop the tunnel, swap the profile, restart, reset every poll. | PROPOSALS-2026-09-F.md §4 |
+| F-8 | console + protocol | **Name this console per mesh**, ahead of D-5. | PROPOSALS-2026-09-F.md §4 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-15: one console, several meshes (F-1..F-5, v0.29)
+
+PROPOSALS-2026-09-F.md; CONSOLE_APP.md §7. Profiles (one mesh as the
+hosted console sees it; every per-mesh key scoped, transcripts too; a
+one-time migration), the mesh label and switcher in the status bar, the
+Meshes page (a card per mesh, a fresh identity per mesh, direct nodes
+filed by the mesh they report), push in every mesh with a console-held
+sender key and `mesh=` links that switch first.
 
 ## Shipped — 2026-09-14: the plugins menu (G-1..G-6, v0.28)
 

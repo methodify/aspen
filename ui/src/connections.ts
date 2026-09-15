@@ -6,7 +6,10 @@
 // fetch), or a node reached through a relay as a mesh peer (tunnel.ts).
 // One is active; api.ts prefixes every request with it.
 
-import { loadConfig, saveConfig, tunnel } from "./tunnel";
+import { loadConfig, saveConfig, tunnel, type TunnelConfig } from "./tunnel";
+import { hosted, readFrom, scoped } from "./profiles";
+
+export { hosted };
 
 export type Connection =
   | { id: string; name: string; kind: "direct"; url: string; token: string | null }
@@ -15,23 +18,21 @@ export type Connection =
 const LIST_KEY = "aspen.connections";
 const ACTIVE_KEY = "aspen.connections.active";
 
-export const hosted: boolean = typeof __ASPEN_HOSTED__ !== "undefined" && __ASPEN_HOSTED__;
-
 export function listConnections(): Connection[] {
   try {
-    const raw = localStorage.getItem(LIST_KEY);
+    const raw = localStorage.getItem(scoped(LIST_KEY));
     return raw ? (JSON.parse(raw) as Connection[]) : [];
   } catch {
     return [];
   }
 }
 function saveList(list: Connection[]) {
-  localStorage.setItem(LIST_KEY, JSON.stringify(list));
+  localStorage.setItem(scoped(LIST_KEY), JSON.stringify(list));
 }
 
 export function activeConnection(): Connection | null {
   try {
-    const id = localStorage.getItem(ACTIVE_KEY);
+    const id = localStorage.getItem(scoped(ACTIVE_KEY));
     return listConnections().find((c) => c.id === id) ?? null;
   } catch {
     return null;
@@ -56,8 +57,8 @@ export function addConnection(c: NewConnection): Connection {
 
 export function removeConnection(id: string) {
   saveList(listConnections().filter((c) => c.id !== id));
-  if (localStorage.getItem(ACTIVE_KEY) === id) {
-    localStorage.removeItem(ACTIVE_KEY);
+  if (localStorage.getItem(scoped(ACTIVE_KEY)) === id) {
+    localStorage.removeItem(scoped(ACTIVE_KEY));
     tunnel.stop();
     saveConfig({ ...loadConfig(), enabled: false });
   }
@@ -66,7 +67,7 @@ export function removeConnection(id: string) {
 /** Record which connection is active without touching the tunnel or
  *  reloading — for the attach page, which is starting the tunnel itself. */
 export function markActive(id: string) {
-  localStorage.setItem(ACTIVE_KEY, id);
+  localStorage.setItem(scoped(ACTIVE_KEY), id);
 }
 
 /** Make a connection the active one: a relay connection turns the
@@ -74,13 +75,13 @@ export function markActive(id: string) {
  *  page reloads so every poll starts over against the new target. */
 export function activate(id: string | null) {
   if (id === null) {
-    localStorage.removeItem(ACTIVE_KEY);
+    localStorage.removeItem(scoped(ACTIVE_KEY));
     tunnel.stop();
     saveConfig({ ...loadConfig(), enabled: false });
   } else {
     const c = listConnections().find((x) => x.id === id);
     if (!c) return;
-    localStorage.setItem(ACTIVE_KEY, id);
+    localStorage.setItem(scoped(ACTIVE_KEY), id);
     if (c.kind === "relay") {
       saveConfig({ enabled: true, relay: c.relay, node: c.node });
     } else {
@@ -123,4 +124,36 @@ export function directUrlProblem(url: string): string | null {
     }
   }
   return null;
+}
+
+/** One line about how a profile gets into its mesh — for the switcher
+ *  and the Meshes page, which read other profiles too. */
+export function connectionSummary(profileId: string): string {
+  try {
+    // An attached tunnel is what requests ride, whatever connection is
+    // marked active (App.tsx TunnelPill): say that first.
+    const t = readFrom(profileId, "aspen.console.tunnel");
+    const tun = t ? (JSON.parse(t) as TunnelConfig) : null;
+    if (tun?.enabled && tun.node) return `via relay → ${tun.node}`;
+    const raw = readFrom(profileId, LIST_KEY);
+    const list = raw ? (JSON.parse(raw) as Connection[]) : [];
+    const activeId = readFrom(profileId, ACTIVE_KEY);
+    const c = list.find((x) => x.id === activeId) ?? list[0];
+    if (!c) return "not connected";
+    return c.kind === "direct" ? `direct · ${c.url.replace(/^https?:\/\//, "")}` : `via relay → ${c.node}`;
+  } catch {
+    return "not connected";
+  }
+}
+
+/** Ask a node reached directly which mesh it is in — how a direct
+ *  connection is filed under the right mesh (PROPOSALS-2026-09-F.md
+ *  §2.3). Resolves to the mesh name, or null for a node in no mesh. */
+export async function probeMesh(url: string, token: string | null): Promise<{ mesh: string | null; node: string }> {
+  const headers: Record<string, string> = {};
+  if (token) headers["x-aspen-token"] = token;
+  const r = await fetch(`${url.replace(/\/+$/, "")}/api/mesh`, { headers });
+  if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? "that node wants a token" : `node answered ${r.status}`);
+  const m = (await r.json()) as { in_mesh?: boolean; mesh?: string; node?: string };
+  return { mesh: m.in_mesh && m.mesh ? m.mesh : null, node: m.node ?? "" };
 }

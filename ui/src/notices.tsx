@@ -7,10 +7,11 @@
 // Every preference is this browser's, in localStorage.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { scoped } from "./profiles";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api, serverNow, type Notice, type NoticeKind } from "./api";
-import { pushCurrent, pushSubscribe, pushSupported, pushUnsubscribe } from "./pwa";
+import { pushCurrent, pushOnElsewhere, pushOnHere, pushSubscribe, pushSupported, pushUnsubscribe, senderKey } from "./pwa";
 import { loadIdentity } from "./tunnel";
 
 export const NOTICE_KINDS: { kind: NoticeKind; label: string; hint: string }[] = [
@@ -40,7 +41,7 @@ const DEFAULT_PREFS: Prefs = {
 
 function loadPrefs(): Prefs {
   try {
-    const raw = localStorage.getItem(PREFS_KEY);
+    const raw = localStorage.getItem(scoped(PREFS_KEY));
     if (!raw) return DEFAULT_PREFS;
     const p = JSON.parse(raw) as Partial<Prefs>;
     return { ...DEFAULT_PREFS, ...p, kinds: { ...DEFAULT_PREFS.kinds, ...(p.kinds ?? {}) }, mutedNodes: p.mutedNodes ?? {} };
@@ -50,7 +51,7 @@ function loadPrefs(): Prefs {
 }
 function loadCursors(): Record<string, number> {
   try {
-    return JSON.parse(localStorage.getItem(CURSORS_KEY) ?? "{}") as Record<string, number>;
+    return JSON.parse(localStorage.getItem(scoped(CURSORS_KEY)) ?? "{}") as Record<string, number>;
   } catch {
     return {};
   }
@@ -93,7 +94,7 @@ export function NoticesProvider({ children }: { children: ReactNode }) {
   const setPrefs = useCallback((p: Prefs) => {
     setPrefsRaw(p);
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+      localStorage.setItem(scoped(PREFS_KEY), JSON.stringify(p));
     } catch {
       // storage unavailable
     }
@@ -122,7 +123,7 @@ export function NoticesProvider({ children }: { children: ReactNode }) {
         const first = Object.keys(cursors.current).length === 0;
         cursors.current = { ...cursors.current, ...res.cursors };
         try {
-          localStorage.setItem(CURSORS_KEY, JSON.stringify(cursors.current));
+          localStorage.setItem(scoped(CURSORS_KEY), JSON.stringify(cursors.current));
         } catch {
           // storage unavailable
         }
@@ -404,10 +405,10 @@ function consoleName(): string {
   const id = loadIdentity();
   if (id?.node) return id.node;
   try {
-    let v = localStorage.getItem("aspen.console.id");
+    let v = localStorage.getItem(scoped("aspen.console.id"));
     if (!v) {
       v = `browser-${Math.random().toString(36).slice(2, 8)}`;
-      localStorage.setItem("aspen.console.id", v);
+      localStorage.setItem(scoped("aspen.console.id"), v);
     }
     return v;
   } catch {
@@ -419,7 +420,7 @@ const PUSH_KINDS_KEY = "aspen.push.kinds";
 const PUSH_DEFAULT = ["question", "permission"];
 function loadPushKinds(): string[] {
   try {
-    const raw = localStorage.getItem(PUSH_KINDS_KEY);
+    const raw = localStorage.getItem(scoped(PUSH_KINDS_KEY));
     return raw ? (JSON.parse(raw) as string[]) : PUSH_DEFAULT;
   } catch {
     return PUSH_DEFAULT;
@@ -431,6 +432,10 @@ function loadPushKinds(): string[] {
  *  needs-you kinds by default. */
 function PushRow() {
   const [sub, setSub] = useState<PushSubscription | null>(null);
+  // One browser subscription, on or off per mesh (pwa.ts): the box is
+  // this mesh's; the subscription itself lives as long as any mesh uses it.
+  const [onHere, setOnHere] = useState<boolean>(pushOnHere);
+  const elsewhere = pushOnElsewhere();
   const [kinds, setKinds] = useState<string[]>(loadPushKinds);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -450,13 +455,13 @@ function PushRow() {
   const saveKinds = async (next: string[]) => {
     setKinds(next);
     try {
-      localStorage.setItem(PUSH_KINDS_KEY, JSON.stringify(next));
+      localStorage.setItem(scoped(PUSH_KINDS_KEY), JSON.stringify(next));
     } catch {
       /* ignore */
     }
-    if (sub) {
+    if (sub && onHere) {
       try {
-        await api.pushSubscribe(sub.toJSON(), consoleName(), next);
+        await api.pushSubscribe(sub.toJSON(), consoleName(), next, await senderKey());
       } catch (e) {
         setNote(e instanceof Error ? e.message : "could not update");
       }
@@ -466,13 +471,15 @@ function PushRow() {
     setBusy(true);
     setNote(null);
     try {
-      if (sub) {
+      if (sub && onHere) {
         await pushUnsubscribe();
-        setSub(null);
-        setNote("this device will not be pushed");
+        setOnHere(false);
+        setSub(await pushCurrent());
+        setNote(pushOnElsewhere().length > 0 ? `off here; still on in ${pushOnElsewhere().join(", ")}` : "this device will not be pushed");
       } else {
         const s = await pushSubscribe(consoleName(), kinds);
         setSub(s);
+        setOnHere(true);
         setNote("subscribed on this node");
       }
     } catch (e) {
@@ -497,9 +504,10 @@ function PushRow() {
   return (
     <div className="row notices-kinds" style={{ alignItems: "center", flexWrap: "wrap", gap: 6 }}>
       <label className="mono-meta" title="OS notifications with the console closed, sent by the node this console talks to; blocked sites need the browser's site settings">
-        <input type="checkbox" checked={!!sub} disabled={busy} onChange={() => void toggle()} /> push to this device
+        <input type="checkbox" checked={!!sub && onHere} disabled={busy} onChange={() => void toggle()} /> push to this device
       </label>
-      {sub && (
+      {!(sub && onHere) && elsewhere.length > 0 && <span className="mono-meta">on in {elsewhere.join(", ")} — turn it on here too to hear this mesh</span>}
+      {sub && onHere && (
         <>
           {NOTICE_KINDS.map((k) => (
             <label key={k.kind} className={`chip kind-toggle${kinds.includes(k.kind) ? "" : " off"}`} title={`push ${k.hint}`}>

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
+import { scoped } from "./profiles";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, type Agent, type Board, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
@@ -20,7 +21,8 @@ import { NoticesBell, NoticesProvider } from "./notices";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
 import { evictStaleTranscripts } from "./transcript";
 import { pwa, setBadge } from "./pwa";
-import { activeConnection, hosted } from "./connections";
+import { activeConnection, connectionSummary, hosted } from "./connections";
+import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, setProfileMesh, switchTo } from "./profiles";
 
 export interface AppData {
   agents: Agent[];
@@ -76,7 +78,7 @@ interface WorkingSet {
 }
 function loadWorkingSet(): WorkingSet {
   try {
-    const raw = localStorage.getItem(WS_KEY);
+    const raw = localStorage.getItem(scoped(WS_KEY));
     if (raw) {
       const v = JSON.parse(raw) as Partial<WorkingSet>;
       return { pinned: v.pinned ?? [], recent: v.recent ?? [] };
@@ -88,7 +90,7 @@ function loadWorkingSet(): WorkingSet {
 }
 function saveWorkingSet(ws: WorkingSet) {
   try {
-    localStorage.setItem(WS_KEY, JSON.stringify(ws));
+    localStorage.setItem(scoped(WS_KEY), JSON.stringify(ws));
   } catch {
     /* storage unavailable */
   }
@@ -400,6 +402,84 @@ function TunnelPill() {
   );
 }
 
+/** Which mesh this console is looking at (PROPOSALS-2026-09-F.md §2.2):
+ *  a label always — served by a node, that node's mesh; hosted, the
+ *  active profile's — and, hosted with more than one mesh, a menu that
+ *  switches. The node's answer also names a profile that reached it
+ *  directly before it knew where it was. */
+function MeshSwitcher({ node }: { node: NodeInfo | null }) {
+  const meshPoll = usePoll(api.mesh, 60000);
+  const [open, setOpen] = useState(false);
+  const [, setTick] = useState(0);
+  useEffect(() => onProfilesChange(() => setTick((n) => n + 1)), []);
+  const info = meshPoll.data;
+  // The node's answer names a profile that does not know its mesh yet;
+  // a profile that does keeps its name — a node in another mesh is a
+  // misfiled connection, said in the label, not a rename.
+  useEffect(() => {
+    if (!hosted || !info) return;
+    if (info.in_mesh && info.mesh) setProfileMesh(info.mesh, undefined, true);
+    else if (!info.in_mesh) setProfileMesh(null, info.node, true);
+  }, [info]);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+  const nodeLabel = node ? `node ${node.node}` : "connecting…";
+  if (!hosted) {
+    const mesh = info ? (info.in_mesh && info.mesh ? info.mesh : "no mesh") : null;
+    return <span className="mono-meta" title={mesh ? `this node is in mesh ${mesh}` : undefined}>{mesh ? `${mesh} · ${nodeLabel}` : nodeLabel}</span>;
+  }
+  const active = activeProfile();
+  const profiles = listProfiles();
+  const name = active ? profileName(active) : "no mesh";
+  const actual = info ? (info.in_mesh && info.mesh ? info.mesh : "no mesh") : null;
+  const misfiled = active?.mesh && actual && actual !== active.mesh ? ` (in ${actual})` : "";
+  return (
+    <span className="mesh-switch" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="btn ghost sm mono"
+        onClick={() => setOpen((o) => !o)}
+        title={profiles.length > 1 ? "switch mesh" : "connect to another mesh"}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {name} · {nodeLabel}{misfiled} ▾
+      </button>
+      {open && (
+        <div className="mesh-switch-menu" role="menu">
+          {profiles.map((p) => {
+            const conn = connectionSummary(p.id);
+            const isActive = p.id === active?.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                role="menuitem"
+                className={`mesh-switch-row${isActive ? " active" : ""}`}
+                onClick={() => {
+                  if (!isActive) switchTo(p.id);
+                  setOpen(false);
+                }}
+                title={isActive ? "the mesh you are looking at" : "switch to this mesh (the page reloads)"}
+              >
+                <span className="mono">{profileName(p)}</span>
+                <span className="mono-meta">{isActive ? `${conn} · here` : conn}</span>
+              </button>
+            );
+          })}
+          <button type="button" role="menuitem" className="mesh-switch-row" onClick={() => addProfile()} title="connect this console to another mesh">
+            <span>connect to another mesh…</span>
+          </button>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function StatusBar() {
   const { agents, node } = useAppData();
   const [theme, toggleTheme] = useTheme();
@@ -409,7 +489,7 @@ function StatusBar() {
   return (
     <header className="statusbar">
       <span className="brand"><img className="brand-mark" src={`${import.meta.env.BASE_URL}aspen-mark.svg`} alt="" width="18" height="18" />ASP<b>E</b>N</span>
-      <span className="mono-meta">{node ? `node ${node.node}` : "connecting…"}</span>
+      <MeshSwitcher node={node} />
       <span className="spacer" />
       <VersionBadge node={node} />
       <span className="micro" style={{ color: "var(--live)" }}>{busy} BUSY</span>

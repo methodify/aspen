@@ -17,6 +17,7 @@
 // This replaces Command, Sessions, and the rail's fleet list.
 
 import { useEffect, useMemo, useState } from "react";
+import { scoped } from "../profiles";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   api,
@@ -244,8 +245,8 @@ export default function Now() {
   const setReplyText = (t: string) => {
     setReplyTextRaw(t);
     try {
-      if (t) localStorage.setItem(`aspen.draft.now.${replyTo ?? ""}`, t);
-      else localStorage.removeItem(`aspen.draft.now.${replyTo ?? ""}`);
+      if (t) localStorage.setItem(scoped(`aspen.draft.now.${replyTo ?? ""}`), t);
+      else localStorage.removeItem(scoped(`aspen.draft.now.${replyTo ?? ""}`));
     } catch {
       // storage unavailable
     }
@@ -253,7 +254,7 @@ export default function Now() {
   useEffect(() => {
     if (!replyTo) return;
     try {
-      setReplyTextRaw(localStorage.getItem(`aspen.draft.now.${replyTo}`) ?? "");
+      setReplyTextRaw(localStorage.getItem(scoped(`aspen.draft.now.${replyTo}`)) ?? "");
     } catch {
       // storage unavailable
     }

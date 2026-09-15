@@ -648,3 +648,17 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .tool-run:hover { border-color: var(--line-hi); }
 .tool-run-collapse { align-self: flex-start; background: none; border: 0; padding: 2px 0; cursor: pointer; color: var(--text-dim); font: inherit; font-size: 0.75rem; }
 .tool-run-collapse:hover { text-decoration: underline; }
+
+/* The mesh switcher in the status bar (PROPOSALS-2026-09-F.md §2.2). */
+.mesh-switch { position: relative; display: inline-flex; }
+.mesh-switch-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; min-width: 260px;
+  background: var(--bg-panel, var(--bg)); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); padding: 4px; display: flex; flex-direction: column;
+}
+.mesh-switch-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 6px 10px; border: 0; background: transparent; color: inherit; border-radius: 4px; cursor: pointer; font: inherit;
+}
+.mesh-switch-row:hover { background: var(--bg-well); }
+.mesh-switch-row.active { border-left: 2px solid var(--sig-normal); }

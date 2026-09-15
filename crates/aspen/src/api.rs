@@ -2121,6 +2121,10 @@ struct PushSubscribeBody {
     console: Option<String>,
     /// Notice kinds to push; absent = the needs-you kinds.
     kinds: Option<Vec<String>>,
+    /// The sender key the subscription was made with, when the console
+    /// holds it (`{private_key, public_key}`, base64url): one browser
+    /// subscription registered in several meshes needs one key everywhere.
+    vapid: Option<Value>,
 }
 
 async fn post_push_subscribe(State(s): S, Json(b): Json<PushSubscribeBody>) -> impl IntoResponse {
@@ -2157,12 +2161,29 @@ async fn post_push_subscribe(State(s): S, Json(b): Json<PushSubscribeBody>) -> i
             .collect(),
     };
     let console = b.console.unwrap_or_else(|| "console".into());
-    match s
-        .node
-        .inner
-        .store
-        .push_sub_upsert(&console, &endpoint, &p256dh, &auth, &kinds)
-    {
+    let vapid = match b.vapid {
+        Some(v) => {
+            let ok = v.get("private_key").and_then(Value::as_str).is_some()
+                && v.get("public_key").and_then(Value::as_str).is_some();
+            if !ok {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "vapid needs private_key and public_key",
+                )
+                .into_response();
+            }
+            Some(v.to_string())
+        }
+        None => None,
+    };
+    match s.node.inner.store.push_sub_upsert(
+        &console,
+        &endpoint,
+        &p256dh,
+        &auth,
+        &kinds,
+        vapid.as_deref(),
+    ) {
         Ok(()) => Json(json!({ "ok": true, "kinds": kinds })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

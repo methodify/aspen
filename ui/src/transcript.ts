@@ -7,6 +7,7 @@
 // new one, so this module is unit-testable in isolation.
 
 import type { HistoryImage, HistoryItem } from "./api";
+import { transcriptKey } from "./profiles";
 import type {
   SessionEvent,
   AssistantMessageEvent,
@@ -827,7 +828,7 @@ export async function loadPersistedTranscript(name: string): Promise<TranscriptS
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(STORE, "readonly");
-      const req = tx.objectStore(STORE).get(name);
+      const req = tx.objectStore(STORE).get(transcriptKey(name));
       req.onsuccess = () => {
         const v = req.result as { state?: TranscriptState } | undefined;
         resolve(v?.state && Array.isArray(v.state.items) ? v.state : undefined);
@@ -850,7 +851,7 @@ export function persistTranscript(name: string, state: TranscriptState, now = fa
       new Promise<boolean>((resolve) => {
         try {
           const tx = db.transaction(STORE, "readwrite");
-          const req = tx.objectStore(STORE).put({ state: toSave, savedAt: Date.now() }, name);
+          const req = tx.objectStore(STORE).put({ state: toSave, savedAt: Date.now() }, transcriptKey(name));
           req.onsuccess = () => resolve(true);
           req.onerror = () => resolve(false);
           tx.onabort = () => resolve(false);
@@ -904,6 +905,30 @@ export async function evictStaleTranscripts(now = Date.now()): Promise<number> {
       tx.onabort = () => resolve(n);
     } catch {
       resolve(n);
+    }
+  });
+}
+
+/** Forget every persisted transcript whose key starts with `prefix` — a
+ *  mesh being removed from this console (profiles.ts). */
+export async function dropTranscriptsWithPrefix(prefix: string): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(STORE, "readwrite");
+      const req = tx.objectStore(STORE).openCursor();
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (!cur) return;
+        if (typeof cur.key === "string" && cur.key.startsWith(prefix)) cur.delete();
+        cur.continue();
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
     }
   });
 }

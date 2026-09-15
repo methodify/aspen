@@ -70,9 +70,29 @@ export function setBadge(n: number) {
   }
 }
 
-// ── Web Push (PROPOSALS-2026-09-D.md §4) ───────────────────────────────
+// ── Web Push (PROPOSALS-2026-09-D.md §4; several meshes: PROPOSALS-2026-09-F.md §2.5) ──
+//
+// A browser holds one push subscription per app, and that subscription
+// is bound to one sender (VAPID) key. A console that holds several
+// meshes registers the same subscription in each, so the key must be the
+// same everywhere: it is the console's own, made here, kept browser-wide,
+// and handed to every node the console subscribes on. A node without one
+// (older consoles) uses its own key. The key authorizes nothing but
+// pushes to this browser, which the node could already do.
 
 import { api } from "./api";
+import { activeProfile, listProfiles, readFrom, scoped } from "./profiles";
+
+export interface SenderKey {
+  /** Raw 32-byte P-256 private scalar, base64url without padding. */
+  private_key: string;
+  /** Uncompressed 65-byte P-256 public point, base64url without padding. */
+  public_key: string;
+}
+
+const SENDER_KEY = "aspen.push.sender";
+/** Per mesh: whether this device subscribed on a node there. */
+const PUSH_ON_KEY = "aspen.push.on";
 
 function b64urlToBytes(s: string): Uint8Array {
   const pad = "=".repeat((4 - (s.length % 4)) % 4);
@@ -80,6 +100,39 @@ function b64urlToBytes(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+function bytesToB64url(b: Uint8Array): string {
+  let s = "";
+  for (const x of b) s += String.fromCharCode(x);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** The console's sender key, made on first use (WebCrypto P-256; the
+ *  private scalar is exported once, to hand to nodes). */
+export async function senderKey(): Promise<SenderKey> {
+  try {
+    const raw = localStorage.getItem(SENDER_KEY);
+    if (raw) {
+      const k = JSON.parse(raw) as SenderKey;
+      if (k.private_key && k.public_key) return k;
+    }
+  } catch {
+    /* fall through */
+  }
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  if (!jwk.d || !jwk.x || !jwk.y) throw new Error("could not export the push key");
+  const pub = new Uint8Array(65);
+  pub[0] = 4;
+  pub.set(b64urlToBytes(jwk.x), 1);
+  pub.set(b64urlToBytes(jwk.y), 33);
+  const k: SenderKey = { private_key: jwk.d, public_key: bytesToB64url(pub) };
+  try {
+    localStorage.setItem(SENDER_KEY, JSON.stringify(k));
+  } catch {
+    /* storage unavailable: a new key next time, and a re-subscribe */
+  }
+  return k;
 }
 
 export function pushSupported(): boolean {
@@ -93,28 +146,74 @@ export async function pushCurrent(): Promise<PushSubscription | null> {
   return reg.pushManager.getSubscription();
 }
 
-/** Ask permission, subscribe with the node's VAPID key, register with the
- *  node. `console` names this browser to the node. */
+/** Whether this device is subscribed in the active mesh. */
+export function pushOnHere(): boolean {
+  try {
+    return localStorage.getItem(scoped(PUSH_ON_KEY)) === "1";
+  } catch {
+    return false;
+  }
+}
+function setPushOnHere(on: boolean) {
+  try {
+    if (on) localStorage.setItem(scoped(PUSH_ON_KEY), "1");
+    else localStorage.removeItem(scoped(PUSH_ON_KEY));
+  } catch {
+    /* storage unavailable */
+  }
+}
+/** Meshes (other than the active one) where this device is subscribed. */
+export function pushOnElsewhere(): string[] {
+  const me = activeProfile()?.id;
+  return listProfiles()
+    .filter((p) => p.id !== me && readFrom(p.id, PUSH_ON_KEY) === "1")
+    .map((p) => p.label ?? p.mesh ?? p.node ?? "another mesh");
+}
+
+function sameKey(sub: PushSubscription, key: SenderKey): boolean {
+  const k = sub.options.applicationServerKey;
+  if (!k) return false;
+  return bytesToB64url(new Uint8Array(k)) === key.public_key;
+}
+
+/** Ask permission, subscribe with the console's sender key, register on
+ *  the node this console talks to. A subscription made with another key
+ *  (a node's own, before v0.29) is replaced. `console` names this
+ *  browser to the node. */
 export async function pushSubscribe(consoleName: string, kinds: string[]): Promise<PushSubscription> {
   if (!pushSupported()) throw new Error("this browser has no Web Push");
   const perm = await Notification.requestPermission();
   if (perm !== "granted") throw new Error(perm === "denied" ? "notifications are blocked for this site" : "permission was not granted");
-  const { public_key } = await api.pushVapid();
+  const key = await senderKey();
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(public_key) as BufferSource });
+  if (sub && !sameKey(sub, key)) {
+    // Made with a node's key: tell that node, drop it, make ours.
+    try {
+      await api.pushUnsubscribe(sub.endpoint);
+    } catch {
+      /* the node forgets it on the first gone response */
+    }
+    await sub.unsubscribe();
+    sub = null;
   }
-  await api.pushSubscribe(sub.toJSON(), consoleName, kinds);
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(key.public_key) as BufferSource });
+  }
+  await api.pushSubscribe(sub.toJSON(), consoleName, kinds, key);
+  setPushOnHere(true);
   return sub;
 }
 
+/** Unregister on this mesh's node; drop the browser subscription only
+ *  when no other mesh still uses it. */
 export async function pushUnsubscribe(): Promise<void> {
   const sub = await pushCurrent();
+  setPushOnHere(false);
   if (!sub) return;
   try {
     await api.pushUnsubscribe(sub.endpoint);
   } finally {
-    await sub.unsubscribe();
+    if (pushOnElsewhere().length === 0) await sub.unsubscribe();
   }
 }
