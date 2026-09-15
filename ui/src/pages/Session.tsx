@@ -1158,7 +1158,7 @@ function PluginsMenu({
                   <span className="plug-body">
                     <span className="mono">{c.name}<span className="mono-meta"> @{c.marketplace}{via ? ` · via ${via}` : ""}</span></span>
                     <span className="mono-meta plug-versions">
-                      {run ? `running ${run.version}` : next ? `starts with ${next.version} next time` : on ? "not cached yet" : cachedNow ? `latest ${latest}` : "not cached on this node"}
+                      {run ? `running ${run.version}` : next ? `starts with ${next.version} next time` : on ? "not cached yet" : `off · ${latest} in the library${cachedNow ? "" : " (cached when turned on)"}`}
                       {run && !newer && run.version === latest ? " · latest" : ""}
                       {newer ? ` · latest ${latest}` : ""}
                     </span>
