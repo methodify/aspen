@@ -145,6 +145,10 @@ A direct node that turns out to be in a different mesh than the profile
 is named in the label (*beta · node j2 (in relaytest)*), never used to
 rename the profile.
 
+On a phone the status bar scrolls sideways, and that overflow clips
+anything positioned inside it, so the menu pins itself under the bar,
+full width (`phone.css`, v0.29.1).
+
 **The Meshes page** (`/attach`, hosted): a card per mesh — its name
 (click to label it for this console), identity and certification
 state, how it gets in, whether this device is pushed from it — with

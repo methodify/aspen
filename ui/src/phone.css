@@ -60,3 +60,12 @@
   .phone-note { display: block; }
 }
 .phone-note { display: none; margin: 0 0 var(--sp-3); padding: 8px 10px; border: 1px solid var(--line); background: var(--bg-strip-2); color: var(--text-mid); font-size: 0.8rem; }
+
+/* The mesh switcher's menu: the status bar scrolls sideways on a phone,
+   and that overflow would clip a dropdown inside it — so the menu pins
+   itself under the bar, full width (CONSOLE_APP.md §7). */
+@media (max-width: 720px) {
+  .mesh-switch { position: static; }
+  .mesh-switch-menu { position: fixed; top: calc(var(--statusbar-h) + 4px); left: var(--sp-3); right: var(--sp-3); min-width: 0; }
+  .mesh-switch-row { padding: 10px 12px; }
+}
