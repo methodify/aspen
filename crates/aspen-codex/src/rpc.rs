@@ -59,7 +59,7 @@ pub struct RpcClient {
 impl RpcClient {
     /// Spawn the process. Returns the client and the inbound stream.
     pub fn spawn(spec: &ProcessSpec) -> Result<(Arc<Self>, mpsc::Receiver<Inbound>)> {
-        let mut cmd = Command::new(&spec.codex_bin);
+        let mut cmd = Command::new(&spec.codex_bin); // quiet: CREATE_NO_WINDOW below
         cmd.arg("app-server").arg("--listen").arg("stdio://");
         for (k, v) in &spec.config_overrides {
             cmd.arg("-c").arg(format!("{k}={v}"));

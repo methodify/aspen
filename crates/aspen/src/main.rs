@@ -1419,7 +1419,7 @@ fn spawn_detached(
     let log_err = log.try_clone()?;
 
     let exe = std::env::current_exe()?;
-    let mut cmd = Command::new(exe);
+    let mut cmd = Command::new(exe); // quiet: DETACHED_PROCESS below — no console at all
     cmd.arg("--data-dir")
         .arg(data_dir)
         .arg("up")
@@ -1576,7 +1576,9 @@ pub(crate) fn process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        std::process::Command::new("tasklist")
+        // quiet: a bare tasklist flashed a console for every liveness poll
+        // (the cascade seen during `aspen update` on Windows).
+        aspen_node::gitstate::quiet_command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
@@ -1751,7 +1753,7 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
 
     let files = MeshFiles::new(data_dir);
     let default_node = || {
-        std::process::Command::new("hostname")
+        aspen_node::gitstate::quiet_command("hostname") // quiet: no window
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())

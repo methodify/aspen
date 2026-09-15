@@ -117,7 +117,7 @@ fn list_all() -> Vec<Proc> {
 
 #[cfg(not(any(target_os = "linux", windows)))]
 fn list_all() -> Vec<Proc> {
-    let Ok(out) = std::process::Command::new("ps")
+    let Ok(out) = std::process::Command::new("ps") // quiet: not windows
         .args(["-axo", "pid=,ppid=,etimes=,args="])
         .output()
     else {
@@ -148,18 +148,18 @@ pub fn terminate(pid: u32) -> std::io::Result<()> {
     {
         let alive = |p: u32| std::path::Path::new(&format!("/proc/{p}")).exists();
         for c in descendants(pid) {
-            let _ = std::process::Command::new("kill")
+            let _ = std::process::Command::new("kill") // quiet: unix only
                 .args(["-TERM", &c.pid.to_string()])
                 .status();
         }
         // The parent (a shell wrapper) often exits on its own once its
         // child is gone; a missing process is the outcome we wanted.
-        let _ = std::process::Command::new("kill")
+        let _ = std::process::Command::new("kill") // quiet: unix only
             .args(["-TERM", &pid.to_string()])
             .status();
         std::thread::sleep(std::time::Duration::from_millis(1500));
         if alive(pid) {
-            let _ = std::process::Command::new("kill")
+            let _ = std::process::Command::new("kill") // quiet: unix only
                 .args(["-KILL", &pid.to_string()])
                 .status();
             std::thread::sleep(std::time::Duration::from_millis(300));

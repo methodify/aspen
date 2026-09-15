@@ -26,6 +26,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
+      - name: spawn audit (no console windows on Windows)
+        shell: bash
+        run: scripts/check-spawns
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test

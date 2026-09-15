@@ -853,7 +853,7 @@ pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> 
         .create(true)
         .append(true)
         .open(data_dir.join("aspen.log"));
-    let mut cmd = std::process::Command::new(&exe);
+    let mut cmd = std::process::Command::new(&exe); // quiet: CREATE_NO_WINDOW below
     cmd.arg("--data-dir")
         .arg(&data_dir)
         .args(args)
@@ -902,7 +902,7 @@ fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
         .create(true)
         .append(true)
         .open(data_dir.join("aspen.log"));
-    let mut cmd = std::process::Command::new(&exe);
+    let mut cmd = std::process::Command::new(&exe); // quiet: CREATE_NO_WINDOW below
     cmd.arg("--data-dir")
         .arg(&data_dir)
         .args([

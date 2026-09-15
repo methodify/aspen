@@ -279,7 +279,7 @@ fn rollback(data_dir: &Path, exe: &Path, current: &str, trigger: &str) -> Result
         exe.display(),
         slot.display()
     );
-    let ver = std::process::Command::new(exe)
+    let ver = aspen_node::gitstate::quiet_command(&exe.to_string_lossy()) // quiet: no window
         .arg("--version")
         .output()
         .ok()

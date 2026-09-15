@@ -1,0 +1,20 @@
+#!/bin/bash
+# Every process the daemon or CLI starts on Windows must not open a
+# console window (aspen-core::quiet_command, or CREATE_NO_WINDOW /
+# DETACHED_PROCESS set by hand). A bare `Command::new(` is a flash on the
+# operator's screen — the git-status cascade, the tasklist cascade during
+# updates. This check fails CI on any `Command::new(` outside the helpers
+# that is not annotated `// quiet: <why it is fine>`.
+set -u
+cd "$(dirname "$0")/.."
+bad=$(grep -rn "Command::new(" crates --include=*.rs \
+  | grep -v "crates/aspen-core/src/process.rs" \
+  | grep -v "crates/aspen-node/src/gitstate.rs" \
+  | grep -v "/build.rs:" \
+  | grep -v "// quiet:")
+if [ -n "$bad" ]; then
+  echo "process spawns without a window treatment (use quiet_command or annotate '// quiet: ...'):"
+  echo "$bad"
+  exit 1
+fi
+echo "spawn audit: ok"

@@ -103,7 +103,7 @@ pub struct ClaudeProcess {
 }
 
 pub fn spawn(spec: &SpawnSpec) -> Result<ClaudeProcess> {
-    let mut cmd = Command::new(&spec.claude_bin);
+    let mut cmd = Command::new(&spec.claude_bin); // quiet: CREATE_NO_WINDOW below
     cmd.args(spec.argv())
         .current_dir(&spec.cwd)
         .env("CLAUDE_CODE_ENTRYPOINT", &spec.entrypoint)

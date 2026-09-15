@@ -279,6 +279,17 @@ evacuating; evacuate first, update second, is the intended order.
 - **Harness update orchestration** — Claude Code updates itself; we report
   its version and skew, nothing more.
 
+## No console windows on Windows (v0.28.1)
+
+Every process the daemon or the CLI starts on Windows is started
+without a console: `aspen_core::quiet_command` (`CREATE_NO_WINDOW`), or
+the flag set by hand where a `tokio::process::Command` or a detached
+launch needs it. The cascade of black boxes during `aspen update` was
+`tasklist`, polled for liveness by a process that itself had no console
+— each poll opened one. `scripts/check-spawns` runs in CI and fails on
+any `Command::new(` that is neither a helper nor annotated
+`// quiet: <why>`; a new spawn site has to say how it is silent.
+
 ## Start-up: nothing slow on a request (v0.25.2)
 
 A Windows node served the console's HTML at once but answered no API
