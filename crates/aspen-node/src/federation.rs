@@ -49,6 +49,11 @@ pub struct RemoteAgent {
     /// MCP servers by status (PROPOSALS-MCP.md), live sessions only.
     #[serde(default)]
     pub mcp: Option<Value>,
+    /// What the process runs with (plugins.rs), and newer cached versions.
+    #[serde(default)]
+    pub plugins: Option<Value>,
+    #[serde(default)]
+    pub plugin_updates: Option<Value>,
 }
 
 pub struct MeshState {
@@ -903,6 +908,11 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                 "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
                 "harness": a.harness,
                 "mcp": live.as_ref().map(|m| crate::node::mcp_summary(m)),
+                "plugins": live.as_ref().map(|m| json!(m.plugins)),
+                "plugin_updates": match (live.as_ref(), inner.data_dir.as_deref()) {
+                    (Some(m), Some(dd)) => Some(json!(crate::plugins::updates_for(dd, &m.plugins))),
+                    _ => None,
+                },
             })
         })
         .collect();

@@ -69,6 +69,22 @@ is skipped and named in the spawn note.
 
 ## 5. Updates without surprises
 
+**Current is content, not only a version string (v0.28).** For a plugin
+whose source is a path inside the marketplace checkout, the sync hashes
+the source tree (paths, sizes, mtimes) and records it in the cache dir
+(`.aspen-content`) and the catalog (`content`). The same declared
+version whose tree changed is cached again under `<version>-<hash8>`,
+and that key is the catalog's `current`; a git-sourced plugin (a clone at
+a ref) keeps version-only keys. So a directory marketplace under
+development, whose `version` is not bumped for every edit, still moves.
+
+**A new process starts on what is current (v0.28).** A spawn syncs the
+marketplaces its effective plugins come from — skipped when synced
+within the last minute, capped at 20 s, never fatal — and then
+resolves. Before, spawns resolved against the last hourly sync, which
+is why disabling and re-enabling a rule (a sync trigger) was the only
+way to move a session forward.
+
 A running session keeps the version it started with. When a sync caches
 a newer current version for a plugin it runs, the agent JSON carries
 `plugin_updates: [{plugin, running, available}]`, the session page shows
@@ -87,9 +103,16 @@ its own. *Reload* stays for the parts the harness hot-reloads.
   matrix — one row per scope (mesh; each node; each repo; each session)
   with on / off / unset, and a pin for new rules. From the plugin, its
   application.
-- Session page: *plugins N ▾* lists what the process runs with (version,
-  the scope that decided), what it would start with now when that
-  differs, anything not cached, and a link to the page; plus the nag.
+- Session page: *plugins N ▾* (v0.28, PROPOSALS-2026-09-E.md) lists
+  every plugin in the library with an **on/off for this session** toggle
+  (writes a session-scope rule, which wins over repo, node and mesh),
+  the version **running** vs the **latest** cached, **update** (sync that
+  marketplace, restart in place), *starts with … next time* with a
+  restart, *not cached yet*; below, **from the harness's own
+  configuration**: what the runtime reports it loaded from its own tree
+  (Claude's init inventory), read-only. Remote sessions show all of this
+  too: `plugins` and `plugin_updates` ride the roster. The nag under
+  the header stays.
 - API: `GET /api/plugins` (registry + catalog), `PUT/DELETE
   /api/plugins/marketplaces/{name}`, `PUT/DELETE /api/plugins/rules/{id}`,
   `POST /api/plugins/sync`, `GET /api/plugins/effective?agent=` (local or

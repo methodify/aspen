@@ -32,8 +32,19 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
+| G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
+| G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-14: the plugins menu (G-1..G-6, v0.28)
+
+Design: [PROPOSALS-2026-09-E.md](PROPOSALS-2026-09-E.md); as built:
+PLUGINS.md §5–6. Plugins on the roster, the harness's own plugins shown,
+per-session toggles and versions in the menu, update from the menu,
+sync before spawn, content-hashed cache keys. Backlog from it: adopting
+the harness's own plugins into the library; per-plugin usage; hot
+reload where the harness can.
 
 ## Shipped — 2026-09-10: Web Push (D-4, v0.27)
 

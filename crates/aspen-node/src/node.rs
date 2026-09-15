@@ -991,6 +991,9 @@ impl Node {
                     .mesh()
                     .map(|m| m.identity.node.clone())
                     .unwrap_or_else(|| "local".into());
+                // A new process starts on what is current, not on what
+                // the last hourly sync happened to leave (PLUGINS.md §5).
+                crate::plugins::sync_for_spawn(&self.inner, &rules, &node, &repo, name).await;
                 crate::plugins::resolve(dd, &rules, &node, &repo, name)
             }
             _ => (Vec::new(), Vec::new()),

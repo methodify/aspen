@@ -1116,3 +1116,16 @@ cleaner lane for roster updates than user-message headers.
   a down link loses the notice, which the doc says. iOS needs the app on
   the Home Screen before Safari offers push at all; the panel says so
   rather than hiding the toggle.
+- **2026-09-14 — v0.28, the plugins menu that tells the truth**
+  (PROPOSALS-2026-09-E.md). "No plugins" in every session had four
+  causes and none was the operator: remote sessions never carried their
+  plugin set on the roster; the harness's own plugins were captured and
+  never shown; spawns resolved against the last hourly sync; and a
+  cached version dir was never rebuilt when its content changed under
+  the same declared version. Decisions: the session menu is the
+  session's plugin surface (every library plugin, on/off writing a
+  session rule, running vs latest, update = sync + restart in place);
+  the harness's own plugins are shown read-only rather than hidden;
+  current is content-hashed for in-checkout sources; a spawn syncs
+  first, bounded to 20 s. A running session still never changes under
+  the operator's feet.

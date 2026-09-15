@@ -1226,6 +1226,8 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "mesh": mesh.mesh_of_peer(node),
                             "harness": a.harness,
                             "mcp": if reachable { a.mcp.clone() } else { None },
+                            "plugins": if reachable { a.plugins.clone().unwrap_or_else(|| json!([])) } else { json!([]) },
+                            "plugin_updates": if reachable { a.plugin_updates.clone().unwrap_or_else(|| json!([])) } else { json!([]) },
                         }));
                     }
                 }

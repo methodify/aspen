@@ -93,6 +93,11 @@ pub struct CatalogPlugin {
     /// Cached versions on this node, newest first.
     #[serde(default)]
     pub cached: Vec<String>,
+    /// A hash of the plugin's source tree for sources in the checkout —
+    /// the same declared version with new content is a new `current`
+    /// (`<version>-<hash8>`, PROPOSALS-2026-09-E.md §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -249,6 +254,70 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A short hash over a source tree: every file's relative path, size and
+/// mtime (content is not read — plugins are small, but a marketplace can
+/// hold many). Enough to notice an edit under an unchanged version.
+fn tree_hash(dir: &Path) -> Option<String> {
+    use sha2::Digest;
+    let mut entries: Vec<(String, u64, u64)> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let rd = std::fs::read_dir(&d).ok()?;
+        for e in rd.flatten() {
+            let p = e.path();
+            if e.file_name() == ".git" {
+                continue;
+            }
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(m) = e.metadata() {
+                let rel = p
+                    .strip_prefix(dir)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let mt = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                entries.push((rel, m.len(), mt));
+            }
+        }
+    }
+    entries.sort();
+    let mut h = sha2::Sha256::new();
+    for (rel, len, mt) in entries {
+        h.update(rel.as_bytes());
+        h.update(len.to_le_bytes());
+        h.update(mt.to_le_bytes());
+        h.update([0]);
+    }
+    Some(format!("{:x}", h.finalize())[..8].to_owned())
+}
+
+/// The cache key for a plugin as its source stands now: the declared
+/// version (or checkout commit); with a content hash, the same declared
+/// version whose tree changed becomes `<version>-<hash8>` — except the
+/// first time a version is seen, which keeps the plain key.
+fn current_key(data_dir: &Path, cp: &CatalogPlugin, content: Option<&str>) -> String {
+    let base = cp.version.clone().unwrap_or_else(|| cp.current.clone());
+    let Some(hash) = content else { return base };
+    let plain = cache_root(data_dir)
+        .join(safe(&cp.marketplace))
+        .join(safe(&cp.name))
+        .join(safe(&base));
+    match std::fs::read_to_string(plain.join(".aspen-content")) {
+        Ok(recorded) if recorded.trim() == hash => base,
+        // `-` survives `safe()`; `+` would not, and the cache dir must
+        // carry the key as written.
+        Ok(_) => format!("{base}-{hash}"),
+        // Not cached under the plain key yet: that is where it goes.
+        Err(_) => base,
+    }
+}
+
 /// Put `plugin`'s current version on disk; returns the cache path.
 /// Relative sources copy out of the checkout; git sources shallow-clone
 /// at their ref into a temp dir and copy the subdir.
@@ -260,6 +329,12 @@ fn materialize(data_dir: &Path, checkout_dir: &Path, cp: &CatalogPlugin) -> Resu
     if dest.join(".claude-plugin").join("plugin.json").is_file()
         || dest.join("plugin.json").is_file()
     {
+        // Record the content hash on a dir cached before hashing existed.
+        if let Some(h) = &cp.content {
+            if !dest.join(".aspen-content").exists() {
+                let _ = std::fs::write(dest.join(".aspen-content"), h);
+            }
+        }
         return Ok(dest);
     }
     let tmp = dest.with_extension("partial");
@@ -316,6 +391,9 @@ fn materialize(data_dir: &Path, checkout_dir: &Path, cp: &CatalogPlugin) -> Resu
         }
         _ => return Err(anyhow!("bad plugin source")),
     }
+    if let Some(h) = &cp.content {
+        let _ = std::fs::write(tmp.join(".aspen-content"), h);
+    }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -345,6 +423,13 @@ pub fn sync_marketplace(
             continue;
         };
         let version = p.get("version").and_then(|v| v.as_str()).map(str::to_owned);
+        let source = p.get("source").cloned().unwrap_or(Value::Null);
+        // Content hash for sources that live in the checkout (a relative
+        // path); a git source's ref is its content.
+        let content = match &source {
+            Value::String(rel) => tree_hash(&dir.join(rel.trim_start_matches("./"))),
+            _ => None,
+        };
         let mut cp = CatalogPlugin {
             marketplace: m.name.clone(),
             name: name.to_owned(),
@@ -358,9 +443,11 @@ pub fn sync_marketplace(
                 .map(str::to_owned),
             current: version.clone().unwrap_or_else(|| sha.clone()),
             version,
-            source: p.get("source").cloned().unwrap_or(Value::Null),
+            source,
             cached: Vec::new(),
+            content: content.clone(),
         };
+        cp.current = current_key(data_dir, &cp, content.as_deref());
         let wanted = rules
             .iter()
             .any(|r| !r.deleted && r.enabled && r.marketplace == m.name && r.plugin == name);
@@ -632,6 +719,57 @@ pub fn registry_json(inner: &Arc<NodeInner>) -> Value {
         "catalog": catalog,
         "node": inner.mesh().map(|m| m.identity.node.clone()),
     })
+}
+
+/// Sync before a spawn (PROPOSALS-2026-09-E.md §1): the marketplaces the
+/// session's effective plugins come from, unless synced within the last
+/// minute; capped, never fatal — a slow git must not hold a session.
+pub async fn sync_for_spawn(
+    inner: &Arc<NodeInner>,
+    rules: &[Rule],
+    node: &str,
+    repo: &Path,
+    agent: &str,
+) {
+    let Some(dd) = inner.data_dir.clone() else {
+        return;
+    };
+    let markets: Vec<String> = effective(rules, node, repo, agent)
+        .into_iter()
+        .map(|(m, _, _, _)| m)
+        .collect();
+    if markets.is_empty() {
+        return;
+    }
+    let catalog = load_catalog(&dd);
+    let now = crate::store::now_epoch();
+    let stale: Vec<String> = markets
+        .into_iter()
+        .filter(|m| catalog.synced_at.get(m).is_none_or(|t| now - t > 60.0))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    let all = inner.store.marketplaces(false).unwrap_or_default();
+    let rules = rules.to_vec();
+    let job = tokio::task::spawn_blocking(move || {
+        let mut catalog = load_catalog(&dd);
+        for m in all.iter().filter(|m| !m.deleted && stale.contains(&m.name)) {
+            if let Err(e) = sync_marketplace(&dd, m, &rules, &mut catalog) {
+                tracing::warn!(marketplace = %m.name, error = %e, "pre-spawn plugin sync failed");
+                catalog.errors.insert(m.name.clone(), format!("{e:#}"));
+            }
+        }
+        let _ = save_catalog(&dd, &catalog);
+    });
+    if tokio::time::timeout(std::time::Duration::from_secs(20), job)
+        .await
+        .is_err()
+    {
+        tracing::warn!("pre-spawn plugin sync did not finish in 20s; starting with what is cached");
+    }
 }
 
 /// Sync in the background (git is blocking) and log the outcome.

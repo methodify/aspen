@@ -537,3 +537,10 @@
 .item-anchor { display: contents; }
 .bubble.flash { outline: 2px solid var(--sig-notice); outline-offset: 2px; transition: outline-color 1.5s ease 0.8s; }
 .ctl-model-inuse { margin-left: 6px; color: var(--text-mid); }
+
+/* plugins menu (PROPOSALS-2026-09-E.md) */
+.plug-row { align-items: center; gap: 10px; }
+.plug-toggle { display: inline-flex; align-items: center; }
+.plug-toggle input { width: auto; margin: 0; }
+.plug-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.plug-versions { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

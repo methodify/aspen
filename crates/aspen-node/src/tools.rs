@@ -435,6 +435,8 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
                                 activities: None,
                                 harness: Default::default(),
                                 mcp: None,
+                                plugins: None,
+                                plugin_updates: None,
                             }),
                         ))
                     }
