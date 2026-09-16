@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { scoped } from "./profiles";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, type Agent, type Board, type BusMessage, type NodeInfo } from "./api";
+import { api, type Agent, type Board, type BoardNode, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
 import { Meter, presenceOf, useTheme } from "./components";
 import Now from "./pages/Now";
@@ -32,6 +32,9 @@ export interface AppData {
   refreshAgents: () => Promise<void>;
   inbox: BusMessage[];
   refreshInbox: () => Promise<void>;
+  /** Agents with a permission prompt or question open for the operator
+   *  (`/api/needs` prompts), fleet-wide. */
+  waiting: Set<string>;
   node: NodeInfo | null;
   refreshNode: () => Promise<void>;
 }
@@ -43,6 +46,7 @@ const AppDataContext = createContext<AppData>({
   refreshAgents: async () => {},
   inbox: [],
   refreshInbox: async () => {},
+  waiting: new Set(),
   node: null,
   refreshNode: async () => {},
 });
@@ -146,9 +150,21 @@ function MeshColumn() {
     // reload when navigating (a board was just created/deleted)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc.pathname.startsWith("/board")]);
-  const { agents, inbox } = useAppData();
+  const { agents, inbox, waiting } = useAppData();
   const location = useLocation();
   const [ws, setWs] = useState<WorkingSet>(loadWorkingSet);
+  // A board's pip is the net of its panes' (the operator's ask): any
+  // session pane waiting on the operator lights the board.
+  const boardWaiting = (b: Board): number => {
+    if (b.query) return 0;
+    let n = 0;
+    const walk = (node: BoardNode) => {
+      if (node.kind === "split") node.children.forEach(walk);
+      else if (node.kind === "session" && node.agent && waiting.has(node.agent)) n++;
+    };
+    walk(b.layout);
+    return n;
+  };
 
   // Visiting a session adds it to the recents.
   useEffect(() => {
@@ -201,6 +217,9 @@ function MeshColumn() {
         <span className="rail-body">
           <span className="rail-line1">
             <span className="mono rail-name">@{bare}</span>
+            {waiting.has(a.name) && (
+              <span className="rail-wait-pip" title="waiting on you — a permission prompt or question is open" aria-label="waiting on you" />
+            )}
             {(a.activities?.running ?? 0) > 0 && (
               <span
                 className="rail-activity-pip"
@@ -256,6 +275,9 @@ function MeshColumn() {
             <NavLink key={b.id} to={`/board/${b.id}`} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`} title={b.name}>
               <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>▦</span>
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+              {boardWaiting(b) > 0 && (
+                <span className="rail-wait-pip" title={`${boardWaiting(b)} session${boardWaiting(b) === 1 ? "" : "s"} on this board waiting on you`} aria-label="a session on this board is waiting on you" />
+              )}
             </NavLink>
           ))}
         </>
@@ -569,6 +591,8 @@ function OpenLink() {
 export default function App() {
   const agentsPoll = usePoll(api.agents, 2000);
   const inboxPoll = usePoll(api.inbox, 5000);
+  const needsPoll = usePoll(api.needs, 3000);
+  const waiting = useMemo(() => new Set((needsPoll.data?.prompts ?? []).map((p) => p.agent)), [needsPoll.data]);
   const nodePoll = usePoll(api.node, 15000);
   // The dock badge is the needs-you count (PROPOSALS-2026-09-D.md §1).
   const needsCount = inboxPoll.data?.length ?? 0;
@@ -588,6 +612,7 @@ export default function App() {
     refreshAgents: agentsPoll.refresh,
     inbox: inboxPoll.data ?? [],
     refreshInbox: inboxPoll.refresh,
+    waiting,
     node: nodePoll.data,
     refreshNode: nodePoll.refresh,
   };

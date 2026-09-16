@@ -43,7 +43,11 @@ notification will never come. Counts (`running`, `agents`, `tasks`,
   while anything runs; the session bar's ⋯ button carries a pulsing
   `N bg` badge (SESSION_BAR.md); and the rail's pinned/recent rows show
   a green pip beside the name while anything runs (v0.31.3) — separate
-  from the presence bars, which say whether the agent is in a turn.
+  from the presence bars, which say whether the agent is in a turn. A
+  **red pip** (v0.34.1) means the session is waiting on the operator: a
+  permission prompt or an `AskUserQuestion` is open (`/api/needs`
+  prompts, polled every 3 s). A board in the rail carries the net of its
+  panes' red pips, so a board with any waiting session lights up too.
   Dynamic boards accept `has activity` as a state.
 - **Drawer** (*activity* in the session bar's ⋯ menu, page or pane; the
   status line's count opens it too): the
