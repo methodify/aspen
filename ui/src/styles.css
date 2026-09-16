@@ -535,6 +535,10 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .rail-line1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .rail-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-line1 .badge-count { margin-left: auto; }
+/* background work under way (ACTIVITY.md): a green pip, separate from
+   the presence bars, which say whether the agent is in a turn */
+.rail-activity-pip { width: 7px; height: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 5px var(--live); flex: 0 0 auto; animation: pulse 1.6s ease-in-out infinite; }
+.mesh-col.narrow .rail-activity-pip { position: absolute; transform: translate(10px, -9px); }
 .rail-line2 {
   font: 400 0.68rem/1.3 var(--font-mono);
   color: var(--text-dim);

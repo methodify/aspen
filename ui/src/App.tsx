@@ -200,6 +200,13 @@ function MeshColumn() {
         <span className="rail-body">
           <span className="rail-line1">
             <span className="mono rail-name">@{bare}</span>
+            {(a.activities?.running ?? 0) > 0 && (
+              <span
+                className="rail-activity-pip"
+                title={`${a.activities!.running} background ${a.activities!.running === 1 ? "activity" : "activities"} running — subagents, tasks, workflows`}
+                aria-label="background activity running"
+              />
+            )}
             {a.pending > 0 && <span className="badge-count">{a.pending}</span>}
           </span>
           <span className="rail-line2">{identity}</span>
