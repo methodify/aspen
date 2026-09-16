@@ -1,7 +1,7 @@
 # Proposal: one console, several meshes
 
-**Status:** approved 2026-09-15 (§7); shipping as v0.29. Reference once
-built: CONSOLE_APP.md §7.
+**Status:** approved 2026-09-15 (§7); shipped as v0.29 (F-1..F-5) and
+v0.33 (§8, F-6..F-8). Reference: CONSOLE_APP.md §7.
 
 ## 0. The ask, and the decision it rests on
 
@@ -270,3 +270,25 @@ Found while building: the VAPID binding (§2.5, second paragraph), which
 was not in the draft. And a notification tapped while the console is
 already open is a hash change, not a load, so the app follows a link's
 mesh on `hashchange` as well as at start.
+
+## 8. Tier 2 (2026-09-15, v0.33)
+
+- **F-7 live switch.** No reload. `switchTo` sets the active profile,
+  bumps a switch generation, and `main.tsx` keys the whole app on it:
+  every poll and every piece of React state starts over against the new
+  mesh, and the tunnel restarts with that profile's identity and relay.
+  Module-level caches key by profile themselves — the transcript cache
+  (in memory and IndexedDB) does — which is the scoping rule from §7
+  earning its keep. A push link's `mesh=` switches the same way.
+- **F-6 peek.** `peek.ts`: every profile *not* in view gets a reader —
+  a fetch to its direct node, or a second `Tunnel` into its relay with
+  that profile's identity — polled every minute for the operator inbox.
+  The switcher row shows the count as a badge, *nothing waiting*, or
+  *unreachable: why*. One socket per mesh while the console is open; push
+  answers the same question while it is closed.
+- **F-8 name this console.** The identity's name is chosen when it is
+  made — `console-<slug>` from a field beside *create identity*
+  ("bryons-phone"), random when blank — because the cert carries it. That
+  is what the mesh's nodes list the console as (`/api/mesh` `consoles`),
+  and what D-5 will name, revoke and show last-seen for. A profile's
+  label stays a local nickname.

@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
+import { consoleNodeName, createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
 import { activate, activeConnection, addConnection, connectionSummary, directUrlProblem, hosted, listConnections, markActive, probeMesh, removeConnection, type Connection } from "../connections";
 import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, readFrom, removeProfile, setProfileLabel, setProfileMesh, switchTo, type Profile } from "../profiles";
 import { ErrorBar } from "../components";
@@ -20,6 +20,9 @@ export default function Attach() {
     return { relay: params.get("relay") ?? c.relay, node: params.get("node") ?? c.node, enabled: c.enabled };
   });
   const [blob, setBlob] = useState("");
+  // F-8: the name this console goes by in the mesh — the cert carries it,
+  // so it is chosen before the identity is made.
+  const [consoleName, setConsoleName] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [, setTick] = useState(0);
   useEffect(() => tunnel.onChange(() => setTick((n) => n + 1)), []);
@@ -79,15 +82,27 @@ export default function Attach() {
                 className="btn ghost sm"
                 onClick={() => {
                   if (tunnel.enabled) disconnect();
-                  setId(createIdentity());
+                  setId(createIdentity(consoleName));
                 }}
-                title="forget this identity and make a new one (the old cert stops working)"
+                title="forget this identity and make a new one (the old cert stops working); the name below is used if given"
               >
                 new identity
               </button>
             </div>
           ) : (
-            <button className="btn primary sm" onClick={() => setId(createIdentity())}>create identity</button>
+            <div className="attach-row">
+              <input
+                className="mono"
+                value={consoleName}
+                onChange={(e) => setConsoleName(e.target.value)}
+                placeholder="name in this mesh, e.g. bryons-phone (optional)"
+                spellCheck={false}
+                style={{ flex: 1, minWidth: 220 }}
+                title="how this console appears to the mesh's nodes: console-<name>; the cert carries it, so it is chosen now"
+              />
+              <span className="mono-meta">{consoleNodeName(consoleName)}</span>
+              <button className="btn primary sm" onClick={() => setId(createIdentity(consoleName))}>create identity</button>
+            </div>
           )}
         </section>
 
@@ -343,7 +358,7 @@ function MeshCards() {
             </span>
             <span style={{ flex: 1 }} />
             {!isActive && (
-              <button className="btn sm" onClick={() => switchTo(p.id, "/attach")} title="look at this mesh (the page reloads)">
+              <button className="btn sm" onClick={() => switchTo(p.id, "/attach")} title="look at this mesh">
                 switch
               </button>
             )}

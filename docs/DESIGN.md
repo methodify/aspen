@@ -1167,3 +1167,12 @@ cleaner lane for roster updates than user-message headers.
   the next feature ships as a menu entry that is also a palette command
   from the same spec. Model in use: readout on the bar, and in the menu
   head and the harness chip's tooltip where it is hidden.
+- **2026-09-15 — v0.33, several meshes tier 2.** Live switch is a
+  remount keyed on a switch generation rather than a live re-target of
+  every poll: honest, sub-second, and it makes the per-profile storage
+  rule the only thing standing between two meshes — so the one
+  module-level cache (transcripts) keys by profile too. Peek is one
+  socket per mesh while the console is open, as the operator accepted;
+  it reads only the operator inbox. A console's name is fixed at
+  identity creation because the cert carries it; the profile label
+  stays a local nickname.

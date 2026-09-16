@@ -2,8 +2,9 @@
 // one mesh as this console sees it: the mesh name, this console's identity
 // in that mesh, the connections that lead into it, and everything the
 // browser remembers about that mesh (working set, cursors, drafts,
-// preferences). One profile is active; switching reloads the page so
-// every poll and the tunnel start over against the new mesh.
+// preferences). One profile is active; switching remounts the app and
+// restarts the tunnel (no reload) so every poll starts over against the
+// new mesh.
 //
 // Storage: every per-mesh key goes through `scoped()` and lands under
 // `aspen.p.<id>.<key>`; browser-wide keys (theme, rail width, the
@@ -194,7 +195,7 @@ export function profileName(p: Profile): string {
  *  becomes active and the page reloads onto the connect page, where the
  *  usual steps (identity, certify, relay and node, or a direct node)
  *  fill it in. */
-export function addProfile(): never {
+export function addProfile(): void {
   ensure();
   const p: Profile = { id: newId(), mesh: null, created: Date.now() };
   const list = readList();
@@ -214,9 +215,19 @@ function currentRoute(): string {
   return h.split("?")[0] || "/";
 }
 
-/** Make `id` the active profile and reload, keeping the route when it
- *  is mesh-neutral. */
-export function switchTo(id: string, route?: string): never {
+/** The switch generation: main.tsx keys the whole app on it, so a
+ *  switch remounts everything — every poll, every cache in React state,
+ *  the notices provider, the working set — and restarts the tunnel
+ *  (F-7, live switch: no page reload). Module-level caches must key by
+ *  profile themselves (transcript.ts does). */
+let generation = 0;
+export function switchGeneration(): number {
+  return generation;
+}
+
+/** Make `id` the active profile — live, no reload — keeping the route
+ *  when it is mesh-neutral and going to `route` (or Now) otherwise. */
+export function switchTo(id: string, route?: string): void {
   ensure();
   const list = readList();
   if (!list.some((p) => p.id === id)) throw new Error("no such mesh");
@@ -225,10 +236,11 @@ export function switchTo(id: string, route?: string): never {
   } catch {
     /* storage unavailable */
   }
+  activeId = id;
   const r = route ?? (KEEP_ROUTES.has(currentRoute()) ? currentRoute() : "/");
   window.location.hash = `#${r}`;
-  window.location.reload();
-  throw new Error("reloading");
+  generation += 1;
+  for (const l of listeners) l();
 }
 
 /** Forget a mesh: every key under it, and the profile. Removing the
@@ -251,17 +263,21 @@ export function removeProfile(id: string) {
   writeList(list);
   if (activeId === id) {
     if (list.length === 0) {
+      // Nothing left: a fresh profile, as on first run.
       ensured = false;
+      activeId = null;
       try {
         localStorage.removeItem(ACTIVE_KEY);
       } catch {
         /* storage unavailable */
       }
+      ensure();
       window.location.hash = "#/attach";
-      window.location.reload();
+      generation += 1;
+    } else {
+      switchTo(list[0]!.id, "/attach");
       return;
     }
-    switchTo(list[0]!.id, "/attach");
   }
   for (const l of listeners) l();
 }
@@ -305,6 +321,7 @@ export function followMeshLink(): void {
   const target = readList().find((p) => p.mesh === mesh);
   if (target && target.id !== activeId) {
     switchTo(target.id, route);
+    return;
   }
   window.location.hash = `#${route}`;
 }

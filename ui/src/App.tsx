@@ -23,6 +23,7 @@ import { evictStaleTranscripts } from "./transcript";
 import { pwa, setBadge } from "./pwa";
 import { activeConnection, connectionSummary, hosted } from "./connections";
 import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, setProfileMesh, switchTo } from "./profiles";
+import { peek } from "./peek";
 
 export interface AppData {
   agents: Agent[];
@@ -419,6 +420,8 @@ function MeshSwitcher({ node }: { node: NodeInfo | null }) {
   const [open, setOpen] = useState(false);
   const [, setTick] = useState(0);
   useEffect(() => onProfilesChange(() => setTick((n) => n + 1)), []);
+  // Peek (F-6): needs-you counts for the meshes not in view.
+  useEffect(() => peek.onChange(() => setTick((n) => n + 1)), []);
   const info = meshPoll.data;
   // The node's answer names a profile that does not know its mesh yet;
   // a profile that does keeps its name — a node in another mesh is a
@@ -461,6 +464,7 @@ function MeshSwitcher({ node }: { node: NodeInfo | null }) {
           {profiles.map((p) => {
             const conn = connectionSummary(p.id);
             const isActive = p.id === active?.id;
+            const pk = isActive ? undefined : peek.get(p.id);
             return (
               <button
                 key={p.id}
@@ -471,10 +475,17 @@ function MeshSwitcher({ node }: { node: NodeInfo | null }) {
                   if (!isActive) switchTo(p.id);
                   setOpen(false);
                 }}
-                title={isActive ? "the mesh you are looking at" : "switch to this mesh (the page reloads)"}
+                title={isActive ? "the mesh you are looking at" : "switch to this mesh"}
               >
-                <span className="mono">{profileName(p)}</span>
-                <span className="mono-meta">{isActive ? `${conn} · here` : conn}</span>
+                <span className="mono">
+                  {profileName(p)}
+                  {!isActive && (pk?.needs ?? 0) > 0 && <span className="badge-count" title={`${pk!.needs} waiting on you there`}>{pk!.needs}</span>}
+                </span>
+                <span className="mono-meta">
+                  {isActive ? `${conn} · here` : conn}
+                  {!isActive && pk?.state === "down" ? ` · unreachable${pk.error ? `: ${pk.error}` : ""}` : ""}
+                  {!isActive && pk?.state === "up" && pk.needs === 0 ? " · nothing waiting" : ""}
+                </span>
               </button>
             );
           })}

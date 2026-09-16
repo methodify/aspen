@@ -169,9 +169,14 @@ dropped only when the last mesh turns it off. The notification names
 the mesh (*on dev009 · work*), and its link carries `mesh=`; the app
 switches profile before it navigates, at load and on a hash change.
 
-**Not here.** Peek (needs-you counts for the meshes you are not looking
-at), live switch without reload, naming this console per mesh ahead of
-D-5: BACKLOG.md F-6..F-8.
+**Tier 2 (v0.33; PROPOSALS-2026-09-F.md §8).** Switching is live: the
+app remounts on the new profile and the tunnel restarts, no reload.
+*Peek*: the switcher shows, for each mesh not in view, how many things
+wait on you there (a reader per mesh — a fetch to its node, or a second
+tunnel with that mesh's identity — every minute), *nothing waiting*, or
+*unreachable* with the reason. And a console's name in a mesh is chosen
+when its identity is made: a field beside *create identity* gives
+`console-<name>`, which is how that mesh's nodes list it.
 
 Verified 2026-09-15 on the rig from the hosted bundle: a console with
 one identity woke as one profile with its recents, cursors and

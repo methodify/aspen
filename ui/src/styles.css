@@ -659,3 +659,4 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 }
 .mesh-switch-row:hover { background: var(--bg-well); }
 .mesh-switch-row.active { border-left: 2px solid var(--sig-normal); }
+.mesh-switch-row .mono .badge-count { margin-left: 8px; }

@@ -89,12 +89,25 @@ export function loadIdentity(): ConsoleIdentity | null {
 export function saveIdentity(id: ConsoleIdentity): void {
   localStorage.setItem(scoped(ID_KEY), JSON.stringify(id));
 }
-export function createIdentity(): ConsoleIdentity {
+/** A console name the mesh accepts: `console-` plus a slug. The prefix
+ *  is what nodes key on (never dialed, observe + control only); the slug
+ *  is the operator's ("bryons-phone"), else random. */
+export function consoleNodeName(name?: string): string {
+  const slug = (name ?? "")
+    .toLowerCase()
+    .replace(/^console-/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  if (slug) return `console-${slug}`;
+  const suffix = b64e(crypto.getRandomValues(new Uint8Array(6))).replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
+  return `console-${suffix}`;
+}
+export function createIdentity(name?: string): ConsoleIdentity {
   const edSecret = ed25519.utils.randomPrivateKey();
   const xSecret = x25519.utils.randomPrivateKey();
-  const suffix = b64e(crypto.getRandomValues(new Uint8Array(6))).replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
   const id: ConsoleIdentity = {
-    node: `console-${suffix}`,
+    node: consoleNodeName(name),
     ed_secret: b64e(edSecret),
     ed_public: b64e(ed25519.getPublicKey(edSecret)),
     x_secret: b64e(xSecret),
@@ -205,7 +218,7 @@ interface HttpResult {
 
 type Sub = { onEvent: (ev: unknown) => void; onEnd: () => void };
 
-class Tunnel {
+export class Tunnel {
   state: TunnelState = "off";
   error: string | null = null;
   present: string[] = [];
@@ -261,11 +274,13 @@ class Tunnel {
     this.emit();
   }
 
-  /** Start (or restart) with the saved config. Resolves when linked. */
-  start(): Promise<void> {
+  /** Start (or restart) with the saved config — or, for a peek tunnel
+   *  into another profile's mesh (peek.ts), with the config and identity
+   *  given. Resolves when linked. */
+  start(config?: TunnelConfig, id?: ConsoleIdentity | null): Promise<void> {
     this.stop();
-    this.config = loadConfig();
-    this.id = loadIdentity();
+    this.config = config ?? loadConfig();
+    this.id = id !== undefined ? id : loadIdentity();
     if (!this.enabled) return Promise.resolve();
     if (!this.id?.cert) {
       this.set("down", "this console has no cert yet — see /attach");

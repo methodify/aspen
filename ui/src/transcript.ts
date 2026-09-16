@@ -760,13 +760,16 @@ function applyRaw(state: TranscriptState, ev: RawEvent): TranscriptState {
 const CACHE_MAX = 24;
 const cache = new Map<string, TranscriptState>();
 
+// Keyed by profile as well as name (profiles.ts transcriptKey): two
+// meshes' same-named sessions stay apart across a live switch.
 export function cachedTranscript(name: string): TranscriptState | undefined {
-  return cache.get(name);
+  return cache.get(transcriptKey(name));
 }
 
 export function rememberTranscript(name: string, state: TranscriptState): void {
-  cache.delete(name);
-  cache.set(name, state);
+  const key = transcriptKey(name);
+  cache.delete(key);
+  cache.set(key, state);
   while (cache.size > CACHE_MAX) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
