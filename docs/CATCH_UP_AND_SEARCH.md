@@ -80,3 +80,10 @@ seconds with no assistant bubble appearing in the console and no turn
 counted; the same request mid-turn answered 409. Search from one node
 returned hits from four nodes' sessions with the node tag on each, and a
 hit opened the remote session at its line.
+
+**Recap on demand (v0.31.4).** The bar opens on its own after time away
+or when there is something unseen; once dismissed, nothing brought it
+back but waiting. *recap now* in the session bar's ⋯ menu (inspect; also
+a palette command) opens the bar from "now" — nothing new, no time away
+— and asks the harness at once. Only on a harness with a recap of its
+own, and not mid-turn. The system's own bar is unchanged.

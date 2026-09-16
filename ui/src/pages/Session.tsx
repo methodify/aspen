@@ -95,7 +95,7 @@ import {
   type SlashCommand,
 } from "./sessionExtras";
 import "./session.css";
-import { AWAY_SECS, CatchUpBar, computeCatchUp, readMarker, writeMarker, type SeenMarker } from "./catchUp";
+import { AWAY_SECS, CatchUpBar, computeCatchUp, markerOf, readMarker, writeMarker, type SeenMarker } from "./catchUp";
 
 // ---------------------------------------------------------------------------
 // Transcript reducer (thin shell over the pure module)
@@ -1895,12 +1895,27 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [name, subagent, transcript.items]);
+  // A recap on demand (the ⋯ menu): the bar opens from "now" — nothing
+  // new, no time away — and asks at once. The system's own bar (time
+  // away, unseen items) is untouched by this.
+  const [recapForced, setRecapForced] = useState<SeenMarker | null>(null);
+  const [recapSignal, setRecapSignal] = useState(0);
+  const canRecap = agent?.capabilities?.recap === true && agent?.live === true;
+  function recapNow() {
+    if (transcript.items.length === 0) return;
+    // The bar is not showing (dismissed, or nothing new and not long
+    // away): open it from "now".
+    if (!catchUp) setRecapForced(markerOf(transcript.items));
+    setRecapSignal((n) => n + 1);
+  }
   const catchUp = useMemo(() => {
-    if (!seen || subagent || transcript.items.length === 0) return null;
-    const cu = computeCatchUp(transcript.items, seen);
-    if (!cu) return null;
-    return cu.unseen > 0 || cu.awaySecs >= AWAY_SECS ? cu : null;
-  }, [seen, subagent, transcript.items]);
+    if (subagent || transcript.items.length === 0) return null;
+    if (seen) {
+      const cu = computeCatchUp(transcript.items, seen);
+      if (cu && (cu.unseen > 0 || cu.awaySecs >= AWAY_SECS)) return cu;
+    }
+    return recapForced ? computeCatchUp(transcript.items, recapForced) : null;
+  }, [seen, recapForced, subagent, transcript.items]);
   // A search hit (`?at=<uuid>`): show everything and scroll to the line.
   const atParam = new URLSearchParams(window.location.search).get("at");
   useEffect(() => {
@@ -1924,6 +1939,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
 
   async function send() {
     setSeen(null);
+    setRecapForced(null);
     const text = draft.trim();
     if (!text || exited) return;
     // TUI-local commands the console has a surface for open it instead
@@ -2580,6 +2596,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       { id: "branch", group: "verb", label: "branch here", hint: "bookmark and fork", run: () => setBranchLabel("") },
       { id: "reload", group: "setup", label: "reload plugins & skills", run: () => void reload() },
       { id: "charter", group: "inspect", label: "charter", run: () => setCharterOpen((o) => !o) },
+      ...(canRecap ? [{ id: "recap", group: "inspect" as const, label: "recap now", hint: "a one-line recap from the harness", run: () => recapNow() }] : []),
       { id: "history", group: "inspect", label: "history", hint: "lineage and bookmarks", run: () => { setHistoryOpen(true); void loadHistory(); } },
       { id: "move", group: "move", label: "move or copy to another node…", run: () => { setMoveOpen(true); setMoveErr(null); void loadNodes(); } },
       { id: "menu", group: "setup", label: "session menu", hint: "model, mode, render, plugins, MCP, artifacts, activity, boards", run: () => openMenu() },
@@ -2588,7 +2605,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     setSessionCommands(name, cmds);
     return () => clearSessionCommands(name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, pane?.focused, busy]);
+  }, [name, pane?.focused, busy, canRecap]);
 
   return (
     <div className={pane ? `session in-pane${pane.compact ? " compact" : ""}` : "session"} onMouseDownCapture={pane?.onFocus}>
@@ -2839,6 +2856,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         </MenuGroup>
         <MenuGroup label="inspect">
           <MenuRow label={`charter${charterOpen ? " ▴" : ""}`} hint="the session's charter, below the bar" onClick={() => { closeMenu(); setCharterOpen((o) => !o); }} />
+          {canRecap && (
+            <MenuRow label="recap now" hint="open the since-you-last-looked bar and ask the harness for a one-line recap of the whole session (nothing enters the conversation)" onClick={() => { closeMenu(); recapNow(); }} disabled={agent?.turn_state === "busy"} />
+          )}
           <MenuRow label={`history${historyOpen ? " ▴" : ""}`} hint="this name's lineage and bookmarks" onClick={() => { closeMenu(); const next = !historyOpen; setHistoryOpen(next); if (next) void loadHistory(); }} />
         <span className="artifacts-wrap">
           <button
@@ -3184,7 +3204,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <CatchUpBar
           agent={name}
           cu={catchUp}
-          canRecap={agent?.capabilities?.recap === true && agent?.live === true}
+          canRecap={canRecap}
           idle={agent?.turn_state !== "busy"}
           onJump={() => {
             setShowEarlier(Infinity);
@@ -3197,7 +3217,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           onDismiss={() => {
             writeMarker(name, transcript.items);
             setSeen(null);
+            setRecapForced(null);
           }}
+          askSignal={recapSignal}
         />
       )}
       <div

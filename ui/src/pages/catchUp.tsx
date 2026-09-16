@@ -160,6 +160,7 @@ export function CatchUpBar({
   idle,
   onJump,
   onDismiss,
+  askSignal,
 }: {
   agent: string;
   cu: CatchUp;
@@ -168,6 +169,9 @@ export function CatchUpBar({
   idle: boolean;
   onJump: () => void;
   onDismiss: () => void;
+  /** The operator asked for a recap from the session menu: each
+   *  increment asks once, whatever the away time. */
+  askSignal?: number;
 }) {
   const [recap, setRecap] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -191,6 +195,12 @@ export function CatchUpBar({
     void ask();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canRecap, auto, idle]);
+  // Asked for from the menu: on demand, no away-time condition.
+  useEffect(() => {
+    if (!askSignal || !canRecap) return;
+    void ask();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askSignal]);
   const parts: string[] = [];
   if (cu.turns) parts.push(`${cu.turns} turn${cu.turns === 1 ? "" : "s"}`);
   if (cu.tools) parts.push(`${cu.tools} tool use${cu.tools === 1 ? "" : "s"}${cu.toolNames.length ? ` (${cu.toolNames.map(([n, c]) => `${n} ×${c}`).join(", ")})` : ""}`);
