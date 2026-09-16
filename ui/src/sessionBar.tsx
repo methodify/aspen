@@ -143,3 +143,49 @@ export function panelAnchor(el: HTMLElement | null, width: number): { top: numbe
   }
   return { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) };
 }
+
+/** A panel opened from the bar or the menu (plugins, MCP, activity,
+ *  artifacts, boards, usage): fixed at `at`, a real popover — it stays
+ *  while the pointer wanders, closes on Esc, on a click outside it (a
+ *  click in the ⋯ menu or another panel does not count, so the operator
+ *  can go down the list), or on its × (PROPOSALS-2026-09-G.md §3). */
+export function PanelFrame({ at, width, className, title, extra, onClose, children, style }: { at: { top: number; left: number }; width: number; className?: string; title?: string; extra?: ReactNode; onClose: () => void; children: ReactNode; style?: React.CSSProperties }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t || ref.current?.contains(t)) return;
+      if (t.closest(".session-menu, .artifacts-menu, .bar-menu-btn")) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("mousedown", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("mousedown", onDown, true);
+    };
+  }, [onClose]);
+  return createPortal(
+    <div ref={ref} className={`artifacts-menu panel-frame${className ? ` ${className}` : ""}`} style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width, ...style }} role="dialog" aria-label={title}>
+      {title !== undefined && (
+        <div className="row panel-head">
+          <span className="label">{title}</span>
+          <span style={{ flex: 1 }} />
+          {extra}
+          <button type="button" className="status-note-x" onClick={onClose} title="close (esc)" aria-label="close">×</button>
+        </div>
+      )}
+      {title === undefined && (
+        <button type="button" className="status-note-x panel-x" onClick={onClose} title="close (esc)" aria-label="close">×</button>
+      )}
+      {children}
+    </div>,
+    document.body,
+  );
+}

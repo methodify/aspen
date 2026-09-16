@@ -1,7 +1,7 @@
 # Proposal: the top of a session — one row, one menu
 
-**Status:** approved 2026-09-15 (§6); shipped as v0.31 (U-1..U-4).
-Reference: SESSION_BAR.md.
+**Status:** approved 2026-09-15 (§6); shipped as v0.31 (U-1..U-4) and
+v0.32 (§7, U-5..U-7). Reference: SESSION_BAR.md.
 
 ## 0. The ask
 
@@ -130,3 +130,13 @@ adds a palette entry (and a slash alias where it makes sense) for free.
    tucks into the ⋯ menu's head and the harness chip's tooltip — both,
    as the operator allowed.
 3. The menu replaces the strip: the menu is the controls.
+
+## 7. Second wave (2026-09-15, v0.32)
+
+What §2 and §3 asked for that the first round left out:
+
+| id | ask |
+|---|---|
+| U-5 | **Real popovers.** The six panels (plugins, MCP, activity, artifacts, boards, usage) stop closing on mouse-leave: `PanelFrame` — stays while the pointer wanders, closes on Esc, on a click outside it (a click in the ⋯ menu or another panel does not count), or on its ×. |
+| U-6 | **Every menu entry in the palette.** Model (each option), mode (each), render (each), plugins, MCP, artifacts, activity, add to a board — from the same registry, so *Session @name* in the palette is the whole menu. Each panel can be opened by signal from anywhere. |
+| U-7 | **Composer aliases.** `/plugins`, `/artifacts`, `/activity`, `/recap` open the console's own surface instead of going to a harness that cannot run them, beside the existing `/mcp`, `/tasks`, `/branch`. |

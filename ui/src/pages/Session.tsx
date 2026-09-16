@@ -67,7 +67,7 @@ import {
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { relTime } from "./../components";
-import { BarVerb, MenuField, MenuGroup, MenuRow, PresenceGlyph, SessionMenu, barPresence, panelAnchor } from "./../sessionBar";
+import { BarVerb, MenuField, MenuGroup, MenuRow, PanelFrame, PresenceGlyph, SessionMenu, barPresence, panelAnchor } from "./../sessionBar";
 import { clearSessionCommands, setSessionCommands, type SessionCommand } from "./../sessionCommands";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
@@ -332,9 +332,8 @@ function UsagePopover({ agent, liveCost }: { agent: string; liveCost: number | n
       >
         {cost !== null ? `session $${cost.toFixed(2)}` : "session $—"}
       </button>
-      {open &&
-        createPortal(
-          <div className="artifacts-menu usage-pop" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 420, transform: "translateY(-100%)" }} role="menu" onMouseLeave={() => setOpen(false)}>
+      {open && (
+        <PanelFrame at={at} width={420} className="usage-pop" title="this session's spend" onClose={() => setOpen(false)} style={{ transform: "translateY(-100%)" }}>
             {row === null ? (
               <div className="row dim">loading…</div>
             ) : (
@@ -381,9 +380,8 @@ function UsagePopover({ agent, liveCost }: { agent: string; liveCost: number | n
                 </div>
               </>
             )}
-          </div>,
-          document.body,
-        )}
+        </PanelFrame>
+      )}
     </span>
   );
 }
@@ -785,9 +783,8 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
       >
         activity{running ? ` ${label}` : ""} ▾
       </button>
-      {open &&
-        createPortal(
-          <div className="artifacts-menu activity-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 560 }} role="menu" onMouseLeave={() => setOpen(false)}>
+      {open && (
+        <PanelFrame at={at} width={560} className="activity-menu" title="activity" onClose={() => setOpen(false)}>
             {acts === null ? (
               <div className="row dim">loading…</div>
             ) : sorted.length === 0 ? (
@@ -858,9 +855,8 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
               </>
             )}
             {note && <div className="row mono-meta">{note}</div>}
-          </div>,
-          document.body,
-        )}
+        </PanelFrame>
+      )}
     </span>
   );
 }
@@ -951,9 +947,8 @@ function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { tot
       >
         mcp{summary?.total ? ` ${summary.total}` : ""}{down ? ` · ${down} down` : ""} ▾
       </button>
-      {open &&
-        createPortal(
-          <div className="artifacts-menu mcp-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 560 }} role="menu" onMouseLeave={() => setOpen(false)}>
+      {open && (
+        <PanelFrame at={at} width={560} className="mcp-menu" onClose={() => setOpen(false)}>
             <div className="row">
               <span className="label">MCP servers</span>
               <span style={{ flex: 1 }} />
@@ -1019,9 +1014,8 @@ function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { tot
                 )}
               </div>
             )}
-          </div>,
-          document.body,
-        )}
+        </PanelFrame>
+      )}
     </span>
   );
 }
@@ -1040,7 +1034,10 @@ function PluginsMenu({
   harnessPlugins,
   onRestart,
   restarting,
+  openSignal,
 }: {
+  /** Open from elsewhere (the palette, `/plugins` in the composer). */
+  openSignal?: number;
   agent: string;
   /** The session's local key on its home node — what session rules name. */
   bare: string;
@@ -1057,6 +1054,14 @@ function PluginsMenu({
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [at, setAt] = useState({ top: 0, left: 0 });
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!openSignal) return;
+    setAt(panelAnchor(btnRef.current, 600));
+    setOpen(true);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal]);
   const load = useCallback(() => {
     api.pluginsEffective(agent).then(setEff).catch(() => setEff({ would_start_with: [], missing: [] }));
     api
@@ -1119,6 +1124,7 @@ function PluginsMenu({
   return (
     <span className="artifacts-wrap">
       <button
+        ref={btnRef}
         className="charter-toggle"
         onClick={(e) => {
           setAt(panelAnchor(e.currentTarget as HTMLButtonElement, 600));
@@ -1129,9 +1135,8 @@ function PluginsMenu({
       >
         plugins{running.length ? ` ${running.length}` : ""}{updates.length ? " ↑" : ""} ▾
       </button>
-      {open &&
-        createPortal(
-          <div className="artifacts-menu plugins-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 580 }} role="menu" onMouseLeave={() => setOpen(false)}>
+      {open && (
+        <PanelFrame at={at} width={580} className="plugins-menu" onClose={() => setOpen(false)}>
             <div className="row">
               <span className="label">the library</span>
               <span style={{ flex: 1 }} />
@@ -1190,19 +1195,25 @@ function PluginsMenu({
               ))
             )}
             {note && <div className="row mono-meta">{note}</div>}
-          </div>,
-          document.body,
-        )}
+        </PanelFrame>
+      )}
     </span>
   );
 }
 
 /** "add to board": put this session in a board's first empty pane, or
  *  split its last pane. */
-function AddToBoard({ agent }: { agent: string }) {
+function AddToBoard({ agent, openSignal }: { agent: string; openSignal?: number }) {
   const [open, setOpen] = useState(false);
   const [boards, setBoards] = useState<Board[] | null>(null);
   const [at, setAt] = useState({ top: 0, left: 0 });
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!openSignal) return;
+    setAt(panelAnchor(btnRef.current, 400));
+    setOpen(true);
+    api.boards().then(setBoards).catch(() => setBoards([]));
+  }, [openSignal]);
   const nav = useNavigate();
   async function add(b: Board, how: "fill" | "right" | "down") {
     const fill = (n: BoardNode): [BoardNode, boolean] => {
@@ -1234,6 +1245,7 @@ function AddToBoard({ agent }: { agent: string }) {
   return (
     <span className="artifacts-wrap">
       <button
+        ref={btnRef}
         className="charter-toggle"
         onClick={(e) => {
           setAt(panelAnchor(e.currentTarget as HTMLButtonElement, 400));
@@ -1244,9 +1256,8 @@ function AddToBoard({ agent }: { agent: string }) {
       >
         board ▾
       </button>
-      {open &&
-        createPortal(
-          <div className="artifacts-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 380 }} role="menu" onMouseLeave={() => setOpen(false)}>
+      {open && (
+        <PanelFrame at={at} width={380} title="add to a board" onClose={() => setOpen(false)}>
             {boards === null ? (
               <div className="row dim">loading…</div>
             ) : (
@@ -1264,9 +1275,8 @@ function AddToBoard({ agent }: { agent: string }) {
                 </div>
               </>
             )}
-          </div>,
-          document.body,
-        )}
+        </PanelFrame>
+      )}
     </span>
   );
 }
@@ -1479,6 +1489,17 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
   const [activitySignal, setActivitySignal] = useState(0);
+  // The other panels, opened from the palette or the composer.
+  const [pluginsSignal, setPluginsSignal] = useState(0);
+  const [boardSignal, setBoardSignal] = useState(0);
+  const [artifactsSignal, setArtifactsSignal] = useState(0);
+  useEffect(() => {
+    if (!artifactsSignal) return;
+    setArtifactsAt(panelAnchor(null, 640));
+    setArtifactsOpen(true);
+    void loadArtifacts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artifactsSignal]);
   const [ctlNote, setCtlNote] = useState<string | null>(null);
   const [ctlError, setCtlError] = useState<string | null>(null);
   // The ⋯ menu (PROPOSALS-2026-09-G.md): the controls, folded.
@@ -1959,9 +1980,25 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       setMcpSignal((n) => n + 1);
       return;
     }
-    if (/^\/(tasks|bashes|monitors)(\s|$)/.test(text)) {
+    if (/^\/(tasks|bashes|monitors|activity)(\s|$)/.test(text)) {
       setDraft("");
       setActivitySignal((n) => n + 1);
+      return;
+    }
+    // Console surfaces with a name of their own (SESSION_BAR.md §3).
+    if (/^\/plugins?(\s|$)/.test(text)) {
+      setDraft("");
+      setPluginsSignal((n) => n + 1);
+      return;
+    }
+    if (/^\/artifacts?(\s|$)/.test(text)) {
+      setDraft("");
+      setArtifactsSignal((n) => n + 1);
+      return;
+    }
+    if (/^\/recap(\s|$)/.test(text) && canRecap) {
+      setDraft("");
+      recapNow();
       return;
     }
     // Aspen-level command: /branch [label] — handled here, never sent.
@@ -2610,12 +2647,31 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       { id: "history", group: "inspect", label: "history", hint: "lineage and bookmarks", run: () => { setHistoryOpen(true); void loadHistory(); } },
       { id: "move", group: "move", label: "move or copy to another node…", run: () => { setMoveOpen(true); setMoveErr(null); void loadNodes(); } },
       { id: "menu", group: "setup", label: "session menu", hint: "model, mode, render, plugins, MCP, artifacts, activity, boards", run: () => openMenu() },
+      { id: "plugins", group: "setup", label: "plugins", hint: "this session's plugins: on/off, versions, updates", run: () => setPluginsSignal((n) => n + 1) },
+      { id: "mcp", group: "setup", label: "mcp servers", hint: "status, tools, reconnect, authenticate", run: () => setMcpSignal((n) => n + 1) },
+      { id: "artifacts", group: "inspect", label: "artifacts", hint: "files this session wrote, edited or read", run: () => setArtifactsSignal((n) => n + 1) },
+      { id: "activity", group: "inspect", label: "activity", hint: "background tasks, subagents, workflows, monitors", run: () => setActivitySignal((n) => n + 1) },
+      ...(pane ? [] : [{ id: "board", group: "move" as const, label: "add to a board", run: () => setBoardSignal((n) => n + 1) }]),
+      ...(["chat", "console", "source"] as const).map((m) => ({ id: `render:${m}`, group: "setup" as const, label: `render as ${m}`, run: () => changeRenderMode(m) })),
+      ...(exited === null
+        ? [
+            { id: "model:default", group: "setup" as const, label: `model: default${defaultResolves ? ` (${defaultResolves})` : ""}`, hint: "takes effect next turn", run: () => void changeModel("default") },
+            ...modelOptions.map((o) => ({ id: `model:${o.id}`, group: "setup" as const, label: `model: ${o.label}`, hint: "takes effect next turn", run: () => void changeModel(o.id) })),
+            ...(runtime?.modes?.length ? runtime.modes.map((m) => ({ id: m.id, label: m.label })) : PERMISSION_MODES.map((m) => ({ id: m, label: m }))).map((m) => ({
+              id: `mode:${m.id}`,
+              group: "setup" as const,
+              label: `mode: ${m.label}`,
+              hint: "permission mode",
+              run: () => void changeMode(m.id),
+            })),
+          ]
+        : []),
     ];
     if (busy) cmds.unshift({ id: "interrupt", group: "verb", label: "interrupt the running turn", run: () => void interrupt() });
     setSessionCommands(name, cmds);
     return () => clearSessionCommands(name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, pane?.focused, busy, canRecap]);
+  }, [name, pane?.focused, busy, canRecap, exited, modelOptions, runtime?.modes, defaultResolves]);
 
   return (
     <div className={pane ? `session in-pane${pane.compact ? " compact" : ""}` : "session"} onMouseDownCapture={pane?.onFocus}>
@@ -2861,6 +2917,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             harnessPlugins={harnessPluginsOf(runtime)}
             onRestart={restartForPlugins}
             restarting={restarting}
+            openSignal={pluginsSignal}
           />
           <McpMenu agent={name} summary={agent?.mcp ?? null} openSignal={mcpSignal} />
         </MenuGroup>
@@ -2884,8 +2941,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           >
             artifacts {artifactsOpen ? "▴" : "▾"}
           </button>
-          {artifactsOpen && createPortal(
-            <div className="artifacts-menu" role="menu" style={{ position: "fixed", top: artifactsAt.top, left: artifactsAt.left, right: "auto" }}>
+          {artifactsOpen && (
+            <PanelFrame at={artifactsAt} width={640} title="artifacts" onClose={() => setArtifactsOpen(false)}>
               {artifacts === null ? (
                 <div className="row dim">loading…</div>
               ) : artifacts.length === 0 ? (
@@ -2901,8 +2958,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                   </div>
                 ))
               )}
-            </div>,
-            document.body,
+            </PanelFrame>
           )}
         </span>
           <ActivityMenu agent={name} counts={agent?.activities ?? null} openSignal={activitySignal} />
@@ -2914,7 +2970,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           {!agent?.moved_to && name.split("@").length >= 3 && (
             <MenuRow label="bring here" hint="move this session to this console's node, with the counterpart repo" onClick={() => { closeMenu(); setMoveMode("move"); setMoveErr(null); setMoveOpen(true); void loadNodes(true); }} />
           )}
-          {!pane && <AddToBoard agent={name} />}
+          {!pane && <AddToBoard agent={name} openSignal={boardSignal} />}
         </MenuGroup>
         <div className="menu-foot mono-meta">every row here is also in the palette (⌘K / ctrl+K)</div>
       </SessionMenu>

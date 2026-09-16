@@ -78,9 +78,14 @@ still closes on mouse-leave.
 
 `sessionCommands.ts`: the session in view — the page's, or a board's
 focused pane — registers its commands (`{ id, group, label, hint, run }`)
-while mounted, and the palette lists them under *Session @name*:
-interrupt (while busy), stop, branch, reload, charter, history, move,
-and *session menu* (which opens the ⋯).
+while mounted, and the palette lists them under *Session @name*: the
+whole menu (v0.32) — interrupt (while busy), stop, branch, reload,
+recap now, charter, history, move, add to a board, plugins, mcp
+servers, artifacts, activity, *model: …* for each model, *mode: …* for
+each mode, *render as chat / console / source*, and *session menu*
+(which opens the ⋯). In the composer, `/plugins`, `/artifacts`,
+`/activity` and `/recap` open the same surfaces, beside `/mcp`,
+`/tasks` and `/branch`.
 
 **Where the next control goes.** The bar has three verb slots and two
 readout slots, and they are taken. A new session feature ships as a

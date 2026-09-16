@@ -40,6 +40,15 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
+## Shipped — 2026-09-15: the session menu's second wave (U-5..U-7, v0.32)
+
+PROPOSALS-2026-09-G.md §7. Panels are real popovers (no mouse-leave
+close; Esc, outside click, ×); every menu entry is a palette command
+(models, modes, render, each panel); `/plugins`, `/artifacts`,
+`/activity`, `/recap` in the composer. Also v0.31.1–.5: menu close,
+panels beside the menu, rail activity pip, recap on demand, recap for
+remote sessions.
+
 ## Shipped — 2026-09-15: the top of a session — one row, one menu (U-1..U-4, v0.31)
 
 PROPOSALS-2026-09-G.md; SESSION_BAR.md. One session bar shared by the
