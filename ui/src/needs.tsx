@@ -7,51 +7,10 @@ import { useNavigate } from "react-router-dom";
 import {
   type MemoryConflict, api, type Adoption, type OpenPrompt } from "./api";
 import { relTime } from "./components";
+import { buildQuestionUpdatedInput, parseQuestions, type QuestionSpec } from "./pages/sessionExtras";
 import "./pages/command.css";
 
 /* ── AskUserQuestion input shape (§7.6) ─────────────────────────────── */
-
-interface QOption {
-  label: string;
-  description?: string;
-}
-interface Question {
-  question: string;
-  header?: string;
-  multiSelect?: boolean;
-  options: QOption[];
-}
-
-export function questionsOf(input: unknown): Question[] {
-  if (!input || typeof input !== "object") return [];
-  const raw = (input as { questions?: unknown }).questions;
-  if (!Array.isArray(raw)) return [];
-  const out: Question[] = [];
-  for (const q of raw) {
-    if (!q || typeof q !== "object") continue;
-    const o = q as Record<string, unknown>;
-    if (typeof o.question !== "string") continue;
-    const options: QOption[] = [];
-    if (Array.isArray(o.options)) {
-      for (const op of o.options) {
-        if (!op || typeof op !== "object") continue;
-        const oo = op as Record<string, unknown>;
-        if (typeof oo.label !== "string") continue;
-        options.push({
-          label: oo.label,
-          ...(typeof oo.description === "string" ? { description: oo.description } : {}),
-        });
-      }
-    }
-    out.push({
-      question: o.question,
-      ...(typeof o.header === "string" ? { header: o.header } : {}),
-      ...(typeof o.multiSelect === "boolean" ? { multiSelect: o.multiSelect } : {}),
-      options,
-    });
-  }
-  return out;
-}
 
 /* ── Collapsed key-field summary of a permission's tool input ───────── */
 
@@ -228,13 +187,13 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
 /* ── Question card (AskUserQuestion) ────────────────────────────────── */
 
 export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswered: () => void }) {
-  const questions = useMemo(() => questionsOf(prompt.input), [prompt.input]);
+  const questions = useMemo(() => parseQuestions(prompt.input) ?? [], [prompt.input]);
   const [picks, setPicks] = useState<Record<string, string[]>>({});
   const [response, setResponse] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  function toggle(q: Question, label: string) {
+  function toggle(q: QuestionSpec, label: string) {
     setPicks((p) => {
       const cur = p[q.question] ?? [];
       if (q.multiSelect) {
@@ -250,21 +209,11 @@ export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAns
   async function submit(skip: boolean) {
     setBusy(true);
     setErr(null);
-    const answers: Record<string, string | string[]> = {};
-    if (!skip) {
-      for (const q of questions) {
-        const sel = picks[q.question] ?? [];
-        if (sel.length === 0) continue;
-        answers[q.question] = q.multiSelect ? sel : (sel[0] as string);
-      }
-    }
-    const echo =
-      prompt.input && typeof prompt.input === "object"
-        ? (prompt.input as { questions?: unknown }).questions
-        : undefined;
-    const updated_input: Record<string, unknown> = { questions: echo, answers };
-    const free = response.trim();
-    if (!skip && free) updated_input.response = free;
+    // One builder for both cards (sessionExtras.ts): it decides where the
+    // free text goes so the CLI keeps the picks.
+    const updated_input = skip
+      ? { questions: (prompt.input as { questions?: unknown } | null)?.questions, answers: {} }
+      : buildQuestionUpdatedInput(prompt.input, questions, questions.map((q) => picks[q.question] ?? []), response);
     try {
       await api.answerPermission(prompt.agent, prompt.request_id, { allow: true, updated_input });
       onAnswered();
@@ -293,20 +242,35 @@ export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAns
             <div key={q.question} className="q-block">
               {q.header && <div className="label" style={{ marginBottom: 4 }}>{q.header}</div>}
               <div className="q-text">{q.question}</div>
-              <div className="q-options">
-                {q.options.map((o) => (
-                  <button
-                    key={o.label}
-                    type="button"
-                    className="q-option"
-                    aria-pressed={sel.includes(o.label)}
-                    onClick={() => toggle(q, o.label)}
-                  >
-                    {o.label}
-                    {o.description && <span className="q-desc">{o.description}</span>}
-                  </button>
-                ))}
-              </div>
+              {q.kind === "choice" ? (
+                <div className="q-options">
+                  {q.options.map((o) => (
+                    <button
+                      key={o.label}
+                      type="button"
+                      className="q-option"
+                      aria-pressed={sel.includes(o.label)}
+                      onClick={() => toggle(q, o.label)}
+                    >
+                      {o.label}
+                      {o.description && <span className="q-desc">{o.description}</span>}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <input
+                  className="q-response"
+                  type={q.kind === "number" ? "number" : "text"}
+                  min={q.min}
+                  max={q.max}
+                  value={sel[0] ?? ""}
+                  placeholder={q.kind === "number" ? "a number" : "your answer"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPicks((p) => ({ ...p, [q.question]: v ? [v] : [] }));
+                  }}
+                />
+              )}
               {q.multiSelect && <div className="mono-meta" style={{ marginTop: 4 }}>multi-select</div>}
             </div>
           );

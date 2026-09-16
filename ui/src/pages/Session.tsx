@@ -592,21 +592,42 @@ function QuestionCard({
         <div className="q-block" key={qi}>
           {q.header && <div className="q-header-label">{q.header}</div>}
           <div className="q-question">{q.question}</div>
-          <div className="q-opts" role="group" aria-label={q.question}>
-            {q.options.map((o) => (
-              <button
-                key={o.label}
-                type="button"
-                className="q-opt"
-                aria-pressed={(picks[qi] ?? []).includes(o.label)}
-                title={o.description ?? undefined}
+          {q.kind === "choice" ? (
+            <div className="q-opts" role="group" aria-label={q.question}>
+              {q.options.map((o) => (
+                <button
+                  key={o.label}
+                  type="button"
+                  className="q-opt"
+                  aria-pressed={(picks[qi] ?? []).includes(o.label)}
+                  title={o.description ?? undefined}
+                  disabled={submitting}
+                  onClick={() => toggle(qi, o.label, q.multiSelect)}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="q-free">
+              <input
+                type={q.kind === "number" ? "number" : "text"}
+                min={q.min}
+                max={q.max}
+                value={picks[qi]?.[0] ?? ""}
+                placeholder={q.kind === "number" ? "a number" : "your answer"}
                 disabled={submitting}
-                onClick={() => toggle(qi, o.label, q.multiSelect)}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setPicks((prev) => {
+                    const next = prev.slice();
+                    next[qi] = v ? [v] : [];
+                    return next;
+                  });
+                }}
+              />
+            </div>
+          )}
           {q.multiSelect && <div className="q-multi-hint">select all that apply</div>}
         </div>
       ))}

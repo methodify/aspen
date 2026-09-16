@@ -446,11 +446,25 @@ Answer by allowing with:
   } }
 ```
 
-Keys of `answers` are the **question text**, values are option **labels**.
-Omit a question's key to skip it. Free-text `response` is honored with or
-without picks. Result strings the model sees: "Your questions have been
-answered: …" (all picks valid) / "The user answered: … Read the answers
-carefully…" (mixed/custom) / "The user did not answer the questions."
+Keys of `answers` are the **question text**, values are option **labels**
+(a multiSelect array is joined with commas in the result). Omit a
+question's key to skip it.
+
+**`response` DROPS the picks (2.1.273, read from the binary's result
+builder, 2026-09-16).** The result is chosen in this order: `afkTimeoutMs`
+→ `followUp` → **`response` non-empty → "The user responded: <text>" and
+nothing else** → picks → "The user did not answer the questions." So a
+free-text note sent as `response` beside selections silently discards
+the selections — the operator's picks never reach the model. Send free
+text as `annotations: { "<question>": { notes } }` whenever any pick is
+present (the result folds it in: `"Q"="Yes" notes: …`, under "The user
+answered: …"); use `response` only when there are no picks at all.
+
+Questions also carry `kind`: `"choice"` (default, options), `"text"`,
+`"number"` (with `min`/`max`) — the last two are answered with a typed
+string in `answers`. The earlier claim here that `response` is "honored
+with or without picks" was true only in the sense that it is honored
+*instead of* them.
 
 Render it as a question card (options as buttons, multiSelect, free-text
 path, explicit Skip) — never as an Allow/Deny permission card.

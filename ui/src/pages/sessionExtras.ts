@@ -24,6 +24,11 @@ export interface QuestionSpec {
   header: string | null;
   multiSelect: boolean;
   options: QuestionOption[];
+  /** CLI 2.1.27x: "choice" (options) — or "text" / "number", answered
+   *  with a typed string (min/max bound a number). */
+  kind: "choice" | "text" | "number";
+  min?: number;
+  max?: number;
 }
 
 /**
@@ -51,11 +56,15 @@ export function parseQuestions(input: unknown): QuestionSpec[] | null {
         });
       }
     }
+    const kind = q["kind"] === "text" ? "text" : q["kind"] === "number" ? "number" : "choice";
     out.push({
       question: q["question"],
       header: typeof q["header"] === "string" && q["header"] ? q["header"] : null,
       multiSelect: q["multiSelect"] === true,
       options,
+      kind,
+      ...(typeof q["min"] === "number" ? { min: q["min"] } : {}),
+      ...(typeof q["max"] === "number" ? { max: q["max"] } : {}),
     });
   }
   return out.length > 0 ? out : null;
@@ -64,8 +73,16 @@ export function parseQuestions(input: unknown): QuestionSpec[] | null {
 /**
  * Build the §7.6 `updated_input` for an allow: echo the original `questions`
  * verbatim, key `answers` by question text (label for single-select, label
- * array for multiSelect; unanswered questions omitted), and attach the
- * optional free-text `response`.
+ * array for multiSelect, the typed string for text/number; unanswered
+ * questions omitted), and attach the operator's free text.
+ *
+ * Where the free text goes matters (CLI 2.1.273, read from the binary):
+ * a non-empty `response` makes the tool result "The user responded: …"
+ * and DROPS every selection — the operator's picks never reach the model.
+ * So with any pick present the free text travels as `annotations`
+ * (`{ "<question>": { notes } }` on the first answered question), which
+ * the result folds in beside the picks; `response` only when there are no
+ * picks at all.
  */
 export function buildQuestionUpdatedInput(
   originalInput: unknown,
@@ -75,17 +92,27 @@ export function buildQuestionUpdatedInput(
 ): Record<string, unknown> {
   const r = asRecord(originalInput);
   const answers: Record<string, string | string[]> = {};
+  let firstAnswered: string | null = null;
   questions.forEach((q, i) => {
     const picked = picks[i] ?? [];
     if (picked.length === 0) return;
-    answers[q.question] = q.multiSelect ? picked : picked[0]!;
+    if (q.kind === "choice") answers[q.question] = q.multiSelect ? picked : picked[0]!;
+    else {
+      const t = picked[0]!.trim();
+      if (!t) return;
+      answers[q.question] = t;
+    }
+    if (firstAnswered === null) firstAnswered = q.question;
   });
   const out: Record<string, unknown> = {
     questions: r?.["questions"] ?? [],
     answers,
   };
   const trimmed = response.trim();
-  if (trimmed) out["response"] = trimmed;
+  if (trimmed) {
+    if (firstAnswered !== null) out["annotations"] = { [firstAnswered]: { notes: trimmed } };
+    else out["response"] = trimmed;
+  }
   return out;
 }
 

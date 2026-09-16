@@ -133,3 +133,11 @@ bell's box is per mesh; the browser subscription goes only when the
 last mesh turns it off. A node that still holds a row for a subscription
 made with its own key (before v0.29) forgets it on the first *gone*
 answer from the push service.
+
+**Questions with a note (v0.34.2).** Picking options and typing a note
+on a question card used to reach the agent as the note alone: the CLI's
+result builder reports a free-text `response` *instead of* the picks
+(CLAUDE_RUNTIME_REFERENCE.md §7.6). Both cards — Now's and the session
+page's — now send the note as an annotation on the first answered
+question when any option is picked, and as `response` only when nothing
+is. Text and number questions (`kind`) get an input.
