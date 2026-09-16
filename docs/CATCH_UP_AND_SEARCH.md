@@ -87,3 +87,10 @@ back but waiting. *recap now* in the session bar's ⋯ menu (inspect; also
 a palette command) opens the bar from "now" — nothing new, no time away
 — and asks the harness at once. Only on a harness with a recap of its
 own, and not mid-turn. The system's own bar is unchanged.
+
+**Remote sessions (v0.31.5).** The agent JSON carries `capabilities`
+only for a session local to the node the console talks to, so the bar's
+recap button and the menu's *recap now* had been missing for every
+session on another node. The console now takes the capability from the
+agent, else from the session's runtime info (proxied to its node), else
+from what this node knows of the harness (`/api/node` `harnesses`).

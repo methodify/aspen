@@ -1293,7 +1293,7 @@ export interface PaneMode {
 export function SessionView({ name, pane, subagent }: { name: string; pane?: PaneMode; subagent?: string }) {
   const liveGate = useLiveGate();
   const nav = useNavigate();
-  const { agents, agentsLoaded, refreshAgents } = useAppData();
+  const { agents, agentsLoaded, refreshAgents, node: nodeInfo } = useAppData();
   const agent = agents.find((a) => a.name === name);
 
   const [transcript, dispatch] = useReducer(reducer, undefined, emptyTranscript);
@@ -1900,7 +1900,17 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // away, unseen items) is untouched by this.
   const [recapForced, setRecapForced] = useState<SeenMarker | null>(null);
   const [recapSignal, setRecapSignal] = useState(0);
-  const canRecap = agent?.capabilities?.recap === true && agent?.live === true;
+  // Capabilities ride the agent JSON only for a session local to the node
+  // the console talks to; for one on another node they come with the
+  // runtime info (proxied), and failing that from what this node knows
+  // of the harness. Without this the menu's recap and the bar's recap
+  // button both vanished for every remote session.
+  const recapCapable =
+    agent?.capabilities?.recap ??
+    runtime?.capabilities?.recap ??
+    nodeInfo?.harnesses?.find((h) => h.name === agent?.harness)?.capabilities?.recap ??
+    false;
+  const canRecap = recapCapable === true && agent?.live === true;
   function recapNow() {
     if (transcript.items.length === 0) return;
     // The bar is not showing (dismissed, or nothing new and not long
