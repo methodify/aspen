@@ -87,6 +87,18 @@ export function loadIdentity(): ConsoleIdentity | null {
   }
 }
 export function saveIdentity(id: ConsoleIdentity): void {
+  // Never overwrite a certified identity for one mesh with one certified
+  // for another: a save that would do that is a bug upstream, not a
+  // change of mind (a new identity for a mesh starts uncertified).
+  try {
+    const cur = loadIdentity();
+    if (cur?.cert && id.cert && cur.cert.mesh !== id.cert.mesh && cur.node !== id.node) {
+      console.warn(`aspen: refusing to overwrite ${cur.node} (${cur.cert.mesh}) with ${id.node} (${id.cert.mesh})`);
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
   localStorage.setItem(scoped(ID_KEY), JSON.stringify(id));
 }
 /** A console name the mesh accepts: `console-` plus a slug. The prefix
@@ -235,6 +247,12 @@ export class Tunnel {
   private pingTimer = 0;
   private retryTimer = 0;
   private stopped = true;
+  /** Whether learned certs are written back to the identity in storage.
+   *  Only the console's main tunnel may: a peek tunnel (peek.ts) runs
+   *  with *another* profile's identity, and `saveIdentity` writes to the
+   *  active profile's slot — persisting from there overwrote one mesh's
+   *  identity with another's (v0.33.1). */
+  persist = true;
 
   get enabled(): boolean {
     return this.config.enabled && !!this.config.relay && !!this.config.node;
@@ -407,7 +425,7 @@ export class Tunnel {
             }
             this.target = theirs;
             id.known = { ...(id.known ?? {}), [theirs.node]: theirs };
-            saveIdentity(id);
+            if (this.persist) saveIdentity(id);
             ws.send(JSON.stringify({ t: "route", to: from, data: seal(id, theirs, JSON.stringify({ t: "auth", nonce: h.nonce })) }));
             phase = "auth";
             this.set("linking");

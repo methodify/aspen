@@ -178,6 +178,15 @@ tunnel with that mesh's identity — every minute), *nothing waiting*, or
 when its identity is made: a field beside *create identity* gives
 `console-<name>`, which is how that mesh's nodes list it.
 
+v0.33.1: a peek tunnel runs with *another* profile's identity, and the
+identity store writes to the active profile's slot — so a peek tunnel
+learning a cert over hello wrote one mesh's identity over another's.
+Peek tunnels no longer persist, and the store refuses to overwrite an
+identity certified for one mesh with one certified for a different
+mesh. A console hit by this before the fix shows the wrong mesh under
+*1 · Identity* on the Meshes page: *new identity* there, certify it on
+that mesh's root, and reattach.
+
 Verified 2026-09-15 on the rig from the hosted bundle: a console with
 one identity woke as one profile with its recents, cursors and
 connections intact; *connect to another mesh* plus a direct loopback

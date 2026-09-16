@@ -99,6 +99,8 @@ function startReader(pid: string) {
           const id = identityOf(pid);
           if (!id?.cert) throw new Error("no cert in that mesh yet");
           tunnel = new Tunnel();
+          // Never write this profile's identity into the active one's slot.
+          tunnel.persist = false;
           await tunnel.start({ enabled: true, relay: c.relay, node: c.node }, id);
         }
         await readRelay(pid, tunnel);
