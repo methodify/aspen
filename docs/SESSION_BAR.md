@@ -61,6 +61,11 @@ row acts. Arrow keys walk the rows; the first row takes focus on open.
   meaningless).
 - **foot**: a reminder that every row is in the palette.
 
+(v0.31.1: the closed menu is hidden by an explicit `[hidden]` rule —
+the menu's own `display: flex` had been beating the attribute, so once
+opened it never went away — and the ⋯ button's own mousedown is not an
+"outside click", so a second press closes rather than reopening.)
+
 The panels (plugins, MCP, activity, artifacts, boards) are the same
 components as before, their trigger buttons restyled as rows; they open
 beside the row and still close on mouse-leave.

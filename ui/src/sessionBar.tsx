@@ -72,8 +72,10 @@ export function SessionMenu({ open, onClose, anchor, children }: { open: boolean
       const t = e.target as HTMLElement | null;
       if (!t) return;
       if (ref.current?.contains(t)) return;
-      // A panel a row opened (plugins, MCP, activity, artifacts, board).
-      if (t.closest(".artifacts-menu, .session-menu-anchor")) return;
+      // A panel a row opened (plugins, MCP, activity, artifacts, board),
+      // or the ⋯ button itself — its click toggles; closing here first
+      // would reopen it.
+      if (t.closest(".artifacts-menu, .bar-menu-btn")) return;
       onClose();
     };
     window.addEventListener("keydown", onKey, true);
