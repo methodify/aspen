@@ -88,8 +88,16 @@ export function SessionMenu({ open, onClose, anchor, children }: { open: boolean
     };
   }, [open, onClose]);
   const style: React.CSSProperties = anchor ? { top: anchor.top, right: anchor.right, left: "auto" } : {};
+  // A row that opens a panel (plugins, MCP, activity, artifacts, board)
+  // hands over to it: the menu closes so the panel — portaled to the
+  // body, positioned from the row's rect at the click — stands alone.
+  const onRowClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const t = e.target as HTMLElement;
+    if (t.closest(".charter-toggle")) window.setTimeout(onClose, 0);
+  };
   return createPortal(
-    <div ref={ref} className="session-menu" role="menu" hidden={!open} style={style} onClick={(e) => e.stopPropagation()}>
+    <div ref={ref} className="session-menu" role="menu" hidden={!open} style={style} onClick={onRowClick}>
       {children}
     </div>,
     document.body,

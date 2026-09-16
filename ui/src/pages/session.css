@@ -74,6 +74,8 @@
   display: flex; flex-direction: column; padding: 4px 0;
 }
 .session-menu[hidden] { display: none; }
+/* a panel opened from a row stands above the menu, should both show */
+.artifacts-menu { z-index: 70; }
 .session-menu .menu-head { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 6px; border-bottom: 1px solid var(--line); }
 .session-menu .menu-foot { padding: 6px 12px; border-top: 1px solid var(--line); }
 .menu-group { display: flex; flex-direction: column; padding: 4px 0; border-bottom: 1px solid var(--line); }

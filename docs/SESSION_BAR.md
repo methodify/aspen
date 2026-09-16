@@ -67,8 +67,11 @@ opened it never went away — and the ⋯ button's own mousedown is not an
 "outside click", so a second press closes rather than reopening.)
 
 The panels (plugins, MCP, activity, artifacts, boards) are the same
-components as before, their trigger buttons restyled as rows; they open
-beside the row and still close on mouse-leave.
+components as before, their trigger buttons restyled as rows. Opening
+one hands over: the menu closes and the panel — portaled to the body,
+placed from the row's position at the click — stands alone, above
+anything else (v0.31.2; before that it opened behind the menu). It
+still closes on mouse-leave.
 
 ## 3. The registry and the rule
 
