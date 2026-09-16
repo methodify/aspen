@@ -13,6 +13,7 @@ import {
   type ToolCardItem,
   type TranscriptState,
   type UserBubbleItem,
+  splitSegments,
 } from "./transcript";
 
 function run(events: SessionEvent[], initial?: TranscriptState): TranscriptState {
@@ -279,5 +280,26 @@ describe("bus traffic", () => {
       },
     ]);
     expect(s.items).toHaveLength(0);
+  });
+});
+
+describe("splitSegments (PROPOSALS-2026-09-H.md §5)", () => {
+  it("a merged line splits into the operator's words and each message", () => {
+    const merged = "OP: do the thing\n\n[aspen bus] normal from @fresh1@repo1\nhello again\n[aspen bus end]\n\n[aspen bus] gating from @arch · #proj\nline one\nline two\n[aspen bus end]\nand then this";
+    const segs = splitSegments(merged);
+    expect(segs.map((s) => s.bus)).toEqual([false, true, true, false]);
+    expect(segs[0].text).toBe("OP: do the thing");
+    expect(segs[1].text.startsWith("[aspen bus] normal from @fresh1@repo1")).toBe(true);
+    expect(segs[2].text).toContain("line two");
+    expect(segs[3].text).toBe("and then this");
+  });
+  it("an old envelope without an end line runs to the end", () => {
+    const segs = splitSegments("[aspen bus] normal from @a\nbody\nmore body");
+    expect(segs).toHaveLength(1);
+    expect(segs[0].bus).toBe(true);
+    expect(segs[0].text).toContain("more body");
+  });
+  it("plain operator text is one non-bus segment", () => {
+    expect(splitSegments("just me")).toEqual([{ bus: false, text: "just me" }]);
   });
 });

@@ -522,6 +522,9 @@ export interface HistoryItem {
   timestamp?: string;
   /** assistant items: the model that produced the message. */
   model?: string | null;
+  /** user items from the node's input record: "mid-turn" (consumed by the
+   *  harness without a transcript line) or "queued" (still held). */
+  via?: string | null;
 }
 
 export interface SessionInfo {

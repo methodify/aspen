@@ -2316,18 +2316,14 @@ async fn serve_api_req(
                 .iter()
                 .find(|a| a.name == agent)
                 .ok_or_else(|| anyhow!("no agent named @{agent}"))?;
-            let sid = row
-                .session_id
-                .as_ref()
-                .ok_or_else(|| anyhow!("no session on record"))?;
-            let st = node.inner.store_for(row.harness);
-            if let Some(after) = body.get("after").and_then(|a| a.as_str()) {
-                let (items, found) = st
-                    .rehydrate_after(&row.repo, sid, after)
-                    .unwrap_or_default();
+            if row.session_id.is_none() {
+                return Err(anyhow!("no session on record"));
+            }
+            let after = body.get("after").and_then(|a| a.as_str());
+            let (items, found) = crate::node::transcript_with_record(&node.inner, row, after);
+            if after.is_some() {
                 return Ok(json!({ "items": items, "after_found": found }));
             }
-            let items = st.rehydrate(&row.repo, sid).unwrap_or_default();
             Ok(json!(items))
         }
         // -------------------------------------------------- node-scoped ops

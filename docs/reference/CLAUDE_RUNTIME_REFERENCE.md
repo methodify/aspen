@@ -251,12 +251,22 @@ shutdown path, and `-r` gets the conversation back.
   any post-send bookkeeping (we lost this race; bubbles stuck "queued").
 - With `--replay-user-messages`, the echo (`isReplay: true`, your uuid)
   marks the message delivered.
-- **Mid-turn sends are queued and COALESCED by the CLI**: three messages
-  sent during a running turn reach the model as one merged turn; only the
-  last uuid survives as the turn identity, but replay acks arrive for all
-  three. Don't build your own send queue — send immediately, always, and
-  mark bubbles delivered on their acks. (We deleted a whole client-side
-  queue/watchdog subsystem when we learned this.)
+- **Mid-turn sends are queued by the CLI and appended to its NEXT MODEL
+  REQUEST** (measured 2.1.265, 2026-09-16 — this corrects the earlier
+  "coalesced into the next turn"):
+  - If another request follows in the running turn (after a tool result),
+    the queued text goes into *that* request: the model sees it mid-turn,
+    **no `user` line is written to the JSONL**, and the replay ack
+    arrives when that request starts (26 s after the write, in the test).
+  - If no request follows (the write landed during the turn's final
+    reply), the CLI holds it and opens a new turn at the boundary on its
+    own: one merged `user` line with all held writes joined by blank
+    lines, a fresh uuid, and acks for each held write when it starts.
+  - So the replay ack marks **consumption**, not the write. A write acked
+    only at the next turn was held; unacked at a turn end = still held.
+  Still: don't build a send queue — send immediately, mark bubbles on
+  their acks — but keep your own record of what you wrote (Aspen's
+  `inputs`), because the transcript will not have the mid-turn ones.
 - `content` accepts a plain string or full content-block arrays (images…).
 - **Slash commands are just text** — `/compact`, `/model sonnet`, plugin
   commands. Output returns as `system/local_command_output`.

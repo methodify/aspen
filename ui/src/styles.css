@@ -468,8 +468,15 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .bubble-user { align-self: flex-end; background: var(--bg-strip); border-left: 2px solid var(--sig-normal); padding: var(--sp-2) var(--sp-4); }
 .bubble-user .bubble-tag { color: var(--sig-normal); font-size: 0.7rem; margin-bottom: 2px; }
 .bubble-user .user-text { white-space: pre-wrap; }
-.bubble-bus { align-self: stretch; max-width: none; background: color-mix(in srgb, var(--sig-notice-dim) 50%, var(--bg-strip)); border-left: 2px solid var(--sig-notice); padding: var(--sp-2) var(--sp-4); }
-.bubble-bus .bus-header { color: var(--sig-notice); font-size: 0.72rem; margin-bottom: 4px; }
+.bubble-bus { align-self: stretch; max-width: none; background: color-mix(in srgb, var(--sig-notice-dim) 50%, var(--bg-strip)); border-left: 2px solid var(--sig-notice); padding: 2px var(--sp-3) 2px var(--sp-4); }
+.bubble-bus.open { padding-bottom: var(--sp-2); }
+.bubble-bus .bus-header { color: var(--sig-notice); font-size: 0.72rem; white-space: nowrap; flex: 0 0 auto; }
+.bubble-bus .bus-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.bubble-bus.open .bus-row { margin-bottom: 4px; }
+.bubble-bus .bus-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mid); font-size: 0.85rem; }
+.bubble-bus .bus-caret { flex: 0 0 auto; margin-left: auto; }
+.bubble-bus .bus-urgency { margin-left: 8px; font-size: 0.62rem; }
+.bubble-bus .bus-urgency.u-gating { color: var(--sig-gate); border-color: var(--sig-gate); }
 .bubble-note { font-size: 0.72rem; margin-top: 4px; }
 .dim { color: var(--text-dim); }
 .error-text { color: var(--sig-gate); }

@@ -274,6 +274,8 @@ const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) 
       )}
       {item.pending && !item.failed && <div className="bubble-note dim">sending…</div>}
       {item.failed && <div className="bubble-note error-text">send failed — not delivered</div>}
+      {!item.pending && item.via === "mid-turn" && <div className="bubble-note dim" title="the harness took this while a turn was running, between two of its own steps; it kept no transcript line, so this comes from the node's record">delivered mid-turn</div>}
+      {!item.pending && item.via === "queued" && <div className="bubble-note dim" title="written while a turn was running; the harness had not taken it when the transcript was read">queued in the harness</div>}
     </div>
   );
 });
@@ -386,14 +388,43 @@ function UsagePopover({ agent, liveCost }: { agent: string; liveCost: number | n
   );
 }
 
+/** The envelope's first line, taken apart for the collapsed row. */
+function busHeaderParts(header: string): { urgency: string; sender: string; rest: string } {
+  const m = /^\s*\[aspen bus\]\s+(\w+)\s+from\s+(@\S+)(.*)$/.exec(header);
+  if (!m) return { urgency: "", sender: "", rest: header.replace(/^\s*\[aspen bus\]\s*/, "") };
+  return { urgency: m[1], sender: m[2], rest: m[3].trim() };
+}
+
+/** A message from another agent (PROPOSALS-2026-09-H.md §5): collapsed by
+ *  default to one row — sender, channel, the body's first line, ellipsized
+ *  to the width — a click expands; `gating` opens expanded. The body's
+ *  end marker is not shown. */
 const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBubbleItem; source?: boolean; agent?: string }) {
   const nl = item.text.indexOf("\n");
   const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
-  const body = nl >= 0 ? item.text.slice(nl + 1) : "";
+  const rawBody = nl >= 0 ? item.text.slice(nl + 1) : "";
+  const body = rawBody.replace(/\n?\[aspen bus end\]\s*$/, "").trimEnd();
+  const parts = busHeaderParts(header);
+  const [open, setOpen] = useState(parts.urgency === "gating");
+  const firstLine = body.split("\n").find((l) => l.trim()) ?? "";
   return (
-    <div className="bubble bubble-bus">
-      <div className="bus-header mono">{header}</div>
-      {body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} agent={agent} />)}
+    <div className={`bubble bubble-bus${open ? " open" : ""}`}>
+      <button type="button" className="bus-row" onClick={() => setOpen((o) => !o)} title={open ? "collapse" : "expand"} aria-expanded={open}>
+        <span className="bus-header mono">
+          {parts.sender ? (
+            <>
+              <b>{parts.sender}</b>
+              {parts.rest ? ` ${parts.rest}` : ""}
+              {parts.urgency && parts.urgency !== "normal" ? <span className={`chip mono bus-urgency u-${parts.urgency}`}>{parts.urgency}</span> : null}
+            </>
+          ) : (
+            header
+          )}
+        </span>
+        {!open && <span className="bus-preview">— {firstLine}</span>}
+        <span className="bus-caret mono-meta" aria-hidden>{open ? "▾" : "▸"}</span>
+      </button>
+      {open && body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} agent={agent} />)}
     </div>
   );
 });

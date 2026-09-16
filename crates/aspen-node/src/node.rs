@@ -560,6 +560,221 @@ fn schedule_mcp_refresh(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>, dela
 }
 
 /// Epoch seconds → an ISO-8601 UTC timestamp (the ledger's format).
+/// After a turn ends: anything written to the session during it that the
+/// harness never acked is sitting in its input queue. The harness opens a
+/// turn for held input on its own in the cases seen; when it does not,
+/// a carrier line starts one, and the held text rides along with it.
+/// Claude only — the ack is Claude's `--replay-user-messages`.
+fn spawn_boundary_guard(inner: Arc<NodeInner>, sess: Arc<ManagedSession>, turn_started: f64) {
+    if sess.harness != Harness::Claude {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        if sess.turn_state() != TurnState::Idle {
+            return;
+        }
+        let held: Vec<crate::store::InputRow> = inner
+            .store
+            .inputs_since(&sess.name, turn_started - 1.0)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.acked_at.is_none() && i.source != "boundary")
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        let n = held.len();
+        let carrier = format!(
+            "[aspen boundary] {n} message{} sent to you during your last turn {} below — read and act on {} now.",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "follows" } else { "follow" },
+            if n == 1 { "it" } else { "them" }
+        );
+        sess.mark_busy();
+        match sess.handle.send_user(carrier.clone()).await {
+            Ok(uuid) => {
+                let _ = inner
+                    .store
+                    .record_input(&sess.name, &uuid, "boundary", &carrier, false);
+                let _ = inner.store.record_event(
+                    &sess.name,
+                    "boundary_nudge",
+                    serde_json::json!({ "held": n }),
+                );
+                tracing::info!(agent = %sess.name, held = n, "boundary: nudged the harness to run held input");
+            }
+            Err(e) => {
+                *sess.turn_state.lock().unwrap() = TurnState::Idle;
+                tracing::warn!(agent = %sess.name, error = %e, "boundary nudge failed");
+            }
+        }
+    });
+}
+
+/// A user line the harness merged from several writes (an operator line
+/// and bus messages, in write order) splits back into its segments: bus
+/// segments run from a `[aspen bus]` header line to `[aspen bus end]`
+/// (older ones, without the end line, to the end of the text); anything
+/// else is the operator's. One segment → the item itself, unchanged.
+pub fn split_user_item(item: &serde_json::Value) -> Vec<serde_json::Value> {
+    let Some(text) = item.get("text").and_then(|t| t.as_str()) else {
+        return vec![item.clone()];
+    };
+    let segs = split_segments(text);
+    if segs.len() <= 1 {
+        let mut one = item.clone();
+        if let Some(seg) = segs.first() {
+            one["bus"] = serde_json::Value::Bool(seg.0);
+        }
+        return vec![one];
+    }
+    let uuid = item.get("uuid").and_then(|u| u.as_str()).unwrap_or("");
+    segs.into_iter()
+        .enumerate()
+        .map(|(i, (bus, t))| {
+            let mut v = item.clone();
+            v["text"] = serde_json::Value::String(t);
+            v["bus"] = serde_json::Value::Bool(bus);
+            if i > 0 {
+                v["uuid"] = serde_json::Value::String(format!("{uuid}#{i}"));
+                v.as_object_mut().map(|o| o.remove("images"));
+            }
+            v
+        })
+        .collect()
+}
+
+/// (is_bus, text) segments of a user line; see `split_user_item`.
+pub fn split_segments(text: &str) -> Vec<(bool, String)> {
+    const HEAD: &str = "[aspen bus]";
+    let mut out: Vec<(bool, String)> = Vec::new();
+    let mut cur = String::new();
+    let mut in_bus = false;
+    let flush = |out: &mut Vec<(bool, String)>, cur: &mut String, bus: bool| {
+        let t = cur.trim().to_owned();
+        if !t.is_empty() {
+            out.push((bus, t));
+        }
+        cur.clear();
+    };
+    for line in text.split_inclusive('\n') {
+        let l = line.trim_end_matches(['\n', '\r']);
+        if !in_bus && l.trim_start().starts_with(HEAD) {
+            flush(&mut out, &mut cur, false);
+            in_bus = true;
+            cur.push_str(line);
+        } else if in_bus && l.trim() == crate::delivery::BUS_END {
+            cur.push_str(line);
+            flush(&mut out, &mut cur, true);
+            in_bus = false;
+        } else {
+            cur.push_str(line);
+        }
+    }
+    flush(&mut out, &mut cur, in_bus);
+    out
+}
+
+/// The session's transcript as the console shows it: the harness's
+/// rehydration, merged lines split into their segments, and completed
+/// from the input record where the harness consumed a write mid-turn
+/// without writing it (PROPOSALS-2026-09-H.md §4). `after` is the delta
+/// anchor (a user line uuid): items after it, and whether it was found.
+pub fn transcript_with_record(
+    inner: &Arc<NodeInner>,
+    row: &crate::store::AgentRow,
+    after: Option<&str>,
+) -> (Vec<serde_json::Value>, bool) {
+    let Some(sid) = row.session_id.as_deref() else {
+        return (Vec::new(), false);
+    };
+    let st = inner.store_for(row.harness);
+    let raw = st.rehydrate(&row.repo, sid).unwrap_or_default();
+    // Split first, so an anchor that names a merged line's first segment
+    // still matches, and later segments carry derived uuids.
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for it in &raw {
+        if it.get("role").and_then(|r| r.as_str()) == Some("user") {
+            items.extend(split_user_item(it));
+        } else {
+            items.push(it.clone());
+        }
+    }
+    // The record: inputs the transcript does not contain, at their time.
+    let since = row.last_spawned_at.unwrap_or(0.0);
+    let inputs = inner
+        .store
+        .inputs_since(&row.name, since)
+        .unwrap_or_default();
+    if !inputs.is_empty() {
+        let user_texts: Vec<String> = items
+            .iter()
+            .filter(|i| i.get("role").and_then(|r| r.as_str()) == Some("user"))
+            .filter_map(|i| {
+                i.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|t| t.trim().to_owned())
+            })
+            .collect();
+        let uuids: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|i| i.get("uuid").and_then(|u| u.as_str()).map(str::to_owned))
+            .collect();
+        let mut synth: Vec<serde_json::Value> = Vec::new();
+        for inp in inputs {
+            if inp.source == "boundary" || uuids.contains(&inp.ingest_uuid) {
+                continue;
+            }
+            let t = inp.text.trim();
+            if t.is_empty() || user_texts.iter().any(|u| u == t || u.contains(t)) {
+                continue;
+            }
+            let ts = iso_of(inp.ts);
+            for (i, (bus, seg)) in split_segments(t).into_iter().enumerate() {
+                synth.push(serde_json::json!({
+                    "role": "user", "bus": bus, "text": seg, "images": [],
+                    "uuid": if i == 0 { inp.ingest_uuid.clone() } else { format!("{}#{i}", inp.ingest_uuid) },
+                    "timestamp": ts,
+                    "via": if inp.acked_at.is_some() { "mid-turn" } else { "queued" },
+                }));
+            }
+        }
+        if !synth.is_empty() {
+            let ts_of = |v: &serde_json::Value| {
+                v.get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            for sv in synth {
+                let t = ts_of(&sv);
+                // After the last item whose timestamp is not later; items
+                // without one (rare) sort as early.
+                let pos = items
+                    .iter()
+                    .rposition(|i| ts_of(i) <= t && !ts_of(i).is_empty())
+                    .map(|p| p + 1)
+                    .unwrap_or(items.len());
+                items.insert(pos, sv);
+            }
+        }
+    }
+    match after {
+        Some(a) => {
+            let idx = items.iter().position(|i| {
+                i.get("role").and_then(|r| r.as_str()) == Some("user")
+                    && i.get("uuid").and_then(|u| u.as_str()) == Some(a)
+            });
+            match idx {
+                Some(i) => (items[i + 1..].to_vec(), true),
+                None => (items, false),
+            }
+        }
+        None => (items, false),
+    }
+}
+
 fn iso_of(epoch: f64) -> String {
     let secs = epoch.floor() as i64;
     let days = secs.div_euclid(86400);
@@ -1233,8 +1448,14 @@ impl Node {
                 "ask",
                 serde_json::json!({ "from": "operator", "text": snippet(&plain, 200), "attachments": attachments.len() }),
             );
+            let mid_turn = sess.turn_state() == TurnState::Busy;
             sess.mark_busy();
-            return sess.handle.send_user_content(content).await;
+            let uuid = sess.handle.send_user_content(content).await?;
+            let _ = self
+                .inner
+                .store
+                .record_input(name, &uuid, "operator", &plain, mid_turn);
+            return Ok(uuid);
         }
         delivery::flush_notices(&self.inner, &sess).await;
         {
@@ -1248,8 +1469,17 @@ impl Node {
             "ask",
             serde_json::json!({ "from": "operator", "text": snippet(&text, 200) }),
         );
+        let mid_turn = sess.turn_state() == TurnState::Busy;
         sess.mark_busy();
-        sess.handle.send_user(text).await
+        let uuid = sess.handle.send_user(text.clone()).await?;
+        // The record (PROPOSALS-2026-09-H.md §4): mid-turn input the
+        // harness consumes without writing a transcript line is completed
+        // from here when the transcript is read.
+        let _ = self
+            .inner
+            .store
+            .record_input(name, &uuid, "operator", &text, mid_turn);
+        Ok(uuid)
     }
 
     pub async fn interrupt(&self, name: &str) -> Result<()> {
@@ -2809,8 +3039,17 @@ async fn pump(
                 ..
             } => {
                 *sess.turn_state.lock().unwrap() = TurnState::Idle;
-                *sess.busy_since.lock().unwrap() = None;
+                let turn_started = sess.busy_since.lock().unwrap().take();
                 *sess.last_tool.lock().unwrap() = None;
+                // The boundary guard (PROPOSALS-2026-09-H.md §4): input
+                // written during this turn that the harness has not acked
+                // is still held in its queue — it appends to the *next*
+                // model request, and a write after the turn's last one
+                // waits for a turn nobody starts. Give it a moment (the
+                // harness usually opens that turn itself), then nudge.
+                if let Some(started) = turn_started {
+                    spawn_boundary_guard(inner.clone(), sess.clone(), started);
+                }
                 {
                     let prev_cost = sess.summary.lock().unwrap().cost_usd;
                     let _ = inner.store.record_event(
@@ -3059,6 +3298,7 @@ async fn pump(
             }
             SessionEvent::UserReplay { uuid } => {
                 let _ = inner.store.mark_ingested(uuid);
+                let _ = inner.store.mark_input_acked(uuid);
             }
             SessionEvent::McpChanged { servers } => {
                 // The adapter's own picture (Claude's init): keep it; the

@@ -37,6 +37,14 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
+## Shipped — 2026-09-16: delivery that always lands, on the record (B-1..B-4, v0.34)
+
+PROPOSALS-2026-09-H.md; DESIGN.md §4.2. Every bus message writes now,
+idle or busy, as the operator's does; urgency advisory; the node records
+every write and completes the transcript from it; merged lines split on
+`[aspen bus end]`; a boundary guard nudges when the harness holds input
+past a turn end; bus bubbles collapse to sender + first line.
+
 ## Shipped — 2026-09-15: several meshes, tier 2 (F-6..F-8, v0.33)
 
 PROPOSALS-2026-09-F.md §8; CONSOLE_APP.md §7. Live switch (the app

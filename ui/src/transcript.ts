@@ -22,6 +22,38 @@ import type {
 } from "./events";
 
 export const BUS_HEADER = "[aspen bus]";
+/** Closes a bus segment (delivery.rs BUS_END). */
+export const BUS_END = "[aspen bus end]";
+
+/** A user line the harness merged from several writes — the operator's
+ *  text and bus messages, in write order — split back into segments: a
+ *  bus segment runs from its header line to `[aspen bus end]` (older ones
+ *  to the end of the text); the rest is the operator's. */
+export function splitSegments(text: string): { bus: boolean; text: string }[] {
+  const out: { bus: boolean; text: string }[] = [];
+  let cur: string[] = [];
+  let inBus = false;
+  const flush = (bus: boolean) => {
+    const t = cur.join("\n").trim();
+    if (t) out.push({ bus, text: t });
+    cur = [];
+  };
+  for (const line of text.split("\n")) {
+    if (!inBus && line.trimStart().startsWith(BUS_HEADER)) {
+      flush(false);
+      inBus = true;
+      cur.push(line);
+    } else if (inBus && line.trim() === BUS_END) {
+      cur.push(line);
+      flush(true);
+      inBus = false;
+    } else {
+      cur.push(line);
+    }
+  }
+  flush(inBus);
+  return out;
+}
 const INTERRUPT_MARKER = "[Request interrupted";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +87,10 @@ export interface UserBubbleItem {
   failed: boolean;
   /** Pasted images, in marker order. */
   images?: HistoryImage[];
+  /** From the node's input record (PROPOSALS-2026-09-H.md §4): the
+   *  harness consumed this mid-turn without writing a transcript line
+   *  ("mid-turn"), or still holds it ("queued"). */
+  via?: string | null;
 }
 
 /** A harness task notification (`<task-notification>…`): a background
@@ -206,21 +242,25 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
     const lastHistory = hi === history.length - 1;
     const text = typeof h.text === "string" ? h.text : "";
     if (h.role === "user") {
-      if (h.bus === true || text.startsWith(BUS_HEADER)) {
-        items.push({ kind: "bus", id: nextId++, text });
-      } else if (isTaskNotice(text)) {
-        items.push(taskNoticeItem(nextId++, text));
-      } else if (!text.startsWith(INTERRUPT_MARKER)) {
-        items.push({
-          kind: "user",
-          id: nextId++,
-          text,
-          uuid: typeof h.uuid === "string" ? h.uuid : null,
-          localKey: null,
-          pending: false,
-          failed: false,
-          images: h.images && h.images.length ? h.images : undefined,
-        });
+      const segs = h.bus === true && !text.includes(BUS_END) ? [{ bus: true, text }] : splitSegments(text);
+      for (const [si, seg] of segs.entries()) {
+        if (seg.bus) {
+          items.push({ kind: "bus", id: nextId++, text: seg.text });
+        } else if (isTaskNotice(seg.text)) {
+          items.push(taskNoticeItem(nextId++, seg.text));
+        } else if (!seg.text.startsWith(INTERRUPT_MARKER)) {
+          items.push({
+            kind: "user",
+            id: nextId++,
+            text: seg.text,
+            uuid: typeof h.uuid === "string" ? (si === 0 ? h.uuid : `${h.uuid}#${si}`) : null,
+            localKey: null,
+            pending: false,
+            failed: false,
+            images: si === 0 && h.images && h.images.length ? h.images : undefined,
+            via: typeof h.via === "string" ? h.via : null,
+          });
+        }
       }
     } else {
       if (text) {
@@ -712,43 +752,60 @@ function applyUserReplay(state: TranscriptState, ev: UserReplayEvent): Transcrip
     }
   }
 
-  // 2. A bus injection whose body rode along on the replay.
-  if (text.startsWith(BUS_HEADER)) return pushBusBubble(state, text);
-  if (isTaskNotice(text)) {
-    if (state.items.some((it) => it.kind === "notice" && it.text === text)) return state;
-    return { ...state, items: [...state.items, taskNoticeItem(state.nextId, text)], nextId: state.nextId + 1 };
-  }
-
-  // 3. The synthetic interrupt message — never render as something typed. §5.4
+  // 2. The synthetic interrupt message — never render as something typed. §5.4
   if (text.startsWith(INTERRUPT_MARKER)) return state;
 
-  // 4. Ack racing the POST response: match a pending bubble by text.
-  if (text) {
-    const idx = state.items.findIndex(
-      (it) => it.kind === "user" && it.pending && it.text === text,
-    );
-    if (idx >= 0) {
-      const items = state.items.slice();
-      const bubble = items[idx] as UserBubbleItem;
-      items[idx] = { ...bubble, pending: false, uuid: uuid || bubble.uuid };
-      return { ...state, items };
+  // 3. Everything else, segment by segment: a merged line (the harness
+  //    coalesced an operator write with bus messages) yields the
+  //    operator's words and each message on its own. A bus segment is a
+  //    bus bubble; a task notice a card; operator text matches a pending
+  //    bubble by text (the ack racing the POST response), else — traffic
+  //    from another console, or merged — shows as a user bubble.
+  let st = state;
+  const segs = splitSegments(text);
+  for (const [si, seg] of segs.entries()) {
+    if (seg.bus) {
+      st = pushBusBubble(st, seg.text);
+      continue;
     }
+    if (isTaskNotice(seg.text)) {
+      if (!st.items.some((it) => it.kind === "notice" && it.text === seg.text)) {
+        st = { ...st, items: [...st.items, taskNoticeItem(st.nextId, seg.text)], nextId: st.nextId + 1 };
+      }
+      continue;
+    }
+    if (!seg.text) continue;
+    const pendIdx = st.items.findIndex((it) => it.kind === "user" && it.pending && it.text === seg.text);
+    if (pendIdx >= 0) {
+      const items = st.items.slice();
+      const bubble = items[pendIdx] as UserBubbleItem;
+      items[pendIdx] = { ...bubble, pending: false, uuid: uuid || bubble.uuid };
+      st = { ...st, items };
+      continue;
+    }
+    const segUuid = uuid ? (si === 0 ? uuid : `${uuid}#${si}`) : null;
+    if (st.items.some((it) => it.kind === "user" && ((segUuid && it.uuid === segUuid) || it.text === seg.text))) continue;
+    st = {
+      ...st,
+      items: [...st.items, { kind: "user", id: st.nextId, text: seg.text, uuid: segUuid, localKey: null, pending: false, failed: false }],
+      nextId: st.nextId + 1,
+    };
   }
-
-  // Otherwise it is an ack for traffic we did not originate — record nothing.
-  return state;
+  return st;
 }
 
 function applyRaw(state: TranscriptState, ev: RawEvent): TranscriptState {
   const r = asRecord(ev.raw);
   if (!r || r["type"] !== "user") return state;
   const text = extractText(ev.raw);
-  if (text.startsWith(BUS_HEADER)) return pushBusBubble(state, text);
-  if (isTaskNotice(text)) {
-    if (state.items.some((it) => it.kind === "notice" && it.text === text)) return state;
-    return { ...state, items: [...state.items, taskNoticeItem(state.nextId, text)], nextId: state.nextId + 1 };
+  let st = state;
+  for (const seg of splitSegments(text)) {
+    if (seg.bus) st = pushBusBubble(st, seg.text);
+    else if (isTaskNotice(seg.text) && !st.items.some((it) => it.kind === "notice" && it.text === seg.text)) {
+      st = { ...st, items: [...st.items, taskNoticeItem(st.nextId, seg.text)], nextId: st.nextId + 1 };
+    }
   }
-  return state;
+  return st;
 }
 
 

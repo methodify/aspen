@@ -171,6 +171,17 @@ CREATE TABLE IF NOT EXISTS harness_defaults(
   deleted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(scope, harness)
 );
+CREATE TABLE IF NOT EXISTS inputs(
+  id           INTEGER PRIMARY KEY,
+  agent        TEXT NOT NULL,
+  ingest_uuid  TEXT NOT NULL UNIQUE,
+  ts           REAL NOT NULL,
+  source       TEXT NOT NULL,   -- operator | bus | boundary
+  text         TEXT NOT NULL,
+  mid_turn     INTEGER NOT NULL DEFAULT 0,
+  acked_at     REAL
+);
+CREATE INDEX IF NOT EXISTS idx_inputs_agent ON inputs(agent, ts);
 CREATE TABLE IF NOT EXISTS push_subs(
   id INTEGER PRIMARY KEY,
   console TEXT NOT NULL,
@@ -217,6 +228,16 @@ pub fn now_epoch() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InputRow {
+    pub ingest_uuid: String,
+    pub ts: f64,
+    pub source: String,
+    pub text: String,
+    pub mid_turn: bool,
+    pub acked_at: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1249,6 +1270,55 @@ impl BusStore {
             )?;
         }
         Ok(())
+    }
+
+    // ---- the input record (PROPOSALS-2026-09-H.md §4): every write to a
+    // session's stdin, with the exact text, so the transcript can be
+    // completed where the harness consumed input mid-turn without
+    // recording it.
+
+    pub fn record_input(
+        &self,
+        agent: &str,
+        ingest_uuid: &str,
+        source: &str,
+        text: &str,
+        mid_turn: bool,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO inputs(agent, ingest_uuid, ts, source, text, mid_turn) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![agent, ingest_uuid, now_epoch(), source, text, mid_turn as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_input_acked(&self, ingest_uuid: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE inputs SET acked_at=?1 WHERE ingest_uuid=?2 AND acked_at IS NULL",
+            params![now_epoch(), ingest_uuid],
+        )?;
+        Ok(())
+    }
+
+    /// Inputs written for an agent since `since` (epoch), oldest first.
+    pub fn inputs_since(&self, agent: &str, since: f64) -> Result<Vec<InputRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT ingest_uuid, ts, source, text, mid_turn, acked_at FROM inputs WHERE agent=?1 AND ts>=?2 ORDER BY ts, id",
+        )?;
+        let rows = st.query_map(params![agent, since], |r| {
+            Ok(InputRow {
+                ingest_uuid: r.get(0)?,
+                ts: r.get(1)?,
+                source: r.get(2)?,
+                text: r.get(3)?,
+                mid_turn: r.get::<_, i64>(4)? != 0,
+                acked_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     pub fn add_notice(

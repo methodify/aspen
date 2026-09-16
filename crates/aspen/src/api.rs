@@ -2857,27 +2857,26 @@ async fn get_transcript(
     let Some(agent) = rows.iter().find(|a| a.name == name) else {
         return err(StatusCode::NOT_FOUND, format!("no agent named @{name}")).into_response();
     };
-    let Some(sid) = &agent.session_id else {
+    if agent.session_id.is_none() {
         return Json(Vec::<Value>::new()).into_response();
-    };
-    let st = s.node.inner.store_for(agent.harness);
-    // Whole-file reads: off the runtime workers.
-    let (repo, sid) = (agent.repo.clone(), sid.clone());
-    if let Some(after) = q.after.map(|a| a.to_owned()) {
-        let r = tokio::task::spawn_blocking(move || st.rehydrate_after(&repo, &sid, &after)).await;
-        return match r {
-            Ok(Ok((items, found))) => {
-                Json(json!({ "items": items, "after_found": found })).into_response()
-            }
-            _ => Json(json!({ "items": [], "after_found": false })).into_response(),
-        };
     }
-    let r = tokio::task::spawn_blocking(move || st.rehydrate(&repo, &sid))
-        .await
-        .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
-    match r {
-        Ok(items) => Json(items).into_response(),
-        Err(_) => Json(Vec::<Value>::new()).into_response(), // no transcript yet
+    let q_after_given = q.after.is_some();
+    // Whole-file reads: off the runtime workers. The merged view: split
+    // lines and the input record (node.rs transcript_with_record).
+    let inner = s.node.inner.clone();
+    let row = agent.clone();
+    let after = q.after.map(|a| a.to_owned());
+    let r = tokio::task::spawn_blocking(move || {
+        aspen_node::node::transcript_with_record(&inner, &row, after.as_deref())
+    })
+    .await;
+    match (r, q_after_given) {
+        (Ok((items, found)), true) => {
+            Json(json!({ "items": items, "after_found": found })).into_response()
+        }
+        (Ok((items, _)), false) => Json(items).into_response(),
+        (Err(_), true) => Json(json!({ "items": [], "after_found": false })).into_response(),
+        (Err(_), false) => Json(Vec::<Value>::new()).into_response(),
     }
 }
 

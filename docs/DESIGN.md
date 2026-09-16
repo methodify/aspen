@@ -134,33 +134,55 @@ history; Aspen holds only what its UI needs live plus the bus trail.
 ### 4.2 In: bus delivery
 
 A bus message reaching an agent is **injected as a user-typed message with an
-unmistakable envelope header**:
+unmistakable envelope**:
 
 ```
-[aspen bus] from @arch (contextua @ gpu-box) · #contextua · thread t-7
+[aspen bus] normal from @arch (contextua @ gpu-box) · #contextua · thread t-7
+<body>
+[aspen bus end]
 ```
 
-followed by the body. Delivery semantics come straight from plumb's proven
-model, upgraded by pipe ownership:
+Delivery (rewritten 2026-09-16, PROPOSALS-2026-09-H.md; the original
+plumb-derived table with sender-chosen timing is in the decisions log):
 
-| Recipient state | `notice` | `normal` | `gating` |
-|---|---|---|---|
-| idle | held until they next run a turn — **never wakes anyone** | inject now (wakes them) | inject now |
-| mid-turn | rides along with the next delivery / next turn | inject now — the CLI queues and coalesces it into the **next turn** (delivery at the boundary, for free) | `interrupt` control request (~110 ms), then inject |
-| session not running | held in store; next session start | held in store; delivered at next session start | same, marked late |
+| Recipient state | any urgency |
+|---|---|
+| idle | inject now — wakes them, one batch, one turn |
+| mid-turn | inject now, exactly as an operator's message would be: the harness appends it to its **next model request**, so the recipient sees it at the next sensible point in its own work and decides whether to act now or park it |
+| session not running | held in store; delivered at next session start |
 
-The third class, `notice`, is stolen from claude-orgtree's cleanest idea: an
-explicit event-vs-message distinction. Roster changes, channel membership,
-"a peer went idle" — ambient facts an agent should *have* but that must never
-cost anyone a wake-up. Most systems conflate these with messages; we won't.
+**Urgency is advisory.** `gating`, `normal` and `notice` travel in the
+envelope for the recipient to read; none of them changes timing, none
+interrupts, none is withheld. The operator's decision: the sender does
+not know whether the message matters to the recipient now or at the end
+of its work, and a sender asked to choose veers polite — an agent an
+hour into a task needing an answer at minute five gets it at minute
+sixty. Recipients are capable; they get the message and the benefit of
+the doubt. Interrupting is the operator's verb, not the bus's.
 
-- Everything pending delivers together, **in send order** — class never
-  reorders (a gating message may depend on the normal ones before it).
+**Everything is on the record.** A mid-turn write the harness consumes
+between two of its own steps leaves no transcript line (Claude 2.1.26x,
+measured); the node records every write it makes (`inputs`: text, uuid,
+time, whether mid-turn, and the replay ack when it comes) and completes
+the transcript from that record when it is read. A line the harness
+merged from several writes splits back into the operator's words and
+each message (`[aspen bus end]` is what makes that exact).
+
+**The boundary guard.** The harness's queue appends to the next model
+request; a write after a turn's last request waits for a turn nobody
+starts. The replay ack marks consumption, not the write, so at every
+turn end the node knows what is still held; the harness opens the turn
+itself in every case seen, and if it has not within a few seconds a
+carrier line starts one — the held text rides along. So a message to a
+running agent always produces a turn.
+
+- Everything pending delivers together, **in send order**; the
+  operator's message goes after pending mail (chronology — the operator
+  is usually replying to it).
 - **No acks, no receipts, by inheritance and by scar.** The bus memorializes
-  passively: `delivered_at`, `delivered_via`, repo commit hash at delivery —
-  and now, because of `--replay-user-messages`, the replay ack closes the loop
-  with *proof of ingestion*, something plumb never had. A sender who needs
-  confirmation asks in the message.
+  passively: `delivered_at`, `delivered_via`, and, because of
+  `--replay-user-messages`, `ingested_at` — proof the model was given it.
+  A sender who needs confirmation asks in the message.
 - Delivery notes at send time: if the recipient session is down, the sender is
   told *at the moment of sending* how the message will actually land.
 
@@ -227,8 +249,9 @@ Rules of the seam:
 
 Inherited from plumb (each item is scar tissue, not taste):
 
-- **Urgency is delivery timing, nothing else.** Two classes, `gating` and
-  `normal`. Urgency rations *derailment*.
+- **Urgency was delivery timing** (plumb: `gating` interrupts, `normal`
+  waits). Retired 2026-09-16 (§4.2): the recipient, not the sender, knows
+  what matters now; urgency is a word in the envelope.
 - **Silence is not loss.** The trail (`delivered_at` etc.) answers questions;
   nobody re-sends on a hunch.
 - **A ruling goes on the durable record before the wire** — messages carry an
@@ -1176,3 +1199,17 @@ cleaner lane for roster updates than user-message headers.
   it reads only the operator inbox. A console's name is fixed at
   identity creation because the cert carries it; the profile label
   stays a local nickname.
+- **2026-09-16 — v0.34, delivery that always lands and is on the record**
+  (PROPOSALS-2026-09-H.md). The operator: an idle agent did not wake for
+  a peer's message until the operator wrote; the peer's message arrived
+  then; the operator's own message vanished from the console's history.
+  Measured on the rig: the harness appends mid-turn stdin to its *next
+  model request* — consumed with no transcript line when a request
+  follows, held until the next turn when none does; the replay ack marks
+  consumption. Decisions: urgency is advisory (the sender's guess at
+  timing was plumb's, and it selected for politeness over correctness —
+  no interrupts, nothing withheld, all messages enqueue like the
+  operator's); the node records every write (`inputs`) and completes the
+  transcript from it; merged lines split on `[aspen bus end]`; a boundary
+  guard nudges when the harness holds input past a turn end; chronology
+  over sender rank; bus bubbles collapse to sender + first line.

@@ -1,17 +1,21 @@
-//! The delivery engine.
+//! The delivery engine (PROPOSALS-2026-09-H.md, decision 2026-09-16).
 //!
 //! Owning the pipe makes delivery physics simple and exact:
 //!
-//! - recipient live + idle  → write now (wakes them; one batch, one turn)
-//! - recipient live + busy  → `normal`: write now — the CLI queues and
-//!   coalesces into the *next* turn, which IS boundary delivery;
-//!   `gating`: interrupt first (~110 ms), then write
+//! - recipient live + idle  → write now: wakes them, one batch, one turn
+//! - recipient live + busy  → write now, exactly as an operator's message
+//!   mid-turn: the harness appends it to its next model request, so the
+//!   recipient sees it at the next sensible point in its own work and
+//!   decides for itself whether to act now or park it. No interrupt —
+//!   the sender's guess at urgency is not the recipient's judgement.
 //! - recipient not running  → rows stay pending; delivered at next spawn
-//! - `notice`               → never delivered alone; rides along with any
-//!   other delivery or operator send
 //!
-//! Everything pending delivers together, in send order — class never
-//! reorders (a gating message may depend on the normal ones before it).
+//! Urgency is carried in the envelope for the recipient to read; it no
+//! longer changes timing. Everything pending delivers together, in send
+//! order. What a mid-turn write does *not* guarantee is a wake at the
+//! boundary when the harness has no further model request in that turn:
+//! node.rs watches the replay acks and nudges at the boundary for
+//! anything still held (the record of every write is `inputs`).
 
 use std::sync::Arc;
 
@@ -58,32 +62,11 @@ pub async fn run(inner: Arc<NodeInner>, mut rx: mpsc::UnboundedReceiver<String>)
 
 async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::Result<()> {
     let pending = inner.store.pending_for(&sess.name)?;
-    // Notices never deliver alone — they must not wake or interrupt anyone.
-    if !pending.iter().any(|m| m.urgency != "notice") {
+    if pending.is_empty() {
         return Ok(());
     }
     let busy = sess.turn_state() == TurnState::Busy;
-    let has_gating = pending.iter().any(|m| m.urgency == "gating");
-    if busy && has_gating {
-        // The interrupt ends the in-flight turn with an error-flavored
-        // result; our queued write then forms the next turn.
-        if let Err(e) =
-            tokio::time::timeout(std::time::Duration::from_secs(10), sess.handle.interrupt())
-                .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("interrupt timed out")))
-        {
-            tracing::warn!(error = %e, "interrupt for gating delivery failed; delivering at boundary instead");
-        }
-    }
-    let via = if busy {
-        if has_gating {
-            "interrupt"
-        } else {
-            "boundary" // CLI-queued; reaches the model when this turn ends
-        }
-    } else {
-        "wake"
-    };
+    let via = if busy { "mid-turn" } else { "wake" };
     let text = compose(&pending);
     sess.mark_busy();
     let _ = inner.store.record_event(
@@ -93,13 +76,13 @@ async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::
             "from": "bus",
             "senders": pending.iter().map(|m| m.sender.clone()).collect::<std::collections::BTreeSet<_>>(),
             "count": pending.len(),
-            "gating": has_gating,
+            "mid_turn": busy,
         }),
     );
     // A wedged child must not stall delivery for every other agent.
     let ingest_uuid = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        sess.handle.send_user(text),
+        sess.handle.send_user(text.clone()),
     )
     .await
     .map_err(|_| {
@@ -110,44 +93,42 @@ async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::
     })??;
     let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
     inner.store.mark_delivered(&ids, via, Some(&ingest_uuid))?;
+    let _ = inner
+        .store
+        .record_input(&sess.name, &ingest_uuid, "bus", &text, busy);
     Ok(())
 }
 
-/// Flush pending notices for a session about to receive an operator message
-/// — the only lane besides a delivery that a notice may ride.
+/// Before an operator message: anything pending for the session (rows that
+/// waited while it was down) goes first, in send order — chronology, so
+/// the operator's reply to a message lands after the message.
 pub async fn flush_notices(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) {
     let Ok(pending) = inner.store.pending_for(&sess.name) else {
         return;
     };
-    if pending.is_empty() || pending.iter().any(|m| m.urgency != "notice") {
-        // Nothing to flush, or a real delivery is due anyway — let the
-        // delivery engine handle the full batch in order.
-        if !pending.is_empty() {
-            inner.tick_delivery(&sess.name);
-        }
+    if pending.is_empty() {
         return;
     }
-    let text = compose(&pending);
-    if let Ok(ingest_uuid) = sess.handle.send_user(text).await {
-        let ids: Vec<i64> = pending.iter().map(|m| m.id).collect();
-        let _ = inner
-            .store
-            .mark_delivered(&ids, "rode-along", Some(&ingest_uuid));
+    if let Err(e) = attempt(inner, sess).await {
+        tracing::warn!(agent = %sess.name, error = %e, "pending mail before an operator message: attempt failed");
     }
 }
 
+/// The end-of-message line: a bus segment runs from its header to this,
+/// so a transcript line the harness merged from several writes splits
+/// back into the operator's words and each message (node.rs, the console).
+pub const BUS_END: &str = "[aspen bus end]";
+
 /// The injection envelope: unmistakably bus traffic, never mistaken for the
-/// operator. One write carries everything pending, in send order.
+/// operator. One write carries everything pending, in send order, each
+/// message self-contained between its header line and `[aspen bus end]`.
 pub fn compose(messages: &[StoredMessage]) -> String {
     let mut out = String::new();
-    if messages.len() > 1 {
-        out.push_str(&format!(
-            "[aspen bus] {} messages, in send order:\n",
-            messages.len()
-        ));
-    }
-    for m in messages {
-        out.push_str(&format!("\n[aspen bus] {} from @{}", m.urgency, m.sender));
+    for (i, m) in messages.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("[aspen bus] {} from @{}", m.urgency, m.sender));
         if m.to_display.starts_with('#') {
             out.push_str(&format!(" · {}", m.to_display));
         }
@@ -158,7 +139,9 @@ pub fn compose(messages: &[StoredMessage]) -> String {
             out.push_str(&format!(" · record {r}"));
         }
         out.push('\n');
-        out.push_str(&m.body);
+        out.push_str(m.body.trim_end());
+        out.push('\n');
+        out.push_str(BUS_END);
         out.push('\n');
     }
     out
@@ -190,13 +173,15 @@ mod tests {
     #[test]
     fn compose_single_and_batch() {
         let one = compose(&[msg("normal", "arch", "hello")]);
-        assert!(one.contains("[aspen bus] normal from @arch"));
+        assert!(one.starts_with("[aspen bus] normal from @arch"));
+        assert!(one.trim_end().ends_with(BUS_END));
         assert!(one.contains("hello"));
         let two = compose(&[
             msg("normal", "arch", "first"),
             msg("gating", "op", "second"),
         ]);
-        assert!(two.starts_with("[aspen bus] 2 messages"));
+        assert!(two.starts_with("[aspen bus] "));
+        assert_eq!(two.matches(BUS_END).count(), 2);
         // Send order preserved in the rendered text.
         assert!(two.find("first").unwrap() < two.find("second").unwrap());
     }
