@@ -88,16 +88,8 @@ export function SessionMenu({ open, onClose, anchor, children }: { open: boolean
     };
   }, [open, onClose]);
   const style: React.CSSProperties = anchor ? { top: anchor.top, right: anchor.right, left: "auto" } : {};
-  // A row that opens a panel (plugins, MCP, activity, artifacts, board)
-  // hands over to it: the menu closes so the panel — portaled to the
-  // body, positioned from the row's rect at the click — stands alone.
-  const onRowClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const t = e.target as HTMLElement;
-    if (t.closest(".charter-toggle")) window.setTimeout(onClose, 0);
-  };
   return createPortal(
-    <div ref={ref} className="session-menu" role="menu" hidden={!open} style={style} onClick={onRowClick}>
+    <div ref={ref} className="session-menu" role="menu" hidden={!open} style={style} onClick={(e) => e.stopPropagation()}>
       {children}
     </div>,
     document.body,
@@ -131,4 +123,23 @@ export function MenuField({ label, children, hint }: { label: string; children: 
       <span className="menu-field-ctl">{children}</span>
     </div>
   );
+}
+
+/** Where a row's panel opens. A row in the ⋯ menu puts its panel beside
+ *  the menu (to its left, level with the row) so the menu stays open and
+ *  the operator can go down the list — plugins, then MCP, then activity
+ *  — without reopening it; the panel stacks above the menu. When there
+ *  is no room beside (a phone), it opens over the row instead. A row on
+ *  the bar itself opens under it, as before. */
+export function panelAnchor(el: HTMLElement | null, width: number): { top: number; left: number } {
+  const r = el?.getBoundingClientRect();
+  if (!r || r.width === 0) return { top: 52, left: Math.max(8, window.innerWidth - width - 16) };
+  const menu = el?.closest(".session-menu")?.getBoundingClientRect();
+  if (menu) {
+    const beside = menu.left - width - 8;
+    const top = Math.max(8, Math.min(r.top, window.innerHeight - 80));
+    if (beside >= 8) return { top, left: beside };
+    return { top: Math.max(8, r.top - 8), left: 8 };
+  }
+  return { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) };
 }

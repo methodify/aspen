@@ -67,7 +67,7 @@ import {
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { relTime } from "./../components";
-import { BarVerb, MenuField, MenuGroup, MenuRow, PresenceGlyph, SessionMenu, barPresence } from "./../sessionBar";
+import { BarVerb, MenuField, MenuGroup, MenuRow, PresenceGlyph, SessionMenu, barPresence, panelAnchor } from "./../sessionBar";
 import { clearSessionCommands, setSessionCommands, type SessionCommand } from "./../sessionCommands";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
@@ -722,15 +722,6 @@ function fmtElapsed(startIso: string | null, endIso: string | null): string {
 /** "activity ▾": the session's ledger (PROPOSALS §8) — background tasks,
  *  subagents, workflows, monitors — running first; agents open their own
  *  transcript. */
-/** Where a row's panel opens: under the row when it is on screen, else
- *  (the row lives in the ⋯ menu, which may be closed when the status
- *  line opens the panel by signal) under the top bar, right-aligned. */
-function anchorFor(el: HTMLElement | null, width: number): { top: number; left: number } {
-  const r = el?.getBoundingClientRect();
-  if (r && r.width > 0) return { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) };
-  return { top: 52, left: Math.max(8, window.innerWidth - width - 16) };
-}
-
 function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: ActivityCounts | null; openSignal?: number }) {
   const [open, setOpen] = useState(false);
   const [acts, setActs] = useState<Activity[] | null>(null);
@@ -744,7 +735,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
   // The status line's count opens this menu (PROPOSALS-MCP.md §6.4).
   useEffect(() => {
     if (!openSignal) return;
-    setAt(anchorFor(btnRef.current, 580));
+    setAt(panelAnchor(btnRef.current, 580));
     setOpen(true);
   }, [openSignal]);
   useEffect(() => {
@@ -787,8 +778,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
         ref={btnRef}
         className={`charter-toggle${running ? " activity-live" : ""}`}
         onClick={(e) => {
-          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+          setAt(panelAnchor(e.currentTarget as HTMLButtonElement, 580));
           setOpen((o) => !o);
         }}
         title="background tasks, subagents, workflows and monitors of this session"
@@ -900,7 +890,7 @@ function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { tot
   }, [agent]);
   useEffect(() => {
     if (!openSignal) return;
-    setAt(anchorFor(btnRef.current, 580));
+    setAt(panelAnchor(btnRef.current, 580));
     setOpen(true);
     load(false);
   }, [openSignal, load]);
@@ -953,8 +943,7 @@ function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { tot
         className="charter-toggle"
         style={down ? { color: "var(--sig-gate)" } : undefined}
         onClick={(e) => {
-          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 580)) });
+          setAt(panelAnchor(e.currentTarget as HTMLButtonElement, 580));
           setOpen((o) => !o);
           if (!open) load(false);
         }}
@@ -1132,8 +1121,7 @@ function PluginsMenu({
       <button
         className="charter-toggle"
         onClick={(e) => {
-          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 600)) });
+          setAt(panelAnchor(e.currentTarget as HTMLButtonElement, 600));
           setOpen((o) => !o);
           if (!open) load();
         }}
@@ -1248,8 +1236,7 @@ function AddToBoard({ agent }: { agent: string }) {
       <button
         className="charter-toggle"
         onClick={(e) => {
-          const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-          setAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 400)) });
+          setAt(panelAnchor(e.currentTarget as HTMLButtonElement, 400));
           setOpen((o) => !o);
           if (!open) api.boards().then(setBoards).catch(() => setBoards([]));
         }}
@@ -2859,9 +2846,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             aria-expanded={artifactsOpen}
             onClick={(e) => {
               const next = !artifactsOpen;
-              const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-              // Keep the menu on screen: it is up to 640px wide.
-              setArtifactsAt({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 656)) });
+              setArtifactsAt(panelAnchor(e.currentTarget as HTMLButtonElement, 640));
               setArtifactsOpen(next);
               if (next) void loadArtifacts();
             }}
