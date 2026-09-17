@@ -823,6 +823,26 @@ export function cachedTranscript(name: string): TranscriptState | undefined {
   return cache.get(transcriptKey(name));
 }
 
+/** Drop every cached copy of a session's transcript — memory and disk —
+ *  so the next load is a full fetch from the node (the ⋯ menu's
+ *  *reload transcript*). */
+export async function forgetTranscript(name: string): Promise<void> {
+  cache.delete(transcriptKey(name));
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(transcriptKey(name));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
 export function rememberTranscript(name: string, state: TranscriptState): void {
   const key = transcriptKey(name);
   cache.delete(key);

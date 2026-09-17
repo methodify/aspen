@@ -59,6 +59,7 @@ import {
   settleTools,
   addOpenPrompts,
   cachedTranscript,
+  forgetTranscript,
   rememberTranscript,
   loadPersistedTranscript,
   persistTranscript,
@@ -875,7 +876,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
                     </div>
                     {isOpen && (
                       <div className="act-details">
-                        <div className="act-kv"><span className="k">status</span><span className={`v mono ${a.status === "running" ? "live" : ""}`}>{a.status}{a.detail["stopped_by"] === "operator" ? " (by you)" : ""}</span></div>
+                        <div className="act-kv"><span className="k">status</span><span className={`v mono ${a.status === "running" ? "live" : ""}`}>{a.status}{a.detail["stopped_by"] === "operator" ? " (by you)" : ""}{typeof a.detail["note"] === "string" ? ` — ${a.detail["note"]}` : ""}</span></div>
                         <div className="act-kv"><span className="k">runtime</span><span className="v mono">{a.status === "running" ? fmtElapsed(a.started_at, null) : fmtElapsed(a.started_at, a.ended_at)}</span></div>
                         {script && <div className="act-kv"><span className="k">script</span><pre className="v mono act-script">{script}</pre></div>}
                         {typeof a.detail["description"] === "string" && <div className="act-kv"><span className="k">purpose</span><span className="v">{String(a.detail["description"])}</span></div>}
@@ -2228,6 +2229,30 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
 
+  /** Full refetch of the transcript from the node (the ⋯ menu): drops the
+   *  browser's cached copy — memory and IndexedDB — and seeds from the
+   *  whole history, instead of the usual tail-after-head delta. For when
+   *  the cached copy and the node disagree. */
+  const [reloadingTranscript, setReloadingTranscript] = useState(false);
+  async function reloadTranscript() {
+    if (reloadingTranscript) return;
+    setReloadingTranscript(true);
+    setCtlNote("reloading transcript…");
+    try {
+      await forgetTranscript(name);
+      const history = await api.transcript(name);
+      const seeded = settleTools(seedFromHistory(history));
+      dispatch({ type: "seed", state: seeded });
+      persistTranscript(name, seeded, true);
+      setCtlNote(`transcript reloaded — ${history.length} items`);
+    } catch (e) {
+      setCtlError(`reload transcript: ${errText(e)}`);
+    } finally {
+      setReloadingTranscript(false);
+      window.setTimeout(() => setCtlNote(null), 4000);
+    }
+  }
+
   async function reload() {
     if (reloading) return;
     setReloading(true);
@@ -2695,6 +2720,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       { id: "branch", group: "verb", label: "branch here", hint: "bookmark and fork", run: () => setBranchLabel("") },
       { id: "reload", group: "setup", label: "reload plugins & skills", run: () => void reload() },
       { id: "charter", group: "inspect", label: "charter", run: () => setCharterOpen((o) => !o) },
+      ...(subagent ? [] : [{ id: "reload-transcript", group: "inspect" as const, label: "reload transcript", hint: "full refetch from the node", run: () => void reloadTranscript() }]),
       ...(canRecap ? [{ id: "recap", group: "inspect" as const, label: "recap now", hint: "a one-line recap from the harness", run: () => recapNow() }] : []),
       { id: "history", group: "inspect", label: "history", hint: "lineage and bookmarks", run: () => { setHistoryOpen(true); void loadHistory(); } },
       { id: "move", group: "move", label: "move or copy to another node…", run: () => { setMoveOpen(true); setMoveErr(null); void loadNodes(); } },
@@ -2977,6 +3003,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           <MenuRow label={`charter${charterOpen ? " ▴" : ""}`} hint="the session's charter, below the bar" onClick={() => { closeMenu(); setCharterOpen((o) => !o); }} />
           {canRecap && (
             <MenuRow label="recap now" hint="open the since-you-last-looked bar and ask the harness for a one-line recap of the whole session (nothing enters the conversation)" onClick={() => { closeMenu(); recapNow(); }} disabled={agent?.turn_state === "busy"} />
+          )}
+          {!subagent && (
+            <MenuRow label={reloadingTranscript ? "reloading transcript…" : "reload transcript"} hint="fetch the whole transcript from the node again, dropping this browser's cached copy" onClick={() => { closeMenu(); void reloadTranscript(); }} disabled={reloadingTranscript} />
           )}
           <MenuRow label={`history${historyOpen ? " ▴" : ""}`} hint="this name's lineage and bookmarks" onClick={() => { closeMenu(); const next = !historyOpen; setHistoryOpen(next); if (next) void loadHistory(); }} />
         <span className="artifacts-wrap">

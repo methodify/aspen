@@ -114,6 +114,35 @@ fn find_after(text: &str, marker: &str) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
+/// A `<task-notification>` (any carrier line): end the activity it names.
+fn apply_notification(acts: &mut [Activity], text: &str, ts: &Option<String>) {
+    if !text.contains("<task-notification>") {
+        return;
+    }
+    let Some(id) = tag(text, "task-id") else {
+        return;
+    };
+    let status = tag(text, "status").unwrap_or_else(|| "completed".into());
+    let summary = tag(text, "summary");
+    // The first report ends it (the enqueue line, then the attachment,
+    // then the remove line all carry the same notification).
+    if let Some(a) = acts
+        .iter_mut()
+        .rev()
+        .find(|a| a.id == id && a.status == "running")
+    {
+        a.status = status;
+        a.ended_at = ts.clone();
+        if let Some(s) = summary {
+            a.detail["summary"] = Value::String(snippet(&s, 200));
+            a.detail["output"] = Value::String(snippet(&s, 4000));
+        }
+        if let Some(f) = tag(text, "output-file") {
+            a.detail["output_file"] = Value::String(f);
+        }
+    }
+}
+
 /// Replay a transcript's lines into a ledger.
 pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>) -> Vec<Activity> {
     let mut acts: Vec<Activity> = Vec::new();
@@ -135,7 +164,38 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
             .and_then(|c| c.as_array())
             .cloned()
             .unwrap_or_default();
+        // A task's end reaches the transcript in more than one shape (all
+        // seen in real sessions, CLI 2.1.25x–2.1.27x): a `user` line whose
+        // content is the notification as a plain string; a `user` line
+        // with it as a text block; and — when the harness absorbed it
+        // mid-turn — only an `attachment` line (`commandMode:
+        // task-notification`) and the `queue-operation` pair, never a user
+        // line at all. Missing the last two left tasks "running" forever.
         match ty {
+            "attachment" => {
+                if let Some(p) = v.pointer("/attachment/prompt").and_then(|p| p.as_str()) {
+                    apply_notification(&mut acts, p, &ts);
+                }
+                continue;
+            }
+            "queue-operation" => {
+                if let Some(c) = v.get("content").and_then(|c| c.as_str()) {
+                    apply_notification(&mut acts, c, &ts);
+                }
+                continue;
+            }
+            "user"
+                if v.pointer("/message/content")
+                    .and_then(|c| c.as_str())
+                    .is_some() =>
+            {
+                let text = v
+                    .pointer("/message/content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                apply_notification(&mut acts, text, &ts);
+                continue;
+            }
             "assistant" => {
                 for b in &blocks {
                     if b.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
@@ -310,39 +370,7 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                         }
                     } else if bt == Some("text") || b.is_string() {
                         let text = text_of(&Value::Array(vec![b.clone()]));
-                        if text.contains("<task-notification>") {
-                            if let Some(id) = tag(&text, "task-id") {
-                                let status =
-                                    tag(&text, "status").unwrap_or_else(|| "completed".into());
-                                let summary = tag(&text, "summary");
-                                if let Some(a) = acts.iter_mut().rev().find(|a| a.id == id) {
-                                    a.status = status;
-                                    a.ended_at = ts.clone();
-                                    if let Some(s) = summary {
-                                        a.detail["summary"] = Value::String(snippet(&s, 200));
-                                        a.detail["output"] = Value::String(snippet(&s, 4000));
-                                    }
-                                    if let Some(f) = tag(&text, "output-file") {
-                                        a.detail["output_file"] = Value::String(f);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Plain-string user content (older lines) carrying a notification.
-                if let Some(s) = v
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
-                {
-                    if s.contains("<task-notification>") {
-                        if let (Some(id), Some(status)) = (tag(s, "task-id"), tag(s, "status")) {
-                            if let Some(a) = acts.iter_mut().rev().find(|a| a.id == id) {
-                                a.status = status;
-                                a.ended_at = ts.clone();
-                            }
-                        }
+                        apply_notification(&mut acts, &text, &ts);
                     }
                 }
             }
@@ -517,6 +545,35 @@ mod tests {
         assert_eq!(acts[1].status, "running");
         let c = counts(&acts);
         assert_eq!((c.running, c.tasks, c.agents), (1, 1, 0));
+    }
+
+    #[test]
+    fn notification_absorbed_mid_turn_ends_the_task() {
+        // The harness took the notification mid-turn: only an attachment
+        // line (and the queue-operation pair) record it — no user line.
+        let lines = vec![
+            r#"{"type":"assistant","timestamp":"t1","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 5","run_in_background":true,"description":"wait"}}]}}"#,
+            r#"{"type":"user","timestamp":"t2","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Command running in background with ID: bg9. Output is being written to: x"}]}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"t3","content":"<task-notification>\n<task-id>bg9</task-id>\n<status>completed</status>\n<summary>Background command \"wait\" completed (exit code 0)</summary>\n</task-notification>"}"#,
+            r#"{"type":"attachment","timestamp":"t3","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>\n<task-id>bg9</task-id>\n<status>completed</status>\n<summary>Background command \"wait\" completed (exit code 0)</summary>\n</task-notification>"}}"#,
+            r#"{"type":"queue-operation","operation":"remove","timestamp":"t4","content":"<task-notification>\n<task-id>bg9</task-id>\n<status>completed</status>\n<summary>Background command \"wait\" completed (exit code 0)</summary>\n</task-notification>","reason":"absorbed_mid_turn"}"#,
+        ];
+        let acts = derive(lines.into_iter().map(str::to_owned), None);
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].status, "completed");
+        assert_eq!(acts[0].ended_at.as_deref(), Some("t3"));
+    }
+
+    #[test]
+    fn notification_as_string_content_ends_the_task() {
+        let lines = vec![
+            r#"{"type":"assistant","timestamp":"t1","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 5","run_in_background":true}}]}}"#,
+            r#"{"type":"user","timestamp":"t2","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Command running in background with ID: bg9. Output is being written to: x"}]}}"#,
+            r#"{"type":"user","timestamp":"t3","message":{"role":"user","content":"<task-notification>\n<task-id>bg9</task-id>\n<status>failed</status>\n<summary>exit 1</summary>\n</task-notification>"}}"#,
+        ];
+        let acts = derive(lines.into_iter().map(str::to_owned), None);
+        assert_eq!(acts[0].status, "failed");
+        assert_eq!(acts[0].ended_at.as_deref(), Some("t3"));
     }
 
     #[test]

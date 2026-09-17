@@ -97,3 +97,19 @@ does, the row reads `stopped (by you)`. Child processes no ledger row
 explains (a hook-launched monitor) are listed under "processes under
 this session" with a stop of their own. Monitors keep the whole script
 and the tool's replies in `detail.command` / `detail.output`.
+
+## Where a task's end is read from (v0.34.3)
+
+A background task's end reaches the transcript in more than one shape
+(all seen in real sessions, CLI 2.1.25x–2.1.27x): a `user` line whose
+content is the `<task-notification>` as a plain string; a `user` line
+carrying it as a text block; and — when the harness absorbed the
+notification mid-turn — only an `attachment` line (`commandMode:
+task-notification`) plus the `queue-operation` enqueue/remove pair,
+never a user line at all. The ledger read only user text blocks, so
+tasks that ended mid-turn showed *running* for hours. It now reads all
+four carriers (the first report ends the task), and the node adds a
+second source for shell tasks: a task the ledger still calls running
+whose command no child process runs any more is reported `ended` with
+a note, so the panel never says *running 2h* about a process that is
+gone.

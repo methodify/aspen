@@ -55,8 +55,11 @@ row acts. Arrow keys walk the rows; the first row takes focus on open.
 - **setup**: model (select), mode (select), render (chat / console /
   source), reload plugins & skills, plugins ▸, mcp ▸.
 - **inspect**: charter, recap now (opens the since-you-last-looked bar
-  and asks; CATCH_UP_AND_SEARCH.md), history (charter and history open
-  drawers under the bar), artifacts ▸, activity ▸.
+  and asks; CATCH_UP_AND_SEARCH.md), reload transcript (v0.34.3: a full
+  refetch from the node, dropping the browser's cached copy in memory
+  and IndexedDB — the usual load fetches only the tail after the cached
+  head), history (charter and history open drawers under the bar),
+  artifacts ▸, activity ▸.
 - **move**: move or copy to another node…, bring here (for a session on
   another node), board ▸ (on the page only — inside a board it is
   meaningless).

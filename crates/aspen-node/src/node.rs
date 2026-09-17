@@ -2767,6 +2767,41 @@ impl Node {
                 }
             }
         }
+        // Second source for a shell task's end (PROPOSALS-MCP.md §6.4):
+        // the process tree. A task still "running" by the ledger whose
+        // command no child process runs any more has ended — the harness
+        // may hold its notification (delivered at the next turn), or have
+        // recorded it in a shape we do not read. Say so rather than
+        // "running 2h".
+        if let Some(sess) = self.inner.live(name) {
+            if let Some(pid) = sess.handle.pid() {
+                let procs = tokio::task::spawn_blocking(move || crate::procs::descendants(pid))
+                    .await
+                    .unwrap_or_default();
+                for a in acts.iter_mut() {
+                    if a.get("kind").and_then(|k| k.as_str()) != Some("task")
+                        || a.get("status").and_then(|s| s.as_str()) != Some("running")
+                    {
+                        continue;
+                    }
+                    let Some(cmd) = a
+                        .get("detail")
+                        .and_then(|d| d.get("command"))
+                        .and_then(|c| c.as_str())
+                    else {
+                        continue;
+                    };
+                    let alive = procs
+                        .iter()
+                        .any(|p| crate::procs::matches_script(&p.cmdline, cmd));
+                    if !alive {
+                        a["status"] = serde_json::json!("ended");
+                        a["detail"]["note"] =
+                            serde_json::json!("process gone; the harness has not reported it yet");
+                    }
+                }
+            }
+        }
         acts.reverse();
         Ok(acts)
     }
