@@ -630,6 +630,10 @@ function applyAssistantMessage(
 }
 
 function applyToolUse(state: TranscriptState, ev: ToolUseEvent): TranscriptState {
+  // A subagent's call (marked with its parent Agent call): the activity
+  // panel and the status line's "N agents" cover it; the transcript is
+  // the session's own conversation.
+  if (ev.parent_tool_use_id) return state;
   const t = extractToolUse(ev);
   const item: ToolCardItem = {
     kind: "tool",

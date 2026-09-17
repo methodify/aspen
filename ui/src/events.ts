@@ -25,6 +25,9 @@ export interface ToolUseEvent {
   name?: string;
   input?: unknown;
   raw?: unknown;
+  /** Set when a subagent made the call (the parent Agent call's id):
+   *  not this session's own transcript. */
+  parent_tool_use_id?: string | null;
 }
 
 export interface ToolResultEvent {

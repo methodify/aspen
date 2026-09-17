@@ -16,6 +16,21 @@ fn s(v: &Value, key: &str) -> Option<String> {
 /// plus the `AssistantMessage` snapshot).
 pub fn normalize(frame: Value) -> Vec<SessionEvent> {
     let ty = frame.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    // A subagent's traffic rides the same stream, marked with the parent
+    // Agent call's `parent_tool_use_id` (reference §5.2). It is not the
+    // session's own conversation: its text, deltas and tool results never
+    // become transcript events (they painted a subagent's web searches
+    // into the main transcript). Its tool calls do pass, still marked, so
+    // a consumer can show "subagents working" without showing the work.
+    if s(&frame, "parent_tool_use_id").is_some() {
+        return match ty {
+            "assistant" => normalize_assistant(frame)
+                .into_iter()
+                .filter(|e| matches!(e, SessionEvent::ToolUse { .. }))
+                .collect(),
+            _ => vec![],
+        };
+    }
     match ty {
         "stream_event" => normalize_stream_event(&frame),
         "assistant" => normalize_assistant(frame),
@@ -157,5 +172,45 @@ fn normalize_system(frame: Value) -> Vec<SessionEvent> {
             out
         }
         _ => vec![SessionEvent::Status { raw: frame }],
+    }
+}
+
+#[cfg(test)]
+mod subagent_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn subagent_frames_yield_only_marked_tool_uses() {
+        let assistant = json!({
+            "type": "assistant", "parent_tool_use_id": "toolu_parent",
+            "message": { "id": "m1", "content": [
+                { "type": "text", "text": "searching…" },
+                { "type": "tool_use", "id": "tu_sub", "name": "WebFetch", "input": { "url": "https://x" } }
+            ] }
+        });
+        let evs = normalize(assistant);
+        assert_eq!(evs.len(), 1);
+        assert!(
+            matches!(&evs[0], SessionEvent::ToolUse { parent_tool_use_id: Some(p), .. } if p == "toolu_parent")
+        );
+        let result = json!({
+            "type": "user", "parent_tool_use_id": "toolu_parent",
+            "message": { "content": [ { "type": "tool_result", "tool_use_id": "tu_sub", "content": "ok" } ] }
+        });
+        assert!(normalize(result).is_empty());
+        let delta = json!({
+            "type": "stream_event", "parent_tool_use_id": "toolu_parent",
+            "event": { "type": "content_block_delta", "delta": { "type": "text_delta", "text": "hi" } }
+        });
+        assert!(normalize(delta).is_empty());
+        // The session's own frames are untouched.
+        let own = json!({
+            "type": "assistant", "parent_tool_use_id": null,
+            "message": { "id": "m2", "content": [ { "type": "text", "text": "mine" } ] }
+        });
+        assert!(normalize(own)
+            .iter()
+            .any(|e| matches!(e, SessionEvent::AssistantMessage { .. })));
     }
 }

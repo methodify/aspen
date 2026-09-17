@@ -1798,6 +1798,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           setStatusNote(null);
           break;
         case "tool_use": {
+          // A subagent's call (parent set) is not this session's last tool.
+          if (ev.parent_tool_use_id) break;
           const tn = toolUseNameOf(ev);
           if (tn) setLocalLastTool(tn);
           setStatusNote(null);

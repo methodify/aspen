@@ -113,3 +113,12 @@ second source for shell tasks: a task the ledger still calls running
 whose command no child process runs any more is reported `ended` with
 a note, so the panel never says *running 2h* about a process that is
 gone.
+
+**Subagent traffic (v0.34.4).** A running subagent's frames ride the
+parent session's stream marked with `parent_tool_use_id`
+(CLAUDE_RUNTIME_REFERENCE.md §5.2). They painted the subagents' web
+fetches into the main transcript and set the session's "last tool". The
+normalizer now drops a subagent's text, deltas and tool results; its
+tool calls pass, still marked, and the node and console ignore them for
+the transcript, the last tool and History. The subagent's work is in
+the activity panel (its own transcript opens from there).

@@ -3221,8 +3221,16 @@ async fn pump(
                 tool_name,
                 input,
                 tool_kind,
+                parent_tool_use_id,
                 ..
             } => {
+                // A subagent's own call (parent set): not this session's
+                // tool, not its "last tool", not a History event — the
+                // ledger counts the subagent itself.
+                if parent_tool_use_id.is_some() {
+                    sess.mark_busy();
+                    continue;
+                }
                 // A subagent/task/workflow started mid-turn: refresh the
                 // cached activity counts (throttled; off the workers) so
                 // the fleet chips move before the turn ends.

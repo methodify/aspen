@@ -283,6 +283,15 @@ For one assistant message you receive, interleaved:
    re-emission**. `message.id` is the upstream identity.
 3. **Tool traffic**: `tool_use` blocks inside assistant envelopes;
    `tool_result` blocks arrive inside **`user`-typed envelopes**.
+4. **Subagent traffic on the same stream** (2.1.27x, confirmed
+   2026-09-16): while an `Agent` call runs, the subagent's own
+   `assistant`, `user` (tool results) and `stream_event` frames arrive on
+   the parent session's stdout, each carrying `parent_tool_use_id` = the
+   Agent call's `tool_use` id. They are not in the parent's JSONL (the
+   subagent has its own file under `<session>/subagents/`). A renderer
+   that ignores the marker paints the subagents' searches and prose into
+   the main transcript, and their tools become the session's "last tool".
+   Aspen drops everything but the marked `tool_use`s at the normalizer.
 
 The merge algorithm that survived contact (Studio's reducer):
 
