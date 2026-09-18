@@ -384,9 +384,12 @@
   word-break: break-word;
 }
 .cline-user { color: var(--sig-normal); }
+.cline-user .cline-note { color: var(--text-dim); }
 .cline-assistant { color: var(--text-hi); }
 .cline-tool { color: var(--text-dim); }
 .cline-bus { color: var(--sig-notice); opacity: 0.75; }
+.cline.bubble-bus { opacity: 1; white-space: normal; }
+.cline.bubble-bus .bus-preview { color: var(--text-mid); }
 .cline-turn { color: var(--text-dim); opacity: 0.8; }
 
 /* ── Source render mode — raw markdown in a pre ─────────────────────── */

@@ -108,3 +108,12 @@ showed *Session @far@repo1 · charter*; a two-pane board rendered one row
 per pane with the pair chip, the context % and the layout buttons after
 the hairline; under the phone rules the menu was a full-width bottom
 sheet and the bar dropped the chip, title, repo and model text.
+
+## 5. Render modes carry the same state (v0.34.5)
+
+The *console* render mode had its own bus renderer and never folded a
+message; it now uses the same folded row as chat mode (sender + first
+line, click to expand, TUI markdown when open), and its user lines carry
+the chat bubble's state as suffixes — sending, failed, *delivered
+mid-turn* / *queued in the harness* from the node's record, and an
+attachment count. Tool-run folding was already shared.

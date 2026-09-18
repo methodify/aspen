@@ -400,7 +400,7 @@ function busHeaderParts(header: string): { urgency: string; sender: string; rest
  *  default to one row — sender, channel, the body's first line, ellipsized
  *  to the width — a click expands; `gating` opens expanded. The body's
  *  end marker is not shown. */
-const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBubbleItem; source?: boolean; agent?: string }) {
+const BusBubble = memo(function BusBubble({ item, source, agent, tui }: { item: BusBubbleItem; source?: boolean; agent?: string; tui?: boolean }) {
   const nl = item.text.indexOf("\n");
   const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
   const rawBody = nl >= 0 ? item.text.slice(nl + 1) : "";
@@ -409,7 +409,7 @@ const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBu
   const [open, setOpen] = useState(parts.urgency === "gating");
   const firstLine = body.split("\n").find((l) => l.trim()) ?? "";
   return (
-    <div className={`bubble bubble-bus${open ? " open" : ""}`}>
+    <div className={`${tui ? "cline cline-bus " : ""}bubble bubble-bus${open ? " open" : ""}`}>
       <button type="button" className="bus-row" onClick={() => setOpen((o) => !o)} title={open ? "collapse" : "expand"} aria-expanded={open}>
         <span className="bus-header mono">
           {parts.sender ? (
@@ -425,7 +425,7 @@ const BusBubble = memo(function BusBubble({ item, source, agent }: { item: BusBu
         {!open && <span className="bus-preview">— {firstLine}</span>}
         <span className="bus-caret mono-meta" aria-hidden>{open ? "▾" : "▸"}</span>
       </button>
-      {open && body && (source ? <pre className="src-body">{body}</pre> : <Md text={body} agent={agent} />)}
+      {open && body && (source ? <pre className="src-body">{body}</pre> : tui ? <TuiMd text={body} agent={agent} /> : <Md text={body} agent={agent} />)}
     </div>
   );
 });
@@ -2455,27 +2455,29 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           </div>
         );
       }
-      case "user":
+      case "user": {
+        // The same state as the chat bubble, as terminal suffixes: sending,
+        // failed, the node's record of a mid-turn delivery, attachments.
+        const notes = [
+          item.pending && !item.failed ? "sending…" : "",
+          item.failed ? "send failed — not delivered" : "",
+          !item.pending && item.via === "mid-turn" ? "delivered mid-turn" : "",
+          !item.pending && item.via === "queued" ? "queued in the harness" : "",
+          item.images && item.images.length ? `[${item.images.length} image${item.images.length === 1 ? "" : "s"}]` : "",
+        ].filter(Boolean);
         return (
-          <div key={item.id} className="cline cline-user">
+          <div key={item.id} className="cline cline-user" data-uuid={item.uuid ?? undefined}>
             {"> " + item.text}
-          </div>
-        );
-      case "notice":
-        return <NoticeCard key={item.id} item={item} tui />;
-      case "bus": {
-        // Keep the [aspen bus] header line as raw terminal text; the body
-        // is agent prose and renders as TUI markdown like everything else.
-        const nl = item.text.indexOf("\n");
-        const header = nl >= 0 ? item.text.slice(0, nl) : item.text;
-        const body = nl >= 0 ? item.text.slice(nl + 1) : "";
-        return (
-          <div key={item.id} className="cline cline-bus">
-            <div>{header}</div>
-            {body && <TuiMd text={body} agent={name} />}
+            {notes.length > 0 && <span className="mono-meta cline-note">{`  · ${notes.join(" · ")}`}</span>}
           </div>
         );
       }
+      case "notice":
+        return <NoticeCard key={item.id} item={item} tui />;
+      case "bus":
+        // The same folded row as chat mode (sender + first line, click to
+        // expand); the body renders as TUI markdown when open.
+        return <BusBubble key={item.id} item={item} agent={name} tui />;
       case "tool":
         return toolCard(item, true);
       case "permission":
