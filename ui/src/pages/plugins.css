@@ -21,3 +21,13 @@
 /* session templates (PLUGINS.md §templates) */
 .tpl-editor { display: grid; gap: 12px; padding: 14px; margin: 8px 0 16px; }
 .tpl-plugins { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* on a phone (PROPOSALS-2026-09-I.md §2.2): the where-active rows wrap
+   onto two lines, the scope column has no floor, the catalog scrolls */
+@media (max-width: 720px) {
+  .mx-row { flex-wrap: wrap; row-gap: 4px; }
+  .mx-scope { min-width: 0; flex: 1 1 60%; overflow: hidden; text-overflow: ellipsis; }
+  .plg-table-wrap { overflow-x: auto; }
+  .plg-desc { max-width: 40vw; }
+  .mk-row { gap: 6px; }
+}

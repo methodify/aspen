@@ -32,10 +32,19 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
+| Q-5 | console | **Boards on a phone**: the panes stacked — a chip strip under the board head, one pane open at a time, layout editing desktop-only. | PROPOSALS-2026-09-I.md §2.3 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-19: the whole console on a phone (Q-1..Q-4, v0.35)
+
+PROPOSALS-2026-09-I.md; CONSOLE_APP.md §4. The audit: Plugins, Usage,
+the palette and hover-only details were unreachable on a phone. A More
+sheet in the bottom bar, a ⌘ button for the palette, a verbs group in
+the session sheet, tap-to-reveal, and phone layouts for the Plugins
+page. Q-5 (stacked boards) is the open design.
 
 ## Shipped — 2026-09-16: delivery that always lands, on the record (B-1..B-4, v0.34)
 

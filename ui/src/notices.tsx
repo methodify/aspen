@@ -259,6 +259,16 @@ export function NoticesBell() {
   const { recent, unseen, markSeen, prefs, setPrefs, requestBrowser } = useNotices();
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState({ top: 0, left: 0 });
+  // The phone's More sheet opens the panel by event (the bell sits behind
+  // a sideways scroll there).
+  useEffect(() => {
+    const onOpen = () => {
+      setAt({ top: 52, left: 8 });
+      setOpen(true);
+    };
+    window.addEventListener("aspen:notices", onOpen);
+    return () => window.removeEventListener("aspen:notices", onOpen);
+  }, []);
   const [hook, setHook] = useState<{ webhook: string; command: string; kinds: string } | null>(null);
   const [hookNote, setHookNote] = useState<string | null>(null);
   const nav = useNavigate();

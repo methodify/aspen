@@ -3,6 +3,11 @@
    the mark, the version pill and the bell, controls strips scroll
    sideways, cards stack. Boards, the map and the library stay desktop
    surfaces and say so (.phone-note). */
+/* the palette button and the More tab exist for phones only; the base
+   rules come first so the phone block below wins at equal specificity */
+.statusbar .palette-btn { display: none; font-family: var(--font-mono); }
+.mesh-col .nav-more { display: none; }
+
 @media (max-width: 720px) {
   :root { --mesh-w: 0px; }
   .body-grid { grid-template-columns: 1fr !important; }
@@ -33,7 +38,11 @@
   }
   .mesh-col .nav-item.active { border-top-color: var(--sig-normal); }
   .mesh-col .nav-item .nav-key { width: auto !important; font-size: 0.8rem; color: var(--text-hi) !important; }
-  .mesh-col .nav-item[title="Plugins"], .mesh-col .nav-item[title="Usage"] { display: none; }
+  /* the bottom bar: the phone items and More; the rest live in the More
+     sheet (PROPOSALS-2026-09-I.md §2.1) */
+  .mesh-col .nav-item:not(.nav-phone):not(.nav-more) { display: none; }
+  .mesh-col .nav-more { display: flex; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  .statusbar .palette-btn { display: inline-flex; }
   .mesh-col .nav-item .badge-count { position: absolute; top: 2px; right: 10%; margin: 0; }
 
   /* session */

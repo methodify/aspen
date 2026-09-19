@@ -603,3 +603,8 @@
 .plug-toggle input { width: auto; margin: 0; }
 .plug-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .plug-versions { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* the ⋯ sheet's verbs group: the bar's icons have no tooltip on touch,
+   so a phone gets them in words (PROPOSALS-2026-09-I.md §2.4) */
+.menu-phone-only { display: none; }
+@media (max-width: 720px) { .menu-phone-only { display: contents; } }

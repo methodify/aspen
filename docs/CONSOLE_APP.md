@@ -88,11 +88,20 @@ console's minimum (`MIN_NODE_VERSION` in `App.tsx`, 0.25.0) gets a red
 on `capabilities` and on the presence of fields, not on version
 arithmetic.
 
-## 4. On a phone (D-10)
+## 4. On a phone (D-10; PROPOSALS-2026-09-I.md, v0.35)
 
 `ui/src/phone.css`, at 720 px and below: one column; the rail becomes a
-bottom bar of Now, Flow, Mesh, History, Search and Boards (Plugins and
-Usage stay reachable by URL and the palette); the status bar keeps the
+bottom bar of Now, Flow, Mesh, Search, Boards and **More** — a sheet
+holding History, Plugins, Usage, the command palette, Meshes (hosted),
+notifications & push, install and theme, so nothing the desktop rail
+reaches is unreachable by tap (v0.35; before that Plugins and Usage were
+hidden, and the palette had no button). The status bar carries a ⌘
+button for the palette on phones. The session ⋯ sheet gains a *session*
+group with interrupt / branch / stop in words (the bar's icons have no
+tooltip on touch). History and map details reveal on tap as well as
+hover; the Plugins page's where-active rows wrap and its catalog
+scrolls. A board on a phone is still one session at a time (Q-5,
+stacked panes, is the open design in PROPOSALS-2026-09-I.md §2.3); the status bar keeps the
 mark, the version badge, the connection pill and the bell; the session
 page's bar keeps the name, the context %, the verbs and the ⋯ menu,
 which opens as a bottom sheet (SESSION_BAR.md), and the composer sits

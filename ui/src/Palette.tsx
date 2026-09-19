@@ -103,8 +103,15 @@ export default function Palette() {
         close();
       }
     };
+    // A button (the phone's ⌘ in the status bar, the More sheet) opens
+    // it too: a chord is not a tap target.
+    const onOpen = () => setOpen(true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("aspen:palette", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("aspen:palette", onOpen);
+    };
   }, [open, close]);
 
   // Open: remember focus, reset, fetch sources. Close: restore focus.

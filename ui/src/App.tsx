@@ -24,6 +24,7 @@ import { pwa, setBadge } from "./pwa";
 import { activeConnection, connectionSummary, hosted } from "./connections";
 import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, setProfileMesh, switchTo } from "./profiles";
 import { peek } from "./peek";
+import { MenuGroup, MenuRow, SessionMenu } from "./sessionBar";
 
 export interface AppData {
   agents: Agent[];
@@ -64,16 +65,52 @@ export function useAppData(): AppData {
   return useContext(AppDataContext);
 }
 
-const NAV: { to: string; key: string; label: string; end?: boolean }[] = [
-  { to: "/", key: "N", label: "Now", end: true },
-  { to: "/flow", key: "F", label: "Flow" },
-  { to: "/mesh", key: "M", label: "Mesh" },
+// `phone`: on the bottom bar at phone width; the rest are in the More
+// sheet there (PROPOSALS-2026-09-I.md §2.1). Nothing is hidden.
+const NAV: { to: string; key: string; label: string; end?: boolean; phone?: boolean }[] = [
+  { to: "/", key: "N", label: "Now", end: true, phone: true },
+  { to: "/flow", key: "F", label: "Flow", phone: true },
+  { to: "/mesh", key: "M", label: "Mesh", phone: true },
   { to: "/history", key: "H", label: "History" },
-  { to: "/search", key: "S", label: "Search" },
-  { to: "/boards", key: "B", label: "Boards" },
+  { to: "/search", key: "S", label: "Search", phone: true },
+  { to: "/boards", key: "B", label: "Boards", phone: true },
   { to: "/plugins", key: "P", label: "Plugins" },
   { to: "/usage", key: "U", label: "Usage" },
 ];
+
+/** The phone's More sheet: every rail item that is not on the bottom bar,
+ *  the palette, and the status bar's tail (meshes, notifications, install,
+ *  theme) — reachable by tap, in the desktop's words. */
+function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const nav = useNavigate();
+  const [theme, toggleTheme] = useTheme();
+  const [, setTick] = useState(0);
+  useEffect(() => pwa.onChange(() => setTick((n) => n + 1)), []);
+  const go = (to: string) => {
+    onClose();
+    nav(to);
+  };
+  return (
+    <SessionMenu open={open} onClose={onClose} anchor={null}>
+      <div className="menu-head">
+        <span className="mono">more</span>
+      </div>
+      <MenuGroup label="surfaces">
+        {NAV.filter((n) => !n.phone).map((n) => (
+          <MenuRow key={n.to} label={`${n.key}  ${n.label}`} onClick={() => go(n.to)} />
+        ))}
+        <MenuRow label="⌘  command palette" hint="every session control and surface, by name" onClick={() => { onClose(); window.dispatchEvent(new Event("aspen:palette")); }} />
+      </MenuGroup>
+      <MenuGroup label="this console">
+        {hosted && <MenuRow label="meshes · connect" hint="the meshes this console is connected to, and how" onClick={() => go("/attach")} />}
+        <MenuRow label="notifications & push" hint="notices, push to this device, outbound hooks" onClick={() => { onClose(); window.dispatchEvent(new Event("aspen:notices")); }} />
+        {pwa.canInstall && <MenuRow label="install as app" hint="its own window, a dock icon with the needs-you count" onClick={() => { onClose(); void pwa.install(); }} />}
+        {pwa.needRefresh && <MenuRow label="new console — reload" onClick={() => pwa.reload()} />}
+        <MenuRow label={`theme: ${theme}`} hint="cycle system · light · dark" onClick={() => toggleTheme()} />
+      </MenuGroup>
+    </SessionMenu>
+  );
+}
 
 // ── working set: pinned + recently opened sessions (per browser) ──────────
 const WS_KEY = "aspen.workingSet";
@@ -153,6 +190,7 @@ function MeshColumn() {
   const { agents, inbox, waiting } = useAppData();
   const location = useLocation();
   const [ws, setWs] = useState<WorkingSet>(loadWorkingSet);
+  const [moreOpen, setMoreOpen] = useState(false);
   // A board's pip is the net of its panes' (the operator's ask): any
   // session pane waiting on the operator lights the board.
   const boardWaiting = (b: Board): number => {
@@ -258,12 +296,17 @@ function MeshColumn() {
         {narrow ? "»" : "«"}
       </button>
       {NAV.map((n) => (
-        <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`} title={n.label}>
+        <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `nav-item${isActive ? " active" : ""}${n.phone ? " nav-phone" : ""}`} title={n.label}>
           <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>{n.key}</span>
           <span>{n.label}</span>
           {n.label === "Now" && needs > 0 && <span className="badge-count">{needs}</span>}
         </NavLink>
       ))}
+      <button type="button" className="nav-item nav-more" onClick={() => setMoreOpen(true)} title="More" aria-haspopup="menu" aria-expanded={moreOpen}>
+        <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>⋯</span>
+        <span>More</span>
+      </button>
+      <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} />
       <div className="nav-section label" style={{ marginTop: 12 }} title="busy / live / registered">
         Fleet · {busy} busy · {live}/{agents.length} live
       </div>
@@ -529,6 +572,7 @@ function StatusBar() {
   return (
     <header className="statusbar">
       <span className="brand"><img className="brand-mark" src={`${import.meta.env.BASE_URL}aspen-mark.svg`} alt="" width="18" height="18" />ASP<b>E</b>N</span>
+      <button type="button" className="btn ghost sm palette-btn" onClick={() => window.dispatchEvent(new Event("aspen:palette"))} title="command palette (⌘K / ctrl+K)" aria-label="open the command palette">⌘</button>
       <MeshSwitcher node={node} />
       <span className="spacer" />
       <VersionBadge node={node} />

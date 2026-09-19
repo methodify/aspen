@@ -2941,6 +2941,13 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           <span className="mono">@{name}</span>
           <span className="mono-meta">{[agent?.harness, modelInUse].filter(Boolean).join(" · ")}</span>
         </div>
+        <div className="menu-phone-only">
+          <MenuGroup label="session">
+            {busy && exited === null && !subagent && <MenuRow label="interrupt the running turn" onClick={() => { closeMenu(); void interrupt(); }} disabled={interrupting} />}
+            {exited === null && <MenuRow label="branch here" hint="bookmark this point and continue on a fork" onClick={() => { closeMenu(); setBranchLabel(""); }} disabled={branching} />}
+            {exited === null && <MenuRow label="stop session" hint="asks to confirm" onClick={() => { closeMenu(); setConfirmStop(true); }} />}
+          </MenuGroup>
+        </div>
         <MenuGroup label="setup">
           <MenuField label="model" hint={`switch model — takes effect next turn${modelInUse ? `; the latest reply came from ${modelInUse}` : ""}`}>
           <select

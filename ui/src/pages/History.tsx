@@ -289,7 +289,7 @@ export default function History() {
                     return (
                       <rect key={j} x={Math.max(x(s.start), W_LABEL + GUTTER)} y={6} width={Math.max(2, Math.min(x(s.end ?? now), W_LABEL + GUTTER + plotW) - Math.max(x(s.start), W_LABEL + GUTTER))} height={H_LANE - 12}
                         fill={s.end ? "var(--live)" : "var(--sig-notice)"} opacity={hover === key ? 1 : 0.55}
-                        onMouseEnter={() => setHover(key)} onMouseLeave={() => setHover(null)}>
+                        onMouseEnter={() => setHover(key)} onMouseLeave={() => setHover(null)} onClick={() => setHover((h) => (h === key ? null : key))}>
                         <title>{`${s.ask}\n${s.end ? fmtDur(s.end - s.start) : "running"}${s.reply ? `\n→ ${s.reply}` : ""}${s.cost != null ? `\n$${s.cost.toFixed(3)}` : ""}`}</title>
                       </rect>
                     );
@@ -310,7 +310,7 @@ export default function History() {
                   ))}
                   {dots.filter((d) => d.agent === a && inWin(d.ts)).map((d, j) => (
                     <circle key={`d${j}`} cx={x(d.ts)} cy={H_LANE - 5} r={3} fill={d.urgency === "gating" ? "var(--sig-gate)" : d.urgency === "notice" ? "var(--sig-notice)" : "var(--sig-normal)"}
-                      onMouseEnter={() => setHover(`d:${d.agent}:${d.ts}`)} onMouseLeave={() => setHover(null)}>
+                      onMouseEnter={() => setHover(`d:${d.agent}:${d.ts}`)} onMouseLeave={() => setHover(null)} onClick={() => setHover((h) => (h === `d:${d.agent}:${d.ts}` ? null : `d:${d.agent}:${d.ts}`))}>
                       <title>{`${fmtClock(d.ts)} ${d.label}`}</title>
                     </circle>
                   ))}
@@ -334,7 +334,7 @@ export default function History() {
                 <Empty mark="—">Nothing in this window.</Empty>
               ) : (
                 log.map((it) => (
-                  <div key={it.key} className={`hist-row${hover === it.key ? " hot" : ""}`} onMouseEnter={() => setHover(it.key)} onMouseLeave={() => setHover(null)}>
+                  <div key={it.key} className={`hist-row${hover === it.key ? " hot" : ""}`} onMouseEnter={() => setHover(it.key)} onMouseLeave={() => setHover(null)} onClick={() => setHover((h) => (h === it.key ? null : it.key))}>
                     <span className="mono-meta" style={{ width: 44, flex: "none" }}>{fmtClock(it.ts)}</span>
                     <span className={`chip mono kind-${it.kind}`}>{it.kind.replace("bus-", "")}</span>
                     <span className="mono" style={{ color: "var(--text-hi)", cursor: "pointer" }} onClick={() => nav(`/session/${encodeURIComponent(it.agent)}`)}>@{it.agent}</span>

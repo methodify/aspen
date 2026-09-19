@@ -177,6 +177,7 @@ export default function Plugins() {
 
       <h2>Catalog</h2>
       <input className="plg-search" placeholder="filter plugins by name, description, marketplace" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="plg-table-wrap">
       <table className="plg-table">
         <thead>
           <tr>
@@ -219,6 +220,7 @@ export default function Plugins() {
           )}
         </tbody>
       </table>
+      </div>
 
       {opened && (
         <Matrix
