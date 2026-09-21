@@ -132,30 +132,39 @@ the UI: **branch**, never "fork".
 
 ### 4.2 The branch verb
 
-The ⎇ dialog and `/branch` become one two-choice card whose button says
-what will happen:
+**Decided 2026-09-21 (§8):** move (carry) stays the default. Bare
+`/branch` means "a branch for this session, keeping its identity";
+`/branch <name>` means "a new session with a new identity, in parallel."
+What changes is that **nothing acts without the card being seen**. The
+console already intercepts `/branch` (it is an Aspen-level command,
+never sent to the harness), so the card costs no protocol work. The ⎇
+button, the ⋯ menu row, `/branch`, `/fork` and `/branch <name>` all open
+one card:
 
 ```
 Branch @dw-optimize here
-  ● Start a new agent on the branch            @ [dw-optimize-2]
-    @dw-optimize keeps this transcript and keeps running.
-  ○ Move @dw-optimize onto the branch
+  ● Move @dw-optimize onto the branch
     This transcript stays as an earlier point of @dw-optimize.  label [optional]
     Restarts @dw-optimize; a running turn is interrupted.
-                                        [Start @dw-optimize-2]   [Cancel]
+  ○ Start a new agent on the branch            @ [dw-optimize-2]
+    @dw-optimize keeps this transcript and keeps running.
+                                        [Move @dw-optimize]   [Cancel]
 ```
 
-- The first choice (split) is the default. The name is prefilled with
-  `<name>-2` (first free suffix), text selected, so Enter accepts and
-  typing replaces. A taken name is rejected inline before submit. The
-  button reads `[Move @dw-optimize]` when the second choice is picked.
-- Bare `/branch` opens the card instead of acting. `/branch as <name>`
-  and `/branch move [label]` act at once, for the keyboard.
-- The confirmation names both and links the other: "Started
-  `@dw-optimize-2` on a branch of this transcript. `@dw-optimize` is
-  unchanged. [open `@dw-optimize-2`]" or "`@dw-optimize` is now on the
-  branch; this point is kept as an earlier transcript (label …)." A
-  split still navigates to the new session, as today.
+- Bare `/branch` or `/fork`: the card, move preselected, the label
+  field focused; Enter confirms.
+- `/branch <name>`: the card, "start a new agent" preselected with the
+  name filled; Enter confirms. (Today that argument is the bookmark
+  label, which is the mismatch that bit the operator; the label is a
+  field on the card instead.) `/branch <name> now` skips the card, for
+  the keyboard.
+- The button says the outcome (`Move @dw-optimize` / `Start
+  @dw-optimize-2`). A taken name is rejected inline before submit.
+- The confirmation names both: "`@dw-optimize` is now on the branch;
+  this point is kept as an earlier transcript (label …). [open it]" or
+  "Started `@dw-optimize-2` on a branch of this transcript.
+  `@dw-optimize` is unchanged. [open `@dw-optimize-2`]". A split still
+  navigates to the new session, as today.
 - **Undo.** Until the fork's first turn nothing exists to lose: the
   confirmation offers *undo*, which stops the fork and puts the name
   back where it was without a re-fork. After a turn, the honest path is
@@ -170,6 +179,9 @@ Branch @dw-optimize here
   the session bar show "branched from `@dw-optimize` · no turn yet —
   send something to start the transcript." Stopping such a fork loses
   nothing, and the stop confirmation says so.
+- Claude's own `/branch` typed in a terminal TUI cannot be intercepted
+  (no protocol hook); adoption notices the file afterwards and §4.3
+  puts its verbs on the row.
 
 ### 4.3 The Mesh list shows names, grouped by name
 
@@ -248,7 +260,7 @@ double-named transcripts (made by Mesh *resume*) list as
 
 | id | ask | tier |
 |---|---|---|
-| S-1 | Branch card: split default with a prefilled selected name, move explicit, button says the outcome; bare `/branch` opens it; confirmation names both; undo before the first turn. | 1 |
+| S-1 | Branch card on every entry (⎇, menu, `/branch`, `/fork`, `/branch <name>`): move preselected bare, new-name preselected with a name; prefilled selected name; button says the outcome; confirmation names both; undo before the first turn. | 1 |
 | S-2 | Branch atomic: bookmark after the spawn; failure leaves the name running where it was; "no turn yet" on rail/Now/bar for a fresh branch. | 1 |
 | S-3 | `agent`/`state`/`label`/`branch_of` on `GET /api/sessions`; Mesh list grouped by name, one primary verb + ⋯, title second line with tags stripped, filter matches names and ids; phone rows. | 1 |
 | S-4 | Move a name onto a transcript: one node verb; bookmark-resume folds into it; adoption card and palette use the word. | 1 |
@@ -259,8 +271,8 @@ double-named transcripts (made by Mesh *resume*) list as
 
 ## 6. Questions
 
-1. **Default of branch.** Split (a new name continues on the branch;
-   this name stays) as the default. Move stays one click away. Agree?
+1. **Default of branch.** Answered: move (carry) stays the default;
+   the card always shows first (§4.2, §8).
 2. **The prefilled name.** `<name>-2`, selected, Enter accepts. Or a
    required blank field?
 3. **The word.** *move* for putting a name on a transcript ("move `@x`
@@ -282,4 +294,10 @@ rename is missing; strip the command tags from titles regardless.
 
 ## 8. Decisions
 
-(pending the operator's read)
+1. **2026-09-21, the operator:** the 2026-09-04 model stands. Bare
+   `/branch` is a branch for this session keeping its identity (move);
+   `/branch <name>` is a new identity running in parallel (split). The
+   change is the card: every entry to the verb shows it, preselected to
+   the reading of the command, and nothing acts unseen. (The operator's
+   own report: they did what was agreed but expected a prompt.)
+2. Questions 2–4 of §6 remain open.
