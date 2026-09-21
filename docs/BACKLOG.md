@@ -32,6 +32,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
+| S-1..S-8 | sessions + console | **Names, transcripts and the branch verb.** Branch defaults to a new name (split) with the outcome on the button; atomic branch; the Mesh list grouped by name with current/earlier/branch-of/no-name rows and one primary verb; "move @x here" as one node verb; the ⋯ bookmarks panel becomes transcripts; one name per transcript; rename. Awaiting the operator's decisions (§6). | PROPOSALS-2026-09-J.md |
 | Q-5 | console | **Boards on a phone**: the panes stacked — a chip strip under the board head, one pane open at a time, layout editing desktop-only. | PROPOSALS-2026-09-I.md §2.3 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
