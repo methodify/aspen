@@ -2143,6 +2143,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       setBranchCard(null);
       if (asName) {
         setCtlNote(`started @${res.name.split("@")[0]} on a branch of this transcript — @${bareName} is unchanged`);
+        refreshAgents();
         nav(`/session/${encodeURIComponent(res.name)}`);
         return;
       }

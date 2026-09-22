@@ -48,6 +48,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | S-3 | `sessions_json` (node + federation) carries `agent`/`agents`/`state`/`label`/`bookmark_id`/`agent_live`/`branch_of`/`adoption_id`; titles cleaned of command markup; the Mesh list grouped by name with one primary verb (open / revive / resume…) and ⋯ (ignore branch, forget earlier point); two-line rows on phones. |
 | S-4 | `POST /agents/{name}/move-to`; bookmark-resume without `as` folds into it; the adoption card says "move @x here"; the Mesh chooser offers "move a name here". |
 | S-7 | Spawn refuses a resume onto another name's current transcript; the Mesh row never offers it; the list marks a transcript with two names. |
+| v0.36.1 | A split (and move-to, bookmark-resume, undo) on a peer's agent came back with the peer's bare key, so the console opened a name this node did not have ("no agent named …", the operator's first-week error); `proxy_agent` qualifies it with the node; the rail refreshes before opening the new agent. |
 
 ## Shipped — 2026-09-19: the whole console on a phone (Q-1..Q-4, v0.35)
 

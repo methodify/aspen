@@ -816,6 +816,41 @@ async fn proxy(
     }
 }
 
+/// `proxy` for ops that answer with an agent (`branch`, `resume_bookmark`,
+/// `move_to`, `branch_undo`): the peer answers with its registered key
+/// (bare@repo); qualify it with the node, matching the roster, so the
+/// console can open it here. (A split on a peer used to come back bare,
+/// and the console opened a name this node did not have.)
+async fn proxy_agent(
+    s: &AppState,
+    node: &str,
+    op: &str,
+    agent: &str,
+    body: Value,
+) -> axum::response::Response {
+    let Some(mesh) = s.node.inner.mesh() else {
+        return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+    };
+    match mesh.api_call(node, op, agent, body, REMOTE_TIMEOUT).await {
+        Ok(v) if v.get("live_elsewhere").is_some() => live_elsewhere_response(
+            "session is being written elsewhere: choose fork or in_place (resume_choice)",
+            v.get("live_elsewhere").cloned().unwrap_or(Value::Null),
+        ),
+        Ok(mut v) => {
+            if let Some(key) = v.get("name").and_then(|n| n.as_str()).map(str::to_owned) {
+                if aspen_node::addr::node_of(&key).is_none() {
+                    v["name"] = Value::String(format!("{key}@{node}"));
+                    v["bare"] = Value::String(aspen_node::addr::bare(&key).to_owned());
+                    v["node"] = Value::String(node.to_owned());
+                    v["remote"] = Value::Bool(true);
+                }
+            }
+            Json(v).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("via node '{node}': {e}")).into_response(),
+    }
+}
+
 /// 409 with `live_elsewhere` — the console turns it into the fork /
 /// resume-in-place question.
 fn live_elsewhere_response(msg: impl Into<String>, le: Value) -> axum::response::Response {
@@ -2552,7 +2587,7 @@ async fn post_branch(
 ) -> impl IntoResponse {
     let b = body.map(|j| j.0).unwrap_or_default();
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(
+        return proxy_agent(
             &s,
             &node,
             "branch",
@@ -2593,7 +2628,7 @@ async fn post_move_to(
     Json(b): Json<MoveToBody>,
 ) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(
+        return proxy_agent(
             &s,
             &node,
             "move_to",
@@ -2612,7 +2647,7 @@ async fn post_move_to(
 /// transcript in place and the bookmark the branch left is removed.
 async fn post_branch_undo(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(&s, &node, "branch_undo", &bare, json!({})).await;
+        return proxy_agent(&s, &node, "branch_undo", &bare, json!({})).await;
     }
     match s.node.undo_branch(&name).await {
         Ok(sess) => agent_response(&s, &sess.name),
@@ -2642,7 +2677,7 @@ async fn post_bookmark_resume(
 ) -> impl IntoResponse {
     let b = body.map(|j| j.0).unwrap_or_default();
     if let Some((bare, node)) = remote_parts(&s, &name) {
-        return proxy(
+        return proxy_agent(
             &s,
             &node,
             "resume_bookmark",
