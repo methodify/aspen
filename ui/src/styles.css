@@ -693,3 +693,5 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .sess-choice-head { font: 500 0.78rem/1.3 var(--font-mono); color: var(--text-hi); }
 .sess-choice-field { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .sess-unnamed-toggle { align-self: flex-start; }
+.sess-pending { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+button.link { background: none; border: 0; padding: 0; color: var(--sig-normal); cursor: pointer; text-decoration: underline; font: inherit; }

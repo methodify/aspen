@@ -49,6 +49,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | S-4 | `POST /agents/{name}/move-to`; bookmark-resume without `as` folds into it; the adoption card says "move @x here"; the Mesh chooser offers "move a name here". |
 | S-7 | Spawn refuses a resume onto another name's current transcript; the Mesh row never offers it; the list marks a transcript with two names. |
 | v0.36.1 | A split (and move-to, bookmark-resume, undo) on a peer's agent came back with the peer's bare key, so the console opened a name this node did not have ("no agent named …", the operator's first-week error); `proxy_agent` qualifies it with the node; the rail refreshes before opening the new agent. |
+| v0.36.2 | The operator's store showed three names with `fork_pending` on one transcript — branches that never took a turn because the console opened the wrong name (v0.36.1). Now the parent's Mesh row lists branches *waiting for a first turn* with links; the bar offers *undo branch* whenever a name is a pending fork (refused for a split: stop it instead). |
 
 ## Shipped — 2026-09-19: the whole console on a phone (Q-1..Q-4, v0.35)
 

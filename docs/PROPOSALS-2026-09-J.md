@@ -309,3 +309,7 @@ rename is missing; strip the command tags from titles regardless.
    and the failed-fork revive answer it with `in_place`; a pending fork
    still points at its parent's transcript and must not count as a name
    on it (the listing, the one-name guard).
+4. v0.36.1/2: the operator's first-week failure was the proxied split
+   reply (bare key, opened on the wrong node); three pending forks of
+   one transcript sat in the store with no turn taken. Pending forks now
+   show on the parent's Mesh row and can be undone from the bar.

@@ -426,6 +426,13 @@ function SessionRow({ session: s, v, indent }: { session: SessionInfo; v: Sessio
           <button type="button" className="btn ghost sm" aria-label="more" title="more" onClick={() => setMore((m) => !m)}>⋯</button>
         )}
       </div>
+      {(s.pending?.length ?? 0) > 0 && (
+        <div className="sess-pending mono-meta" title="branches of this transcript that have not taken a turn — open one and send something to start its transcript; stopping one loses nothing">
+          waiting for a first turn: {s.pending!.map((p, i) => (
+            <span key={p}>{i > 0 ? ", " : ""}<button type="button" className="link mono" onClick={() => v.onOpen(agentAddr(p, v.node, v.isSelf))}>@{bare(p)}</button></span>
+          ))}
+        </div>
+      )}
       {title && <div className="sess-title mono-meta" title={s.title ?? undefined}>{title}{s.mcc_name && s.title && s.title !== s.mcc_name ? <span className="dim"> · {s.title}</span> : null}{s.mcc_args ? <span className="dim"> · {s.mcc_args}</span> : null}</div>}
       {more && (
         <div className="sess-more">

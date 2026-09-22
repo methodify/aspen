@@ -2844,15 +2844,15 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <span className="spacer" />
         {reloadNote && <span className="ok-inline mono reload-note">{reloadNote}</span>}
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
-        {ctlNote && undoable && agent?.fork_pending && (
-          <button type="button" className="btn ghost sm ctl-undo" onClick={() => void undoBranch()} title="the branch has not taken a turn; put @name back on its transcript in place">
-            undo
-          </button>
-        )}
         {agent?.fork_pending && exited === null && (
           <span className="mono-meta ctl-fork-pending" title="this is a branch that has not taken a turn yet — nothing of its own is on disk until you send something; stopping it loses nothing">
             no turn yet
           </span>
+        )}
+        {agent?.fork_pending && exited === null && (
+          <button type="button" className="btn ghost sm ctl-undo" onClick={() => void undoBranch()} title={undoable ? "the branch has not taken a turn; put @name back on its transcript in place" : "this name is a branch that never took a turn; undo puts it back on the transcript it was branched from (a moved name goes back in place; a new name would then share the parent's transcript — stop it instead)"}>
+            undo branch
+          </button>
         )}
         {ctlError && <span className="ctl-error">{ctlError}</span>}
         {ctx && (ctxPct !== null || ctx.categories.length > 0) && (

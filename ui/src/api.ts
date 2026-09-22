@@ -563,6 +563,9 @@ export interface SessionInfo {
   branch_of?: string | null;
   /** An open adoption (a branch made outside Aspen, unanswered). */
   adoption_id?: number | null;
+  /** Names that are branches of this transcript waiting for their first
+   *  turn (nothing of their own on disk yet). */
+  pending?: string[];
 }
 
 /** A tip left behind by branch/swap, or a manual bookmark. */

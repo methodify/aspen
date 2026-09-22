@@ -482,10 +482,15 @@ pub fn sessions_json(inner: &Arc<NodeInner>, repo: &Path) -> serde_json::Value {
     let rows = enumerate_all(inner, repo);
     let agents = inner.store.agents().unwrap_or_default();
     let mut current: HashMap<&str, Vec<&crate::store::AgentRow>> = HashMap::new();
+    // Branches that have not taken a turn still point at their parent's
+    // transcript; they are not names on it, but the parent's row says
+    // they are waiting (`pending`), so a stalled branch is never invisible.
+    let mut pending: HashMap<&str, Vec<String>> = HashMap::new();
     for a in &agents {
-        // A branch that has not taken a turn still points at its parent's
-        // transcript; it is not a name on that transcript.
         if a.fork_pending {
+            if let Some(sid) = a.session_id.as_deref() {
+                pending.entry(sid).or_default().push(a.name.clone());
+            }
             continue;
         }
         if let Some(sid) = a.session_id.as_deref() {
@@ -560,6 +565,7 @@ pub fn sessions_json(inner: &Arc<NodeInner>, repo: &Path) -> serde_json::Value {
                 "agent_live": agent_live,
                 "branch_of": branch_of,
                 "adoption_id": adoption.map(|a| a.id),
+                "pending": pending.get(sid).cloned().unwrap_or_default(),
             })
         })
         .collect::<Vec<_>>())
@@ -1804,6 +1810,22 @@ impl Node {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("@{name} has no transcript to go back to"))?;
+        // The bookmark the branch left points at the very transcript the
+        // name is going back onto. No such bookmark means this name was
+        // started on the branch (a split): putting it back in place would
+        // put a second name on the parent's transcript.
+        let Some(b) = self
+            .inner
+            .store
+            .bookmarks(name)?
+            .into_iter()
+            .find(|b| b.session_id == head && matches!(b.reason.as_str(), "branch" | "move"))
+        else {
+            return Err(anyhow!(
+                "@{name} was started as a new name on this branch; there is nothing to go back to — stop it instead (nothing is lost)"
+            ));
+        };
+        let _ = self.inner.store.delete_bookmark(name, b.id);
         if self.inner.live(name).is_some() {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -1816,17 +1838,6 @@ impl Node {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-        }
-        // The bookmark the branch left points at the very transcript the
-        // name is going back onto.
-        if let Some(b) = self
-            .inner
-            .store
-            .bookmarks(name)?
-            .into_iter()
-            .find(|b| b.session_id == head && matches!(b.reason.as_str(), "branch" | "move"))
-        {
-            let _ = self.inner.store.delete_bookmark(name, b.id);
         }
         self.inner.store.set_fork_pending(name, false)?;
         let _ =
