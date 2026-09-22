@@ -149,3 +149,15 @@ Verified (rig, 2026-09-07): two sessions paired on a board; both
 received the notice, the link appeared in the Mesh list, and a message
 one sent to the other with the thread showed in the strip; *send to
 both* reached both; unpair removed the link.
+
+## 9. A board is a team (v0.37)
+
+Every session pane on a board is a **board-mate** of every other: the
+agents' neighborhood (topology.rs, `Neighborhood.boards`) includes them,
+so the charter at spawn and `bus_status` say *On the operator's board
+"dw" with @arch, @pdt@lt-bryon-win — they are your team for it*, closed
+topology admits them, and bare names resolve across the board the way
+they do across a link. It is derived from the board rows every node
+holds, never stored, so editing the board is editing the team; dynamic
+boards do not count. A running agent is not pushed the change (K-3,
+PROPOSALS-2026-09-K.md).

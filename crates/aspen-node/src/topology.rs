@@ -195,6 +195,85 @@ pub struct Neighborhood {
     pub repo_mates: Vec<String>,
     pub links: Vec<Reach>,
     pub channels: Vec<(String, Vec<String>)>,
+    /// Boards this agent sits on (BOARDS.md §9): (board name, the other
+    /// session panes' addresses, as the agent should write them).
+    pub boards: Vec<(String, Vec<String>)>,
+}
+
+/// The session addresses in a board layout (session and viewer panes).
+fn layout_agents(node: &serde_json::Value, out: &mut Vec<String>) {
+    match node.get("kind").and_then(|k| k.as_str()) {
+        Some("split") => {
+            for c in node
+                .get("children")
+                .and_then(|c| c.as_array())
+                .into_iter()
+                .flatten()
+            {
+                layout_agents(c, out);
+            }
+        }
+        Some("session") | Some("view") => {
+            if let Some(a) = node.get("agent").and_then(|a| a.as_str()) {
+                if !out.iter().any(|x| x == a) {
+                    out.push(a.to_owned());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Boards the agent is on, with the other panes' addresses. Boards ride
+/// the mesh, so a board assembled on any console counts here; dynamic
+/// boards (a fleet query) do not — their membership is a moment's view.
+///
+/// Pane addresses are the console's `bare@repo@node`. Outside a mesh the
+/// console names this node by hostname, which the node does not know, so
+/// a pane whose key is a local agent counts as local whenever its node is
+/// this node's mesh name or there is no mesh (then every agent is local).
+pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<String>)> {
+    let self_node = inner.mesh().map(|m| m.identity.node.clone());
+    let local: BTreeSet<String> = inner
+        .store
+        .agents()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    // The address as the bus writes it from here: the local key for an
+    // agent on this node, `key@node` for one elsewhere.
+    let bus_form = |addr: &str| -> String {
+        let (key, node) = match addr.rfind('@') {
+            Some(i) => (&addr[..i], Some(&addr[i + 1..])),
+            None => (addr, None),
+        };
+        let here = local.contains(key)
+            && match (&self_node, node) {
+                (Some(me), Some(n)) => me == n,
+                _ => true,
+            };
+        if here {
+            key.to_owned()
+        } else {
+            addr.to_owned()
+        }
+    };
+    let mut out = Vec::new();
+    for b in inner.store.boards(false).unwrap_or_default() {
+        if b.query.is_some() {
+            continue;
+        }
+        let mut panes = Vec::new();
+        layout_agents(&b.layout, &mut panes);
+        let panes: Vec<String> = panes.iter().map(|p| bus_form(p)).collect();
+        if !panes.iter().any(|p| p == agent) {
+            continue;
+        }
+        let others: Vec<String> = panes.into_iter().filter(|p| p != agent).collect();
+        out.push((b.name.clone(), others));
+    }
+    out
 }
 
 /// Everything an agent can see/reach by topology.
@@ -252,6 +331,7 @@ pub fn neighborhood(inner: &Arc<NodeInner>, agent: &str) -> Neighborhood {
         repo_mates,
         links,
         channels,
+        boards: board_mates(inner, agent),
     }
 }
 
@@ -269,16 +349,21 @@ pub fn in_neighborhood(inner: &Arc<NodeInner>, from: &str, to: &str) -> bool {
     if n.links.iter().any(|r| r.targets.iter().any(|t| t == to)) {
         return true;
     }
-    n.channels.iter().any(|(_, ms)| ms.iter().any(|m| m == to))
+    if n.channels.iter().any(|(_, ms)| ms.iter().any(|m| m == to)) {
+        return true;
+    }
+    n.boards.iter().any(|(_, ms)| ms.iter().any(|m| m == to))
 }
 
 /// The set of link targets for bare-name resolution: addresses reachable
-/// through links only.
+/// through links, and the other panes of a board the sender is on (a
+/// team assembled on a board addresses each other by bare name).
 pub fn link_targets(inner: &Arc<NodeInner>, from: &str) -> BTreeSet<String> {
-    neighborhood(inner, from)
-        .links
+    let n = neighborhood(inner, from);
+    n.links
         .into_iter()
         .flat_map(|r| r.targets)
+        .chain(n.boards.into_iter().flat_map(|(_, ms)| ms))
         .collect()
 }
 
@@ -342,6 +427,19 @@ pub fn guidance(inner: &Arc<NodeInner>, agent: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    for (b, ms) in &n.boards {
+        lines.push(if ms.is_empty() {
+            format!("On the operator's board “{b}” (alone there right now).")
+        } else {
+            format!(
+                "On the operator's board “{b}” with {} — the operator works with you together there; they are your team for it.",
+                ms.iter()
+                    .map(|m| format!("@{m}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
     }
     lines.join("\n")
 }

@@ -505,6 +505,7 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
         .cloned()
         .chain(neighborhood.links.iter().flat_map(|r| r.targets.clone()))
         .chain(neighborhood.channels.iter().flat_map(|(_, m)| m.clone()))
+        .chain(neighborhood.boards.iter().flat_map(|(_, m)| m.clone()))
         .collect();
     lines.push(
         "Everyone on the bus (addresses as you should write them; * = in your neighborhood):"

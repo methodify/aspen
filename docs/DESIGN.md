@@ -1229,3 +1229,11 @@ cleaner lane for roster updates than user-message headers.
   branch of @x · no name), grouped by name, one verb per row; "move @x
   here" is the single re-pointing verb (bookmark-resume folds into it,
   adoption's carry uses the word); one transcript, one name.
+- **2026-09-22 — Start and stay; a board is a team (v0.37,
+  PROPOSALS-2026-09-K.md).** The Mesh list's start paths all navigated
+  to the session; a "stay here" choice on the page keeps the operator
+  where they were, with a strip of what was started. Agents on a board
+  become each other's neighborhood (charter, `bus_status`, closed
+  topology, bare-name resolution), derived from the mesh-synced board
+  rows, never stored. Pushing a board change to a running agent is left
+  open (a message per agent per edit under v0.34's always-lands delivery).

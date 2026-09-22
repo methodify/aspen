@@ -33,11 +33,19 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
 | S-5, S-6, S-8 | sessions + console | **Names, tier 2.** The ⋯ "bookmarks" panel becomes "transcripts" sharing the Mesh row component with lineage in words (S-5); adoption verbs on the Mesh row beyond *ignore* (S-6); rename a name (S-8). | PROPOSALS-2026-09-J.md §5 |
+| K-3 | sessions + protocol | **Tell running agents when their board changes.** A bus notice per agent on membership change; costs a turn each under always-lands delivery. | PROPOSALS-2026-09-K.md §2 |
 | Q-5 | console | **Boards on a phone**: the panes stacked — a chip strip under the board head, one pane open at a time, layout editing desktop-only. | PROPOSALS-2026-09-I.md §2.3 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-22: start and stay; a board is a team (K-1, K-2, v0.37)
+
+| id | shipped as |
+|---|---|
+| K-1 | "stay here after starting a session" on the Mesh page (per browser, per mesh profile); every start path honours it; a *started:* strip of links. |
+| K-2 | `Neighborhood.boards` from the board rows; charter + `bus_status` line; in-neighborhood; bare names resolve across a board. |
 
 ## Shipped — 2026-09-21: names, transcripts and the branch verb (S-1..S-4, S-7, v0.36)
 

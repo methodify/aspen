@@ -920,6 +920,35 @@ function RepositoriesSection({
   const selfNode = nodes.find((n) => n.self)?.node;
   const isSelf = (node: string) => node === selfNode;
 
+  // After starting, resuming or reviving from here: open the session, or
+  // stay on this page (assembling several from one repo). Remembered per
+  // browser.
+  const STAY_KEY = "aspen.mesh.stayHere";
+  const [stayHere, setStayHere] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(scoped(STAY_KEY)) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(scoped(STAY_KEY), stayHere ? "1" : "0");
+    } catch {
+      /* storage unavailable */
+    }
+  }, [stayHere]);
+  const [started, setStarted] = useState<string[]>([]);
+  function afterStart(agentName: string) {
+    if (!stayHere) {
+      navigate(`/session/${encodeURIComponent(agentName)}`);
+      return;
+    }
+    setStarted((l) => [agentName, ...l.filter((x) => x !== agentName)].slice(0, 8));
+    reloadSessions();
+    void meshPoll.refresh();
+  }
+
   async function newSession(node: string, repo: string, name: string) {
     setActionError(null);
     try {
@@ -929,7 +958,7 @@ function RepositoriesSection({
         node: isSelf(node) ? undefined : node,
       });
       if (agent === null) return; // operator declined the trust review
-      navigate(`/session/${encodeURIComponent(agent.name)}`);
+      afterStart(agent.name);
     } catch (e) {
       setActionError(errText(e));
     }
@@ -950,7 +979,7 @@ function RepositoriesSection({
         skip_permissions: s.mcc_skip ? true : undefined,
       });
       if (agent === null) return;
-      navigate(`/session/${encodeURIComponent(agent.name)}`);
+      afterStart(agent.name);
     } catch (e) {
       setActionError(errText(e));
     }
@@ -960,7 +989,7 @@ function RepositoriesSection({
     setActionError(null);
     try {
       await api.revive(addr);
-      navigate(`/session/${encodeURIComponent(addr)}`);
+      afterStart(addr);
     } catch (e) {
       setActionError(errText(e));
     }
@@ -974,7 +1003,7 @@ function RepositoriesSection({
     const addr = isSelf(node) ? key : `${key}@${node}`;
     try {
       const agent = await api.moveTo(addr, s.session_id);
-      navigate(`/session/${encodeURIComponent(agent.name)}`);
+      afterStart(agent.name);
     } catch (e) {
       setActionError(errText(e));
     }
@@ -1034,6 +1063,22 @@ function RepositoriesSection({
       <HarnessDefaults />
       <ReplicasSection />
       <LinksSection />
+
+      <div className="mesh-start-row" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <label className="micro" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }} title="after starting, resuming or reviving a session from this page: open it, or stay here to start several">
+          <input type="checkbox" checked={stayHere} onChange={(e) => setStayHere(e.target.checked)} />
+          stay here after starting a session
+        </label>
+        {started.length > 0 && (
+          <span className="mono-meta" style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            started:
+            {started.map((a) => (
+              <button key={a} type="button" className="link mono" onClick={() => navigate(`/session/${encodeURIComponent(a)}`)} title="open it">@{a.split("@")[0]}</button>
+            ))}
+            <button type="button" className="btn ghost sm" onClick={() => setStarted([])} aria-label="clear the started list">×</button>
+          </span>
+        )}
+      </div>
 
       {nodes.reduce((acc, n) => acc + n.repos.length, 0) > 8 && (
         <input
