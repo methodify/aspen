@@ -1917,6 +1917,20 @@ async fn serve_api_req(
                 },
             }
         }
+        "move_to" => {
+            let session = body
+                .get("session")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow!("missing session"))?;
+            let sess = node
+                .move_to(agent, session, body.get("at").and_then(|a| a.as_str()))
+                .await?;
+            Ok(json!({ "name": sess.name }))
+        }
+        "branch_undo" => {
+            let sess = node.undo_branch(agent).await?;
+            Ok(json!({ "name": sess.name }))
+        }
         "branch" => {
             let sess = node
                 .branch_agent(
@@ -2479,26 +2493,10 @@ async fn serve_api_req(
                 .get("repo")
                 .and_then(|r| r.as_str())
                 .ok_or_else(|| anyhow!("missing repo"))?;
-            let path = std::path::Path::new(repo);
-            let mcc = crate::mcc::read(path);
-            let rows = crate::node::enumerate_all(&node.inner, path);
-            Ok(json!(rows
-                .iter()
-                .map(|si| {
-                    let m = mcc.get(&si.session_id);
-                    json!({
-                        "session_id": si.session_id,
-                        "title": si.title,
-                        "entrypoint": si.entrypoint,
-                        "modified": si.modified_epoch,
-                        "user_messages": si.user_messages,
-                        "harness": si.harness,
-                        "mcc_name": m.map(|m| m.name.clone()),
-                        "mcc_args": m.and_then(|m| m.args.clone()),
-                        "mcc_skip": m.map(|m| m.skip_permissions),
-                    })
-                })
-                .collect::<Vec<_>>()))
+            Ok(crate::node::sessions_json(
+                &node.inner,
+                std::path::Path::new(repo),
+            ))
         }
         "spawn" => {
             // Body is a spawn request; run it here and return the agent name.

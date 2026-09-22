@@ -1986,6 +1986,43 @@ impl BusStore {
         Ok(rows)
     }
 
+    /// Every bookmark on the node, with its agent — for the sessions list.
+    pub fn bookmarks_all(&self) -> Result<Vec<(String, Bookmark)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT agent, id, session_id, message_uuid, label, reason, created_at
+             FROM bookmarks ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    Bookmark {
+                        id: r.get(1)?,
+                        session_id: r.get(2)?,
+                        message_uuid: r.get(3)?,
+                        label: r.get(4)?,
+                        reason: r.get(5)?,
+                        created_at: r.get(6)?,
+                    },
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The parent a session was branched from, if the node recorded it.
+    pub fn lineage_parent(&self, child: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT parent_session FROM lineage WHERE child_session=?1",
+                params![child],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn bookmark(&self, agent: &str, id: i64) -> Result<Option<Bookmark>> {
         Ok(self.bookmarks(agent)?.into_iter().find(|b| b.id == id))
     }

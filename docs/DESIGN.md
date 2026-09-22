@@ -1213,3 +1213,19 @@ cleaner lane for roster updates than user-message headers.
   transcript from it; merged lines split on `[aspen bus end]`; a boundary
   guard nudges when the harness holds input past a turn end; chronology
   over sender rank; bus bubbles collapse to sender + first line.
+- **2026-09-21 — Names, transcripts and the branch verb (v0.36,
+  PROPOSALS-2026-09-J.md).** The operator's bare `/branch` carried the
+  name onto the fork, as designed on 2026-09-04, and the Mesh list could
+  not then say which transcript was which: it listed files by
+  first-message title with no name, and its *resume* minted a second
+  name on a transcript. Decisions: the 2026-09-04 model stands (move is
+  the default of bare `/branch`; `/branch <name>` is a new identity in
+  parallel), but every entry to the verb opens one card whose button
+  says the outcome, so nothing acts unseen; the bookmark is written
+  after the fork, never before (a failed fork left a stray bookmark and
+  a name that "went nowhere"); a fork that has not taken a turn is said
+  so in the bar and can be undone in place; the sessions list carries
+  the name and its state in the operator's words (current · earlier ·
+  branch of @x · no name), grouped by name, one verb per row; "move @x
+  here" is the single re-pointing verb (bookmark-resume folds into it,
+  adoption's carry uses the word); one transcript, one name.

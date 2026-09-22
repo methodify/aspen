@@ -32,12 +32,22 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
-| S-1..S-8 | sessions + console | **Names, transcripts and the branch verb.** Branch defaults to a new name (split) with the outcome on the button; atomic branch; the Mesh list grouped by name with current/earlier/branch-of/no-name rows and one primary verb; "move @x here" as one node verb; the ⋯ bookmarks panel becomes transcripts; one name per transcript; rename. Awaiting the operator's decisions (§6). | PROPOSALS-2026-09-J.md |
+| S-5, S-6, S-8 | sessions + console | **Names, tier 2.** The ⋯ "bookmarks" panel becomes "transcripts" sharing the Mesh row component with lineage in words (S-5); adoption verbs on the Mesh row beyond *ignore* (S-6); rename a name (S-8). | PROPOSALS-2026-09-J.md §5 |
 | Q-5 | console | **Boards on a phone**: the panes stacked — a chip strip under the board head, one pane open at a time, layout editing desktop-only. | PROPOSALS-2026-09-I.md §2.3 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-21: names, transcripts and the branch verb (S-1..S-4, S-7, v0.36)
+
+| id | shipped as |
+|---|---|
+| S-1 | The branch card on every entry to the verb (⎇, ⋯ row, `/branch`, `/fork`, `/branch <name>`, palette): move preselected bare, new-agent preselected with a name; `<name>-N` prefilled and selected; the button says the outcome; taken names rejected inline; `now` skips the card (`ui/src/branchCard.tsx`). |
+| S-2 | `branch_agent` forks first and bookmarks after; a failed fork revives the name in place and says so; `fork_pending` on the agent → "no turn yet" in the bar; `POST /agents/{name}/branch/undo` before the first turn, offered beside the confirmation. |
+| S-3 | `sessions_json` (node + federation) carries `agent`/`agents`/`state`/`label`/`bookmark_id`/`agent_live`/`branch_of`/`adoption_id`; titles cleaned of command markup; the Mesh list grouped by name with one primary verb (open / revive / resume…) and ⋯ (ignore branch, forget earlier point); two-line rows on phones. |
+| S-4 | `POST /agents/{name}/move-to`; bookmark-resume without `as` folds into it; the adoption card says "move @x here"; the Mesh chooser offers "move a name here". |
+| S-7 | Spawn refuses a resume onto another name's current transcript; the Mesh row never offers it; the list marks a transcript with two names. |
 
 ## Shipped — 2026-09-19: the whole console on a phone (Q-1..Q-4, v0.35)
 

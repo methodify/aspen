@@ -34,8 +34,9 @@ Left to right:
   in use** as text (hidden in compact panes and on phones — it is then
   in the ⋯ menu's head and the harness chip's tooltip).
 - **Verbs**, icons with tooltips, three slots: ⏸ interrupt (only while
-  busy; also `i`), ⎇ branch (the inline label/as form opens in place;
-  also `/branch`), ■ stop (confirm in place; also `x`).
+  busy; also `i`), ⎇ branch (opens the branch card beside the bar — move the name
+  or start a new agent, nothing acts unseen; also `/branch`, `/fork`,
+  `/branch <name>`; PROPOSALS-2026-09-J.md §4.2), ■ stop (confirm in place; also `x`).
 - **⋯**, the session menu, with badges for what it folds away: a
   pulsing `N bg` while activities run, `↑` when a plugin update is
   available, `mcp N` in red when servers are down or need auth.

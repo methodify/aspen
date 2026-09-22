@@ -675,3 +675,21 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .mesh-switch-row:hover { background: var(--bg-well); }
 .mesh-switch-row.active { border-left: 2px solid var(--sig-normal); }
 .mesh-switch-row .mono .badge-count { margin-left: 8px; }
+
+/* ── the Mesh list's session rows (PROPOSALS-2026-09-J §4.3) ──────────── */
+.sess-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; }
+.sess-row.sess-indent { margin-left: 18px; border-left: 2px solid var(--line); }
+.sess-group { display: flex; flex-direction: column; gap: 6px; }
+.sess-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sess-lead { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sess-name { font-weight: 500; color: var(--text-hi); }
+.sess-state { font: 400 0.78rem/1.2 var(--font-mono); color: var(--text-mid); }
+.sess-meta { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sess-title { padding-left: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-more { display: flex; gap: 8px; flex-wrap: wrap; }
+.sess-chooser { display: flex; flex-direction: column; gap: 8px; padding: 6px 0 2px; align-items: flex-start; }
+.sess-chooser .sess-choice { align-self: stretch; }
+.sess-choice { display: flex; flex-direction: column; gap: 4px; }
+.sess-choice-head { font: 500 0.78rem/1.3 var(--font-mono); color: var(--text-hi); }
+.sess-choice-field { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sess-unnamed-toggle { align-self: flex-start; }

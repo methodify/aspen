@@ -608,3 +608,18 @@
    so a phone gets them in words (PROPOSALS-2026-09-I.md §2.4) */
 .menu-phone-only { display: none; }
 @media (max-width: 720px) { .menu-phone-only { display: contents; } }
+
+/* ── the branch card (PROPOSALS-2026-09-J §4.2) ───────────────────────── */
+.branch-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.branch-card-title { font: 500 0.8rem/1.2 var(--font-mono); color: var(--text-hi); }
+.branch-choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.branch-choice.on { border-color: var(--sig-normal); background: color-mix(in srgb, var(--sig-normal) 6%, transparent); }
+.branch-choice input[type="radio"] { margin-top: 3px; }
+.branch-choice-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.branch-choice-head { font: 500 0.8rem/1.3 var(--font-mono); color: var(--text-hi); }
+.branch-choice-hint { font: 400 0.72rem/1.4 var(--font-mono); color: var(--text-mid); }
+.branch-choice-field { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
+.branch-choice-field input { min-width: 160px; flex: 1; }
+.branch-problem { font: 400 0.7rem/1 var(--font-mono); color: var(--sig-gate); flex-basis: 100%; }
+.branch-card-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.session-bar .ctl-undo { margin-left: 6px; }

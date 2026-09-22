@@ -1,7 +1,7 @@
 # Proposal: names, transcripts and the branch verb
 
-**Status:** draft 2026-09-21, reviewed by a UX pass (§7), for the
-operator's read. Nothing built. References: DESIGN.md log 2026-09-04
+**Status:** decided 2026-09-21 (§8); S-1..S-4 and S-7 shipped as v0.36;
+S-5, S-6, S-8 in the backlog. References: DESIGN.md log 2026-09-04
 (adoption), `crates/aspen-node/src/node.rs` (`branch_agent`,
 `split_agent`, `fork_to`), `adoption.rs`, `ui/src/pages/Library.tsx`
 (the Mesh list), `ui/src/pages/Session.tsx` (the branch dialog, the
@@ -300,4 +300,12 @@ rename is missing; strip the command tags from titles regardless.
    change is the card: every entry to the verb shows it, preselected to
    the reading of the command, and nothing acts unseen. (The operator's
    own report: they did what was agreed but expected a prompt.)
-2. Questions 2–4 of §6 remain open.
+2. **2026-09-21, the operator ("go for it"):** the reviewer's answers
+   stand for questions 2–4 — the prefilled selected `<name>-N`; *move* as
+   the one word (the adoption card's "carry" becomes "move @x here");
+   the state words current · earlier · branch of `@x` · no name.
+3. Built as v0.36: S-1..S-4, S-7. Rig notes: the live-elsewhere gate
+   fires on the transcript the node itself just stopped writing, so undo
+   and the failed-fork revive answer it with `in_place`; a pending fork
+   still points at its parent's transcript and must not count as a name
+   on it (the listing, the one-name guard).

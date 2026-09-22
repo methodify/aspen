@@ -120,6 +120,8 @@ pub async fn serve(
         .route("/sessions/import", post(post_import))
         .route("/agents/{name}/file", get(get_agent_file))
         .route("/agents/{name}/branch", post(post_branch))
+        .route("/agents/{name}/branch/undo", post(post_branch_undo))
+        .route("/agents/{name}/move-to", post(post_move_to))
         .route("/agents/{name}/bookmarks", get(get_bookmarks))
         .route(
             "/agents/{name}/bookmarks/{id}/resume",
@@ -1167,6 +1169,9 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         "repo": a.repo.to_string_lossy(),
         "channel": a.channel,
         "session_id": a.session_id,
+        // A branch that has not taken a turn: nothing of its own on disk
+        // yet, the row still points at the parent.
+        "fork_pending": a.fork_pending,
         "charter": a.charter,
         "moved_to": a.moved_to,
         "live": live.is_some(),
@@ -2572,6 +2577,49 @@ async fn post_branch(
     }
 }
 
+#[derive(Deserialize)]
+struct MoveToBody {
+    /// The transcript to move the name onto (a session id in its repo).
+    session: String,
+    /// Branch from this message instead of the transcript's tip.
+    at: Option<String>,
+}
+
+/// Move a name onto a transcript: it relaunches on a branch of it; the
+/// transcript it was on is kept as an earlier point.
+async fn post_move_to(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<MoveToBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(
+            &s,
+            &node,
+            "move_to",
+            &bare,
+            json!({ "session": b.session, "at": b.at }),
+        )
+        .await;
+    }
+    match s.node.move_to(&name, &b.session, b.at.as_deref()).await {
+        Ok(sess) => agent_response(&s, &sess.name),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+/// Undo a branch before its first turn: the name goes back onto its
+/// transcript in place and the bookmark the branch left is removed.
+async fn post_branch_undo(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "branch_undo", &bare, json!({})).await;
+    }
+    match s.node.undo_branch(&name).await {
+        Ok(sess) => agent_response(&s, &sess.name),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
 /// The agent's bookmarks (tips left behind by branch/swap, plus manual
 /// ones) and the lineage of its current head.
 async fn get_bookmarks(State(s): S, Path(name): Path<String>) -> impl IntoResponse {
@@ -2781,29 +2829,10 @@ async fn get_sessions(State(s): S, Query(q): Query<SessionsQuery>) -> impl IntoR
     if let Some(node) = q.node.as_deref().filter(|n| !is_self_node(&s, n)) {
         return proxy(&s, node, "node_sessions", "", json!({ "repo": q.repo })).await;
     }
-    let repo = std::path::Path::new(&q.repo);
-    // mcc's register, when the repo has one: names win over derived titles,
-    // and configured args ride along for the resume flow.
-    let mcc = aspen_node::mcc::read(repo);
-    let rows = aspen_node::node::enumerate_all(&s.node.inner, repo);
-    Json(
-        rows.iter()
-            .map(|si| {
-                let m = mcc.get(&si.session_id);
-                json!({
-                    "session_id": si.session_id,
-                    "title": si.title,
-                    "entrypoint": si.entrypoint,
-                    "modified": si.modified_epoch,
-                    "user_messages": si.user_messages,
-                    "harness": si.harness,
-                    "mcc_name": m.map(|m| m.name.clone()),
-                    "mcc_args": m.and_then(|m| m.args.clone()),
-                    "mcc_skip": m.map(|m| m.skip_permissions),
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
+    Json(aspen_node::node::sessions_json(
+        &s.node.inner,
+        std::path::Path::new(&q.repo),
+    ))
     .into_response()
 }
 

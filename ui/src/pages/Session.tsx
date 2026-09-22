@@ -69,6 +69,7 @@ import {
 import { useAppData } from "./../App";
 import { relTime } from "./../components";
 import { BarVerb, MenuField, MenuGroup, MenuRow, PanelFrame, PresenceGlyph, SessionMenu, barPresence, panelAnchor } from "./../sessionBar";
+import { BranchCard, type BranchChoice } from "../branchCard";
 import { clearSessionCommands, setSessionCommands, type SessionCommand } from "./../sessionCommands";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
@@ -1700,8 +1701,17 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   }
   const [history, setHistory] = useState<BookmarksInfo | null>(null);
   const [branching, setBranching] = useState(false);
-  const [branchLabel, setBranchLabel] = useState<string | null>(null);
-  const [branchAs, setBranchAs] = useState("");
+  // The branch card (PROPOSALS-2026-09-J §4.2): open with a preselected
+  // choice; null = closed. `undoable` = a move branch that has not taken a
+  // turn yet, which the confirmation can undo in place.
+  const [branchCard, setBranchCard] = useState<{ choice: BranchChoice; name?: string; label?: string } | null>(null);
+  const [branchAt, setBranchAt] = useState<{ top: number; left: number }>({ top: 52, left: 8 });
+  const [undoable, setUndoable] = useState(false);
+  const branchBtnRef = useRef<HTMLButtonElement | null>(null);
+  function openBranchCard(card: { choice: BranchChoice; name?: string; label?: string }, from?: HTMLElement | null) {
+    setBranchAt(panelAnchor(from ?? branchBtnRef.current, 440));
+    setBranchCard(card);
+  }
   const [resumeAs, setResumeAs] = useState<{ id: number; name: string } | null>(null);
   const [charterDraft, setCharterDraft] = useState<string | null>(null);
   const [charterSaving, setCharterSaving] = useState(false);
@@ -2056,12 +2066,23 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       recapNow();
       return;
     }
-    // Aspen-level command: /branch [label] — handled here, never sent.
-    if (/^\/branch(\s|$)/.test(text)) {
+    // Aspen-level command, handled here, never sent: `/branch` or `/fork`
+    // opens the card with move preselected; `/branch <name>` (or
+    // `/branch as <name>`) with "start a new agent" preselected and the
+    // name filled; a trailing `now` skips the card.
+    if (/^\/(branch|fork)(\s|$)/.test(text)) {
       setDraft("");
-      const rest = text.replace(/^\/branch\s*/, "");
-      const m = /^(.*?)(?:\s+as\s+@?([A-Za-z0-9_-]+))?\s*$/.exec(rest);
-      await branchHere(m?.[1] ?? rest, m?.[2]);
+      const rest = text.replace(/^\/(branch|fork)\s*/, "").trim();
+      const m = /^(?:as\s+)?@?([A-Za-z0-9_-]+)?\s*(now)?$/.exec(rest);
+      const asName = m?.[1] && m[1] !== "now" ? m[1] : undefined;
+      const now = !!m?.[2] || m?.[1] === "now";
+      if (now) {
+        await branchHere(asName ? "new" : "move", { name: asName ?? "", label: "" });
+      } else if (asName) {
+        openBranchCard({ choice: "new", name: asName });
+      } else {
+        openBranchCard({ choice: "move" });
+      }
       return;
     }
     if (attachOver) {
@@ -2108,33 +2129,51 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
 
-  /// Branch here. Carry (no `as`): the tip becomes a bookmark (labeled),
-  /// the session forks, and this name continues on the fork — the head
-  /// moves at the first turn on the branch. Split (`as` given): the fork
-  /// starts as a NEW agent and this one keeps its session; we open it.
-  /// Also: `/branch [label] [as <name>]`.
-  async function branchHere(label: string, as?: string) {
+  /// Branch here. Move: this name continues on the fork and this point is
+  /// kept as an earlier transcript (the head moves at the first turn on
+  /// the branch; until then the branch can be undone in place). New: the
+  /// fork starts as a new agent, this one keeps its transcript; we open it.
+  async function branchHere(choice: BranchChoice, opts: { name: string; label: string }) {
     if (branching) return;
     setBranching(true);
-    setBranchLabel(null);
-    setBranchAs("");
     setActionError(null);
     try {
-      const asName = as?.trim() || undefined;
-      const res = await api.branch(name, label.trim() || undefined, undefined, asName);
+      const asName = choice === "new" ? opts.name.trim() : undefined;
+      const res = await api.branch(name, opts.label.trim() || undefined, undefined, asName);
+      setBranchCard(null);
       if (asName) {
+        setCtlNote(`started @${res.name.split("@")[0]} on a branch of this transcript — @${bareName} is unchanged`);
         nav(`/session/${encodeURIComponent(res.name)}`);
         return;
       }
-      setCtlNote(`branched — the previous tip is bookmarked${label.trim() ? ` as “${label.trim()}”` : ""}`);
+      setCtlNote(`@${bareName} is now on the branch — this point is kept as an earlier transcript${opts.label.trim() ? ` (“${opts.label.trim()}”)` : ""}`);
+      setUndoable(true);
       await loadHistory();
-      setHistoryOpen(true);
     } catch (e) {
       setActionError(`branch: ${errText(e)}`);
     } finally {
       setBranching(false);
     }
   }
+
+  /// Undo a move branch before its first turn: the name goes back onto its
+  /// transcript in place and the earlier point it left is removed.
+  async function undoBranch() {
+    setActionError(null);
+    try {
+      await api.undoBranch(name);
+      setUndoable(false);
+      setCtlNote(`undone — @${bareName} is back on its transcript`);
+      await loadHistory();
+      refreshAgents();
+    } catch (e) {
+      setActionError(`undo: ${errText(e)}`);
+    }
+  }
+  const bareName = name.split("@")[0];
+  const takenNames = agents
+    .filter((a) => a.channel === agent?.channel && a.node === agent?.node && a.name !== name)
+    .map((a) => a.name.split("@")[0]);
 
   async function resumeBookmark(id: number, as?: string) {
     setActionError(null);
@@ -2721,7 +2760,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     if (pane && !pane.focused) return;
     const cmds: SessionCommand[] = [
       { id: "stop", group: "verb", label: "stop session", hint: "asks to confirm", run: () => setConfirmStop(true) },
-      { id: "branch", group: "verb", label: "branch here", hint: "bookmark and fork", run: () => setBranchLabel("") },
+      { id: "branch", group: "verb", label: "branch here", hint: "move @name or start a new agent on a branch", run: () => openBranchCard({ choice: "move" }) },
       { id: "reload", group: "setup", label: "reload plugins & skills", run: () => void reload() },
       { id: "charter", group: "inspect", label: "charter", run: () => setCharterOpen((o) => !o) },
       ...(subagent ? [] : [{ id: "reload-transcript", group: "inspect" as const, label: "reload transcript", hint: "full refetch from the node", run: () => void reloadTranscript() }]),
@@ -2804,6 +2843,16 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <span className="spacer" />
         {reloadNote && <span className="ok-inline mono reload-note">{reloadNote}</span>}
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
+        {ctlNote && undoable && agent?.fork_pending && (
+          <button type="button" className="btn ghost sm ctl-undo" onClick={() => void undoBranch()} title="the branch has not taken a turn; put @name back on its transcript in place">
+            undo
+          </button>
+        )}
+        {agent?.fork_pending && exited === null && (
+          <span className="mono-meta ctl-fork-pending" title="this is a branch that has not taken a turn yet — nothing of its own is on disk until you send something; stopping it loses nothing">
+            no turn yet
+          </span>
+        )}
         {ctlError && <span className="ctl-error">{ctlError}</span>}
         {ctx && (ctxPct !== null || ctx.categories.length > 0) && (
           <div
@@ -2864,45 +2913,33 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         {busy && exited === null && !subagent && (
           <BarVerb glyph="⏸" title="interrupt the running turn (i)" onClick={() => void interrupt()} disabled={interrupting} className="verb-interrupt" />
         )}
-        {exited === null &&
-          (branchLabel !== null ? (
-            <span className="stop-confirm">
-              <input
-                className="mono"
-                value={branchLabel}
-                onChange={(e) => setBranchLabel(e.target.value)}
-                placeholder="bookmark label (optional)"
-                autoFocus
-                style={{ width: 180 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void branchHere(branchLabel, branchAs);
-                  if (e.key === "Escape") setBranchLabel(null);
-                }}
-                aria-label="bookmark label"
-              />
-              <input
-                className="mono"
-                value={branchAs}
-                onChange={(e) => setBranchAs(e.target.value)}
-                placeholder="continue as @… (optional)"
-                style={{ width: 170 }}
-                title="empty: @name follows the branch and the tip is bookmarked. A name: the branch becomes a new agent and this one keeps its session."
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void branchHere(branchLabel, branchAs);
-                  if (e.key === "Escape") setBranchLabel(null);
-                }}
-                aria-label="continue the branch as a new agent"
-              />
-              <button className="btn sm" disabled={branching} onClick={() => void branchHere(branchLabel, branchAs)}>
-                {branching ? "branching…" : branchAs.trim() ? `split → @${branchAs.trim()}` : "branch here"}
-              </button>
-              <button className="btn ghost sm" onClick={() => setBranchLabel(null)}>
-                cancel
-              </button>
-            </span>
-          ) : (
-            <BarVerb glyph="⎇" title="branch here: bookmark this point and continue on a fork — come back to the bookmark any time (also: /branch [label])" onClick={() => setBranchLabel("")} disabled={branching} className="verb-branch" />
-          ))}
+        {exited === null && (
+          <button
+            ref={branchBtnRef}
+            type="button"
+            className="bar-verb verb-branch"
+            title="branch here: move @name onto a branch, or start a new agent on one (also: /branch, /branch <name>)"
+            aria-label="branch here"
+            disabled={branching}
+            onClick={(e) => openBranchCard({ choice: "move" }, e.currentTarget)}
+          >
+            ⎇
+          </button>
+        )}
+        {branchCard && (
+          <PanelFrame at={branchAt} width={440} className="branch-pop" onClose={() => setBranchCard(null)}>
+            <BranchCard
+              bare={bareName}
+              taken={takenNames}
+              initialChoice={branchCard.choice}
+              initialName={branchCard.name}
+              initialLabel={branchCard.label}
+              busy={branching}
+              onSubmit={(choice, opts) => void branchHere(choice, opts)}
+              onCancel={() => setBranchCard(null)}
+            />
+          </PanelFrame>
+        )}
         {exited === null &&
           (confirmStop ? (
             <span className="stop-confirm">
@@ -2944,7 +2981,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <div className="menu-phone-only">
           <MenuGroup label="session">
             {busy && exited === null && !subagent && <MenuRow label="interrupt the running turn" onClick={() => { closeMenu(); void interrupt(); }} disabled={interrupting} />}
-            {exited === null && <MenuRow label="branch here" hint="bookmark this point and continue on a fork" onClick={() => { closeMenu(); setBranchLabel(""); }} disabled={branching} />}
+            {exited === null && <MenuRow label="branch here" hint="move @name or start a new agent on a branch" onClick={() => { closeMenu(); openBranchCard({ choice: "move" }); }} disabled={branching} />}
             {exited === null && <MenuRow label="stop session" hint="asks to confirm" onClick={() => { closeMenu(); setConfirmStop(true); }} />}
           </MenuGroup>
         </div>

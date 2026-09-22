@@ -291,6 +291,9 @@ export interface Agent {
   spawn_note?: string | null;
   channel: string;
   session_id: string;
+  /** A branch that has not taken a turn yet: nothing of its own on disk,
+   *  the row still points at the parent (local agents). */
+  fork_pending?: boolean;
   charter: string | null;
   live: boolean;
   turn_state: TurnState | null;
@@ -542,6 +545,24 @@ export interface SessionInfo {
   mcc_args: string | null;
   /** mcc had --dangerously-skip-permissions configured. */
   mcc_skip: boolean | null;
+  /** The name on this transcript (its current one, or one it left), when
+   *  the node knows. Local key (`bare@repo`) on its node. */
+  agent?: string | null;
+  /** Every name whose current transcript this is (more than one is a
+   *  state to resolve). */
+  agents?: string[];
+  /** "current": the name's transcript now; "earlier": one it left (a
+   *  bookmark, with `label` and `bookmark_id`). */
+  state?: "current" | "earlier" | null;
+  label?: string | null;
+  bookmark_id?: number | null;
+  /** Whether the name on a current transcript is running. */
+  agent_live?: boolean | null;
+  /** The name this transcript was branched from, when lineage or an open
+   *  adoption says so. */
+  branch_of?: string | null;
+  /** An open adoption (a branch made outside Aspen, unanswered). */
+  adoption_id?: number | null;
 }
 
 /** A tip left behind by branch/swap, or a manual bookmark. */
@@ -1307,6 +1328,12 @@ export const api = {
       ...(at ? { at } : {}),
       ...(as ? { as } : {}),
     }),
+  /** Move a name onto a transcript: it relaunches on a branch of it; the
+   *  transcript it was on is kept as an earlier point. */
+  moveTo: (name: string, session: string, at?: string) =>
+    post<Agent>(`/api/agents/${enc(name)}/move-to`, { session, ...(at ? { at } : {}) }),
+  /** Undo a branch before its first turn: the name goes back in place. */
+  undoBranch: (name: string) => post<Agent>(`/api/agents/${enc(name)}/branch/undo`, {}),
   bookmarks: (name: string) => request<BookmarksInfo>(`/api/agents/${enc(name)}/bookmarks`),
   resumeBookmark: (name: string, id: number, as?: string) =>
     post<Agent>(`/api/agents/${enc(name)}/bookmarks/${id}/resume`, as ? { as } : {}),

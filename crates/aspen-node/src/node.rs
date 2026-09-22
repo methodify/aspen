@@ -442,6 +442,129 @@ pub fn enumerate_all(inner: &Arc<NodeInner>, repo: &Path) -> Vec<aspen_core::Ses
     out
 }
 
+/// A session's first-message title without the slash-command markup the
+/// harness writes (`<command-message>x</command-message> <command-name>/x
+/// </command-name> <command-args>…`): the command and its args, or the
+/// text with any tags stripped.
+pub fn clean_title(title: &str) -> String {
+    fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+        let i = s.find(open)? + open.len();
+        let j = s[i..].find(close)? + i;
+        Some(s[i..j].trim())
+    }
+    if let Some(cmd) = between(title, "<command-name>", "</command-name>") {
+        let args = between(title, "<command-args>", "</command-args>").unwrap_or("");
+        let out = format!("{cmd} {args}");
+        return out.trim().to_owned();
+    }
+    let mut out = String::with_capacity(title.len());
+    let mut in_tag = false;
+    for c in title.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The sessions of a repo as the console lists them: every transcript on
+/// disk, with what this node knows about it — the name on it and whether
+/// that is the name's current transcript (`state` = "current") or one it
+/// left (`"earlier"`, with the bookmark's label and id), the name it was
+/// branched from when the lineage or an open adoption says so, and the
+/// mcc register's name/args when the repo has one.
+pub fn sessions_json(inner: &Arc<NodeInner>, repo: &Path) -> serde_json::Value {
+    use std::collections::HashMap;
+    let mcc = crate::mcc::read(repo);
+    let rows = enumerate_all(inner, repo);
+    let agents = inner.store.agents().unwrap_or_default();
+    let mut current: HashMap<&str, Vec<&crate::store::AgentRow>> = HashMap::new();
+    for a in &agents {
+        // A branch that has not taken a turn still points at its parent's
+        // transcript; it is not a name on that transcript.
+        if a.fork_pending {
+            continue;
+        }
+        if let Some(sid) = a.session_id.as_deref() {
+            current.entry(sid).or_default().push(a);
+        }
+    }
+    let bookmarks = inner.store.bookmarks_all().unwrap_or_default();
+    let mut earlier: HashMap<&str, &(String, crate::store::Bookmark)> = HashMap::new();
+    for b in &bookmarks {
+        earlier.entry(b.1.session_id.as_str()).or_insert(b);
+    }
+    let adoptions = inner.store.adoptions(true).unwrap_or_default();
+    let name_on = |sid: &str| -> Option<String> {
+        current
+            .get(sid)
+            .and_then(|v| v.first())
+            .map(|a| a.name.clone())
+            .or_else(|| earlier.get(sid).map(|b| b.0.clone()))
+    };
+    serde_json::json!(rows
+        .iter()
+        .map(|si| {
+            let m = mcc.get(&si.session_id);
+            let sid = si.session_id.as_str();
+            let heads = current.get(sid).cloned().unwrap_or_default();
+            let bm = earlier.get(sid);
+            let adoption = adoptions
+                .iter()
+                .find(|a| a.session_id == sid && a.kind == "fork");
+            let (agent, state, label, bookmark_id, agent_live) = if let Some(a) = heads.first() {
+                (
+                    Some(a.name.clone()),
+                    Some("current"),
+                    a.title.clone(),
+                    None,
+                    Some(inner.live(&a.name).is_some()),
+                )
+            } else if let Some((who, b)) = bm {
+                (
+                    Some(who.clone()),
+                    Some("earlier"),
+                    b.label.clone(),
+                    Some(b.id),
+                    None,
+                )
+            } else {
+                (None, None, None, None, None)
+            };
+            let branch_of = adoption.and_then(|a| a.of_agent.clone()).or_else(|| {
+                inner
+                    .store
+                    .lineage_parent(sid)
+                    .ok()
+                    .flatten()
+                    .and_then(|p| name_on(&p))
+            });
+            serde_json::json!({
+                "session_id": si.session_id,
+                "title": si.title.as_deref().map(clean_title),
+                "entrypoint": si.entrypoint,
+                "modified": si.modified_epoch,
+                "user_messages": si.user_messages,
+                "harness": si.harness,
+                "mcc_name": m.map(|m| m.name.clone()),
+                "mcc_args": m.and_then(|m| m.args.clone()),
+                "mcc_skip": m.map(|m| m.skip_permissions),
+                "agent": agent,
+                "agents": heads.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+                "state": state,
+                "label": label,
+                "bookmark_id": bookmark_id,
+                "agent_live": agent_live,
+                "branch_of": branch_of,
+                "adoption_id": adoption.map(|a| a.id),
+            })
+        })
+        .collect::<Vec<_>>())
+}
+
 /// The daemon's local API address, for the tool bridge (`daemon.json`).
 fn local_api_addr(data_dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(data_dir.join("daemon.json")).ok()?;
@@ -1087,6 +1210,24 @@ impl Node {
         // silently: refuse with LiveElsewhere so the console can ask, and
         // act only on an explicit choice — fork (history kept, new id) or
         // resume in place anyway.
+        // One transcript, one name: resuming (not branching) onto another
+        // name's current transcript would put two names on it. The Mesh
+        // list never offers that; this is the guard for everything else.
+        if let (Some(sid), false) = (opts.resume.as_deref(), opts.fork) {
+            if let Some(other) = self
+                .inner
+                .store
+                .agents()
+                .unwrap_or_default()
+                .iter()
+                .find(|a| a.name != name && !a.fork_pending && a.session_id.as_deref() == Some(sid))
+            {
+                return Err(anyhow!(
+                    "that is @{}'s current transcript — open it, or branch it",
+                    other.name
+                ));
+            }
+        }
         let mut opts = opts;
         let mut spawn_note: Option<String> = None;
         if let (Some(sid), false) = (opts.resume.as_deref(), opts.fork) {
@@ -1591,18 +1732,109 @@ impl Node {
         if let Some(as_name) = as_name {
             return self.split_agent(name, as_name, &head, at_message).await;
         }
-        // Bookmark the tip we're leaving.
-        self.inner.store.add_bookmark(
+        // Fork first, bookmark after: a failed fork must not leave a stray
+        // bookmark of a tip the name never left.
+        let label = label
+            .or(row.title.as_deref())
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let sess = self.fork_to(name, &head, at_message).await?;
+        self.inner
+            .store
+            .add_bookmark(name, &head, None, label.as_deref(), "branch")?;
+        Ok(sess)
+    }
+
+    /// Move a name onto a transcript: the name relaunches on a branch of
+    /// `session` (never in place — one writer per transcript), and the
+    /// transcript it was on is kept as an earlier point (reason "move").
+    pub async fn move_to(
+        &self,
+        name: &str,
+        session: &str,
+        at_message: Option<&str>,
+    ) -> Result<Arc<ManagedSession>> {
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        if !self.inner.store_for(row.harness).exists(&row.repo, session) {
+            return Err(anyhow!(
+                "no transcript {} in this repo",
+                &session[..8.min(session.len())]
+            ));
+        }
+        let head = row.session_id.clone();
+        if head.as_deref() == Some(session) && at_message.is_none() {
+            return Err(anyhow!("@{name} is already on that transcript"));
+        }
+        let sess = self.fork_to(name, session, at_message).await?;
+        if let Some(head) = head.filter(|h| h != session) {
+            let _ = self
+                .inner
+                .store
+                .add_bookmark(name, &head, None, row.title.as_deref(), "move");
+        }
+        let _ = self.inner.store.record_event(
             name,
-            &head,
-            None,
-            label
-                .or(row.title.as_deref())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty()),
-            "branch",
-        )?;
-        self.fork_to(name, &head, at_message).await
+            "move",
+            serde_json::json!({ "session": session, "at": at_message }),
+        );
+        Ok(sess)
+    }
+
+    /// Undo a branch that has not taken a turn: the fork has nothing of its
+    /// own yet (the row still points at the parent, `fork_pending`), so the
+    /// name goes back onto its transcript in place and the bookmark the
+    /// branch left is removed. After a turn there is a transcript to keep,
+    /// and the answer is to move the name back to the earlier point.
+    pub async fn undo_branch(&self, name: &str) -> Result<Arc<ManagedSession>> {
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        if !row.fork_pending {
+            return Err(anyhow!(
+                "the branch already has its own transcript — move @{name} back to the earlier point instead"
+            ));
+        }
+        let head = row
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("@{name} has no transcript to go back to"))?;
+        if self.inner.live(name).is_some() {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.shutdown_for_restart(name),
+            )
+            .await;
+            for _ in 0..50 {
+                if self.inner.live(name).is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        // The bookmark the branch left points at the very transcript the
+        // name is going back onto.
+        if let Some(b) = self
+            .inner
+            .store
+            .bookmarks(name)?
+            .into_iter()
+            .find(|b| b.session_id == head && matches!(b.reason.as_str(), "branch" | "move"))
+        {
+            let _ = self.inner.store.delete_bookmark(name, b.id);
+        }
+        self.inner.store.set_fork_pending(name, false)?;
+        let _ =
+            self.inner
+                .store
+                .record_event(name, "unbranch", serde_json::json!({ "session": head }));
+        self.revive_agent(name, true, Some("in_place".to_owned()))
+            .await
     }
 
     /// Resume a bookmark: bookmark the current tip (reason "swap"), then
@@ -1623,19 +1855,7 @@ impl Node {
                 .split_agent(name, as_name, &bm.session_id, bm.message_uuid.as_deref())
                 .await;
         }
-        let rows = self.inner.store.agents()?;
-        let row = rows
-            .iter()
-            .find(|a| a.name == name)
-            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
-        if let Some(head) = &row.session_id {
-            if head != &bm.session_id {
-                self.inner
-                    .store
-                    .add_bookmark(name, head, None, row.title.as_deref(), "swap")?;
-            }
-        }
-        self.fork_to(name, &bm.session_id, bm.message_uuid.as_deref())
+        self.move_to(name, &bm.session_id, bm.message_uuid.as_deref())
             .await
     }
 
@@ -1712,7 +1932,8 @@ impl Node {
             .live(name)
             .map(|s| s.broker.is_some())
             .unwrap_or(true);
-        if self.inner.live(name).is_some() {
+        let was_live = self.inner.live(name).is_some();
+        if was_live {
             // Keep the live mark: this is a restart, not an operator stop.
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -1737,7 +1958,23 @@ impl Node {
             extra_args: row.extra_args.clone(),
             ..Default::default()
         };
-        self.spawn_agent(name, row.repo.clone(), opts).await
+        match self.spawn_agent(name, row.repo.clone(), opts).await {
+            Ok(sess) => Ok(sess),
+            Err(e) => {
+                // The name stays where it was: back on its own transcript,
+                // running if it was.
+                let _ = self.inner.store.set_fork_pending(name, false);
+                let restarted = was_live
+                    && self
+                        .revive_agent(name, interactive, Some("in_place".to_owned()))
+                        .await
+                        .is_ok();
+                Err(anyhow!(
+                    "couldn't start the branch ({e:#}); @{name} is unchanged{}",
+                    if restarted { " and still running" } else { "" }
+                ))
+            }
+        }
     }
 
     /// Recover repos from Claude Code's on-disk session store and add the
@@ -3421,5 +3658,30 @@ async fn pump(
             _ => {}
         }
         let _ = sess.events.send(ev); // no receivers is fine
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::clean_title;
+
+    #[test]
+    fn command_markup_becomes_the_command() {
+        let t = "<command-message>fabric:init</command-message> <command-name>/fabric:init</command-name> <command-args>--all</command-args>";
+        assert_eq!(clean_title(t), "/fabric:init --all");
+        let t = "<command-message>recap</command-message> <command-name>/recap</command-name>";
+        assert_eq!(clean_title(t), "/recap");
+    }
+
+    #[test]
+    fn other_tags_are_stripped_and_plain_text_kept() {
+        assert_eq!(
+            clean_title("Lakehouse shortcut dependency mapping"),
+            "Lakehouse shortcut dependency mapping"
+        );
+        assert_eq!(
+            clean_title("<system-reminder>x</system-reminder> hello  there"),
+            "x hello there"
+        );
     }
 }

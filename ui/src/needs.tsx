@@ -378,8 +378,8 @@ export function AdoptionCard({ a, onDone }: { a: Adoption; onDone: () => void })
       <span style={{ flex: 1 }} />
       {a.kind === "fork" && splitName === null && (
         <>
-          <button className="btn sm" disabled={busy} onClick={() => void act("carry")} title={`@${bare} moves to the branch; its current tip is bookmarked`}>
-            carry @{bare} here
+          <button className="btn sm" disabled={busy} onClick={() => void act("carry")} title={`@${bare} moves onto the branch; the transcript it is on is kept as an earlier point`}>
+            move @{bare} here
           </button>
           <button className="btn sm" disabled={busy} onClick={() => setSplitName(`${bare}-2`)} title="the branch becomes a new agent; the original keeps its session">
             new agent…

@@ -79,4 +79,12 @@
   .mesh-switch { position: static; }
   .mesh-switch-menu { position: fixed; top: calc(var(--statusbar-h) + 4px); left: var(--sp-3); right: var(--sp-3); min-width: 0; }
   .mesh-switch-row { padding: 10px 12px; }
+
+  /* Session rows in the Mesh list: two lines — the name and its state,
+     then the meta and the one verb; the chooser stacks. */
+  .sess-main { gap: 6px; }
+  .sess-main .sess-lead { flex-basis: 100%; }
+  .sess-meta { font-size: 0.7rem; gap: 6px; }
+  .sess-row.sess-indent { margin-left: 8px; }
+  .sess-title { white-space: normal; }
 }
