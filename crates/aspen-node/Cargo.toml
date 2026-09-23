@@ -35,6 +35,10 @@ hkdf = "0.12"
 aes-gcm = "0.10"
 base64 = "0.22"
 url = "2.5.8"
+rcgen = { version = "0.14.10", features = ["pem", "x509-parser"] }
+x509-parser = "0.18.1"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+time = "0.3.55"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

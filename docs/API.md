@@ -41,6 +41,9 @@ whoever messaged you are always allowed.
 | `POST /api/repos/discover` | `{ node? }` | `{ found: [{path, sessions, added}] }` | recover repos from Claude Code's session store (`~/.claude/projects`, real paths read from transcript `cwd`) and register the new ones. With `node`, runs on that peer (its repos register there) |
 | `POST /api/shutdown` | `{}` | `{ ok, stopping }` | graceful stop (same ladder as SIGTERM); what `aspen down` uses on every platform — Windows has no SIGTERM and a detached process has no window for taskkill |
 | `GET /api/mesh` | — | `{ in_mesh, mesh, node, identity{node,fingerprint,certified,cert_blob,version,sha,has_root,root_key_path}, root_public, peers[{node,url,console_url,link_up,agents,fingerprint,has_root,health{…}}], relay, pending }` | membership + health; when not in a mesh, `identity.enroll_blob` if enrolled. `peers[].has_root` (from rosters) says where certify happens; `console_url` is derived from the dial URL |
+| `GET /api/tls` | — | `{ mesh, root_here, ca{fingerprint,not_after,root_sig_ok,here,pem}, leaf{names,not_before,not_after,fingerprint,issuer,covers_current_names,serving}, names, https_port, separate_port, last_error, last_attempt, last_ok }` | TLS.md: the mesh CA as known here, this node's leaf, the renewal loop |
+| `POST /api/tls/renew` | — | `{ ok, summary }` | request (or mint, on the root) a leaf now; 400 when the root is not reachable |
+| `GET /api/tls/root.crt` | — | PEM, `application/x-x509-ca-cert` | the mesh CA as a download |
 | `POST /api/mesh/inspect` | `{ blob }` | `BlobInfo` | read-only: what an enroll/cert/bundle blob is, fingerprints, warnings, what accepting it would do here |
 | `GET /api/mesh/pending` | — | `{ proposals, outcomes }` | the console-authored queue and recent `aspen mesh apply` results (with artifacts) |
 | `POST /api/mesh/pending` | `{ kind: init\|enroll\|certify\|join\|peers_add\|peers_remove\|relay\|leave, args }` | `{ ok, proposal, apply }` | queue a mesh change — the daemon never executes it; `aspen mesh apply` (a shell) does. `init {mesh, node}` creates a mesh here (mints the root key); `peers_remove {node}` forgets a peer; `leave {discard_root?}` drops membership (refused while holding the root key unless `discard_root`) |
@@ -332,3 +335,15 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - `Board.pairs: [[paneA, paneB], …]` (column `pairs`, synced with the board). Pairing declares a
   two-way link (`POST /api/links`) and sends each agent a `notice` on thread `pair:<board>:<a>:<b>`;
   the strip reads `GET /api/bus/log?thread=…` and posts with `POST /api/bus/send {thread}`.
+
+
+## TLS (v0.41) — TLS.md
+
+- Rosters carry `tls_ca {mesh, der, root_sig}` (verified against the mesh root before a member
+  keeps it); `GET /api/mesh` `meshes[].tls_ca {fingerprint, not_after}` and
+  `identity.advertised.https_urls`. Mesh op `tls_csr {csr, names}` → `{leaf, ca}` (answered by
+  the root holder only; fleet event `tls_issue`).
+- `aspen up --tls-listen`, `aspen config tls-listen | tls-names`, `aspen tls status | ca | renew |
+  request | sign | install`; `daemon.json` gains `tls_listen`, `tls_requested`.
+- Same port serves http and https (first-byte sniff) unless `--tls-listen`; https is on only
+  when a listener is beyond loopback; the node token rule is unchanged.

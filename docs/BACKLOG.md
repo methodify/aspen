@@ -31,11 +31,23 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-7 | servicing | **Relay-hosted console.** The hosted bundle served by the Cloudflare worker as its `/`. | PROPOSALS-2026-09-D.md §3 |
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
-| D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
+| T-3 | servicing + console | **Trust the mesh CA on this computer.** `aspen tls trust / --check / --remove / --print`, `POST /api/tls/trust`, recipes for Windows, macOS, Linux (NSS, system, Firefox), WSL → Windows; the status hint. | PROPOSALS-2026-09-M.md §3.4 |
+| T-4 | console | **The console side of TLS.** Certificate row per mesh, https attach guidance, root download with phone steps, direct-address chips, `wss` verified. | PROPOSALS-2026-09-M.md §3.5 |
+| T-5 | console | **Direct first, relay when away.** Probe a node's advertised https addresses and switch to direct when reachable and trusted. | PROPOSALS-2026-09-M.md §3.6 |
+| R-1 | protocol | **The macbook relay-dial noise.** anindor-wsl dialing macbook via relay and timing out on hello whenever the Mac's direct link drops. | — |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-23: the mesh root as a certificate authority (T-1, T-2, v0.41)
+
+| id | shipped as |
+|---|---|
+| T-1 | A P-256 CA beside the root key, bound by an Ed25519 root signature and carried in rosters; `tls_csr` over the link; 90-day leaves renewed from day 60, names re-checked every tick; `aspen tls request/sign/install` offline; `tls_issue` on the trail. TLS.md §2–§3. |
+| T-2 | https on the listener: same port by first-byte sniff, `--tls-listen` for a separate one; live resolver, no restart on renewal; `https_urls` advertised; `GET /api/tls`, `POST /api/tls/renew`, `GET /api/tls/root.crt`; `aspen tls status`. TLS.md §4–§5. |
+
+Closes D-11. T-3, T-4, T-5 above are what it left open.
 
 ## Shipped — 2026-09-23: one relay connection per browser profile (C-1, v0.40)
 

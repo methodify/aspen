@@ -69,6 +69,36 @@ pub fn run(data_dir: &Path) -> Result<()> {
                     if let Some(sup) = s.get("supervisor").and_then(|v| v.as_str()) {
                         println!("        supervised by {sup} (autostart)");
                     }
+                    // TLS (docs/TLS.md): only when a listener is beyond
+                    // loopback; a loopback-only node has nothing to certify.
+                    if let Ok(t) = query(&base, "/api/tls", data_dir, &listen) {
+                        if let Some(port) = t["https_port"].as_u64() {
+                            let sep = if t["separate_port"].as_bool() == Some(true) {
+                                ""
+                            } else {
+                                " (same port)"
+                            };
+                            match t["leaf"].as_object() {
+                                Some(l)
+                                    if l.get("serving").and_then(|b| b.as_bool()) == Some(true) =>
+                                {
+                                    let until = l["not_after"]
+                                        .as_i64()
+                                        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                                        .map(|d| d.format("%Y-%m-%d").to_string())
+                                        .unwrap_or_default();
+                                    println!("        https on port {port}{sep}: certificate from the mesh root, valid until {until} — `aspen tls status` for names; browsers trust it once the mesh CA is in their store (docs/TLS.md)");
+                                }
+                                _ => {
+                                    let err = t["last_error"]
+                                        .as_str()
+                                        .map(|e| format!(" ({e})"))
+                                        .unwrap_or_default();
+                                    println!("        https on port {port}{sep}: no certificate yet — issued by the mesh root once linked{err}");
+                                }
+                            }
+                        }
+                    }
                     if ver != env!("CARGO_PKG_VERSION") {
                         println!(
                             "        note: daemon runs v{ver}, this binary is v{} — `aspen update --restart` or `aspen down && aspen up -d` to switch",
@@ -379,7 +409,12 @@ fn disk_mesh(data_dir: &Path) -> Result<()> {
 
 /// GET a daemon API path. Loopback listeners take no token; non-loopback
 /// ones require the node token from the data dir.
-fn query(base: &str, path: &str, data_dir: &Path, listen: &str) -> Result<serde_json::Value> {
+pub(crate) fn query(
+    base: &str,
+    path: &str,
+    data_dir: &Path,
+    listen: &str,
+) -> Result<serde_json::Value> {
     let mut req = ureq::get(&format!("{base}{path}")).timeout(std::time::Duration::from_secs(3));
     let loopback = listen
         .parse::<std::net::SocketAddr>()

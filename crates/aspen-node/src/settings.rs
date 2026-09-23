@@ -41,6 +41,11 @@ pub struct Settings {
     /// default; comma-separated. `-` clears to the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_origins: Option<String>,
+    /// Extra names this node's TLS certificate should cover (docs/TLS.md),
+    /// comma-separated: a DNS name or private address the console will
+    /// type that the node cannot discover itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_names: Option<String>,
     /// Outbound notifications (docs/NOTIFICATIONS.md).
     #[serde(default)]
     pub notify: NotifySettings,
@@ -84,6 +89,17 @@ impl NotifySettings {
 }
 
 impl Settings {
+    pub fn tls_names(&self) -> Vec<String> {
+        self.tls_names
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
     pub fn advertise_urls(&self) -> Vec<String> {
         self.advertise
             .as_deref()
@@ -208,6 +224,10 @@ pub struct DaemonDefaults {
     /// built-in default, which depends on headless).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
+    /// A separate https listener (docs/TLS.md), e.g. "0.0.0.0:7443". None:
+    /// https is served on the main listener, sniffed per connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_listen: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

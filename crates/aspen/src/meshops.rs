@@ -61,6 +61,7 @@ pub fn init(files: &MeshFiles, mesh: &str, node_name: &str) -> Result<Done> {
         relay: None,
         relays: vec![],
         policy: None,
+        tls_ca: None,
     })?;
     let blob = identity::to_blob("cert", id.cert.as_ref().unwrap())?;
     Ok(done(
@@ -226,6 +227,7 @@ pub fn join_with_policy(files: &MeshFiles, blob: &str, policy: Option<&str>) -> 
             relay: None,
             relays: vec![],
             policy: None,
+            tls_ca: None,
         })?;
     }
     let mut summary = format!("joined mesh '{}' as node '{}'", cert.mesh, cert.node);
@@ -291,6 +293,7 @@ fn join_extra(
         relay: None,
         relays: vec![],
         policy: policy.clone(),
+        tls_ca: None,
     };
     let mut summary = format!(
         "joined a SECOND mesh '{}' as '{}' (policy {}); existing repos stay in '{}', new ones are exposed to no mesh until you say",

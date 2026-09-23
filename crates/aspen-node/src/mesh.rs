@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use aspen_wire::identity::{MeshRoot, NodeCert, NodeIdentity};
+use aspen_wire::identity::{MeshRoot, NodeCert, NodeIdentity, TlsCa};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
@@ -41,6 +41,11 @@ pub struct MeshConfig {
     /// None: full for the primary mesh, observe for an additional one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
+    /// The mesh's TLS certificate authority (docs/TLS.md), once the root
+    /// holder minted one; learned from rosters on other members, verified
+    /// against `root_public` before it is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<aspen_wire::identity::TlsCa>,
 }
 
 impl MeshConfig {
@@ -275,6 +280,43 @@ impl MeshFiles {
             self.save_identity(&id)?;
         }
         Ok(format!("left mesh '{mesh}'; its cert and peers dropped"))
+    }
+
+    /// Record a mesh's TLS CA (verified against that mesh's root first).
+    /// Returns whether anything changed.
+    pub fn set_tls_ca(&self, ca: &TlsCa) -> Result<bool> {
+        if let Some(mut m) = self.load_mesh()? {
+            if m.mesh == ca.mesh {
+                ca.verify_against(&m.root_public)?;
+                if m.tls_ca.as_ref() == Some(ca) {
+                    return Ok(false);
+                }
+                m.tls_ca = Some(ca.clone());
+                self.save_mesh(&m)?;
+                return Ok(true);
+            }
+        }
+        for mut m in self.load_extra_meshes()? {
+            if m.mesh == ca.mesh {
+                ca.verify_against(&m.root_public)?;
+                if m.tls_ca.as_ref() == Some(ca) {
+                    return Ok(false);
+                }
+                m.tls_ca = Some(ca.clone());
+                self.save_extra_mesh(&m)?;
+                return Ok(true);
+            }
+        }
+        bail!("this node is not in a mesh named '{}'", ca.mesh)
+    }
+
+    /// The TLS CA of a mesh, if known here.
+    pub fn tls_ca(&self, mesh: &str) -> Result<Option<TlsCa>> {
+        Ok(self
+            .load_all_meshes()?
+            .into_iter()
+            .find(|m| m.mesh == mesh)
+            .and_then(|m| m.tls_ca))
     }
 
     /// Set what peers of a mesh may do here.

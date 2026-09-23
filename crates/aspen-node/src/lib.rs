@@ -32,6 +32,7 @@ pub mod servicing;
 pub mod settings;
 pub mod skills;
 pub mod store;
+pub mod tls;
 pub mod tools;
 pub mod topology;
 pub mod trust;

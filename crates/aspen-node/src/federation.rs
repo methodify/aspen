@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -210,6 +210,10 @@ pub struct Advertised {
     /// Relay endpoints this node hosts that peers may rendezvous at.
     #[serde(default)]
     pub relay_urls: Vec<String>,
+    /// Where a console may reach this node over https directly
+    /// (docs/TLS.md): one URL per name the leaf covers.
+    #[serde(default)]
+    pub https_urls: Vec<String>,
 }
 
 /// What we know about a peer's link, for humans.
@@ -523,6 +527,37 @@ impl MeshState {
         self.config.read().unwrap().root_public.clone()
     }
 
+    /// The TLS CA of a mesh, as held in memory.
+    pub fn tls_ca_of(&self, mesh: &str) -> Option<aspen_wire::identity::TlsCa> {
+        let c = self.config.read().unwrap();
+        if c.mesh == mesh {
+            return c.tls_ca.clone();
+        }
+        drop(c);
+        self.extra
+            .read()
+            .unwrap()
+            .iter()
+            .find(|m| m.mesh == mesh)
+            .and_then(|m| m.tls_ca.clone())
+    }
+
+    /// Record a mesh's TLS CA in memory (verified by the caller against
+    /// that mesh's root; MeshFiles::set_tls_ca persists it).
+    pub fn set_tls_ca(&self, ca: &aspen_wire::identity::TlsCa) {
+        let mut c = self.config.write().unwrap();
+        if c.mesh == ca.mesh {
+            c.tls_ca = Some(ca.clone());
+            return;
+        }
+        drop(c);
+        for m in self.extra.write().unwrap().iter_mut() {
+            if m.mesh == ca.mesh {
+                m.tls_ca = Some(ca.clone());
+            }
+        }
+    }
+
     pub fn link_up(&self, node: &str) -> bool {
         self.links.lock().unwrap().contains_key(node)
     }
@@ -809,6 +844,20 @@ fn advertised_uncached(inner: &Arc<NodeInner>) -> Advertised {
             out.relay_urls.push(relay);
         }
     }
+    // Direct https (docs/TLS.md): every name the installed leaf covers, at
+    // the port that serves TLS — the main one (sniffed) or `--tls-listen`.
+    if let Some(port) = inner.tls.https_port() {
+        if let Ok(Some(leaf)) = crate::tls::leaf_info(dir) {
+            for n in &leaf.names {
+                let host = if n.contains(':') {
+                    format!("[{n}]")
+                } else {
+                    n.clone()
+                };
+                out.https_urls.push(format!("https://{host}:{port}"));
+            }
+        }
+    }
     if configured.is_empty() && is_wsl() {
         out.hint = Some("wsl-nat".into());
     } else if !crate::winfw::block_profiles().is_empty() {
@@ -821,7 +870,7 @@ fn advertised_uncached(inner: &Arc<NodeInner>) -> Advertised {
 
 /// WSL2's virtual NIC sits behind Windows' NAT: its addresses mean
 /// nothing to other machines.
-fn is_wsl() -> bool {
+pub(crate) fn is_wsl() -> bool {
     std::fs::read_to_string("/proc/version")
         .map(|v| v.to_ascii_lowercase().contains("microsoft"))
         .unwrap_or(false)
@@ -862,7 +911,7 @@ fn hostname_is_ours(host: &str, port: u16, ours: &[std::net::Ipv4Addr]) -> bool 
     ok
 }
 
-fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| std::env::var("COMPUTERNAME").ok())
@@ -935,6 +984,10 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
         "servicing": inner.servicing.roster_json(mode),
         "has_root": has_root,
         "advertised": advertised(inner),
+        // The mesh's TLS CA (docs/TLS.md), so members and consoles learn it
+        // with no root contact; verified against the root on receipt.
+        "tls_ca": mesh.and_then(|m| inner.mesh().and_then(|st| st.tls_ca_of(m)))
+            .or_else(|| inner.mesh().and_then(|st| st.tls_ca_of(&st.mesh_name()))),
         "boards_digest": if for_primary { Some(inner.store.boards_digest()) } else { None },
         "plugins_digest": if for_primary { Some(inner.store.plugin_registry_digest()) } else { None },
         "templates_digest": if for_primary { Some(inner.store.templates_digest()) } else { None },
@@ -1421,6 +1474,27 @@ async fn link_loop(
                         .map(str::to_owned);
                     let svc = payload.get("servicing").cloned();
                     let has_root = payload.get("has_root").and_then(|b| b.as_bool());
+                    if let Some(ca) = payload.get("tls_ca").and_then(|c| {
+                        serde_json::from_value::<aspen_wire::identity::TlsCa>(c.clone()).ok()
+                    }) {
+                        if mesh.tls_ca_of(&ca.mesh).as_ref() != Some(&ca) {
+                            match inner
+                                .data_dir
+                                .as_deref()
+                                .map(crate::mesh::MeshFiles::new)
+                                .map(|f| f.set_tls_ca(&ca))
+                            {
+                                Some(Ok(_)) => {
+                                    mesh.set_tls_ca(&ca);
+                                    tracing::info!(peer, mesh = %ca.mesh, "learned the mesh TLS CA");
+                                }
+                                Some(Err(e)) => {
+                                    tracing::warn!(peer, error = %e, "ignoring a TLS CA that does not verify")
+                                }
+                                None => {}
+                            }
+                        }
+                    }
                     let adv: Option<Advertised> = payload
                         .get("advertised")
                         .and_then(|a| serde_json::from_value(a.clone()).ok());
@@ -2358,6 +2432,34 @@ async fn serve_api_req(
         // mesh-wide view. Repos/sessions recovered here register on THIS
         // node; a peer that loses the mesh link stops seeing them, which is
         // the intended "remote content lives on its owning node" model.
+        "tls_csr" => {
+            // A member asks the root holder for a leaf (docs/TLS.md §3): the
+            // CSR is signed here, every name checked, the issue recorded.
+            let files = node
+                .inner
+                .data_dir
+                .as_deref()
+                .map(crate::mesh::MeshFiles::new)
+                .ok_or_else(|| anyhow!("node has no data dir"))?;
+            if files.load_root()?.is_none() {
+                bail!("this node does not hold the mesh root; ask the root holder");
+            }
+            let csr =
+                aspen_wire::b64::decode(body.get("csr").and_then(|c| c.as_str()).unwrap_or(""))
+                    .context("csr")?;
+            let names = crate::tls::csr_names(&csr)?;
+            let ca = crate::tls::ca_ensure(&files, &[])?;
+            if let Some(m) = node.inner.mesh() {
+                m.set_tls_ca(&ca);
+            }
+            let leaf = crate::tls::sign_csr(&files, &csr)?;
+            let _ = node.inner.store.record_event(
+                "node",
+                "tls_issue",
+                json!({ "node": peer, "names": names }),
+            );
+            Ok(json!({ "leaf": aspen_wire::b64::encode(&leaf), "ca": ca }))
+        }
         "node_repos" => {
             let repos = node.inner.store.repos()?;
             let agents = node.inner.store.agents().unwrap_or_default();
@@ -3747,6 +3849,7 @@ mod capability_tests {
             relay: None,
             relays: vec![],
             policy: None,
+            tls_ca: None,
         };
         let st = MeshState::new(me, cfg);
         st.extra.write().unwrap().push(MeshConfig {
@@ -3759,6 +3862,7 @@ mod capability_tests {
             relay: None,
             relays: vec![],
             policy: None,
+            tls_ca: None,
         });
         assert_eq!(st.mesh_of_peer("w1").as_deref(), Some("work"));
         assert_eq!(st.policy_of("work"), "observe");

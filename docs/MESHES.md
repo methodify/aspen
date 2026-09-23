@@ -27,6 +27,12 @@ collide (the certifier's name, or the node's own) is refused — so
 `name@repo@node` keeps three segments and links, rosters and health stay
 keyed by node name.
 
+**TLS (v0.41, TLS.md).** The root holder also keeps a P-256 certificate
+authority beside the root key, vouched for by the root's signature and
+carried in rosters; members ask it for 90-day leaves over the link and
+serve https on their listener. A node in several meshes serves its
+primary mesh's leaf.
+
 ## 2. Links
 
 A hello carries the primary cert plus every extra cert (`certs`). The

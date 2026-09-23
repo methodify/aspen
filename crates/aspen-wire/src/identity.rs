@@ -81,6 +81,71 @@ impl MeshRoot {
     }
 }
 
+/// The mesh's TLS certificate authority (docs/TLS.md): a P-256 X.509 CA
+/// kept beside the root key, vouched for by the Ed25519 root. `root_sig`
+/// covers `aspen-tls-ca-v1\0<mesh>\0<sha256(der)>`, so every member and
+/// every console can check the CA came from the mesh root with no root
+/// online — the same way a node cert is checked.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TlsCa {
+    pub mesh: String,
+    #[serde(with = "b64")]
+    pub der: Vec<u8>,
+    #[serde(with = "b64")]
+    pub root_sig: Vec<u8>,
+}
+
+fn tls_ca_signing_bytes(mesh: &str, der: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    let mut v = b"aspen-tls-ca-v1\0".to_vec();
+    v.extend_from_slice(mesh.as_bytes());
+    v.push(0);
+    v.extend_from_slice(&sha2::Sha256::digest(der));
+    v
+}
+
+impl TlsCa {
+    pub fn verify_against(&self, trusted_root_public: &[u8]) -> Result<()> {
+        let root_bytes: [u8; 32] = trusted_root_public
+            .try_into()
+            .map_err(|_| anyhow!("malformed root public key"))?;
+        let root = VerifyingKey::from_bytes(&root_bytes).context("root public key")?;
+        let sig_bytes: [u8; 64] = self
+            .root_sig
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("malformed CA signature"))?;
+        root.verify(
+            &tls_ca_signing_bytes(&self.mesh, &self.der),
+            &Signature::from_bytes(&sig_bytes),
+        )
+        .map_err(|_| anyhow!("TLS CA signature invalid for this mesh root"))
+    }
+
+    /// SHA-256 of the DER, colon-separated hex — what trust stores show.
+    pub fn fingerprint(&self) -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(&self.der)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
+impl MeshRoot {
+    /// Vouch for a TLS CA certificate (DER) as this mesh's.
+    pub fn sign_tls_ca(&self, der: &[u8]) -> Result<TlsCa> {
+        let key = self.signing_key()?;
+        let sig = key.sign(&tls_ca_signing_bytes(&self.mesh, der));
+        Ok(TlsCa {
+            mesh: self.mesh.clone(),
+            der: der.to_vec(),
+            root_sig: sig.to_bytes().to_vec(),
+        })
+    }
+}
+
 /// A node's own keys (secret halves stay on the node, mode-0600).
 #[derive(Serialize, Deserialize)]
 pub struct NodeIdentity {

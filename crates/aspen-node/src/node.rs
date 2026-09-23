@@ -163,6 +163,9 @@ pub struct NodeInner {
     /// (or a peer) that reaches the relay can reach its host too
     /// (RELAY.md §11).
     pub self_relay: std::sync::OnceLock<String>,
+    /// TLS: the live certificate resolver and the renewal loop's state
+    /// (docs/TLS.md).
+    pub tls: crate::tls::TlsState,
 }
 
 /// (method, path, body, headers) → `{status, content_type, body|body_b64}`.
@@ -1100,6 +1103,7 @@ impl Node {
             replication: Mutex::new(Default::default()),
             http_gateway: std::sync::OnceLock::new(),
             self_relay: std::sync::OnceLock::new(),
+            tls: crate::tls::TlsState::default(),
             servicing: crate::servicing::Servicing::new(
                 crate::federation::VERSION
                     .get()

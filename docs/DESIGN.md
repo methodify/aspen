@@ -1263,3 +1263,17 @@ cleaner lane for roster updates than user-message headers.
   of one identity evict each other (a replaced tab stands down; then
   C-1: tabs elect a leader with the Web Locks API and multiplex through
   it, so every tab is live on one connection).
+- **2026-09-23 — v0.41: the mesh root as a certificate authority (T-1,
+  T-2 of PROPOSALS-2026-09-M.md).** Why: the hosted console cannot reach
+  `http://<node>` beyond localhost at all (mixed content), and a LAN
+  console over plain http is an insecure context that loses Web Locks,
+  clipboard, push and install. Decided: a P-256 X.509 CA beside the root
+  key (browsers do no Ed25519 TLS), bound to the mesh by an Ed25519 root
+  signature and carried in rosters; leaf keys stay on nodes, CSRs ride
+  the link, 90-day leaves renewed from day 60, offline blobs as the
+  fallback; name constraints limit the CA to private IP space, DNS
+  unconstrained by default (single-label hostnames); https on the same
+  port by first-byte sniff, with `--tls-listen` as the escape hatch;
+  https only when a listener is beyond loopback; the node token rule
+  unchanged. Trusting the CA per computer (T-3) and the console's side
+  (T-4) follow. TLS.md.

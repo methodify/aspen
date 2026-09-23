@@ -1,8 +1,10 @@
 # Proposal M — Direct HTTPS to any node: the mesh root as a certificate authority
 
-**Status:** exploration and slate, 2026-09-23. Nothing here is built.
-Headliner: D-11 from the backlog, opened up. Decisions for the operator
-are collected in §6.
+**Status:** accepted 2026-09-23; T-1 + T-2 shipped as v0.41 (TLS.md). Decisions (§6): (a) IP name constraints
+only, DNS opt-in; (b) same port by default **and** an optional
+`--tls-listen` for a separate port if the sniff misbehaves; (c) 90-day
+leaves with renewal; (d) Trust from the console on a loopback node only;
+(e) T-5 in; (f) D-5, R-1, P-3, D-6 in. Headliner: D-11 from the backlog.
 
 ## 0. The question
 

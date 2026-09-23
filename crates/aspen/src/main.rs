@@ -6,7 +6,7 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 
 use aspen_core::SessionEvent;
@@ -17,6 +17,7 @@ mod autostart;
 mod meshops;
 mod relayhost;
 mod status;
+mod tlsserve;
 mod update;
 
 const LONG_VERSION: &str = concat!(
@@ -58,6 +59,10 @@ enum Command {
         /// pick — the actual address lands in daemon.json for status/CLI).
         #[arg(long)]
         listen: Option<std::net::SocketAddr>,
+        /// Serve https on a separate port instead of the main one, e.g.
+        /// 0.0.0.0:7443 (docs/TLS.md). Default: https shares --listen.
+        #[arg(long)]
+        tls_listen: Option<std::net::SocketAddr>,
         /// Directory with the built SPA (defaults to ui/dist next to the
         /// binary's source tree, if present).
         #[arg(long)]
@@ -172,6 +177,12 @@ enum Command {
         #[command(subcommand)]
         command: MeshCommand,
     },
+    /// TLS: the mesh certificate authority, this node's certificate, and
+    /// trusting the mesh CA on this computer (docs/TLS.md).
+    Tls {
+        #[command(subcommand)]
+        command: TlsCommand,
+    },
     /// Move a session to another node: it stops here and resumes there
     /// with its context (PROPOSALS-2026-09 §5). `--copy` forks it there
     /// instead and leaves this one running.
@@ -275,6 +286,36 @@ enum ReposCommand {
     /// Find repos from Claude Code's session store (~/.claude/projects)
     /// and add them to this node's registry.
     Discover,
+}
+
+#[derive(Subcommand)]
+enum TlsCommand {
+    /// The CA as known here, this node's certificate and the names it
+    /// covers, and the last renewal outcome.
+    Status,
+    /// Where the root key lives: create the mesh CA (or show it).
+    Ca {
+        /// Constrain DNS names to these suffixes (only at creation), e.g.
+        /// --dns-suffix .local --dns-suffix .example.ts.net. Default: DNS
+        /// unconstrained; addresses are always constrained to private space.
+        #[arg(long)]
+        dns_suffix: Vec<String>,
+        /// Mint a new CA (every leaf is re-issued, every computer must
+        /// trust the new one).
+        #[arg(long)]
+        rotate: bool,
+    },
+    /// Ask the running daemon to request (or mint, on the root) a
+    /// certificate now.
+    Renew,
+    /// Offline path, on a node whose root is not linked: print a request
+    /// blob for `aspen tls sign` where the root key lives.
+    Request,
+    /// Where the root key lives: sign a request blob into a bundle for
+    /// `aspen tls install` on the requesting node.
+    Sign { blob: String },
+    /// On the requesting node: install a signed bundle.
+    Install { blob: String },
 }
 
 #[derive(Subcommand)]
@@ -444,6 +485,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Up {
             listen,
+            tls_listen,
             ui,
             detach,
             no_resume,
@@ -469,10 +511,19 @@ async fn main() -> Result<()> {
                     let port = if headless { 0 } else { 7420 };
                     std::net::SocketAddr::from(([127, 0, 0, 1], port))
                 });
+            let tls_listen =
+                tls_listen.or_else(|| cfg.tls_listen.as_deref().and_then(|s| s.parse().ok()));
             // Detached start: re-exec self in a new session, redirect output
             // to a log file, record the pid, and return.
             if detach && std::env::var_os("ASPEN_DETACHED").is_none() {
-                return spawn_detached(&cli.data_dir, listen, ui.as_deref(), no_resume, headless);
+                return spawn_detached(
+                    &cli.data_dir,
+                    listen,
+                    tls_listen,
+                    ui.as_deref(),
+                    no_resume,
+                    headless,
+                );
             }
             let node = Node::open(&cli.data_dir)?;
             // Windows Firewall probe (PowerShell, seconds): start it now so
@@ -493,10 +544,13 @@ async fn main() -> Result<()> {
             // Adoption: notice forks/resumes of our agents' sessions made
             // outside Aspen (docs/SERVICING.md-adjacent; see adoption.rs).
             aspen_node::adoption::spawn_scanner(node.inner.clone(), 15);
+            // TLS: keep a leaf from the mesh root while a listener is
+            // beyond loopback (docs/TLS.md).
+            aspen_node::tls::spawn_loop(node.inner.clone());
             // daemon.json is written by serve() once the port is bound and
             // removed here only if it is still ours — a failed bind must not
             // clobber a healthy daemon's state file.
-            let result = api::serve(node, listen, ui, headless, &cli.data_dir).await;
+            let result = api::serve(node, listen, tls_listen, ui, headless, &cli.data_dir).await;
             let ours = read_daemon_state(&cli.data_dir)
                 .and_then(|s| s.get("pid").and_then(|p| p.as_u64()))
                 == Some(std::process::id() as u64);
@@ -603,6 +657,7 @@ async fn main() -> Result<()> {
             BusCommand::Log { lines } => bus_log(&cli.data_dir, lines),
         },
         Command::Mesh { command } => mesh_command(&cli.data_dir, command),
+        Command::Tls { command } => tls_command(&cli.data_dir, command),
         Command::Move {
             agent,
             to,
@@ -702,6 +757,8 @@ pub(crate) fn write_daemon_state(
     data_dir: &std::path::Path,
     listen: std::net::SocketAddr,
     requested: std::net::SocketAddr,
+    tls_listen: Option<std::net::SocketAddr>,
+    tls_requested: Option<std::net::SocketAddr>,
     ui: Option<&std::path::Path>,
     headless: bool,
 ) {
@@ -712,6 +769,10 @@ pub(crate) fn write_daemon_state(
         // What was asked for (may be port 0 = ephemeral) — restart re-uses
         // this, not the specific port the OS happened to hand out.
         "requested": requested.to_string(),
+        // The separate https listener, when one was asked for (docs/TLS.md);
+        // absent when https shares the main port.
+        "tls_listen": tls_listen.map(|a| a.to_string()),
+        "tls_requested": tls_requested.map(|a| a.to_string()),
         "ui": ui.map(|p| p.to_string_lossy()),
         "headless": headless,
         // Set by the autostart unit (autostart.rs): down/restart/update go
@@ -785,6 +846,10 @@ fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
         .or_else(|| state["listen"].as_str())
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], 7420)));
+    let tls_listen: Option<std::net::SocketAddr> = state["tls_requested"]
+        .as_str()
+        .or_else(|| state["tls_listen"].as_str())
+        .and_then(|s| s.parse().ok());
     let ui = state["ui"].as_str().map(PathBuf::from);
     let headless = state["headless"].as_bool().unwrap_or(false);
 
@@ -813,7 +878,7 @@ fn restart_daemon(data_dir: &std::path::Path) -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    spawn_detached(data_dir, listen, ui.as_deref(), false, headless)
+    spawn_detached(data_dir, listen, tls_listen, ui.as_deref(), false, headless)
 }
 
 fn print_autostart(st: &autostart::Status) {
@@ -885,6 +950,17 @@ fn config_command(
                 .listen
                 .clone()
                 .unwrap_or_else(|| "(unset → 127.0.0.1:7420, or ephemeral if headless)".into())
+        );
+        println!(
+            "tls-listen  {}   (a separate https port; unset → https shares listen)",
+            s.daemon
+                .tls_listen
+                .clone()
+                .unwrap_or_else(|| "(unset)".into())
+        );
+        println!(
+            "tls-names   {}   (extra names the node's certificate covers)",
+            s.tls_names.clone().unwrap_or_else(|| "(none)".into())
         );
         println!(
             "topology    {}",
@@ -975,6 +1051,19 @@ fn config_command(
                 Some(value.clone())
             };
         }
+        "tls-listen" => {
+            s.daemon.tls_listen = if clear {
+                None
+            } else {
+                value
+                    .parse::<std::net::SocketAddr>()
+                    .map_err(|e| anyhow::anyhow!("tls-listen must be host:port ({e})"))?;
+                Some(value.clone())
+            };
+        }
+        "tls-names" => {
+            s.tls_names = if clear { None } else { Some(value.clone()) };
+        }
         "topology" => {
             s.topology = if clear {
                 None
@@ -1054,7 +1143,7 @@ fn config_command(
         }
         other => {
             anyhow::bail!(
-                "unknown setting '{other}' (headless | listen | topology | claude-args | advertise | console-origins | replicate | memory-sync | update | update-window | update-soak | update-skip | update-check)"
+                "unknown setting '{other}' (headless | listen | tls-listen | tls-names | topology | claude-args | advertise | console-origins | replicate | memory-sync | update | update-window | update-soak | update-skip | update-check)"
             )
         }
     }
@@ -1404,6 +1493,7 @@ fn hooks_command(data_dir: &std::path::Path, cmd: HooksCommand, harness: &str) -
 fn spawn_detached(
     data_dir: &std::path::Path,
     listen: std::net::SocketAddr,
+    tls_listen: Option<std::net::SocketAddr>,
     ui: Option<&std::path::Path>,
     no_resume: bool,
     headless: bool,
@@ -1425,6 +1515,9 @@ fn spawn_detached(
         .arg("up")
         .arg("--listen")
         .arg(listen.to_string());
+    if let Some(t) = tls_listen {
+        cmd.arg("--tls-listen").arg(t.to_string());
+    }
     if let Some(ui) = ui {
         cmd.arg("--ui").arg(ui);
     }
@@ -1744,6 +1837,210 @@ pub(crate) fn relative(epoch: f64) -> String {
         format!("{}m ago", s / 60)
     } else {
         format!("{}h ago", s / 3600)
+    }
+}
+
+fn fmt_day(ts: Option<i64>) -> String {
+    ts.and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "?".into())
+}
+
+/// `aspen tls …` (docs/TLS.md).
+fn tls_command(data_dir: &std::path::Path, cmd: TlsCommand) -> Result<()> {
+    use aspen_node::mesh::MeshFiles;
+    use aspen_node::tls;
+    let files = MeshFiles::new(data_dir);
+    match cmd {
+        TlsCommand::Status => {
+            // Prefer the daemon's view (it knows the port and the loop);
+            // fall back to the files when it is down.
+            let live = read_daemon_state(data_dir).and_then(|st| {
+                let listen = st["listen"].as_str()?.to_owned();
+                let base = format!("http://{}", dial_addr(&listen));
+                status::query(&base, "/api/tls", data_dir, &listen).ok()
+            });
+            let mesh = files.load_mesh()?;
+            let mesh_name = mesh.as_ref().map(|m| m.mesh.clone());
+            let root_here = files.load_root()?.is_some();
+            match (&mesh_name, live.as_ref()) {
+                (None, _) => {
+                    println!(
+                        "this node is not in a mesh; TLS certificates come from the mesh root"
+                    );
+                    return Ok(());
+                }
+                (Some(m), _) => println!(
+                    "mesh:   {m}{}",
+                    if root_here { " (root key here)" } else { "" }
+                ),
+            }
+            let ca = mesh_name
+                .as_deref()
+                .and_then(|m| files.tls_ca(m).ok().flatten());
+            match &ca {
+                Some(c) => println!(
+                    "CA:     {}
+        sha256 {}
+        valid until {}",
+                    if root_here {
+                        "minted here (tls-ca.key)"
+                    } else {
+                        "learned from the root's roster"
+                    },
+                    c.fingerprint(),
+                    fmt_day(tls::ca_not_after(&c.der))
+                ),
+                None if root_here => println!(
+                    "CA:     none yet — minted on the first request, or now with `aspen tls ca`"
+                ),
+                None => println!("CA:     not known here yet — arrives in the root's next roster"),
+            }
+            match tls::leaf_info(data_dir)? {
+                Some(l) => {
+                    println!(
+                        "leaf:   valid {} → {}
+        sha256 {}
+        names: {}",
+                        fmt_day(Some(l.not_before)),
+                        fmt_day(Some(l.not_after)),
+                        l.fingerprint,
+                        l.names.join(", ")
+                    );
+                }
+                None => println!("leaf:   none installed"),
+            }
+            if let Some(v) = &live {
+                match v["https_port"].as_u64() {
+                    Some(p) => println!(
+                        "https:  port {p}{}, {}",
+                        if v["separate_port"].as_bool() == Some(true) { "" } else { " (same port as http)" },
+                        if v["leaf"]["serving"].as_bool() == Some(true) { "serving the leaf" } else { "no certificate loaded" }
+                    ),
+                    None => println!("https:  off — every listener is loopback-only, nothing to certify (aspen config listen 0.0.0.0:7420)"),
+                }
+                if let Some(names) = v["names"].as_array() {
+                    let cur: Vec<&str> = names.iter().filter_map(|n| n.as_str()).collect();
+                    println!("names now: {}", cur.join(", "));
+                    if v["leaf"]["covers_current_names"].as_bool() == Some(false) {
+                        println!("        (the leaf does not cover all of them; renewal is due)");
+                    }
+                }
+                if let Some(e) = v["last_error"].as_str() {
+                    println!("last renewal error: {e}");
+                }
+            } else {
+                println!("daemon: not running (this is the on-disk view)");
+            }
+            Ok(())
+        }
+        TlsCommand::Ca { dns_suffix, rotate } => {
+            let ca = if rotate {
+                tls::ca_rotate(&files, &dns_suffix)?
+            } else {
+                tls::ca_ensure(&files, &dns_suffix)?
+            };
+            println!(
+                "mesh CA for '{}':
+  sha256 {}
+  valid until {}
+  {}",
+                ca.mesh,
+                ca.fingerprint(),
+                fmt_day(tls::ca_not_after(&ca.der)),
+                if rotate {
+                    "rotated: every member re-requests its leaf on its next check; trust the new CA on every computer again"
+                } else {
+                    "members learn it from this node's roster and request their leaves over the link"
+                }
+            );
+            notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        TlsCommand::Renew => {
+            let v = local_api_post(data_dir, "/api/tls/renew", serde_json::json!({}), 60)?;
+            println!("{}", v["summary"].as_str().unwrap_or("renewed"));
+            Ok(())
+        }
+        TlsCommand::Request => {
+            let id = files
+                .load_identity()?
+                .ok_or_else(|| anyhow::anyhow!("no identity on this node"))?;
+            let mesh = files
+                .load_mesh()?
+                .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
+            // Names as the daemon computes them (the same code), so a leaf
+            // from this path is exactly what the loop would have asked for.
+            let names = tls::leaf_names_for(Some(data_dir));
+            let csr = tls::build_csr(data_dir, &id.node, &names)?;
+            let blob = aspen_wire::identity::to_blob(
+                "tls-req",
+                &tls::TlsRequest {
+                    node: id.node.clone(),
+                    mesh: mesh.mesh,
+                    csr,
+                },
+            )?;
+            println!(
+                "request for '{}' covering {} — run `aspen tls sign <blob>` where the root key lives, then `aspen tls install <bundle>` here:
+{blob}",
+                id.node,
+                names.join(", ")
+            );
+            Ok(())
+        }
+        TlsCommand::Sign { blob } => {
+            let req: tls::TlsRequest = aspen_wire::identity::from_blob("tls-req", &blob)?;
+            let root = files.load_root()?.ok_or_else(|| {
+                anyhow::anyhow!("no root key here — run this on the mesh's root node")
+            })?;
+            if req.mesh != root.mesh {
+                anyhow::bail!(
+                    "that request is for mesh '{}'; this root is '{}'",
+                    req.mesh,
+                    root.mesh
+                );
+            }
+            let names = tls::csr_names(&req.csr)?;
+            let ca = tls::ca_ensure(&files, &[])?;
+            let leaf = tls::sign_csr(&files, &req.csr)?;
+            let bundle = aspen_wire::identity::to_blob(
+                "tls-cert",
+                &tls::TlsBundle {
+                    node: req.node.clone(),
+                    leaf,
+                    ca,
+                },
+            )?;
+            println!(
+                "signed a 90-day certificate for '{}' covering {} — run `aspen tls install <bundle>` there:
+{bundle}",
+                req.node,
+                names.join(", ")
+            );
+            Ok(())
+        }
+        TlsCommand::Install { blob } => {
+            let b: tls::TlsBundle = aspen_wire::identity::from_blob("tls-cert", &blob)?;
+            let mesh = files
+                .load_mesh()?
+                .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
+            b.ca.verify_against(&mesh.root_public)
+                .context("the bundle's CA is not signed by this mesh's root")?;
+            files.set_tls_ca(&b.ca)?;
+            tls::install_leaf(data_dir, &b.leaf, &b.ca.der)?;
+            let info = tls::leaf_info(data_dir)?
+                .ok_or_else(|| anyhow::anyhow!("leaf unreadable after install"))?;
+            println!(
+                "installed: valid until {}, names {}",
+                fmt_day(Some(info.not_after)),
+                info.names.join(", ")
+            );
+            if !notify_daemon_reload(data_dir) {
+                println!("(no running daemon; it loads the certificate at start)");
+            }
+            Ok(())
+        }
     }
 }
 

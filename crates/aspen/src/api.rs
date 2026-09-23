@@ -36,6 +36,7 @@ type S = State<Arc<AppState>>;
 pub async fn serve(
     node: Node,
     listen: SocketAddr,
+    tls_listen: Option<SocketAddr>,
     ui_dir: Option<PathBuf>,
     headless: bool,
     data_dir: &std::path::Path,
@@ -43,11 +44,14 @@ pub async fn serve(
     let shutdown_node = node.clone();
     // Loopback listeners trust the local user; anything wider requires the
     // node token on every /api call (the federation WS is exempt — it has
-    // its own cryptographic auth and carries only sealed frames).
-    let token = if listen.ip().is_loopback() {
-        None
-    } else {
+    // its own cryptographic auth and carries only sealed frames). TLS
+    // changes nothing here: it says which node this is, not who is asking.
+    let beyond_loopback =
+        !listen.ip().is_loopback() || tls_listen.is_some_and(|t| !t.ip().is_loopback());
+    let token = if beyond_loopback {
         Some(load_or_create_token(data_dir)?)
+    } else {
+        None
     };
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let state = Arc::new(AppState {
@@ -217,6 +221,9 @@ pub async fn serve(
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
         .route("/federation/relay", get(ws_relay))
+        .route("/tls", get(get_tls))
+        .route("/tls/renew", post(post_tls_renew))
+        .route("/tls/root.crt", get(get_tls_root))
         .with_state(state.clone());
 
     let api = api
@@ -318,6 +325,32 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(listen).await?;
     // Port 0 = ephemeral: the OS just chose, so report what it chose.
     let actual = listener.local_addr().unwrap_or(listen);
+    // TLS (docs/TLS.md): the same port, sniffed per connection, unless a
+    // separate `--tls-listen` was asked for. The resolver starts empty and
+    // fills when a leaf is installed; until then a TLS hello is refused.
+    let tls_config = aspen_node::tls::server_config(state.node.inner.tls.resolver.clone())?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+    let tls_listener = match tls_listen {
+        Some(addr) => Some(tokio::net::TcpListener::bind(addr).await?),
+        None => None,
+    };
+    let tls_actual = tls_listener.as_ref().and_then(|l| l.local_addr().ok());
+    let https_port = match tls_actual {
+        Some(t) if !t.ip().is_loopback() => Some(t.port()),
+        Some(_) => None,
+        None if !actual.ip().is_loopback() => Some(actual.port()),
+        None => None,
+    };
+    let _ = state.node.inner.tls.https_port.set(https_port);
+    state
+        .node
+        .inner
+        .tls
+        .separate_port
+        .store(tls_actual.is_some(), std::sync::atomic::Ordering::Relaxed);
+    if let Err(e) = aspen_node::tls::reload_resolver(data_dir, &state.node.inner.tls.resolver) {
+        tracing::warn!("tls: not serving the certificate on disk: {e:#}");
+    }
     // A node that hosts a relay is a client of it too (federation.rs,
     // ensure_dialers): registered under its own name, so a console that
     // attaches through this relay can attach to this node.
@@ -329,11 +362,35 @@ pub async fn serve(
         aspen_node::federation::ensure_dialers(state.node.inner.clone());
     }
     // Bound successfully — now this process owns the daemon state file.
-    crate::write_daemon_state(data_dir, actual, listen, ui_for_state.as_deref(), headless);
+    crate::write_daemon_state(
+        data_dir,
+        actual,
+        listen,
+        tls_actual,
+        tls_listen,
+        ui_for_state.as_deref(),
+        headless,
+    );
     tracing::info!("aspen node API listening on http://{actual}");
     match &token {
         Some(tk) => eprintln!("[aspen] node up: http://{actual}/?token={tk}"),
         None => eprintln!("[aspen] node up: http://{actual}"),
+    }
+    if let Some(port) = https_port {
+        let serving = state.node.inner.tls.resolver.has_cert();
+        eprintln!(
+            "[aspen] https on port {port}{}: {}",
+            if tls_actual.is_some() {
+                ""
+            } else {
+                " (same port)"
+            },
+            if serving {
+                "certificate installed"
+            } else {
+                "no certificate yet — issued by the mesh root once linked (aspen tls status)"
+            }
+        );
     }
     // Before routing (a Router::layer runs after the path is matched, too
     // late to change a path param): `bare@repo@<this node>` in an agent
@@ -346,36 +403,106 @@ pub async fn serve(
         ))
         .service(app);
     let app = axum::ServiceExt::<axum::extract::Request>::into_make_service(app);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_signal(shutdown_notify).await;
-            eprintln!("\n[aspen] shutting down sessions…");
-            // Going down: exits during the ladder must keep each agent's
-            // `live` mark — that mark IS the resume ledger, and because it
-            // is maintained continuously it survives a crash too.
-            shutdown_node
-                .inner
-                .shutting_down
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            let names: Vec<String> = shutdown_node
-                .inner
-                .sessions
-                .lock()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect();
-            for name in names {
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(8),
-                    shutdown_node.shutdown_for_restart(&name),
-                )
-                .await;
-            }
-            eprintln!("[aspen] bye");
+    // Two listeners at most: the main one (plain, or sniffed when https
+    // shares it) and the optional TLS-only one. The shutdown ladder runs
+    // once, on the main server's shutdown; the second waits for it.
+    let main_mode = if tls_listener.is_some() {
+        crate::tlsserve::Mode::Plain
+    } else {
+        crate::tlsserve::Mode::Sniff
+    };
+    let main_listener = crate::tlsserve::TlsListener::new(listener, acceptor.clone(), main_mode);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    let second = tls_listener.map(|l| {
+        let l = crate::tlsserve::TlsListener::new(l, acceptor, crate::tlsserve::Mode::TlsOnly);
+        axum::serve(l, app.clone()).with_graceful_shutdown(async move {
+            let _ = done_rx.await;
         })
-        .await?;
+    });
+    let main = axum::serve(main_listener, app).with_graceful_shutdown(async move {
+        shutdown_signal(shutdown_notify).await;
+        eprintln!("\n[aspen] shutting down sessions…");
+        // Going down: exits during the ladder must keep each agent's
+        // `live` mark — that mark IS the resume ledger, and because it
+        // is maintained continuously it survives a crash too.
+        shutdown_node
+            .inner
+            .shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let names: Vec<String> = shutdown_node
+            .inner
+            .sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for name in names {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                shutdown_node.shutdown_for_restart(&name),
+            )
+            .await;
+        }
+        eprintln!("[aspen] bye");
+        let _ = done_tx.send(());
+    });
+    match second {
+        Some(s) => {
+            let (a, b) = tokio::join!(main, s);
+            a?;
+            b?;
+        }
+        None => main.await?,
+    }
     Ok(())
+}
+
+// ------------------------------------------------------------------- TLS
+
+/// GET /api/tls — the mesh CA as known here, this node's leaf and names,
+/// the renewal loop's last word (docs/TLS.md).
+async fn get_tls(State(s): S) -> Json<Value> {
+    Json(aspen_node::tls::status_json(&s.node.inner))
+}
+
+/// POST /api/tls/renew — request (or mint, on the root) a leaf now.
+async fn post_tls_renew(State(s): S) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    match aspen_node::tls::renew(&s.node.inner).await {
+        Ok(summary) => {
+            *s.node.inner.tls.last_error.lock().unwrap() = None;
+            *s.node.inner.tls.last_ok.lock().unwrap() = Some(aspen_node::store::now_epoch());
+            Ok(Json(json!({ "ok": true, "summary": summary })))
+        }
+        Err(e) => {
+            *s.node.inner.tls.last_error.lock().unwrap() = Some(format!("{e:#}"));
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            ))
+        }
+    }
+}
+
+/// GET /api/tls/root.crt — the mesh CA certificate as a download, for a
+/// device that trusts it by hand (a phone).
+async fn get_tls_root(State(s): S) -> axum::response::Response {
+    let st = aspen_node::tls::status_json(&s.node.inner);
+    let Some(pem) = st["ca"]["pem"].as_str() else {
+        return (StatusCode::NOT_FOUND, "this node knows no mesh TLS CA yet").into_response();
+    };
+    let mesh = st["mesh"].as_str().unwrap_or("mesh");
+    (
+        [
+            ("content-type", "application/x-x509-ca-cert".to_string()),
+            (
+                "content-disposition",
+                format!("attachment; filename=\"aspen-mesh-{mesh}.crt\""),
+            ),
+        ],
+        pem.to_owned(),
+    )
+        .into_response()
 }
 
 /// Resolve on Ctrl-C (SIGINT) or SIGTERM — the latter is what `aspen down`
@@ -4052,6 +4179,7 @@ async fn get_mesh(State(s): S) -> impl IntoResponse {
             "policy": mesh.policy_of(&c.mesh),
             "peers": c.peers.iter().map(|p| p.cert.node.clone()).collect::<Vec<_>>(),
             "relays": c.relay_urls(),
+            "tls_ca": c.tls_ca.as_ref().map(|ca| json!({ "fingerprint": ca.fingerprint(), "not_after": aspen_node::tls::ca_not_after(&ca.der) })),
             "root_here": c.mesh == mesh.mesh_name() && s.node.inner.data_dir.as_deref().map(aspen_node::mesh::MeshFiles::new).and_then(|f| f.load_root().ok().flatten()).is_some(),
         })).collect::<Vec<_>>(),
         "multi_mesh": mesh.is_multi(),
@@ -4913,6 +5041,14 @@ async fn delete_link(State(s): S, Path(id): Path<i64>) -> impl IntoResponse {
 /// Apply mesh files to the running daemon (join live, pick up peers/relay).
 /// The mesh CLI calls this after every mutation so no restart is needed.
 async fn post_mesh_reload(State(s): S) -> impl IntoResponse {
+    // A certificate installed by hand (`aspen tls install`) rides the same
+    // reload; the loop also re-checks on its next tick.
+    if let Some(d) = s.node.inner.data_dir.as_deref() {
+        if let Err(e) = aspen_node::tls::reload_resolver(d, &s.node.inner.tls.resolver) {
+            tracing::warn!("tls: reload: {e:#}");
+        }
+        *s.node.inner.tls.next_try.lock().unwrap() = 0.0;
+    }
     match s.node.reload_mesh() {
         Ok(summary) => Json(json!({ "ok": true, "summary": summary })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
