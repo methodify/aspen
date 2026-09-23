@@ -46,7 +46,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # Dependencies come from the cache CI warms on main (a cache saved
+      # on a tag ref is visible only to that tag, so a release run could
+      # never reuse its own); the key must match ci.yml's warm job exactly.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: false
       - name: install zig + cargo-zigbuild
         if: matrix.zig
         run: pip3 install --user ziglang

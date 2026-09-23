@@ -34,6 +34,55 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # Warm the release build's dependency cache on main, per target, with
+  # the release profile and the exact cargo invocation release.yml uses:
+  # GitHub scopes a cache to the ref that saved it plus the default branch,
+  # so a release (a tag ref) can only ever restore what main saved. Without
+  # this every release compiled every dependency from scratch. Cheap when
+  # the lockfile has not changed: only the workspace crates rebuild.
+  warm-release-cache:
+    name: warm release cache (${{ matrix.target }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            zig: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            zig: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: install zig + cargo-zigbuild
+        if: matrix.zig
+        run: pip3 install --user ziglang
+      - uses: taiki-e/install-action@v2
+        if: matrix.zig
+        with:
+          tool: cargo-zigbuild
+      # The binaries embed ui/dist via include_dir; an empty stub keeps the
+      # build identical for cache purposes without building the console.
+      - name: stub the console bundle
+        shell: bash
+        run: mkdir -p ui/dist && [ -f ui/dist/index.html ] || echo '<!doctype html>' > ui/dist/index.html
+      - name: build (release profile, deps only matter)
+        if: matrix.zig
+        run: cargo zigbuild --release --target ${{ matrix.target }}.2.28 -p aspen -p aspen-relay
+      - name: build (release profile, deps only matter)
+        if: ${{ !matrix.zig }}
+        run: cargo build --release --target ${{ matrix.target }} -p aspen -p aspen-relay
+
   ui:
     name: ui
     runs-on: ubuntu-latest
