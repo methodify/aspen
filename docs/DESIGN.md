@@ -1255,3 +1255,11 @@ cleaner lane for roster updates than user-message headers.
   following. The chat view stopped boxing either party into a column:
   opposite gutters carry the who-spoke cue instead. The console render
   mode got its own pass as a terminal.
+- **2026-09-23 — v0.39.1/2 and v0.40: the console and the relay.** Two
+  causes of the hosted console's flapping, neither the relay worker:
+  the node's 45 s link-silence rule closing idle console links (the
+  console's socket ping never reached the node; it now sends a sealed
+  link ping too), and the relay's one-socket-per-name rule making tabs
+  of one identity evict each other (a replaced tab stands down; then
+  C-1: tabs elect a leader with the Web Locks API and multiplex through
+  it, so every tab is live on one connection).

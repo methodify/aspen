@@ -227,6 +227,22 @@ over and the other view stands down in turn. One view per identity is
 live at a time; the identity is per browser profile, so distinct devices
 never collide.
 
+**One connection per browser profile (v0.40, C-1).** The tabs of one
+browser profile share one console identity, so they now share one relay
+connection: `Tunnel.start` takes a Web Lock named after the identity
+(`aspen:tunnel:<console-name>`). The tab that holds the lock dials the
+relay as before; every other tab is a *follower* that mirrors the
+leader's state and sends its requests and subscriptions to it over a
+`BroadcastChannel` of the same name (`req`/`res`, `sub`/`ev`/`sub_end`/
+`unsub`, `who`/`state`, `bye`, `leader_gone`). When the leader's tab
+closes, the lock passes to a waiting tab, which dials; followers see
+`leader_gone`, fail what was in flight so callers retry, and follow the
+new leader. Verified on the rig: three tabs, one registration on the
+relay; closing the leader produced the second registration within the
+same second and no `replaced`. Peek tunnels (another mesh's identity)
+share the same way, keyed by that identity. Browsers without Web Locks
+dial per tab as before (and the `replaced` rule above applies).
+
 **Restarts, precisely (2026-09-06).** Three more rules fell out of a
 restart storm run against the deployed worker (a node restarted three
 times, then both at once; every round must carry traffic afterwards):

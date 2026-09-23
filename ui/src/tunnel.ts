@@ -247,6 +247,21 @@ export class Tunnel {
   private pingTimer = 0;
   private retryTimer = 0;
   private stopped = true;
+  // One relay connection per identity across a browser profile's tabs
+  // (RELAY.md §8, C-1): the relay keeps one socket per console name, so
+  // tabs elect a leader with the Web Locks API — the lock's holder dials
+  // the relay, every other tab multiplexes its requests and subscriptions
+  // through it over a BroadcastChannel, and when the leader's tab closes
+  // the lock passes to a waiting tab, which dials. Without Web Locks
+  // (old browsers) a tab just dials, as before.
+  private role: "none" | "leader" | "follower" = "none";
+  private bc: BroadcastChannel | null = null;
+  private readonly tabId = crypto.randomUUID();
+  private lockRelease: (() => void) | null = null;
+  private followerPending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: number }>();
+  private followerSubs = new Map<string, Sub>();
+  private servedSubs = new Map<string, { from: string; unsub: () => void }>();
+
   /** Whether learned certs are written back to the identity in storage.
    *  Only the console's main tunnel may: a peek tunnel (peek.ts) runs
    *  with *another* profile's identity, and `saveIdentity` writes to the
@@ -290,6 +305,19 @@ export class Tunnel {
     this.state = state;
     this.error = error;
     this.emit();
+    if (this.role === "leader") this.post({ t: "state", state, error, present: this.present });
+  }
+
+  private post(msg: Record<string, unknown>) {
+    try {
+      this.bc?.postMessage({ ...msg, leader: this.tabId });
+    } catch {
+      // channel closed
+    }
+  }
+
+  private lockName(): string {
+    return `aspen:tunnel:${this.id?.node ?? "?"}`;
   }
 
   /** Start (or restart) with the saved config — or, for a peek tunnel
@@ -308,12 +336,162 @@ export class Tunnel {
     this.ready = new Promise<void>((res) => {
       this.readyResolve = res;
     });
-    this.connect();
+    const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+    if (!locks || typeof BroadcastChannel === "undefined") {
+      this.role = "leader";
+      this.connect();
+      return this.ready;
+    }
+    // Follow until the lock is ours: mirror whoever holds it, and ask.
+    this.role = "follower";
+    this.bc = new BroadcastChannel(this.lockName());
+    this.bc.onmessage = (ev: MessageEvent) => this.onShared(ev.data as Record<string, unknown>);
+    this.set("connecting");
+    this.post({ t: "who" });
+    const leave = () => this.post({ t: "bye", from: this.tabId });
+    window.addEventListener("pagehide", leave, { once: true });
+    void locks.request(this.lockName(), async () => {
+      if (this.stopped) return;
+      this.becomeLeader();
+      await new Promise<void>((res) => {
+        this.lockRelease = res;
+      });
+    });
     return this.ready;
+  }
+
+  private becomeLeader() {
+    this.role = "leader";
+    // Whatever a previous leader told us is stale now.
+    this.present = [];
+    this.connect();
+  }
+
+  /** A message on the identity's channel, from a follower (to the leader)
+   *  or from the leader (to followers). */
+  private onShared(m: Record<string, unknown>) {
+    if (!m || typeof m !== "object") return;
+    const t = m["t"];
+    if (this.role === "leader") {
+      switch (t) {
+        case "who":
+          this.post({ t: "state", state: this.state, error: this.error, present: this.present });
+          return;
+        case "req": {
+          const id = String(m["id"]);
+          const from = String(m["from"]);
+          const b = (m["body"] ?? {}) as { method: string; path: string; body?: string; headers?: Record<string, string> };
+          this.http(b.method, b.path, b.body, b.headers)
+            .then((r) => this.post({ t: "res", id, to: from, ok: true, result: r }))
+            .catch((e: unknown) => this.post({ t: "res", id, to: from, ok: false, error: e instanceof Error ? e.message : String(e) }));
+          return;
+        }
+        case "sub": {
+          const id = String(m["id"]);
+          const from = String(m["from"]);
+          const unsub = this.subscribe(
+            String(m["agent"]),
+            (ev) => this.post({ t: "ev", id, to: from, ev }),
+            () => {
+              this.servedSubs.delete(id);
+              this.post({ t: "sub_end", id, to: from });
+            },
+          );
+          this.servedSubs.set(id, { from, unsub });
+          return;
+        }
+        case "unsub": {
+          const id = String(m["id"]);
+          this.servedSubs.get(id)?.unsub();
+          this.servedSubs.delete(id);
+          return;
+        }
+        case "bye": {
+          const from = String(m["from"]);
+          for (const [id, s] of this.servedSubs) {
+            if (s.from === from) {
+              s.unsub();
+              this.servedSubs.delete(id);
+            }
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    }
+    if (this.role !== "follower") return;
+    switch (t) {
+      case "state": {
+        const st = m["state"] as TunnelState;
+        this.present = Array.isArray(m["present"]) ? (m["present"] as string[]) : this.present;
+        this.state = st;
+        this.error = (m["error"] as string | null) ?? null;
+        this.emit();
+        if (st === "up") this.readyResolve?.();
+        return;
+      }
+      case "res": {
+        if (m["to"] !== this.tabId) return;
+        const w = this.followerPending.get(String(m["id"]));
+        if (!w) return;
+        this.followerPending.delete(String(m["id"]));
+        window.clearTimeout(w.timer);
+        if (m["ok"] === true) w.resolve(m["result"]);
+        else w.reject(new Error(String(m["error"] ?? "remote error")));
+        return;
+      }
+      case "ev":
+      case "sub_end": {
+        if (m["to"] !== this.tabId) return;
+        const id = String(m["id"]);
+        const sub = this.followerSubs.get(id);
+        if (!sub) return;
+        if (t === "ev") sub.onEvent(m["ev"]);
+        else {
+          this.followerSubs.delete(id);
+          sub.onEnd();
+        }
+        return;
+      }
+      case "leader_gone": {
+        // The lock is passing; whoever gets it dials. Until then nothing
+        // answers: fail what is in flight so callers retry.
+        this.state = "connecting";
+        this.error = null;
+        this.emit();
+        for (const [, w] of this.followerPending) {
+          window.clearTimeout(w.timer);
+          w.reject(new Error("link dropped"));
+        }
+        this.followerPending.clear();
+        for (const [, sub] of this.followerSubs) sub.onEnd();
+        this.followerSubs.clear();
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.role === "leader") this.post({ t: "leader_gone" });
+    else if (this.role === "follower") this.post({ t: "bye", from: this.tabId });
+    for (const [, s] of this.servedSubs) s.unsub();
+    this.servedSubs.clear();
+    for (const [, w] of this.followerPending) {
+      window.clearTimeout(w.timer);
+      w.reject(new Error("tunnel closed"));
+    }
+    this.followerPending.clear();
+    for (const [, sub] of this.followerSubs) sub.onEnd();
+    this.followerSubs.clear();
+    this.lockRelease?.();
+    this.lockRelease = null;
+    this.bc?.close();
+    this.bc = null;
+    this.role = "none";
     window.clearTimeout(this.retryTimer);
     window.clearInterval(this.pingTimer);
     if (this.ws) {
@@ -531,9 +709,10 @@ export class Tunnel {
     document.addEventListener("visibilitychange", arm);
   }
 
-  /** The operator's own "reconnect now". */
+  /** The operator's own "reconnect now" (the tab holding the connection;
+   *  a follower has nothing of its own to redial). */
   reconnect(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.role === "follower") return;
     window.clearTimeout(this.retryTimer);
     if (this.ws) {
       this.ws.onclose = null;
@@ -582,6 +761,17 @@ export class Tunnel {
   /** One request through the node's own router. */
   async http(method: string, path: string, body?: string, headers?: Record<string, string>): Promise<HttpResult> {
     await this.waitUp();
+    if (this.role === "follower") {
+      const id = crypto.randomUUID();
+      const p = new Promise<unknown>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          if (this.followerPending.delete(id)) reject(new Error("request timed out: the connection's tab did not answer"));
+        }, 25000);
+        this.followerPending.set(id, { resolve, reject, timer });
+      });
+      this.post({ t: "req", id, from: this.tabId, body: { method, path, body, headers } });
+      return (await p) as HttpResult;
+    }
     const id = crypto.randomUUID();
     const p = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -602,6 +792,18 @@ export class Tunnel {
   /** Subscribe to a session's live events (the node's `sub` frame). */
   subscribe(agent: string, onEvent: (ev: unknown) => void, onEnd: () => void): () => void {
     const id = crypto.randomUUID();
+    if (this.role === "follower") {
+      this.followerSubs.set(id, { onEvent, onEnd });
+      void this.waitUp()
+        .then(() => this.post({ t: "sub", id, from: this.tabId, agent }))
+        .catch(() => {
+          this.followerSubs.delete(id);
+          onEnd();
+        });
+      return () => {
+        if (this.followerSubs.delete(id)) this.post({ t: "unsub", id, from: this.tabId });
+      };
+    }
     this.subs.set(id, { onEvent, onEnd });
     void this.waitUp()
       .then(() => this.sendSealed({ t: "sub", id, agent }))

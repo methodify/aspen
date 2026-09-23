@@ -214,3 +214,10 @@ scoped to the mesh profile), not per view: the session page and every
 board pane holding that session show and edit the same draft, and views
 mounted at once follow each other through a window event. It clears on
 send. Older pane-scoped keys are adopted once and dropped.
+
+## 9. Tabs share one connection (v0.40)
+
+All tabs of one browser profile hold one relay connection per mesh
+identity: a leader tab dials, the others multiplex through it, and the
+role passes when the leader closes (RELAY.md §8). Opening the console in
+several tabs, or as the installed app beside a tab, is fine.
