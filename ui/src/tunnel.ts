@@ -444,8 +444,19 @@ export class Tunnel {
               phase = "up";
               this.set("up");
               this.readyResolve?.();
+              // Two keepalives: the socket-level "ping" the relay answers
+              // itself (so a dead relay is noticed), and a sealed link-level
+              // ping routed to the node — the node closes any link silent
+              // for 45s, and only frames that reach it count (an idle tab,
+              // a peek reader polling every 60s, would otherwise flap).
               this.pingTimer = window.setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN) ws.send("ping");
+                if (ws.readyState !== WebSocket.OPEN) return;
+                ws.send("ping");
+                try {
+                  this.sendSealed({ t: "ping" });
+                } catch {
+                  // not up yet, or torn down: the socket ping still goes
+                }
               }, 20000);
             } else {
               this.set("down", `${from} failed the nonce proof`);

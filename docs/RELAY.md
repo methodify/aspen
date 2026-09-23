@@ -204,6 +204,16 @@ object, so hibernation still costs nothing. The relay row in the console
 shows who else the relay says is present; that is the first thing to look
 at when two nodes on one relay don't see each other.
 
+**The link has its own silence rule (v0.39.1).** Every link — node or
+console — comes down after 45 s without an inbound frame (`link_loop`),
+so a dead peer is redialed. Nodes send a roster every 10 s, so they never
+trip it; a console's socket-level `ping` is answered by the relay and
+never reaches the node, so an idle console (a background tab, or the peek
+reader that polls another mesh every 60 s) tripped it every 45 s and
+flapped: connected, "connection closed", reconnecting. The console now
+also sends a sealed `{t:"ping"}` routed to its node every 20 s; the node
+counts it as activity and ignores it.
+
 **Restarts, precisely (2026-09-06).** Three more rules fell out of a
 restart storm run against the deployed worker (a node restarted three
 times, then both at once; every round must carry traffic afterwards):

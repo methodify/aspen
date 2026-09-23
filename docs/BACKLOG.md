@@ -37,6 +37,12 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
+## Shipped — 2026-09-23: console links no longer flap (v0.39.1)
+
+| id | shipped as |
+|---|---|
+| relay | An idle console (background tab, the peek reader's 60 s poll) tripped the node's 45 s link-silence rule because its socket ping was answered at the relay; the console now sends a sealed link-level ping every 20 s and the node ignores it. RELAY.md §8. The relay worker itself was unchanged since v0.27.3. |
+
 ## Shipped — 2026-09-22: the rest — teams told, transcripts, rename, phone boards, chat width, console view (v0.39)
 
 | id | shipped as |

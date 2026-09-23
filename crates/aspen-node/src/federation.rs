@@ -1398,6 +1398,11 @@ async fn link_loop(
                         .mark_delivered_by_uuid(uuid, &format!("federated:{peer}"));
                 }
             }
+            // A console's link keepalive (RELAY.md §8): its socket-level
+            // ping is answered by the relay and never reaches us, so the
+            // console also sends this sealed frame every 20s. Any inbound
+            // frame resets the silence timer above; nothing else to do.
+            "ping" => {}
             "roster" => {
                 let agents: Vec<RemoteAgent> = payload
                     .get("agents")
