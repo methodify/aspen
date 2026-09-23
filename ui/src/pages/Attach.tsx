@@ -226,8 +226,14 @@ function Connections({ relay, node, certified }: { relay: string; node: string; 
         setProfileMesh(got.mesh, got.mesh ? undefined : got.node);
       } catch (e) {
         // Unreachable right now: keep it; the mesh is filled in when it
-        // answers (the switcher asks).
-        setErr(`${e instanceof Error ? e.message : "could not reach the node"} — saved anyway; its mesh is filled in when it answers`);
+        // answers (the switcher asks). An https node the browser cannot
+        // reach is most often a certificate it does not trust yet — the
+        // browser tells JS nothing more than "failed to fetch".
+        const why = e instanceof Error ? e.message : "could not reach the node";
+        const tls = u.startsWith("https://")
+          ? " If the node is up, this browser probably does not trust the mesh certificate yet: on this computer run `aspen tls trust`, or open the Meshes page from a node here and use Certificate → trust."
+          : "";
+        setErr(`${why} — saved anyway; its mesh is filled in when it answers.${tls}`);
       }
     }
     const c = addConnection({ name: name.trim(), kind: "direct", url: u, token: t });
@@ -257,7 +263,7 @@ function Connections({ relay, node, certified }: { relay: string; node: string; 
       ))}
       <div className="attach-row" style={{ flexWrap: "wrap", gap: 8 }}>
         <input className="mono" placeholder="name" value={name} onChange={(e) => setName(e.target.value)} style={{ width: 140 }} />
-        <input className="mono" placeholder="http://127.0.0.1:7420" value={url} onChange={(e) => setUrl(e.target.value)} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
+        <input className="mono" placeholder="http://127.0.0.1:7420 or https://<node>:7420" value={url} onChange={(e) => setUrl(e.target.value)} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
         <input className="mono" placeholder="token (from `aspen status`, if the node needs one)" value={token} onChange={(e) => setToken(e.target.value)} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
         <button
           className="btn primary sm"

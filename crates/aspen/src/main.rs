@@ -305,6 +305,27 @@ enum TlsCommand {
         #[arg(long)]
         rotate: bool,
     },
+    /// Put the mesh CA into this computer's trust stores (Windows user
+    /// roots, macOS login keychain, Chrome's NSS database, Firefox
+    /// profiles), behind each platform's own prompt; prints what needs a
+    /// terminal (Linux system anchors) instead of escalating.
+    Trust {
+        /// Only report which stores hold the CA.
+        #[arg(long)]
+        check: bool,
+        /// Take the CA out of the stores instead.
+        #[arg(long)]
+        remove: bool,
+        /// Print the CA PEM (for a store handled by hand) and stop.
+        #[arg(long)]
+        print: bool,
+        /// Also the Linux system anchors, through sudo.
+        #[arg(long)]
+        system: bool,
+        /// Do not ask before writing.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Ask the running daemon to request (or mint, on the root) a
     /// certificate now.
     Renew,
@@ -1955,6 +1976,164 @@ fn tls_command(data_dir: &std::path::Path, cmd: TlsCommand) -> Result<()> {
                 }
             );
             notify_daemon_reload(data_dir);
+            Ok(())
+        }
+        TlsCommand::Trust {
+            check,
+            remove,
+            print,
+            system,
+            yes,
+        } => {
+            use aspen_node::truststore;
+            let mesh = files
+                .load_mesh()?
+                .ok_or_else(|| anyhow::anyhow!("this node has not joined a mesh"))?;
+            let ca = files.tls_ca(&mesh.mesh)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "this node knows no TLS CA for '{}' yet — it arrives in the root's next roster (or run `aspen tls ca` on the root)",
+                    mesh.mesh
+                )
+            })?;
+            ca.verify_against(&mesh.root_public)
+                .context("the CA on file is not signed by this mesh's root")?;
+            if print {
+                let p = truststore::materialize(data_dir, &ca)?;
+                print!("{}", std::fs::read_to_string(&p)?);
+                eprintln!("(also at {})", p.display());
+                return Ok(());
+            }
+            println!("mesh CA '{}'  sha256 {}", ca.mesh, ca.fingerprint());
+            let stores = truststore::stores(&ca);
+            if stores.is_empty() {
+                println!("no trust store known on this platform; `aspen tls trust --print` gives the certificate for a hand install");
+                return Ok(());
+            }
+            let mark = |s: &truststore::Store| match s.installed {
+                Some(true) => "✓ trusted",
+                Some(false) => "– not yet",
+                None => "? unknown",
+            };
+            for s in &stores {
+                println!("  {:<10} {}", mark(s), s.label);
+            }
+            if check {
+                return Ok(());
+            }
+            let mut ids: Vec<String> = stores
+                .iter()
+                .filter(|s| s.writable && !s.needs_terminal)
+                .filter(|s| remove || s.installed != Some(true))
+                .map(|s| s.id.clone())
+                .collect();
+            if system {
+                if let Some(s) = stores.iter().find(|s| s.id == "linux-system") {
+                    if remove || s.installed != Some(true) {
+                        ids.push(s.id.clone());
+                    }
+                }
+            }
+            if ids.is_empty() {
+                println!(
+                    "{}",
+                    if remove {
+                        "nothing to remove."
+                    } else {
+                        "nothing to do: every store the node can write already trusts it."
+                    }
+                );
+            } else {
+                println!();
+                println!(
+                    "{}:",
+                    if remove {
+                        "will remove it from"
+                    } else {
+                        "will add it to"
+                    }
+                );
+                for s in stores.iter().filter(|s| ids.contains(&s.id)) {
+                    println!(
+                        "  - {}
+      {}",
+                        s.label, s.detail
+                    );
+                }
+                if !yes {
+                    print!("proceed? [y/N] ");
+                    use std::io::Write as _;
+                    std::io::stdout().flush().ok();
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).ok();
+                    if !matches!(line.trim(), "y" | "Y" | "yes") {
+                        println!("left as is.");
+                        return Ok(());
+                    }
+                }
+                let sys_ids: Vec<String> = ids
+                    .iter()
+                    .filter(|i| *i == "linux-system")
+                    .cloned()
+                    .collect();
+                let other: Vec<String> = ids
+                    .iter()
+                    .filter(|i| *i != "linux-system")
+                    .cloned()
+                    .collect();
+                if !other.is_empty() {
+                    for o in truststore::apply(data_dir, &ca, &other, remove) {
+                        println!("  {} {}: {}", if o.ok { "✓" } else { "✗" }, o.id, o.detail);
+                    }
+                }
+                if !sys_ids.is_empty() {
+                    // Root work stays in the terminal: sudo asks here.
+                    let pem = truststore::materialize(data_dir, &ca)?;
+                    let s = stores.iter().find(|s| s.id == "linux-system").unwrap();
+                    let cmd = s
+                        .command
+                        .clone()
+                        .unwrap_or_default()
+                        .replace("<mesh-ca.crt>", &pem.to_string_lossy());
+                    let cmd = if remove {
+                        cmd.replace("cp ", "rm -f ").replacen(
+                            &format!("{} ", pem.to_string_lossy()),
+                            "",
+                            1,
+                        )
+                    } else {
+                        cmd
+                    };
+                    println!("  system anchors: {cmd}");
+                    let st = aspen_core::quiet_command("sh")
+                        .arg("-c")
+                        .arg(&cmd)
+                        .status()?;
+                    println!("  {} linux-system", if st.success() { "✓" } else { "✗" });
+                }
+            }
+            let after = truststore::stores(&ca);
+            println!();
+            for s in after
+                .iter()
+                .filter(|s| s.needs_terminal && s.installed != Some(true) && !remove)
+            {
+                println!(
+                    "by hand — {}:
+  {}{}",
+                    s.label,
+                    s.detail,
+                    s.command
+                        .as_ref()
+                        .map(|c| format!(
+                            "
+  {c}"
+                        ))
+                        .unwrap_or_default()
+                );
+            }
+            if !remove {
+                println!("phones: download the CA from the console (Meshes → Certificate → download) or `aspen tls trust --print`, then install it in Settings (iOS: also enable full trust under Certificate Trust Settings).");
+            }
             Ok(())
         }
         TlsCommand::Renew => {

@@ -1,6 +1,6 @@
 # Proposal M — Direct HTTPS to any node: the mesh root as a certificate authority
 
-**Status:** accepted 2026-09-23; T-1 + T-2 shipped as v0.41 (TLS.md). Decisions (§6): (a) IP name constraints
+**Status:** accepted 2026-09-23; T-1 + T-2 shipped as v0.41, T-3 + T-4 + R-1 as v0.42 (TLS.md). Decisions (§6): (a) IP name constraints
 only, DNS opt-in; (b) same port by default **and** an optional
 `--tls-listen` for a separate port if the sniff misbehaves; (c) 90-day
 leaves with renewal; (d) Trust from the console on a loopback node only;

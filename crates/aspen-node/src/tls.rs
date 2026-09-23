@@ -547,6 +547,8 @@ pub struct TlsState {
     pub last_ok: Mutex<Option<f64>>,
     /// Epoch before which the loop does not try again.
     pub next_try: Mutex<f64>,
+    /// Trust-store probe cache: (when, stores) — the probes run tools.
+    pub stores_cache: Mutex<Option<(f64, Vec<crate::truststore::Store>)>>,
 }
 
 impl TlsState {
@@ -689,6 +691,32 @@ pub fn spawn_loop(inner: Arc<NodeInner>) {
             tokio::time::sleep(std::time::Duration::from_secs(40)).await;
         }
     });
+}
+
+/// The CA of this node's primary mesh, as known here.
+pub fn known_ca(inner: &NodeInner) -> Option<TlsCa> {
+    let mesh = inner.mesh()?;
+    let files = MeshFiles::new(inner.data_dir.as_deref()?);
+    files.tls_ca(&mesh.mesh_name()).ok().flatten()
+}
+
+/// This computer's trust stores and the CA's state in each, cached for
+/// 30 s (the probes run platform tools). Blocking.
+pub fn stores_cached(inner: &NodeInner, force: bool) -> Vec<crate::truststore::Store> {
+    let now = crate::store::now_epoch();
+    if !force {
+        if let Some((at, v)) = inner.tls.stores_cache.lock().unwrap().as_ref() {
+            if now - at < 30.0 {
+                return v.clone();
+            }
+        }
+    }
+    let v = match known_ca(inner) {
+        Some(ca) => crate::truststore::stores(&ca),
+        None => Vec::new(),
+    };
+    *inner.tls.stores_cache.lock().unwrap() = Some((now, v.clone()));
+    v
 }
 
 /// `GET /api/tls`: the CA as known here, the leaf, the names, the loop.

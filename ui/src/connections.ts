@@ -120,7 +120,7 @@ export function directUrlProblem(url: string): string | null {
   if (window.location.protocol === "https:" && u.protocol === "http:") {
     const h = u.hostname;
     if (h !== "127.0.0.1" && h !== "localhost" && h !== "[::1]") {
-      return "this page is https; a plain-http node is reachable only on this machine (127.0.0.1). For a node elsewhere, connect through a relay.";
+      return "this page is https; a plain-http node is reachable only on this machine (127.0.0.1). For a node elsewhere use its https:// address (once this computer trusts the mesh certificate — Meshes → Certificate), or connect through a relay.";
     }
   }
   return null;

@@ -1036,7 +1036,7 @@ export interface MeshPeer {
   /** "direct" or "relay:<url>" while linked. */
   link_kind?: string | null;
   /** Where the peer says it can be reached (empty = a spoke by choice). */
-  advertised?: { dial_urls: string[]; relay_urls: string[]; hint?: string | null } | null;
+  advertised?: { dial_urls: string[]; relay_urls: string[]; https_urls?: string[]; hint?: string | null } | null;
   /** Every URL this node may dial for the peer, with reach memory:
    *  consecutive failures, seconds of backoff left, last success. */
   candidates?: DialCandidate[] | null;
@@ -1079,6 +1079,38 @@ export interface MeshMembership {
   peers: string[];
   relays: string[];
   root_here: boolean;
+  /** The mesh's TLS certificate authority, once the root minted one (TLS.md). */
+  tls_ca?: { fingerprint: string; not_after: number | null } | null;
+}
+
+/** `GET /api/tls` (TLS.md §5). */
+export interface TlsStatus {
+  mesh: string | null;
+  root_here: boolean;
+  ca: { mesh: string; fingerprint: string; not_after: number | null; root_sig_ok: boolean | null; here: boolean; pem: string } | null;
+  leaf: { names: string[]; not_before: number; not_after: number; fingerprint: string; issuer: string; covers_current_names: boolean; serving: boolean } | null;
+  names: string[];
+  https_port: number | null;
+  separate_port: boolean;
+  last_error: string | null;
+  last_attempt: number | null;
+  last_ok: number | null;
+  /** This computer's trust stores (the node's computer, not the browser's unless they are one). */
+  stores?: TrustStore[];
+}
+export interface TrustStore {
+  id: string;
+  label: string;
+  installed: boolean | null;
+  writable: boolean;
+  needs_terminal: boolean;
+  detail: string;
+  command: string | null;
+}
+export interface TrustOutcome {
+  id: string;
+  ok: boolean;
+  detail: string;
 }
 export interface MeshInfo {
   in_mesh: boolean;
@@ -1098,7 +1130,7 @@ export interface MeshInfo {
     has_root?: boolean;
     root_key_path?: string | null;
     /** What this node tells peers about reaching it; empty = spoke. */
-    advertised?: { dial_urls: string[]; relay_urls: string[]; hint?: string | null };
+    advertised?: { dial_urls: string[]; relay_urls: string[]; https_urls?: string[]; hint?: string | null };
   } | null;
   root_public?: string;
   peers?: MeshPeer[];
@@ -1609,6 +1641,10 @@ export const api = {
     request<RepoAutorun>(`/api/repo/autorun?repo=${enc(repo)}`),
 
   mesh: () => request<MeshInfo>("/api/mesh"),
+  tls: () => request<TlsStatus>("/api/tls"),
+  tlsTrust: (stores?: string[], remove?: boolean) =>
+    post<{ ok: boolean; results: TrustOutcome[]; stores: TrustStore[] }>("/api/tls/trust", { stores: stores ?? [], remove: !!remove }),
+  tlsRenew: () => post<{ ok: boolean; summary: string }>("/api/tls/renew"),
 
   // servicing (docs/SERVICING.md)
   update: (node?: string) => request<UpdateStatus>(`/api/update${node ? `?node=${enc(node)}` : ""}`),
@@ -1699,4 +1735,28 @@ export function sessionEventsUrl(name: string): string {
   const proto = origin.protocol === "https:" ? "wss" : "ws";
   const token = nodeToken();
   return `${proto}://${origin.host}/api/agents/${enc(name)}/events${token ? `?token=${enc(token)}` : ""}`;
+}
+
+/** Is the node this console talks to on this very computer? Only then can
+ *  "trust on this computer" mean the browser's own trust store (TLS.md §6). */
+export function attachedIsLocal(): boolean {
+  if (tunnel.state === "up") return false;
+  try {
+    const u = new URL(apiBase() || window.location.origin);
+    return u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]" || u.hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Hand the browser a file to save (a PEM for a phone or a hand install). */
+export function downloadText(name: string, text: string, type = "application/x-x509-ca-cert"): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

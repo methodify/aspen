@@ -1,11 +1,11 @@
 # TLS for nodes: the mesh root as a certificate authority
 
-**Status:** reference for what is built (2026-09-23, v0.41: T-1, T-2 of
-PROPOSALS-2026-09-M.md). Code: `aspen-wire::identity::TlsCa`,
-`crates/aspen-node/src/tls.rs`, `crates/aspen/src/tlsserve.rs`, the
-`tls_csr` op and roster field in `federation.rs`, `aspen tls …` in
-`main.rs`. Trusting the CA on a computer (T-3) and the console's side
-(T-4) come next.
+**Status:** reference for what is built (2026-09-23, v0.41: T-1, T-2;
+v0.42: T-3, T-4 of PROPOSALS-2026-09-M.md). Code:
+`aspen-wire::identity::TlsCa`, `crates/aspen-node/src/tls.rs`,
+`crates/aspen-node/src/truststore.rs`, `crates/aspen/src/tlsserve.rs`,
+the `tls_csr` op and roster field in `federation.rs`, `aspen tls …` in
+`main.rs`, `CertificateRow` in `ui/src/meshPanel.tsx`.
 
 ## 1. Why
 
@@ -124,17 +124,69 @@ One CA per mesh. A node in several meshes serves a leaf from its
   `aspen up --tls-listen`.
 - Fleet trail: `tls_issue {node, names, self?}` on the root.
 
-## 6. Trusting the CA (next: T-3)
+## 6. Trusting the CA on a computer (v0.42, T-3)
 
-Every browser needs the CA in its trust store once per computer:
-Windows' CurrentUser Root (`certutil -addstore -user Root`, with
-Windows' own consent dialog), macOS' login keychain (`security
-add-trusted-cert`, password prompt), Chrome on Linux's NSS database
-(`certutil -d sql:~/.pki/nssdb`), Firefox's profile databases, a WSL
-node's Windows store through interop, phones by downloading
-`/api/tls/root.crt` and installing it by hand. `aspen tls trust`, its
-`--check` / `--remove`, `POST /api/tls/trust` and the console's
-*Certificate* row are PROPOSALS-2026-09-M.md §3.4–§3.5.
+A browser needs the CA in a store it reads, once per computer. The node
+knows the stores of the platform it runs on (`truststore.rs`), whether
+the CA is in each, and writes the ones it can — **behind the platform's
+own consent**, never silently, never escalating:
+
+| store | read by | how the node writes it | prompt |
+|---|---|---|---|
+| Windows, this user's Root | Chrome, Edge (Firefox with enterprise roots on) | `certutil -addstore -user Root` | Windows' own "install this certificate?" dialog with the thumbprint |
+| the same, from a **WSL** node | the Windows browser | `/mnt/c/Windows/System32/certutil.exe` through interop, the PEM as a UNC path via `wslpath -w` | the same dialog, on the Windows desktop |
+| macOS login keychain, trust *always* | Safari, Chrome | `security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db` | keychain password |
+| Chrome / Chromium on Linux (NSS) | Chrome, Chromium | `certutil -d sql:~/.pki/nssdb -A -t "C,," -n "Aspen mesh <name>"` (`~/.local/share/pki/nssdb` when that is the one in use; created if missing) | none; needs `libnss3-tools` / `nss-tools`, else the command is printed |
+| Firefox profiles | Firefox | the same `certutil` per `cert9.db` (Linux; macOS with Homebrew nss) | none; without `certutil`: the about:config switch or the Authorities import, printed |
+| Linux system anchors | curl, Python, other tools | `/usr/local/share/ca-certificates/aspen-mesh-<name>.crt` + `update-ca-certificates`, or `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` | `sudo` in a terminal only (`aspen tls trust --system`); never from the API |
+| iOS, Android, any device with no node | its browser | download the `.crt`, install it by hand (iOS: also *Certificate Trust Settings* → full trust) | the device's own flow |
+
+- `aspen tls trust` lists every store with ✓ / – / ?, says exactly what
+  it will write and which prompts to expect, asks once, runs, then
+  prints the by-hand recipes for what is left (and the phone steps).
+  `--check` reports only; `--remove` reverses; `--print` writes the PEM
+  (also at `<data-dir>/mesh-ca.crt`); `--system` includes the Linux
+  anchors through sudo; `-y` skips the question.
+- `GET /api/tls` carries `stores: [{id, label, installed, writable,
+  needs_terminal, detail, command}]` (probed off the runtime's workers,
+  cached 30 s); `POST /api/tls/trust {stores?, remove?}` writes every
+  writable store (or the named ones) and answers `{ok, results[{id, ok,
+  detail}], stores}`. A write waits at most five minutes for the
+  platform's dialog: a daemon with no desktop (Windows session 0) cannot
+  show it, and the answer says to run `aspen tls trust` in a terminal on
+  that desktop.
+- The CA is identified in Windows by its SHA-1 thumbprint, in the
+  keychain and NSS by the nickname `Aspen mesh <name>` (NSS entries are
+  compared by body, so a rotated CA replaces the old one).
+
+## 7. The console (v0.42, T-4)
+
+- **Meshes → certificate row** (`CertificateRow`): the mesh CA's
+  fingerprint and expiry, this node's https (port, same or separate,
+  serving or not, names in the title), and — when the console is
+  attached to a node on **this computer** (loopback, not through the
+  relay) — one chip per trust store with its state and a **trust on this
+  computer** button that calls `POST /api/tls/trust` and shows each
+  store's answer. Attached from elsewhere, the row says to run `aspen tls
+  trust` on that computer instead. Always: **download CA** (a `.crt` for
+  a phone or a hand install, built from the PEM in the page so it works
+  through the relay too), **copy PEM**, and **steps** (iPhone, Android,
+  Windows, macOS, Firefox, Linux, plus whatever this node's stores still
+  need a terminal for).
+- **Peer rows and this node** show an `https ↗` chip when the node
+  advertises https URLs; the link opens the first.
+- **Attach**: `https://<node>:<port>` is accepted as a direct address; a
+  failed https attach explains that the browser most likely does not
+  trust the mesh certificate yet and where to fix that (the browser
+  itself reports only "failed to fetch").
+
+Verified (rig, 2026-09-23): `aspen tls trust --check` on a WSL node
+found the Windows user store through interop (not yet), Chrome's NSS
+database without `certutil` (unknown, tool named), the Linux anchors
+(not yet, sudo command); the console's certificate row rendered the same
+three with the trust button; the download produced
+`aspen-mesh-rigmesh.crt`. The Windows install itself needs the operator
+at the desktop to accept the dialog.
 
 Verified (rig, 2026-09-23): the root node on `0.0.0.0` minted the CA and
 its own leaf within a loop tick; TLS 1.3 with `Verify return code: 0`

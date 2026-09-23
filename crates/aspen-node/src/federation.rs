@@ -292,6 +292,27 @@ impl MeshState {
         e.last_error = None;
     }
 
+    /// Forget what we know about `url` (a fresh signal makes it worth a
+    /// try at once).
+    pub fn url_reset(&self, url: &str) {
+        self.reach.lock().unwrap().remove(url);
+    }
+
+    /// A relay link to `peer` over `relay_url` is a dial like any other:
+    /// this is its key in the reach memory (R-1: a peer that is present
+    /// on a relay but never answers a hello — a laptop asleep behind a
+    /// stale registration — used to be redialed every 27 s for ever).
+    pub fn relay_link_key(relay_url: &str, peer: &str) -> String {
+        format!("relay-link:{relay_url}#{peer}")
+    }
+
+    /// May a relay link to `peer` over `relay_url` be started now?
+    pub fn relay_link_allowed(&self, relay_url: &str, peer: &str) -> bool {
+        !self
+            .order_urls(&[Self::relay_link_key(relay_url, peer)])
+            .is_empty()
+    }
+
     /// A dial to `url` failed: back off exponentially (5s doubling) up to
     /// `cap` seconds. Returns the consecutive-failure count, so the caller
     /// can log the first loudly and the rest quietly.
@@ -1302,7 +1323,7 @@ pub async fn run_link(
     if kind == "direct" && mesh.identity.node.as_str() < peer.as_str() {
         let sessions = mesh.relay_sessions.lock().unwrap();
         for (url, s) in sessions.iter() {
-            if s.present.contains(&peer) {
+            if s.present.contains(&peer) && mesh.relay_link_allowed(url, &peer) {
                 start_relay_link(&inner, &mesh.identity.node, &peer, url, &s.tx, &s.peer_ins);
                 tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
                 break;
@@ -3436,6 +3457,7 @@ async fn relay_read_loop(
                         && !p.starts_with("console-")
                         && !relay_link_in_flight(&peer_ins, &p)
                         && !mesh.link_up(&p)
+                        && mesh.relay_link_allowed(&relay_url, &p)
                     {
                         tracing::info!(peer = %p, "present on the relay with no link; starting one");
                         start_relay_link(&inner, &me, &p, &relay_url, &relay_tx, &peer_ins);
@@ -3501,6 +3523,7 @@ async fn relay_read_loop(
                     if me < p.as_str()
                         && !p.starts_with("console-")
                         && !relay_link_in_flight(peer_ins, &p)
+                        && mesh.relay_link_allowed(relay_url, &p)
                     {
                         start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
                     }
@@ -3530,6 +3553,9 @@ async fn relay_read_loop(
                         && !node.starts_with("console-")
                         && !relay_link_in_flight(peer_ins, &node)
                     {
+                        // A fresh registration is a fresh socket on the
+                        // peer's side: whatever failed before may work now.
+                        mesh.url_reset(&MeshState::relay_link_key(relay_url, &node));
                         start_relay_link(inner, me, &node, relay_url, relay_tx, peer_ins);
                     }
                 } else {
@@ -3802,10 +3828,29 @@ fn start_relay_link(
     let peer_ins2 = peer_ins.clone();
     let mine = in_tx.clone();
     let kind = format!("relay:{relay_url}");
+    let key = MeshState::relay_link_key(relay_url, peer);
     tracing::info!(peer = %peer, relay = %relay_url, "relay link starting");
     tokio::spawn(async move {
-        if let Err(e) = run_link(inner2, out_tx, in_rx, Some(kind)).await {
-            tracing::info!(peer = %peer3, error = %e, "relay link ended");
+        match run_link(inner2.clone(), out_tx, in_rx, Some(kind)).await {
+            Ok(()) => {
+                if let Some(m) = inner2.mesh() {
+                    m.url_ok(&key);
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // A link superseded by a direct one is not a failure.
+                let benign = msg.contains("already up") || msg.contains("not needed");
+                let fails = match (&benign, inner2.mesh()) {
+                    (false, Some(m)) => m.url_failed(&key, &msg, BACKOFF_CAP_LEARNED),
+                    _ => 0,
+                };
+                if fails <= 1 {
+                    tracing::info!(peer = %peer3, error = %e, "relay link ended");
+                } else {
+                    tracing::debug!(peer = %peer3, error = %e, fails, "relay link ended; backing off");
+                }
+            }
         }
         // Only our own slot: a link that replaced this one (a fallback
         // started while this one was ending, a peer's fresh hello) owns
@@ -3831,6 +3876,39 @@ mod capability_tests {
         assert_eq!(op_capability("spawn"), Capability::Spawn);
         assert_eq!(op_capability("adoption"), Capability::Trust);
         assert_eq!(op_capability("something_new"), Capability::Control);
+    }
+
+    #[test]
+    fn relay_links_back_off_and_reset_on_presence() {
+        let root = aspen_wire::identity::MeshRoot::create("home");
+        let mut me = NodeIdentity::create("me");
+        me.install_cert(root.certify(&me.join_request()).unwrap())
+            .unwrap();
+        let st = MeshState::new(
+            me,
+            MeshConfig {
+                mesh: "home".into(),
+                root_public: root.root_public.clone(),
+                peers: vec![],
+                relay: None,
+                relays: vec![],
+                policy: None,
+                tls_ca: None,
+            },
+        );
+        let relay = "wss://r/relay";
+        assert!(st.relay_link_allowed(relay, "mac"));
+        let key = MeshState::relay_link_key(relay, "mac");
+        assert_eq!(
+            st.url_failed(&key, "hello timed out", BACKOFF_CAP_LEARNED),
+            1
+        );
+        assert!(!st.relay_link_allowed(relay, "mac"));
+        // Another peer over the same relay is unaffected.
+        assert!(st.relay_link_allowed(relay, "pc"));
+        // A fresh presence clears it.
+        st.url_reset(&key);
+        assert!(st.relay_link_allowed(relay, "mac"));
     }
 
     #[test]

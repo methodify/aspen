@@ -1275,5 +1275,13 @@ cleaner lane for roster updates than user-message headers.
   unconstrained by default (single-label hostnames); https on the same
   port by first-byte sniff, with `--tls-listen` as the escape hatch;
   https only when a listener is beyond loopback; the node token rule
-  unchanged. Trusting the CA per computer (T-3) and the console's side
-  (T-4) follow. TLS.md.
+  unchanged. TLS.md.
+- **2026-09-23 — v0.42: trust on this computer, the console side, relay
+  backoff (T-3, T-4, R-1).** Decided: the node writes only the stores
+  it can without escalation and only behind the platform's own consent
+  (Windows' dialog, the keychain prompt); root work (Linux anchors) stays
+  in a terminal; a WSL node targets the Windows store because that is
+  where the browser is; the console offers *trust on this computer* only
+  when attached to a loopback node, and a download plus steps otherwise
+  (a phone never gets automation). Relay links to a peer join the reach
+  memory with backoff, reset by a fresh presence.

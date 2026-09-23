@@ -351,6 +351,15 @@ during shutdown (a lock held across the session ladder) ignored SIGTERM;
 a second signal, or 60s, now ends the process outright — the live marks
 are already on disk.
 
+**Relay links back off too (v0.42, R-1).** A peer present on a relay
+whose hello never comes back — a laptop asleep behind a registration the
+relay has not yet dropped — was redialed every relink tick (27 s) for
+hours, with a log line each time. A relay link is now a dial in the same
+reach memory (`relay-link:<relay>#<peer>`): 5 s doubling to the learned
+cap of 10 min; a fresh *online* presence for the peer resets it (a new
+socket on its side); a link superseded by a direct one does not count;
+only the first failure logs at info.
+
 ## 10. Not built
 
 Console-through-relay (DESIGN §7 mentions it; the relay routes node↔node

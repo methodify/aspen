@@ -31,14 +31,19 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-7 | servicing | **Relay-hosted console.** The hosted bundle served by the Cloudflare worker as its `/`. | PROPOSALS-2026-09-D.md §3 |
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
-| T-3 | servicing + console | **Trust the mesh CA on this computer.** `aspen tls trust / --check / --remove / --print`, `POST /api/tls/trust`, recipes for Windows, macOS, Linux (NSS, system, Firefox), WSL → Windows; the status hint. | PROPOSALS-2026-09-M.md §3.4 |
-| T-4 | console | **The console side of TLS.** Certificate row per mesh, https attach guidance, root download with phone steps, direct-address chips, `wss` verified. | PROPOSALS-2026-09-M.md §3.5 |
 | T-5 | console | **Direct first, relay when away.** Probe a node's advertised https addresses and switch to direct when reachable and trusted. | PROPOSALS-2026-09-M.md §3.6 |
-| R-1 | protocol | **The macbook relay-dial noise.** anindor-wsl dialing macbook via relay and timing out on hello whenever the Mac's direct link drops. | — |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-23: trust on this computer, the console side, relay-link backoff (T-3, T-4, R-1, v0.42)
+
+| id | shipped as |
+|---|---|
+| T-3 | `truststore.rs`: Windows user Root (native or via WSL interop), macOS login keychain, Chrome's NSS database, Firefox profiles, Linux system anchors (terminal only); `aspen tls trust [--check|--remove|--print|--system|-y]`; `GET /api/tls` `stores[]`, `POST /api/tls/trust`. TLS.md §6. |
+| T-4 | `CertificateRow` on the Meshes page (CA, https state, per-store chips, trust button on a local node, download CA / copy PEM / steps), `https ↗` chips on peer rows and this node, https accepted on Attach with certificate guidance on failure. TLS.md §7. |
+| R-1 | A relay link to a peer is a dial in the reach memory: a hello that keeps timing out (a laptop asleep behind a stale registration) backs off 5 s → 10 min instead of every 27 s; a fresh presence resets it; repeats log at debug. RELAY.md §9. |
 
 ## Shipped — 2026-09-23: the mesh root as a certificate authority (T-1, T-2, v0.41)
 

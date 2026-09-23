@@ -223,6 +223,7 @@ pub async fn serve(
         .route("/federation/relay", get(ws_relay))
         .route("/tls", get(get_tls))
         .route("/tls/renew", post(post_tls_renew))
+        .route("/tls/trust", post(post_tls_trust))
         .route("/tls/root.crt", get(get_tls_root))
         .with_state(state.clone());
 
@@ -463,7 +464,63 @@ pub async fn serve(
 /// GET /api/tls — the mesh CA as known here, this node's leaf and names,
 /// the renewal loop's last word (docs/TLS.md).
 async fn get_tls(State(s): S) -> Json<Value> {
-    Json(aspen_node::tls::status_json(&s.node.inner))
+    let mut v = aspen_node::tls::status_json(&s.node.inner);
+    // Trust stores: platform tools, off the runtime's workers.
+    let inner = s.node.inner.clone();
+    let stores = tokio::task::spawn_blocking(move || aspen_node::tls::stores_cached(&inner, false))
+        .await
+        .unwrap_or_default();
+    v["stores"] = json!(stores);
+    Json(v)
+}
+
+#[derive(Deserialize, Default)]
+struct TrustBody {
+    #[serde(default)]
+    stores: Vec<String>,
+    #[serde(default)]
+    remove: bool,
+}
+
+/// POST /api/tls/trust {stores?, remove?} — put the mesh CA into this
+/// computer's trust stores (every writable one, or the named ones), behind
+/// each platform's own consent (TLS.md §6).
+async fn post_tls_trust(
+    State(s): S,
+    body: Option<Json<TrustBody>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let Json(b) = body.unwrap_or_default();
+    let inner = s.node.inner.clone();
+    let Some(ca) = aspen_node::tls::known_ca(&inner) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "this node knows no mesh TLS CA yet" })),
+        ));
+    };
+    let Some(dir) = inner.data_dir.clone() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "node has no data dir" })),
+        ));
+    };
+    let ids = b.stores.clone();
+    let remove = b.remove;
+    let inner2 = inner.clone();
+    let results = tokio::task::spawn_blocking(move || {
+        let r = aspen_node::truststore::apply(&dir, &ca, &ids, remove);
+        let stores = aspen_node::tls::stores_cached(&inner2, true);
+        (r, stores)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e}") })),
+        )
+    })?;
+    Ok(Json(
+        json!({ "ok": results.0.iter().all(|o| o.ok), "results": results.0, "stores": results.1 }),
+    ))
 }
 
 /// POST /api/tls/renew — request (or mint, on the root) a leaf now.

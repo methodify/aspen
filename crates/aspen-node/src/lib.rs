@@ -36,6 +36,7 @@ pub mod tls;
 pub mod tools;
 pub mod topology;
 pub mod trust;
+pub mod truststore;
 pub mod winfw;
 
 pub use node::{Node, SpawnOpts, TurnState};

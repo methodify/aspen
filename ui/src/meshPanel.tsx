@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, type AutostartInfo, type BlobInfo, type MeshInfo, type MeshPeer } from "./api";
+import { api, attachedIsLocal, downloadText, type AutostartInfo, type BlobInfo, type MeshInfo, type MeshPeer, type TlsStatus, type TrustOutcome } from "./api";
 import { usePoll } from "./hooks";
 import { useAppData } from "./App";
 import { ErrorBar, relTime } from "./components";
@@ -206,6 +206,106 @@ export function AutostartChip({ node, self }: { node: string; self: boolean }) {
   );
 }
 
+/** The mesh certificate authority (TLS.md): what the root minted, what
+ *  this node serves, and whether the computer this console is on trusts
+ *  it — with the trust action when that computer is the node's own. */
+function CertificateRow() {
+  const [t, setT] = useState<TlsStatus | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<TrustOutcome[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const local = attachedIsLocal();
+  const load = () => api.tls().then((v) => { setT(v); setErr(null); }).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => void load(), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  if (!t && !err) return null;
+  const day = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toISOString().slice(0, 10) : "?");
+  const ca = t?.ca ?? null;
+  const stores = t?.stores ?? [];
+  const todo = stores.filter((s) => s.writable && !s.needs_terminal && s.installed !== true);
+  const allIn = stores.length > 0 && stores.filter((s) => !s.needs_terminal).every((s) => s.installed === true);
+  async function trust() {
+    setBusy(true);
+    setResults(null);
+    try {
+      const r = await api.tlsTrust();
+      setResults(r.results);
+      setT((prev) => (prev ? { ...prev, stores: r.stores } : prev));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="mesh-row" style={{ flexWrap: "wrap", rowGap: 6 }}>
+      <span className="mono" style={{ color: "var(--text-hi)" }}>certificate</span>
+      {err && <span className="mono-meta" style={{ color: "var(--sig-gate)" }}>{err}</span>}
+      {!ca && t && (
+        <span className="mono-meta" title="the mesh root mints a certificate authority the first time a member asks for a certificate, or with `aspen tls ca` on the root">
+          {t.root_here ? "none yet — minted on the first request, or `aspen tls ca` here" : "none known yet — arrives from the root's roster"}
+        </span>
+      )}
+      {ca && (
+        <>
+          <span className="mono-meta" title={`sha256 ${ca.fingerprint}\nvalid until ${day(ca.not_after)}${ca.root_sig_ok === false ? "\nNOT signed by this mesh's root" : ""}`}>
+            mesh CA ⌘ {ca.fingerprint.replace(/:/g, "").slice(0, 8).toLowerCase()} · until {day(ca.not_after)}
+          </span>
+          {t?.https_port ? (
+            <span className="mono-meta" title={t.leaf ? `this node's certificate covers: ${t.leaf.names.join(", ")}\nvalid ${day(t.leaf.not_before)} → ${day(t.leaf.not_after)}${t.leaf.covers_current_names ? "" : "\n(renewal due: names changed)"}` : t?.last_error ?? "no certificate yet"}>
+              {t.leaf?.serving ? `https on ${t.https_port}${t.separate_port ? "" : " (same port)"}` : `https on ${t.https_port}: no certificate yet`}
+            </span>
+          ) : (
+            <span className="mono-meta" title="this node listens on loopback only; nothing to certify (aspen config listen 0.0.0.0:<port>)">https off (loopback only)</span>
+          )}
+          {local ? (
+            <>
+              {stores.map((s) => (
+                <span key={s.id} className="chip mono" title={`${s.detail}${s.command ? `\n${s.command}` : ""}`} style={{ color: s.installed === true ? "var(--sig-idle)" : undefined }}>
+                  {s.installed === true ? "✓" : s.installed === false ? "–" : "?"} {s.label.split(":")[0].split(" (")[0]}
+                </span>
+              ))}
+              {todo.length > 0 && (
+                <button className="btn sm" disabled={busy} onClick={() => void trust()} title={`put the mesh CA into this computer's trust stores, behind each platform's own prompt:\n${todo.map((s) => `• ${s.label}`).join("\n")}`}>
+                  {busy ? "…" : "trust on this computer"}
+                </button>
+              )}
+              {allIn && <span className="mono-meta">trusted on this computer</span>}
+            </>
+          ) : (
+            <span className="mono-meta" title="this console is attached from another computer (or through a relay): trust the mesh CA on the computer whose browser this is — `aspen tls trust` where a node runs, or download it and install it by hand">
+              trust it on this computer with `aspen tls trust`, or download ↓
+            </span>
+          )}
+          <button className="btn ghost sm" onClick={() => downloadText(`aspen-mesh-${ca.mesh}.crt`, ca.pem)} title="the mesh CA as a .crt file — for a phone, or a store handled by hand">download CA</button>
+          <Copy text={ca.pem} label="copy PEM" />
+          <button className="btn ghost sm" onClick={() => setOpen((o) => !o)} title="how to trust it by hand: phones, Firefox, Linux system anchors">{open ? "hide steps" : "steps"}</button>
+        </>
+      )}
+      {results && (
+        <span className="mono-meta" style={{ flexBasis: "100%" }}>
+          {results.map((r) => `${r.ok ? "✓" : "✗"} ${r.id}: ${r.detail}`).join(" · ")}
+        </span>
+      )}
+      {open && ca && (
+        <div className="micro" style={{ flexBasis: "100%", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: 6, lineHeight: 1.6 }}>
+          <span><b>iPhone / iPad:</b> open the downloaded .crt in Safari → Settings → Profile Downloaded → Install; then Settings → General → About → Certificate Trust Settings → enable full trust for <i>Aspen mesh {ca.mesh}</i>.</span>
+          <span><b>Android:</b> Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate → the downloaded file (Chrome honors it).</span>
+          <span><b>Windows:</b> double-click the .crt → Install Certificate → Current User → place in <i>Trusted Root Certification Authorities</i>. <b>macOS:</b> open it in Keychain Access (login), then set <i>Always Trust</i>. <b>Firefox:</b> Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import, or set <code>security.enterprise_roots.enabled</code> to true to read the system store.</span>
+          <span><b>Linux (Chrome):</b> <code>certutil -d sql:~/.pki/nssdb -A -t "C,," -n "Aspen mesh {ca.mesh}" -i aspen-mesh-{ca.mesh}.crt</code> (libnss3-tools). System tools: copy it to <code>/usr/local/share/ca-certificates/</code> and run <code>update-ca-certificates</code>.</span>
+          {stores.filter((s) => s.needs_terminal && s.installed !== true).map((s) => (
+            <span key={s.id}><b>{s.label}:</b> {s.detail}{s.command ? <> <code>{s.command}</code></> : null}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PeerRow({ p, selfVersion, onRemove, evacuateTargets }: { p: MeshPeer; selfVersion?: string; onRemove?: () => void; evacuateTargets?: string[] }) {
   const h = p.health;
   const skew = h?.version && selfVersion && h.version !== selfVersion;
@@ -248,6 +348,11 @@ function PeerRow({ p, selfVersion, onRemove, evacuateTargets }: { p: MeshPeer; s
       {p.console_url && (
         <a className="mono-meta" href={p.console_url} target="_blank" rel="noreferrer" title="that node's console (a guess from its dial URL)">
           console ↗
+        </a>
+      )}
+      {(p.advertised?.https_urls?.length ?? 0) > 0 && (
+        <a className="chip mono" href={p.advertised!.https_urls![0]} target="_blank" rel="noreferrer" title={`serves https with a certificate from the mesh root (TLS.md); a browser that trusts the mesh CA can open it directly:\n${p.advertised!.https_urls!.join("\n")}`}>
+          https ↗
         </a>
       )}
       {h?.service_state && h.service_state !== "ready" && (
@@ -580,6 +685,9 @@ export function MeshPanel() {
                     spoke (loopback only)
                   </span>
                 )}
+                {(me.advertised?.https_urls?.length ?? 0) > 0 && (
+                  <span className="chip mono" title={`this node serves https with a certificate from the mesh root:\n${me.advertised!.https_urls!.join("\n")}`}>https</span>
+                )}
                 {me.advertised?.hint === "wsl-nat" && (
                   <span className="chip mono" title="this node runs on WSL: its addresses are NAT-internal, so other machines (and the Windows side of this one) reach it only through a relay, a forwarded port, or `aspen config advertise <url>`">
                     wsl: relay or forwarded port only
@@ -598,6 +706,7 @@ export function MeshPanel() {
                 {me.cert_blob && <Copy text={me.cert_blob} label="copy my cert blob" />}
                 {mesh.root_public && <Copy text={mesh.root_public} label="copy root public key" />}
               </div>
+              <CertificateRow />
               {(mesh.meshes ?? []).length > 1
                 ? (mesh.meshes ?? []).map((m) => (
                     <div key={m.mesh} className="mesh-group">
