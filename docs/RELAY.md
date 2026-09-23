@@ -364,10 +364,17 @@ only the first failure logs at info.
 
 Console-through-relay (DESIGN §7 mentions it; the relay routes node↔node
 only), a public multi-tenant relay (§2), rate limiting beyond the
-platform's, a persistent mailbox for the Rust hosts, relay preference
-order (the list is nominally ordered; nothing consumes the order yet —
-the console offers no reordering for that reason), and IPv6 in
+platform's, a persistent mailbox for the Rust hosts, and IPv6 in
 advertisements.
+
+**Relay preference order (v0.43, P-3).** The configured list is ordered
+and the order is consumed: `aspen mesh relay <url> --first` (or *queue
+prefer* on a relay row, applied by `aspen mesh apply`) puts a relay at
+the front; a peer present on several relays is linked through the first
+of them (`preferred_relay_for`: configured order, then discovered), and
+mail for an offline node goes to the first relay that is up
+(`preferred_relay_up`). The console marks the first of several
+*preferred*.
 
 
 ## 11. The console as a peer (v0.18)

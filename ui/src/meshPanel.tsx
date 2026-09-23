@@ -821,10 +821,13 @@ export function MeshPanel() {
                 <span style={{ flex: 1 }} />
                 <button className="btn ghost sm" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>advanced {advanced ? "▴" : "▾"}</button>
               </div>
-              {(mesh.relay?.relays ?? []).map((r) => (
+              {(mesh.relay?.relays ?? []).map((r, i) => (
                 <div key={r.url} className="mesh-peer">
                   <span className={`dot ${r.connected_at ? "dot-idle" : "dot-down"}`} aria-hidden />
                   <span className="mono" style={{ color: "var(--text-hi)" }}>{r.url}</span>
+                  {i === 0 && (mesh.relay?.relays ?? []).length > 1 && (
+                    <span className="chip mono" title="first in the list: a peer present on several relays is linked through this one, and mail for an offline node goes here (aspen mesh relay <url> --first)">preferred</span>
+                  )}
                   <span className="mono-meta">{r.connected_at ? `connected ${relTime(r.connected_at)}` : "not connected"}</span>
                   {r.connected_at && (
                     <span className="mono-meta" title="other nodes registered at this relay right now">
@@ -838,6 +841,9 @@ export function MeshPanel() {
                     </span>
                   )}
                   <span style={{ flex: 1 }} />
+                  {i > 0 && (
+                    <button className="btn ghost sm" onClick={() => void propose("relay", { url: r.url, first: true })} title="make this the preferred relay (first in the list); applied by aspen mesh apply">queue prefer</button>
+                  )}
                   <button className="btn ghost sm" onClick={() => void propose("relay", { url: r.url, remove: true })}>queue remove</button>
                 </div>
               ))}
@@ -970,7 +976,7 @@ function describeProposal(kind: string, args: Record<string, unknown>): string {
     case "peers_remove":
       return `forget peer '${s("node")}'`;
     case "relay":
-      return args["url"] ? `${args["remove"] ? "remove" : "add"} relay ${s("url")}` : "clear all relays";
+      return args["url"] ? `${args["remove"] ? "remove" : args["first"] ? "prefer" : "add"} relay ${s("url")}` : "clear all relays";
     case "leave":
       return args["discard_root"] ? "LEAVE the mesh and discard the root key (ends the mesh)" : "leave the mesh";
     default:

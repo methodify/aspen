@@ -1285,3 +1285,6 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-09-23 — v0.43: relay preference order (P-3).** The ordered
+  relay list is finally consumed: links and mail prefer the first relay
+  by configured order; `--first` and a *queue prefer* verb set it.

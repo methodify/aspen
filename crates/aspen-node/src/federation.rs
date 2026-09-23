@@ -306,11 +306,66 @@ impl MeshState {
         format!("relay-link:{relay_url}#{peer}")
     }
 
-    /// May a relay link to `peer` over `relay_url` be started now?
+    /// May a relay link to `peer` over `relay_url` be started now: not
+    /// backing off, and no better relay (by configured order, P-3) has the
+    /// peer present right now.
     pub fn relay_link_allowed(&self, relay_url: &str, peer: &str) -> bool {
-        !self
+        if self
             .order_urls(&[Self::relay_link_key(relay_url, peer)])
             .is_empty()
+        {
+            return false;
+        }
+        match self.preferred_relay_for(peer) {
+            Some(best) => best == relay_url,
+            None => true,
+        }
+    }
+
+    /// Every relay this node sits on, best first: the configured list in
+    /// its order (`aspen mesh relay <url> --first` puts one ahead), then
+    /// the discovered ones.
+    pub fn relays_ordered(&self) -> Vec<String> {
+        let mut v = self.relay_urls();
+        let disc: Vec<String> = self
+            .discovered_relays
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for d in disc {
+            if !v.contains(&d) {
+                v.push(d);
+            }
+        }
+        v
+    }
+
+    /// The best connected relay where `peer` is present right now, by the
+    /// order above; relays not in the list come last, in map order.
+    pub fn preferred_relay_for(&self, peer: &str) -> Option<String> {
+        let sessions = self.relay_sessions.lock().unwrap();
+        let mut present: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| s.present.contains(peer))
+            .map(|(u, _)| u.clone())
+            .collect();
+        if present.is_empty() {
+            return None;
+        }
+        let order = self.relays_ordered();
+        present.sort_by_key(|u| order.iter().position(|o| o == u).unwrap_or(usize::MAX));
+        present.into_iter().next()
+    }
+
+    /// The first connected relay by preference order (mail goes there).
+    pub fn preferred_relay_up(&self) -> Option<String> {
+        let up = self.relay_up.lock().unwrap();
+        let order = self.relays_ordered();
+        let mut v: Vec<String> = up.keys().cloned().collect();
+        v.sort_by_key(|u| order.iter().position(|o| o == u).unwrap_or(usize::MAX));
+        v.into_iter().next()
     }
 
     /// A dial to `url` failed: back off exponentially (5s doubling) up to
@@ -1321,12 +1376,13 @@ pub async fn run_link(
     // A direct link that dropped: fall back to any relay where the peer is
     // present (lower name starts it; the peer's side does the same).
     if kind == "direct" && mesh.identity.node.as_str() < peer.as_str() {
-        let sessions = mesh.relay_sessions.lock().unwrap();
-        for (url, s) in sessions.iter() {
-            if s.present.contains(&peer) && mesh.relay_link_allowed(url, &peer) {
-                start_relay_link(&inner, &mesh.identity.node, &peer, url, &s.tx, &s.peer_ins);
-                tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
-                break;
+        if let Some(url) = mesh.preferred_relay_for(&peer) {
+            let sessions = mesh.relay_sessions.lock().unwrap();
+            if let Some(s) = sessions.get(&url) {
+                if mesh.relay_link_allowed(&url, &peer) {
+                    start_relay_link(&inner, &mesh.identity.node, &peer, &url, &s.tx, &s.peer_ins);
+                    tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
+                }
             }
         }
     }
@@ -3523,6 +3579,7 @@ async fn relay_read_loop(
                     if me < p.as_str()
                         && !p.starts_with("console-")
                         && !relay_link_in_flight(peer_ins, &p)
+                        && !mesh.link_up(&p)
                         && mesh.relay_link_allowed(relay_url, &p)
                     {
                         start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
@@ -3549,13 +3606,15 @@ async fn relay_read_loop(
                     // that link with a fresh nonce the console's proof no
                     // longer matched — "peer failed nonce proof", every time,
                     // for every node whose name sorts before "console-".
+                    // A fresh registration is a fresh socket on the peer's
+                    // side: whatever failed before may work now.
+                    mesh.url_reset(&MeshState::relay_link_key(relay_url, &node));
                     if me < node.as_str()
                         && !node.starts_with("console-")
                         && !relay_link_in_flight(peer_ins, &node)
+                        && !mesh.link_up(&node)
+                        && mesh.relay_link_allowed(relay_url, &node)
                     {
-                        // A fresh registration is a fresh socket on the
-                        // peer's side: whatever failed before may work now.
-                        mesh.url_reset(&MeshState::relay_link_key(relay_url, &node));
                         start_relay_link(inner, me, &node, relay_url, relay_tx, peer_ins);
                     }
                 } else {
@@ -3669,11 +3728,11 @@ pub fn mailbox_send(mesh: &MeshState, peer: &str, id: &str, payload: &Value) -> 
         id: id.to_owned(),
         data: serde_json::to_string(&env)?,
     })?;
-    let up = mesh.relay_up.lock().unwrap();
-    let (_, tx) = up
-        .values()
-        .next()
+    let best = mesh
+        .preferred_relay_up()
         .ok_or_else(|| anyhow!("no relay connected"))?;
+    let up = mesh.relay_up.lock().unwrap();
+    let (_, tx) = up.get(&best).ok_or_else(|| anyhow!("no relay connected"))?;
     tx.send(frame).map_err(|_| anyhow!("relay writer closed"))
 }
 
@@ -3909,6 +3968,32 @@ mod capability_tests {
         // A fresh presence clears it.
         st.url_reset(&key);
         assert!(st.relay_link_allowed(relay, "mac"));
+        // Preference order (P-3): with the peer present on two relays,
+        // only the first by configured order may start the link.
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let mk = |present: &[&str]| RelaySession {
+            tx: tx.clone(),
+            peer_ins: Arc::new(Mutex::new(HashMap::new())),
+            present: present.iter().map(|s| s.to_string()).collect(),
+            host: None,
+        };
+        st.config.write().unwrap().relays = vec!["wss://a/relay".into(), "wss://b/relay".into()];
+        st.relay_sessions
+            .lock()
+            .unwrap()
+            .insert("wss://b/relay".into(), mk(&["mac"]));
+        st.relay_sessions
+            .lock()
+            .unwrap()
+            .insert("wss://a/relay".into(), mk(&["mac"]));
+        assert_eq!(
+            st.preferred_relay_for("mac").as_deref(),
+            Some("wss://a/relay")
+        );
+        assert!(st.relay_link_allowed("wss://a/relay", "mac"));
+        assert!(!st.relay_link_allowed("wss://b/relay", "mac"));
+        st.relay_sessions.lock().unwrap().remove("wss://a/relay");
+        assert!(st.relay_link_allowed("wss://b/relay", "mac"));
     }
 
     #[test]

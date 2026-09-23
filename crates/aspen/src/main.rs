@@ -418,6 +418,10 @@ enum MeshCommand {
         /// Remove this URL instead of adding it.
         #[arg(long)]
         remove: bool,
+        /// Make this URL the preferred relay (first in the list): a peer
+        /// present on several is linked through it, mail goes to it.
+        #[arg(long, conflicts_with = "remove")]
+        first: bool,
     },
     /// Show mesh membership as configured on disk.
     Status,
@@ -2337,8 +2341,8 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
             println!("{}", aspen_wire::b64::encode(&mesh.root_public));
             Ok(())
         }
-        MeshCommand::Relay { url, remove } => {
-            let d = meshops::relay(&files, url.as_deref(), remove)?;
+        MeshCommand::Relay { url, remove, first } => {
+            let d = meshops::relay_with_order(&files, url.as_deref(), remove, first)?;
             println!("{}", d.summary);
             notify_daemon_reload(data_dir);
             Ok(())
@@ -2388,6 +2392,9 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                     "relay" => match g("url") {
                         Some(u) if p.args.get("remove").and_then(|b| b.as_bool()) == Some(true) => {
                             format!("remove relay {u}")
+                        }
+                        Some(u) if p.args.get("first").and_then(|b| b.as_bool()) == Some(true) => {
+                            format!("prefer relay {u} (first in the list)")
                         }
                         Some(u) => format!("add relay {u}"),
                         None => "clear all relays".into(),
@@ -2439,10 +2446,11 @@ fn mesh_command(data_dir: &std::path::Path, cmd: MeshCommand) -> Result<()> {
                         &g("blob").unwrap_or_default(),
                         g("url").as_deref(),
                     ),
-                    "relay" => meshops::relay(
+                    "relay" => meshops::relay_with_order(
                         &files,
                         g("url").as_deref(),
                         p.args.get("remove").and_then(|b| b.as_bool()) == Some(true),
+                        p.args.get("first").and_then(|b| b.as_bool()) == Some(true),
                     ),
                     "init" => meshops::init(
                         &files,

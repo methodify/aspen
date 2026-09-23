@@ -35,7 +35,12 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
-| P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-23: relay preference order (P-3, v0.43)
+
+| id | shipped as |
+|---|---|
+| P-3 | `aspen mesh relay <url> --first`, proposal `relay {url, first}`, *queue prefer* on relay rows; a peer present on several relays is linked through the first by configured order, mail goes to the first relay that is up. RELAY.md §10. |
 
 ## Shipped — 2026-09-23: trust on this computer, the console side, relay-link backoff (T-3, T-4, R-1, v0.42)
 

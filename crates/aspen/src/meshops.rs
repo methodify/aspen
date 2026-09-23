@@ -363,7 +363,15 @@ pub fn peers_add(files: &MeshFiles, blob: &str, url: Option<&str>) -> Result<Don
 
 /// Relays: add one (`url`, `remove` = false), remove one (`remove` =
 /// true), or clear all (`url` = None).
-pub fn relay(files: &MeshFiles, url: Option<&str>, remove: bool) -> Result<Done> {
+/// The same, with `first`: the URL becomes the preferred relay (RELAY.md
+/// §10 — the order is consumed since v0.43: a peer present on several
+/// relays is linked through the first, mail goes to the first that is up).
+pub fn relay_with_order(
+    files: &MeshFiles,
+    url: Option<&str>,
+    remove: bool,
+    first: bool,
+) -> Result<Done> {
     let mut mesh = files
         .load_mesh()?
         .ok_or_else(|| anyhow!("this node has not joined a mesh"))?;
@@ -388,7 +396,20 @@ pub fn relay(files: &MeshFiles, url: Option<&str>, remove: bool) -> Result<Done>
             if !u.starts_with("ws://") && !u.starts_with("wss://") {
                 bail!("relay URL must start with ws:// or wss:// (got {u:?})");
             }
-            if mesh.add_relay(u) {
+            let added = mesh.add_relay(u);
+            if first {
+                // Fold the legacy field in, then put this URL at the front.
+                let mut v = mesh.relay_urls();
+                v.retain(|x| x != u);
+                v.insert(0, u.to_owned());
+                mesh.relay = None;
+                mesh.relays = v;
+                format!(
+                    "relay preferred: {u}{} ({} total)",
+                    if added { " (added)" } else { "" },
+                    mesh.relay_urls().len()
+                )
+            } else if added {
                 format!("relay added: {u} ({} total)", mesh.relay_urls().len())
             } else {
                 format!("relay already configured: {u}")
