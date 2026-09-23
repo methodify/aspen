@@ -10,6 +10,7 @@
 pub mod addr;
 pub mod adoption;
 pub mod artifacts;
+pub mod boards;
 pub mod delivery;
 pub mod federation;
 pub mod gitstate;

@@ -1247,3 +1247,11 @@ cleaner lane for roster updates than user-message headers.
   additive components, one popover skin), then page passes, the session
   bar kept as the reference. Also decided: a composer draft is one per
   session per console, wherever the session is shown.
+- **2026-09-22 — v0.39: teams told, transcripts, rename, phone boards,
+  chat width.** A board's membership change now reaches the agents on it
+  as a bus notice (the operator: worth a turn). A name's transcripts are
+  one panel in the session and one row format on the Mesh list. Names
+  can be renamed while stopped, with every table and board pane
+  following. The chat view stopped boxing either party into a column:
+  opposite gutters carry the who-spoke cue instead. The console render
+  mode got its own pass as a terminal.

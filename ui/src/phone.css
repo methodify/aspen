@@ -56,7 +56,8 @@
   .session-menu .menu-row, .session-menu .charter-toggle { padding: 10px 14px; }
   .composer { padding: var(--sp-2) var(--sp-3); }
   .ac-pop { left: var(--sp-3); right: var(--sp-3); }
-  .tool-card, .bubble { max-width: 100%; }
+  .transcript { --chat-gutter: 20px; }
+  .tool-card, .bubble { max-width: calc(100% - var(--chat-gutter)); }
   .catchup { padding: 6px var(--sp-3); }
   .catchup-row { flex-wrap: wrap; }
 

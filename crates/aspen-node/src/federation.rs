@@ -1927,6 +1927,14 @@ async fn serve_api_req(
                 .await?;
             Ok(json!({ "name": sess.name }))
         }
+        "rename" => {
+            let to = body
+                .get("to")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow!("missing to"))?;
+            let new = node.rename_agent(agent, to).await?;
+            Ok(json!({ "name": new }))
+        }
         "branch_undo" => {
             let sess = node.undo_branch(agent).await?;
             Ok(json!({ "name": sess.name }))
@@ -3005,7 +3013,9 @@ async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
     };
     let mut changed = false;
     for b in &boards {
-        if inner.store.upsert_board(b).unwrap_or(false) {
+        // Membership changes made on another console reach this node's
+        // agents the same way (boards.rs).
+        if crate::boards::upsert_and_notify(inner, b).unwrap_or(false) {
             changed = true;
         }
     }

@@ -122,6 +122,7 @@ pub async fn serve(
         .route("/agents/{name}/branch", post(post_branch))
         .route("/agents/{name}/branch/undo", post(post_branch_undo))
         .route("/agents/{name}/move-to", post(post_move_to))
+        .route("/agents/{name}/rename", post(post_rename))
         .route("/agents/{name}/bookmarks", get(get_bookmarks))
         .route(
             "/agents/{name}/bookmarks/{id}/resume",
@@ -1814,7 +1815,7 @@ async fn put_board(
     // The console sends no timestamp (or an old one): the node's clock
     // decides, so a write here is later than anything it has merged.
     b.updated_at = s.node.inner.store.hlc_now();
-    match s.node.inner.store.upsert_board(&b) {
+    match aspen_node::boards::upsert_and_notify(&s.node.inner, &b) {
         Ok(changed) => {
             if changed {
                 aspen_node::federation::broadcast_roster(&s.node.inner);
@@ -1827,7 +1828,7 @@ async fn put_board(
 }
 
 async fn delete_board(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
-    match s.node.inner.store.delete_board(&id) {
+    match aspen_node::boards::delete_and_notify(&s.node.inner, &id) {
         Ok(()) => {
             aspen_node::federation::broadcast_roster(&s.node.inner);
             Json(json!({ "ok": true })).into_response()
@@ -2656,6 +2657,29 @@ async fn post_move_to(
     }
     match s.node.move_to(&name, &b.session, b.at.as_deref()).await {
         Ok(sess) => agent_response(&s, &sess.name),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    to: String,
+}
+
+/// Rename a stopped name; answers `{ name }` with the new key (node-
+/// qualified on a peer).
+async fn post_rename(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<RenameBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy_agent(&s, &node, "rename", &bare, json!({ "to": b.to })).await;
+    }
+    match s.node.rename_agent(&name, &b.to).await {
+        Ok(new) => {
+            Json(json!({ "name": new, "bare": aspen_node::addr::bare(&new) })).into_response()
+        }
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
 }

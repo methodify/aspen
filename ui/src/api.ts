@@ -1335,6 +1335,8 @@ export const api = {
    *  transcript it was on is kept as an earlier point. */
   moveTo: (name: string, session: string, at?: string) =>
     post<Agent>(`/api/agents/${enc(name)}/move-to`, { session, ...(at ? { at } : {}) }),
+  /** Rename a stopped name; answers the new key. */
+  rename: (name: string, to: string) => post<{ name: string; bare: string }>(`/api/agents/${enc(name)}/rename`, { to }),
   /** Undo a branch before its first turn: the name goes back in place. */
   undoBranch: (name: string) => post<Agent>(`/api/agents/${enc(name)}/branch/undo`, {}),
   bookmarks: (name: string) => request<BookmarksInfo>(`/api/agents/${enc(name)}/bookmarks`),

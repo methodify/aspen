@@ -201,7 +201,7 @@ pub struct Neighborhood {
 }
 
 /// The session addresses in a board layout (session and viewer panes).
-fn layout_agents(node: &serde_json::Value, out: &mut Vec<String>) {
+pub fn layout_agents(node: &serde_json::Value, out: &mut Vec<String>) {
     match node.get("kind").and_then(|k| k.as_str()) {
         Some("split") => {
             for c in node
@@ -232,7 +232,13 @@ fn layout_agents(node: &serde_json::Value, out: &mut Vec<String>) {
 /// console names this node by hostname, which the node does not know, so
 /// a pane whose key is a local agent counts as local whenever its node is
 /// this node's mesh name or there is no mesh (then every agent is local).
-pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<String>)> {
+/// A board's session panes as the bus writes them from this node: the
+/// local key for an agent on this node, `key@node` for one elsewhere.
+/// Empty for a dynamic board (a fleet query).
+pub fn board_panes(inner: &Arc<NodeInner>, b: &crate::store::Board) -> Vec<String> {
+    if b.query.is_some() {
+        return Vec::new();
+    }
     let self_node = inner.mesh().map(|m| m.identity.node.clone());
     let local: BTreeSet<String> = inner
         .store
@@ -241,8 +247,6 @@ pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<Stri
         .into_iter()
         .map(|a| a.name)
         .collect();
-    // The address as the bus writes it from here: the local key for an
-    // agent on this node, `key@node` for one elsewhere.
     let bus_form = |addr: &str| -> String {
         let (key, node) = match addr.rfind('@') {
             Some(i) => (&addr[..i], Some(&addr[i + 1..])),
@@ -259,14 +263,15 @@ pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<Stri
             addr.to_owned()
         }
     };
+    let mut panes = Vec::new();
+    layout_agents(&b.layout, &mut panes);
+    panes.iter().map(|p| bus_form(p)).collect()
+}
+
+pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<String>)> {
     let mut out = Vec::new();
     for b in inner.store.boards(false).unwrap_or_default() {
-        if b.query.is_some() {
-            continue;
-        }
-        let mut panes = Vec::new();
-        layout_agents(&b.layout, &mut panes);
-        let panes: Vec<String> = panes.iter().map(|p| bus_form(p)).collect();
+        let panes = board_panes(inner, &b);
         if !panes.iter().any(|p| p == agent) {
             continue;
         }

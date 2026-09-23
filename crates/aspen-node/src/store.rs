@@ -2162,6 +2162,137 @@ impl BusStore {
     /// Rename a repo's handle. Refused while any agent in the repo is
     /// running (their addresses would change under them); otherwise every
     /// stored address that carries the old handle is rewritten.
+    /// Rename an agent: `old` (local key) becomes `new_bare@<same repo>`
+    /// everywhere the node keeps the name — the agents row, bookmarks,
+    /// lineage, events, notices, inputs, replicas, adoptions, channel
+    /// membership, the bus record, links, and board panes (which carry
+    /// the node-qualified form). The caller has stopped the process.
+    /// Returns the new key. Boards it touched are bumped so peers merge them.
+    pub fn rename_agent(
+        &self,
+        old: &str,
+        new_bare: &str,
+        self_node: Option<&str>,
+    ) -> Result<String> {
+        let channel = crate::addr::repo_of(old)
+            .ok_or_else(|| anyhow::anyhow!("{old} is not a local key"))?
+            .to_owned();
+        let new = format!("{new_bare}@{channel}");
+        if new == old {
+            return Ok(new);
+        }
+        let t = self.hlc_now();
+        let conn = self.conn.lock().unwrap();
+        let taken: Option<String> = conn
+            .query_row("SELECT name FROM agents WHERE name=?1", params![new], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if taken.is_some() {
+            return Err(anyhow::anyhow!("an agent named @{new} already exists"));
+        }
+        let n = conn.execute("UPDATE agents SET name=?2 WHERE name=?1", params![old, new])?;
+        if n == 0 {
+            return Err(anyhow::anyhow!("no agent named @{old} on record"));
+        }
+        for (table, col) in [
+            ("bookmarks", "agent"),
+            ("events", "agent"),
+            ("lineage", "agent"),
+            ("notices", "agent"),
+            ("inputs", "agent"),
+            ("replicas", "agent"),
+            ("adoptions", "of_agent"),
+            ("adoptions", "resolved_as"),
+            ("channel_members", "member"),
+            ("messages", "sender"),
+            ("messages", "recipient"),
+        ] {
+            conn.execute(
+                &format!("UPDATE {table} SET {col}=?2 WHERE {col}=?1"),
+                params![old, new],
+            )?;
+        }
+        conn.execute(
+            "UPDATE messages SET to_display=?2 WHERE to_display=?1",
+            params![
+                format!("@{}", crate::addr::bare(old)),
+                format!("@{new_bare}")
+            ],
+        )?;
+        // Links name endpoints as `agent:<key>` or `agent:<key>@<node>`.
+        for col in ["src", "dst"] {
+            conn.execute(
+                &format!("UPDATE links SET {col}=?2 WHERE {col}=?1"),
+                params![format!("agent:{old}"), format!("agent:{new}")],
+            )?;
+            if let Some(node) = self_node {
+                conn.execute(
+                    &format!("UPDATE links SET {col}=?2 WHERE {col}=?1"),
+                    params![format!("agent:{old}@{node}"), format!("agent:{new}@{node}")],
+                )?;
+            }
+        }
+        // Board panes: `key@node` (and the bare key on a node with no mesh).
+        let mut boards: Vec<(String, String)> = Vec::new();
+        {
+            let mut stmt = conn.prepare("SELECT id, layout FROM boards WHERE deleted=0")?;
+            for r in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                boards.push(r?);
+            }
+        }
+        for (id, layout) in boards {
+            let mut v: serde_json::Value = match serde_json::from_str(&layout) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let mut hit = false;
+            fn walk(
+                n: &mut serde_json::Value,
+                old: &str,
+                new: &str,
+                node: Option<&str>,
+                hit: &mut bool,
+            ) {
+                if let Some(arr) = n.get_mut("children").and_then(|c| c.as_array_mut()) {
+                    for c in arr {
+                        walk(c, old, new, node, hit);
+                    }
+                }
+                if let Some(a) = n.get("agent").and_then(|a| a.as_str()).map(str::to_owned) {
+                    let renamed = if a == old {
+                        Some(new.to_owned())
+                    } else if let Some(nd) = node {
+                        if a == format!("{old}@{nd}") {
+                            Some(format!("{new}@{nd}"))
+                        } else {
+                            None
+                        }
+                    } else if a.strip_suffix(&a[a.rfind('@').unwrap_or(a.len())..]) == Some(old)
+                        && a.matches('@').count() == 2
+                    {
+                        // no mesh: whatever node suffix the console used
+                        Some(format!("{new}{}", &a[a.rfind('@').unwrap()..]))
+                    } else {
+                        None
+                    };
+                    if let Some(r) = renamed {
+                        n["agent"] = serde_json::Value::String(r);
+                        *hit = true;
+                    }
+                }
+            }
+            walk(&mut v, old, &new, self_node, &mut hit);
+            if hit {
+                conn.execute(
+                    "UPDATE boards SET layout=?2, updated_at=?3 WHERE id=?1",
+                    params![id, v.to_string(), t],
+                )?;
+            }
+        }
+        Ok(new)
+    }
+
     pub fn rename_handle(&self, path: &Path, new: &str, live_names: &[String]) -> Result<()> {
         let new = new.trim();
         if new.is_empty()

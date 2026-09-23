@@ -129,3 +129,20 @@ rows in the ⋯ under a `pane` group (`PaneMode.menu`). The charter and
 history drawers open one at a time. Every ⋯ panel, the context popover,
 the notices panel and the palette share one skin (`.panel-frame` recipe:
 square, strong line, one theme-specific shadow, a short enter).
+
+## 7. v0.39 notes
+
+- **Chat layout.** Neither party is boxed into a column: the agent's
+  turns and tool cards fill the view with a gutter to their right, the
+  operator's turns are pulled right with the same gutter to their left
+  (`--chat-gutter`, clamp(48px, 16%, 220px); 20px on a phone).
+- **Console render mode** is a terminal: a prompt column hangs in the
+  left gutter (❯ for the operator's lines, · for tool lines), turn ends
+  are a hairline rule, tool cards and bus rows are left-ruled, not boxed.
+- **history → transcripts.** The history drawer lists this name's
+  transcripts in the Mesh row's format and verbs (open, revive, resume as
+  a new name, move a name here, forget, ignore) and says *branched from
+  @x* in words; a fresh branch of it shows as *waiting for a first turn*.
+- **rename this name…** in the setup group (disabled while running): an
+  inline field on the bar; the address, rail entry, boards and history
+  follow, and the view opens the new name.

@@ -1790,6 +1790,38 @@ impl Node {
         Ok(sess)
     }
 
+    /// Rename a name (PROPOSALS-2026-09-J §4.7): the bus address, rail
+    /// entry, board slots and history follow; the process is untouched
+    /// because it is stopped first — a running session is keyed by name
+    /// in this process, so a live name is refused with the word.
+    pub async fn rename_agent(&self, name: &str, new_bare: &str) -> Result<String> {
+        let bare = crate::addr::bare(new_bare.trim()).to_owned();
+        if bare.is_empty()
+            || bare == "operator"
+            || !bare
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(anyhow!(
+                "'{new_bare}' is not a valid agent name (letters, digits, - and _)"
+            ));
+        }
+        if self.inner.live(name).is_some() {
+            return Err(anyhow!("@{name} is running — stop it, rename, then revive"));
+        }
+        let self_node = self.inner.mesh().map(|m| m.identity.node.clone());
+        let new = self
+            .inner
+            .store
+            .rename_agent(name, &bare, self_node.as_deref())?;
+        let _ = self
+            .inner
+            .store
+            .record_event(&new, "rename", serde_json::json!({ "from": name }));
+        crate::federation::broadcast_roster(&self.inner);
+        Ok(new)
+    }
+
     /// Undo a branch that has not taken a turn: the fork has nothing of its
     /// own yet (the row still points at the parent, `fork_pending`), so the
     /// name goes back onto its transcript in place and the bookmark the

@@ -1,7 +1,8 @@
 # Proposal: the whole console on a phone
 
 **Status:** audit 2026-09-19 with the approach recommended; Tier 1 built
-as v0.35 (§4). Reference: CONSOLE_APP.md §4.
+as v0.35 (§4); Q-5 as v0.39 (the strip of numbered pane chips with the
+waiting pip, one pane open, layout editing desktop-only). Reference: CONSOLE_APP.md §4.
 
 ## 0. The ask
 

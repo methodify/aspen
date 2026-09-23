@@ -599,9 +599,13 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .transcript { flex: 1; overflow: auto; padding: var(--sp-5) var(--sp-6); min-height: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
 .transcript .empty { padding: var(--sp-8); }
 
-.bubble { max-width: 62ch; }
+/* Chat: both parties fill the view; the gutter is what says who spoke.
+   The agent's turns keep a gutter to their RIGHT, the operator's to their
+   LEFT (pulled right); neither is squeezed into a column. */
+.transcript { --chat-gutter: clamp(48px, 16%, 220px); }
+.bubble { max-width: calc(100% - var(--chat-gutter)); }
 .bubble-assistant { align-self: flex-start; }
-.bubble-user { align-self: flex-end; background: var(--bg-strip); border-left: 2px solid var(--sig-normal); padding: var(--sp-2) var(--sp-4); }
+.bubble-user { align-self: flex-end; background: var(--bg-strip); border-left: 2px solid var(--sig-normal); padding: var(--sp-2) var(--sp-4); min-width: min(24ch, 100%); }
 .bubble-user .bubble-tag { color: var(--sig-normal); font-size: 0.7rem; margin-bottom: 2px; }
 .bubble-user .user-text { white-space: pre-wrap; }
 .bubble-bus { align-self: stretch; max-width: none; background: color-mix(in srgb, var(--sig-notice-dim) 50%, var(--bg-strip)); border-left: 2px solid var(--sig-notice); padding: 2px var(--sp-3) 2px var(--sp-4); }
@@ -632,7 +636,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .tool-chip { align-self: flex-start; display: inline-flex; gap: 6px; padding: 3px 8px; background: var(--bg-strip); border: 1px solid var(--line); font-size: 0.78rem; }
 /* Wide enough that the summary and the "NN lines" hint share a line: the
    summary ellipsizes, the hint never wraps. */
-.tool-card { align-self: flex-start; background: var(--bg-strip); border: 1px solid var(--line); max-width: min(76ch, 100%); width: 100%; }
+.tool-card { align-self: flex-start; background: var(--bg-strip); border: 1px solid var(--line); max-width: calc(100% - var(--chat-gutter)); width: 100%; }
 .tool-card summary { display: flex; align-items: center; gap: 8px; padding: var(--sp-2) var(--sp-3); cursor: pointer; list-style: none; }
 .tool-card summary::-webkit-details-marker { display: none; }
 .tool-name { font-weight: 500; }

@@ -71,6 +71,7 @@ import { useAppData } from "./../App";
 import { relTime } from "./../components";
 import { BarVerb, MenuField, MenuGroup, MenuRow, PanelFrame, PresenceGlyph, SessionMenu, barPresence, panelAnchor } from "./../sessionBar";
 import { BranchCard, type BranchChoice } from "../branchCard";
+import { TranscriptsPanel } from "../sessionRows";
 import { clearSessionCommands, setSessionCommands, type SessionCommand } from "./../sessionCommands";
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
@@ -1738,7 +1739,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       setArtifacts([]);
     }
   }
-  const [history, setHistory] = useState<BookmarksInfo | null>(null);
+  const [, setHistory] = useState<BookmarksInfo | null>(null);
   // One drawer under the bar at a time: opening the charter closes
   // history and the other way round.
   useEffect(() => {
@@ -1754,12 +1755,25 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [branchCard, setBranchCard] = useState<{ choice: BranchChoice; name?: string; label?: string } | null>(null);
   const [branchAt, setBranchAt] = useState<{ top: number; left: number }>({ top: 52, left: 8 });
   const [undoable, setUndoable] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  async function renameTo(to: string) {
+    const t = to.trim();
+    if (!t) return;
+    setActionError(null);
+    try {
+      const r = await api.rename(name, t);
+      setRenaming(null);
+      refreshAgents();
+      nav(`/session/${encodeURIComponent(r.name)}`);
+    } catch (e) {
+      setActionError(`rename: ${errText(e)}`);
+    }
+  }
   const branchBtnRef = useRef<HTMLButtonElement | null>(null);
   function openBranchCard(card: { choice: BranchChoice; name?: string; label?: string }, from?: HTMLElement | null) {
     setBranchAt(panelAnchor(from ?? branchBtnRef.current, 440));
     setBranchCard(card);
   }
-  const [resumeAs, setResumeAs] = useState<{ id: number; name: string } | null>(null);
   const [charterDraft, setCharterDraft] = useState<string | null>(null);
   const [charterSaving, setCharterSaving] = useState(false);
   const [charterOverride, setCharterOverride] = useState<string | null | undefined>(undefined);
@@ -2223,21 +2237,6 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     .filter((a) => a.channel === agent?.channel && a.node === agent?.node && a.name !== name)
     .map((a) => a.name.split("@")[0]);
 
-  async function resumeBookmark(id: number, as?: string) {
-    setActionError(null);
-    try {
-      const res = await api.resumeBookmark(name, id, as?.trim() || undefined);
-      if (as?.trim()) {
-        nav(`/session/${encodeURIComponent(res.name)}`);
-        return;
-      }
-      setCtlNote("resumed the bookmark — the line you were on is bookmarked too");
-      await loadHistory();
-    } catch (e) {
-      setActionError(`resume: ${errText(e)}`);
-    }
-  }
-
   async function interrupt() {
     setInterrupting(true);
     setActionError(null);
@@ -2557,7 +2556,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         ].filter(Boolean);
         return (
           <div key={item.id} className="cline cline-user" data-uuid={item.uuid ?? undefined}>
-            {"> " + item.text}
+            {item.text}
             {notes.length > 0 && <span className="mono-meta cline-note">{`  · ${notes.join(" · ")}`}</span>}
           </div>
         );
@@ -2583,7 +2582,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       case "turn_end":
         return (
           <div key={item.id} className="cline cline-turn">
-            ── turn ended · {item.subtype}
+            <span>turn ended · {item.subtype}</span>
           </div>
         );
     }
@@ -2813,6 +2812,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       { id: "stop", group: "verb", label: "stop session", hint: "asks to confirm", run: () => setConfirmStop(true) },
       { id: "branch", group: "verb", label: "branch here", hint: "move @name or start a new agent on a branch", run: () => openBranchCard({ choice: "move" }) },
       { id: "reload", group: "setup", label: "reload plugins & skills", run: () => void reload() },
+      { id: "rename", group: "setup", label: "rename this name…", hint: agent?.live ? "stop the session first" : "the address, rail entry, boards and history follow", run: () => setRenaming(bareName) },
       { id: "charter", group: "inspect", label: "charter", run: () => setCharterOpen((o) => !o) },
       ...(subagent ? [] : [{ id: "reload-transcript", group: "inspect" as const, label: "reload transcript", hint: "full refetch from the node", run: () => void reloadTranscript() }]),
       ...(canRecap ? [{ id: "recap", group: "inspect" as const, label: "recap now", hint: "a one-line recap from the harness", run: () => recapNow() }] : []),
@@ -2894,6 +2894,14 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <span className="spacer" />
         {reloadNote && <span className="ok-inline mono reload-note">{reloadNote}</span>}
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
+        {renaming !== null && (
+          <span className="stop-confirm">
+            <input className="mono" value={renaming} onChange={(e) => setRenaming(e.target.value)} autoFocus placeholder="new name" style={{ width: 160 }} aria-label="new name for this agent"
+              onKeyDown={(e) => { if (e.key === "Enter") void renameTo(renaming); if (e.key === "Escape") setRenaming(null); }} />
+            <button className="btn primary sm" onClick={() => void renameTo(renaming)}>rename</button>
+            <button className="btn ghost sm" onClick={() => setRenaming(null)}>cancel</button>
+          </span>
+        )}
         {agent?.fork_pending && exited === null && (
           <span className="mono-meta ctl-fork-pending" title="this is a branch that has not taken a turn yet — nothing of its own is on disk until you send something; stopping it loses nothing">
             no turn yet
@@ -3037,6 +3045,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           </MenuGroup>
         </div>
         <MenuGroup label="setup">
+          <MenuRow label="rename this name…" hint={agent?.live ? "stop the session first — a running name cannot move" : "the address, rail entry, boards and history follow"} onClick={() => { closeMenu(); setRenaming(bareName); }} disabled={!!agent?.live} />
           <MenuField label="model" hint={`switch model — takes effect next turn${modelInUse ? `; the latest reply came from ${modelInUse}` : ""}`}>
           <select
             className="ctl-select"
@@ -3236,80 +3245,12 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           )}
       {historyOpen && (
         <div className="charter-drawer">
-          {history === null ? (
-            <div className="dim">loading…</div>
-          ) : (
-            <>
-              <div className="charter-caption" style={{ marginBottom: 6 }}>
-                head {history.head ? history.head.slice(0, 8) : "—"}
-                {history.lineage.length > 0 &&
-                  ` ← ${history.lineage.map((l) => l.session_id.slice(0, 8)).join(" ← ")}`}
-                {" · "}
-                the name follows the head; branching leaves the tip here as a bookmark. “as new agent” starts a sibling instead.
-              </div>
-              {history.bookmarks.length === 0 ? (
-                <div className="dim">no bookmarks yet — branch to leave one.</div>
-              ) : (
-                history.bookmarks.map((b) => (
-                  <div
-                    key={b.id}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}
-                  >
-                    <span className="chip mono" title={b.reason}>
-                      {b.reason === "branch" ? "left by branch" : b.reason === "swap" ? "left by resume" : b.reason}
-                    </span>
-                    <span className="mono" style={{ color: "var(--text-hi)" }}>
-                      {b.label || "(no label)"}
-                    </span>
-                    <span className="mono-meta">{b.session_id.slice(0, 8)}</span>
-                    <span className="mono-meta">{relTime(b.created_at)} ago</span>
-                    <span style={{ flex: 1 }} />
-                    {resumeAs?.id === b.id ? (
-                      <>
-                        <input
-                          className="mono"
-                          value={resumeAs.name}
-                          onChange={(e) => setResumeAs({ id: b.id, name: e.target.value })}
-                          autoFocus
-                          placeholder="new agent name"
-                          style={{ width: 140 }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void resumeBookmark(b.id, resumeAs.name);
-                            if (e.key === "Escape") setResumeAs(null);
-                          }}
-                          aria-label="resume the bookmark as a new agent"
-                        />
-                        <button className="btn primary sm" onClick={() => void resumeBookmark(b.id, resumeAs.name)}>
-                          start @{resumeAs.name.trim() || "…"}
-                        </button>
-                        <button className="btn ghost sm" onClick={() => setResumeAs(null)}>cancel</button>
-                      </>
-                    ) : (
-                      <>
-                        <button className="btn sm" onClick={() => void resumeBookmark(b.id)} title="this name moves to a fork of the bookmark; the line you're on is bookmarked">
-                          resume here
-                        </button>
-                        <button className="btn ghost sm" onClick={() => setResumeAs({ id: b.id, name: "" })} title="a new agent starts from this bookmark; this one stays where it is">
-                          as new agent…
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className="btn ghost sm"
-                      onClick={() =>
-                        void api.deleteBookmark(name, b.id).then(loadHistory).catch((e) => setActionError(errText(e)))
-                      }
-                    >
-                      forget
-                    </button>
-                  </div>
-                ))
-              )}
-            </>
-          )}
+          <div className="charter-caption" style={{ marginBottom: 6 }}>
+            this name's transcripts — the current one, the ones it left, and branches of them nobody named
+          </div>
+          <TranscriptsPanel name={name} repo={agent?.repo ?? null} node={agent?.node ?? nodeInfo?.node ?? ""} selfNode={nodeInfo?.node ?? ""} onError={(e) => setActionError(e)} />
         </div>
       )}
-
       {charterOpen && (
         <div className="charter-drawer">
           {charterDraft === null ? (

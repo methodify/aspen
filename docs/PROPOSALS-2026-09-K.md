@@ -67,4 +67,4 @@ edit. Left for the operator's call: worth a turn, or leave it to pull?
 |---|---|---|
 | K-1 | Stay on the Mesh page after a start; the started strip. | v0.37 |
 | K-2 | Board-mates in the neighborhood: charter, `bus_status`, closed topology, bare-name resolution. | v0.37 |
-| K-3 | A bus notice to the agents on a board when its membership changes. | open (question above) |
+| K-3 | A bus notice to the agents on a board when its membership changes. | v0.39 (the operator: worth the turn) |

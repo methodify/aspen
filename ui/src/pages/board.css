@@ -47,7 +47,9 @@
 
 .board-tabs-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .board-tabs { display: flex; gap: 4px; padding: 6px 8px; overflow-x: auto; border-bottom: 1px solid var(--line); }
-.board-tabs button { font: 500 0.78rem/1 var(--font-body); border: 1px solid var(--line); background: transparent; border-radius: 0; padding: 5px 10px; cursor: pointer; color: var(--text-mid); white-space: nowrap; }
+.board-tabs button { font: 500 0.78rem/1 var(--font-body); border: 1px solid var(--line); background: transparent; border-radius: 0; padding: 5px 10px; cursor: pointer; color: var(--text-mid); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.board-tabs button .mono { color: var(--text-dim); font-size: 0.7rem; }
+.board-tabs button .rail-wait-pip { width: 7px; height: 7px; }
 .board-tabs button.on { color: var(--text-hi); border-color: var(--accent); }
 
 .picker { width: 640px; max-width: 92vw; }

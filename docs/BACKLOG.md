@@ -32,13 +32,22 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
-| S-5, S-6, S-8 | sessions + console | **Names, tier 2.** The ⋯ "bookmarks" panel becomes "transcripts" sharing the Mesh row component with lineage in words (S-5); adoption verbs on the Mesh row beyond *ignore* (S-6); rename a name (S-8). | PROPOSALS-2026-09-J.md §5 |
-| K-3 | sessions + protocol | **Tell running agents when their board changes.** A bus notice per agent on membership change; costs a turn each under always-lands delivery. | PROPOSALS-2026-09-K.md §2 |
-| Q-5 | console | **Boards on a phone**: the panes stacked — a chip strip under the board head, one pane open at a time, layout editing desktop-only. | PROPOSALS-2026-09-I.md §2.3 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-22: the rest — teams told, transcripts, rename, phone boards, chat width, console view (v0.39)
+
+| id | shipped as |
+|---|---|
+| K-3 | `boards::upsert_and_notify` / `delete_and_notify` on both write paths (API and peer merge): one `notice` per local agent whose board-mates changed, thread `board:<id>`. |
+| S-5 | The history drawer is the name's *transcripts*: `TranscriptsPanel` over the shared `sessionRows.tsx` (rows and verbs moved out of Library.tsx); *branched from @x* in words. |
+| S-6 | Adoption verbs on the row: a branch-of row's chooser offers *move @parent here* / a new name, ⋯ offers *ignore*; the bell card stays. |
+| S-8 | `POST /agents/{name}/rename` (`Store::rename_agent` follows every table incl. board panes and links; refused while running); "rename this name…" in the ⋯ setup group with an inline field. |
+| Q-5 | The phone board's strip: numbered pane chips with the waiting pip, one pane open; the note says layout editing is a desktop verb. |
+| chat | Both parties fill the view; opposite gutters say who spoke (`--chat-gutter`). |
+| console | The console render mode as a terminal: prompt column, hairline turn ends, ruled tool cards. |
 
 ## Shipped — 2026-09-22: polish — the console as a crafted studio (L, v0.38)
 

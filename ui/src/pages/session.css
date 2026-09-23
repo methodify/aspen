@@ -385,21 +385,36 @@
   font-size: 0.8125rem;
   line-height: 1.55;
   gap: 2px;
+  padding: var(--sp-4) var(--sp-6) var(--sp-4) calc(var(--sp-6) + 2ch);
+  color: var(--text-hi);
 }
 .cline {
   align-self: stretch;
   max-width: none;
   white-space: pre-wrap;
   word-break: break-word;
+  position: relative;
 }
-.cline-user { color: var(--sig-normal); }
+/* the prompt column: a glyph hangs in the gutter to the left of each line */
+.cline::before { position: absolute; left: -2ch; width: 2ch; color: var(--text-dim); }
+.cline-user { color: var(--sig-normal); margin-top: 0.7em; }
+.cline-user::before { content: "❯"; color: var(--sig-normal); }
 .cline-user .cline-note { color: var(--text-dim); }
-.cline-assistant { color: var(--text-hi); }
+.cline-assistant { color: var(--text-hi); margin-top: 0.35em; }
 .cline-tool { color: var(--text-dim); }
+.cline-tool::before { content: "·"; }
 .cline-bus { color: var(--sig-notice); opacity: 0.75; }
 .cline.bubble-bus { opacity: 1; white-space: normal; }
 .cline.bubble-bus .bus-preview { color: var(--text-mid); }
-.cline-turn { color: var(--text-dim); opacity: 0.8; }
+.cline-turn { color: var(--text-dim); display: flex; align-items: center; gap: 1ch; margin: 0.6em 0 0.2em; white-space: nowrap; }
+.cline-turn::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+/* tool cards in the terminal: a rule, not a card */
+.transcript.console .tool-card, .transcript.console .tool-run { background: transparent; border: 0; border-left: 2px solid var(--line-hi); max-width: none; font-size: inherit; }
+.transcript.console .tool-card summary, .transcript.console .tool-run { padding: 2px var(--sp-2); }
+.transcript.console .tool-detail pre { background: color-mix(in srgb, var(--bg-panel) 60%, transparent); }
+.transcript.console .bubble-bus { background: transparent; border-left: 2px solid var(--sig-notice); }
+.transcript.console .q-card, .transcript.console .perm-card { font-family: var(--font-body); }
+.transcript.console .caret { background: var(--sig-normal); }
 
 /* ── Source render mode — raw markdown in a pre ─────────────────────── */
 .src-body {

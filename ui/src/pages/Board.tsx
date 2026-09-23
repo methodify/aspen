@@ -549,7 +549,7 @@ export default function BoardPage() {
 
   return (
     <div className="board-page">
-      <div className="phone-note">Boards are side-by-side panes; on a phone, open one session at a time from Now.</div>
+      <div className="phone-note">One pane at a time here: pick a session from the strip. Layout editing (splits, pairs) is a desktop verb.</div>
       <div className="board-head">
         <Link className="mono-meta" to="/boards">boards</Link>
         <span className="mono-meta">/</span>
@@ -633,8 +633,9 @@ export default function BoardPage() {
           <div className="board-tabs">
             {panes.map((p, i) => (
               <button key={p.id} className={i === tab ? "on" : ""} onClick={() => { setTab(i); setFocus(p.id); }}>
+                <span className="mono">{i + 1}</span>
                 {p.kind === "session" && p.agent ? `@${p.agent.split("@")[0]}` : p.kind === "view" ? "view" : "empty"}
-                {p.kind === "session" && p.agent && attention.has(p.agent) ? " •" : ""}
+                {p.kind === "session" && p.agent && attention.has(p.agent) ? <i className="rail-wait-pip" aria-label="waiting on you" /> : null}
               </button>
             ))}
           </div>

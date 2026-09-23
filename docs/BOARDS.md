@@ -159,5 +159,9 @@ so the charter at spawn and `bus_status` say *On the operator's board
 topology admits them, and bare names resolve across the board the way
 they do across a link. It is derived from the board rows every node
 holds, never stored, so editing the board is editing the team; dynamic
-boards do not count. A running agent is not pushed the change (K-3,
-PROPOSALS-2026-09-K.md).
+boards do not count. A running agent is told (K-3, v0.39): when a board's session panes
+change — by a write here or a merge from a peer — every local agent
+whose set of board-mates changed gets one `notice` from the operator on
+thread `board:<id>` ("@x joined. With you now: …", "you are no longer on
+the board …"); layout-only edits send nothing. Under always-lands
+delivery that is one turn per affected agent per membership change.

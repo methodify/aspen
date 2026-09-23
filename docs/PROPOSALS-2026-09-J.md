@@ -1,7 +1,7 @@
 # Proposal: names, transcripts and the branch verb
 
 **Status:** decided 2026-09-21 (§8); S-1..S-4 and S-7 shipped as v0.36;
-S-5, S-6, S-8 in the backlog. References: DESIGN.md log 2026-09-04
+S-5, S-6 and S-8 as v0.39. References: DESIGN.md log 2026-09-04
 (adoption), `crates/aspen-node/src/node.rs` (`branch_agent`,
 `split_agent`, `fork_to`), `adoption.rs`, `ui/src/pages/Library.tsx`
 (the Mesh list), `ui/src/pages/Session.tsx` (the branch dialog, the
