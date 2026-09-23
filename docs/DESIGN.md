@@ -1237,3 +1237,13 @@ cleaner lane for roster updates than user-message headers.
   topology, bare-name resolution), derived from the mesh-synced board
   rows, never stored. Pushing a board change to a running agent is left
   open (a message per agent per edit under v0.34's always-lands delivery).
+- **2026-09-22 — Polish: the console as a crafted studio (v0.38,
+  PROPOSALS-2026-09-L.md).** A full audit in both themes, an independent
+  review of it, and the operator's five calls: amber stays the one
+  interactive accent (by subtraction, never a second accent); user turns
+  stay right-aligned; labels keep the display face, larger; a dense
+  modifier for panes and menus rather than one row height; everything in
+  one release. Foundation first (tokens with aliases so nothing broke,
+  additive components, one popover skin), then page passes, the session
+  bar kept as the reference. Also decided: a composer draft is one per
+  session per console, wherever the session is shown.

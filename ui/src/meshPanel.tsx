@@ -386,7 +386,10 @@ export function MeshPanel() {
 
   // First-timers (no mesh yet) see the guide open; established nodes see
   // a one-line summary until they ask.
-  const isOpen = open ?? (stage === "solo" || stage === "enrolled");
+  // The onboarding prose stays behind its disclosure (PROPOSALS-2026-09-L.md
+  // §3): a node that is alone shows one line and "set up ▾", not three
+  // columns of instructions, until asked.
+  const isOpen = open ?? stage === "enrolled";
 
   // Deep link: #enroll=… / #join=… / #cert=… opens the panel prefilled.
   useEffect(() => {

@@ -13,6 +13,7 @@ import { useNavigate } from "react-router-dom";
 import { api, serverNow, type Notice, type NoticeKind } from "./api";
 import { pushCurrent, pushOnElsewhere, pushOnHere, pushSubscribe, pushSupported, pushUnsubscribe, senderKey } from "./pwa";
 import { loadIdentity } from "./tunnel";
+import { PanelFrame } from "./sessionBar";
 
 export const NOTICE_KINDS: { kind: NoticeKind; label: string; hint: string }[] = [
   { kind: "question", label: "questions", hint: "a session asked you something" },
@@ -258,6 +259,7 @@ function ToastStack() {
 export function NoticesBell() {
   const { recent, unseen, markSeen, prefs, setPrefs, requestBrowser } = useNotices();
   const [open, setOpen] = useState(false);
+  const [settings, setSettings] = useState(false);
   const [at, setAt] = useState({ top: 0, left: 0 });
   // The phone's More sheet opens the panel by event (the bell sits behind
   // a sideways scroll there).
@@ -309,13 +311,52 @@ export function NoticesBell() {
           setOpen((o) => !o);
         }}
       >
-        ◔{unseen > 0 && <span className="bell-count mono">{unseen}</span>}
+        <svg className="bell-glyph" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a4 4 0 0 0-4 4v2.6c0 .6-.2 1.1-.6 1.6L2.3 11h11.4l-1.1-1.3a2.5 2.5 0 0 1-.6-1.6V5.5a4 4 0 0 0-4-4Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        {unseen > 0 && <span className="bell-count mono">{unseen}</span>}
       </button>
-      {open &&
-        createPortal(
-          <div className="artifacts-menu notices-menu" style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width: 470 }} role="menu" onMouseLeave={() => setOpen(false)}>
+      {open && (
+        <PanelFrame
+          at={at}
+          width={470}
+          className="notices-menu"
+          title="Notifications"
+          extra={
+            <button type="button" className={`btn ghost sm${settings ? " on" : ""}`} onClick={() => setSettings((v) => !v)} title="what raises a notice, push to this device, outbound hooks" aria-pressed={settings}>
+              settings
+            </button>
+          }
+          onClose={() => setOpen(false)}
+        >
+            <div className="notices-list">
+              {recent.length === 0 ? (
+                <div className="empty" style={{ padding: "18px 12px" }}>
+                  <span className="empty-mark">◌</span>
+                  nothing yet — notices arrive as sessions finish turns, ask, or exit
+                </div>
+              ) : (
+                recent.slice(0, 40).map((n) => (
+                  <div
+                    className="row notice-row"
+                    key={noticeKey(n)}
+                    onClick={() => {
+                      setOpen(false);
+                      if (n.link) nav(n.link);
+                    }}
+                  >
+                    <span className={`toast-glyph mono k-${n.kind}`}>{kindGlyph(n.kind)}</span>
+                    <span className="toast-body">
+                      <span className="toast-title">{n.title}</span>
+                      {n.body && <span className="toast-text">{n.body}</span>}
+                    </span>
+                    <span className="mono-meta">{relTime(n.ts)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          {settings && (
+          <div className="notices-settings">
             <div className="row notices-head">
-              <span className="label">Notifications</span>
+              <span className="label">Raise</span>
               <span className="spacer" />
               <label className="mono-meta">
                 <input type="checkbox" checked={prefs.toasts} onChange={(e) => setPrefs({ ...prefs, toasts: e.target.checked })} /> toasts
@@ -354,29 +395,6 @@ export function NoticesBell() {
                 ))}
               </div>
             )}
-            <div className="notices-list">
-              {recent.length === 0 ? (
-                <div className="row dim">nothing yet this session — notices arrive as sessions finish turns, ask, or exit</div>
-              ) : (
-                recent.slice(0, 40).map((n) => (
-                  <div
-                    className="row notice-row"
-                    key={noticeKey(n)}
-                    onClick={() => {
-                      setOpen(false);
-                      if (n.link) nav(n.link);
-                    }}
-                  >
-                    <span className={`toast-glyph mono k-${n.kind}`}>{kindGlyph(n.kind)}</span>
-                    <span className="toast-body">
-                      <span className="toast-title">{n.title}</span>
-                      {n.body && <span className="toast-text">{n.body}</span>}
-                    </span>
-                    <span className="mono-meta">{relTime(n.ts)}</span>
-                  </div>
-                ))
-              )}
-            </div>
             {hook && (
               <form
                 className="notices-hook"
@@ -397,9 +415,10 @@ export function NoticesBell() {
                 {hookNote && <span className="mono-meta">{hookNote}</span>}
               </form>
             )}
-          </div>,
-          document.body,
-        )}
+          </div>
+          )}
+        </PanelFrame>
+      )}
     </span>
   );
 }

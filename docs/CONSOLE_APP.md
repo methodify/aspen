@@ -206,3 +206,11 @@ was accepted; turning it on in relaytest through the relay too, then
 off there, left it on in beta with the browser subscription kept; a
 `?mesh=` link switched profiles both on load and on a hash change; the
 switcher kept `/mesh` across a switch.
+
+## 8. Drafts (v0.38)
+
+A composer draft is kept per session per console (`aspen.draft.<name>`,
+scoped to the mesh profile), not per view: the session page and every
+board pane holding that session show and edit the same draft, and views
+mounted at once follow each other through a window event. It clears on
+send. Older pane-scoped keys are adopted once and dropped.

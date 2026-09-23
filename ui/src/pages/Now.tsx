@@ -137,7 +137,7 @@ function WorkCard({
           <span className="chip mono harness-chip" title={`runs on ${a.harness}`}>{a.harness}</span>
         )}
         {a.mcp && (a.mcp.failed > 0 || a.mcp.needs_auth > 0) && (
-          <span className="chip mono" style={{ color: "var(--sig-gate)", borderColor: "var(--sig-gate)" }} title={`${a.mcp.failed} MCP server(s) failed, ${a.mcp.needs_auth} need authentication — open the session's mcp menu`}>
+          <span className="chip mono gating" title={`${a.mcp.failed} MCP server(s) failed, ${a.mcp.needs_auth} need authentication — open the session's mcp menu`}>
             mcp {a.mcp.failed + a.mcp.needs_auth} down
           </span>
         )}
@@ -357,7 +357,7 @@ export default function Now() {
         </button>
       </div>
 
-      <div className="stage-body">
+      <div className="stage-body now-page">
         {trust.dialog}
         {liveGate.dialog}
         <ErrorBar error={err} />
@@ -435,7 +435,7 @@ export default function Now() {
           ))}
           {waiting.map((w) => (
             <div key={`${w.agent}:${w.on}`} className="need-card need-cue">
-              <span className="chip mono" style={{ color: "var(--sig-normal)" }}>blocked</span>
+              <span className="chip mono waiting">blocked</span>
               <span className="mono">@{w.agent}</span>
               <span className="dim">is likely waiting on</span>
               <span className="mono">@{w.on}</span>
@@ -446,7 +446,7 @@ export default function Now() {
           ))}
           {finished.map((a) => (
             <div key={`fin:${a.name}`} className="need-card need-cue">
-              <span className="chip mono" style={{ color: "var(--live)" }}>finished</span>
+              <span className="chip mono busy">finished</span>
               <span className="mono">@{a.bare ?? a.name}</span>
               <span className="dim">done with</span>
               <span className="wc-ask" style={{ flex: 1, minWidth: 0 }}>{a.summary?.last_ask}</span>
@@ -456,7 +456,7 @@ export default function Now() {
           ))}
           {exited.map((a) => (
             <div key={`exit:${a.name}`} className="need-card need-cue">
-              <span className="chip mono" style={{ color: "var(--sig-gate)" }}>exited</span>
+              <span className="chip mono gating">exited</span>
               <span className="mono">@{a.bare ?? a.name}</span>
               <span className="dim">
                 {a.last_exit_code === 0 || a.last_exit_code == null ? "ended" : `code ${a.last_exit_code}`} ·{" "}

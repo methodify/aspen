@@ -16,7 +16,7 @@ import { api, ApiError } from "./api";
 import type { Channel, Repo, Template } from "./api";
 import { useAppData } from "./App";
 import { useSessionCommands } from "./sessionCommands";
-import { presenceOf } from "./components";
+import { presenceOf, useTheme } from "./components";
 import type { Presence } from "./components";
 import "./palette.css";
 
@@ -143,6 +143,7 @@ export default function Palette() {
     };
   }, []);
 
+  const [theme, toggleTheme] = useTheme();
   const goto = useCallback(
     (path: string) => {
       setOpen(false);
@@ -449,6 +450,27 @@ export default function Palette() {
     }
 
     {
+      const s = Math.max(score(t, "theme"), score(t, `theme ${theme}`), score(t, "dark mode"), score(t, "light mode"));
+      if (s >= 0) {
+        ranked.push({
+          s,
+          order: order++,
+          item: {
+            key: "act:theme",
+            section: "Actions",
+            node: (
+              <>
+                <span>Theme: {theme}</span>
+                <span className="pal-sub">cycle system · light · dark</span>
+              </>
+            ),
+            run: () => toggleTheme(),
+          },
+        });
+      }
+    }
+
+    {
       const s = Math.max(score(t, "check for updates"), score(t, "update aspen"));
       if (s >= 0) {
         ranked.push({
@@ -550,7 +572,7 @@ export default function Palette() {
     }
 
     return out;
-  }, [q, agents, channels, repos, doSend, doInterrupt, doStart, fill, goto]);
+  }, [q, agents, channels, repos, doSend, doInterrupt, doStart, fill, goto, theme, toggleTheme]);
 
   const selIdx = items.length === 0 ? 0 : Math.min(sel, items.length - 1);
 

@@ -121,19 +121,25 @@ export default function Usage() {
           {rows.length} sessions · {fmtUsd(totals.cost)} lifetime · {fmtUsd(totals.window)} {range === "all" ? "observed" : range === "today" ? "today" : "this week"} · {fmtTokens(totals.input)} in · {fmtTokens(totals.output)} out
         </span>
         <span style={{ flex: 1 }} />
-        <span className="seg">
-          {(["today", "week", "all"] as Range[]).map((r) => (
-            <button key={r} className={range === r ? "on" : ""} onClick={() => setRange(r)}>
-              {r}
-            </button>
-          ))}
+        <span className="ctl-group" role="group" aria-label="range">
+          <span className="ctl-label">range</span>
+          <span className="seg">
+            {(["today", "week", "all"] as Range[]).map((r) => (
+              <button key={r} className={range === r ? "on" : ""} aria-pressed={range === r} onClick={() => setRange(r)}>
+                {r}
+              </button>
+            ))}
+          </span>
         </span>
-        <span className="seg">
-          {(["session", "node", "repo", "model"] as Group[]).map((g) => (
-            <button key={g} className={group === g ? "on" : ""} onClick={() => setGroup(g)}>
-              {g}
-            </button>
-          ))}
+        <span className="ctl-group" role="group" aria-label="group by">
+          <span className="ctl-label">group by</span>
+          <span className="seg">
+            {(["session", "node", "repo", "model"] as Group[]).map((g) => (
+              <button key={g} className={group === g ? "on" : ""} aria-pressed={group === g} onClick={() => setGroup(g)}>
+                {g}
+              </button>
+            ))}
+          </span>
         </span>
       </div>
       <div className="stage-body usage-page">

@@ -24,7 +24,7 @@
 }
 .needs-body { padding: 0 var(--sp-3) var(--sp-3); }
 .needs-kind {
-  font: 700 0.625rem/1 var(--font-display);
+  font: 700 0.68rem/1 var(--font-display);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   padding: 2px 6px;
@@ -41,6 +41,11 @@
   background: var(--sig-normal-dim);
   border: 1px solid var(--sig-normal);
 }
+/* the other kinds a need-card carries: blocked on a peer is *waiting*
+   (amber), an update or a stuck message is *info* (cyan) */
+.needs-kind.waiting, .needs-kind.blocked { color: var(--sig-waiting); background: var(--sig-waiting-dim); border: 1px solid var(--sig-waiting); }
+.needs-kind.info, .needs-kind.update, .needs-kind.stuck { color: var(--sig-info); background: var(--sig-info-dim); border: 1px solid var(--sig-info); }
+.needs-kind.neutral { color: var(--text-mid); background: var(--bg-well); border: 1px solid var(--line-hi); }
 
 /* Node origin chip (remote mesh items) */
 .node-chip {

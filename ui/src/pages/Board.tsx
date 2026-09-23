@@ -10,6 +10,7 @@ import { api, type Agent, type Board, type BoardNode, type BoardPane, type BusMe
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
 import { ErrorBar, relTime } from "../components";
+import { MenuGroup, MenuRow } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
 import "./board.css";
@@ -433,6 +434,13 @@ export default function BoardPage() {
         )}
       </>
     );
+    const menu = (
+      <MenuGroup label="pane">
+        {p.kind === "session" && p.agent && <MenuRow label="open as a page" hint="this session on its own, outside the board" onClick={() => nav(`/session/${encodeURIComponent(p.agent!)}`)} />}
+        {!dynamic && <MenuRow label="change what this pane shows" hint="pick another session or a file to view" onClick={() => setPicker(p.id)} />}
+        <MenuRow label={zoom === p.id ? "unzoom" : "zoom this pane"} hint="alt+z" onClick={() => setZoom((z) => (z === p.id ? null : p.id))} />
+      </MenuGroup>
+    );
     const trailing = (
       <>
         {!dynamic && p.kind === "session" && p.agent && (
@@ -455,13 +463,9 @@ export default function BoardPage() {
             </button>
           )
         )}
-        {p.kind === "session" && p.agent && (
-          <Link className="pane-btn" to={`/session/${encodeURIComponent(p.agent)}`} title="open as a page">↗</Link>
-        )}
         <button className="pane-btn" onClick={() => setZoom((z) => (z === p.id ? null : p.id))} title="zoom (alt+z)">{zoom === p.id ? "⤡" : "⤢"}</button>
         {!dynamic && (
           <>
-            <button className="pane-btn" onClick={() => setPicker(p.id)} title="change what this pane shows">⇅</button>
             <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "row") }))} title="split right">⫿</button>
             <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "col") }))} title="split down">⫽</button>
             <button
@@ -482,7 +486,7 @@ export default function BoardPage() {
             <SessionView
               key={p.agent}
               name={p.agent}
-              pane={{ id: `${board.id}:${p.id}`, focused, compact: zoom !== p.id, onFocus: () => setFocus(p.id), onSent: (t) => onSent(p.id, t), leading, chips, trailing, barProps }}
+              pane={{ id: `${board.id}:${p.id}`, focused, compact: zoom !== p.id, onFocus: () => setFocus(p.id), onSent: (t) => onSent(p.id, t), leading, chips, trailing, menu, barProps }}
             />
           ) : null;
         case "view":

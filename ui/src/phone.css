@@ -20,7 +20,8 @@
   .statusbar::-webkit-scrollbar { display: none; }
   .statusbar .btn, .statusbar .brand { white-space: nowrap; flex: 0 0 auto; }
   .statusbar .brand { letter-spacing: 0.12em; }
-  .statusbar .micro, .statusbar > .mono-meta { display: none; }
+  .statusbar .micro, .statusbar > .mono-meta, .statusbar .presence-strip, .statusbar .sb-utilities .btn:not(.bell), .statusbar .version-pill { display: none; }
+  .statusbar .sb-utilities { border-left: 0; padding-left: 0; }
 
   /* the rail → a bottom bar */
   .mesh-col, .mesh-col.narrow {
@@ -51,7 +52,7 @@
   .session-bar .session-title, .session-bar .session-repo, .session-bar .ctl-model-inuse, .session-bar .ctx-bar { display: none; }
   .session-bar .harness-chip { display: none; }
   /* the ⋯ menu is a bottom sheet */
-  .session-menu { top: auto !important; left: 0 !important; right: 0 !important; bottom: 0; width: auto; max-width: none; max-height: 70vh; border-radius: 10px 10px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+  .session-menu { top: auto !important; left: 0 !important; right: 0 !important; bottom: 0; width: auto; max-width: none; max-height: 70vh; border-radius: var(--r-sheet) var(--r-sheet) 0 0; padding-bottom: env(safe-area-inset-bottom); box-shadow: var(--shadow-sheet); animation: sheet-in var(--dur-normal) var(--ease-seat); }
   .session-menu .menu-row, .session-menu .charter-toggle { padding: 10px 14px; }
   .composer { padding: var(--sp-2) var(--sp-3); }
   .ac-pop { left: var(--sp-3); right: var(--sp-3); }

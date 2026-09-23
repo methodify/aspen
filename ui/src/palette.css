@@ -18,10 +18,8 @@
   max-height: 64vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg-panel);
-  border: 1px solid var(--line-hi);
   clip-path: polygon(var(--chamfer) 0, 100% 0, 100% 100%, 0 100%, 0 var(--chamfer));
-  box-shadow: 0 12px 40px color-mix(in srgb, var(--bg-well) 80%, transparent);
+  animation: panel-in var(--dur-normal) var(--ease-seat);
 }
 
 .pal-input-row {
@@ -34,7 +32,7 @@
 }
 
 .pal-glyph {
-  color: var(--sig-normal);
+  color: var(--text-mid);
   font: 600 0.9rem/1 var(--font-display);
 }
 
@@ -82,7 +80,7 @@
 
 .pal-row.sel {
   background: var(--bg-strip-2);
-  border-left-color: var(--sig-normal);
+  border-left-color: var(--accent);
   color: var(--text-hi);
 }
 
@@ -92,7 +90,7 @@
   color: var(--text-hi);
 }
 .pal-row.sel .pal-mono {
-  color: var(--sig-normal);
+  color: var(--accent);
 }
 
 .pal-sub {

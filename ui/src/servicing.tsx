@@ -613,10 +613,9 @@ export function UpdateCard() {
       setErr(`${label}: ${e instanceof Error ? e.message : "failed"}`);
     }
   }
-  const tone = overdue.length || failed.length ? "var(--sig-gate)" : "var(--sig-normal)";
   return (
     <div className="need-card need-cue" style={{ flexWrap: "wrap" }}>
-      <span className="chip mono" style={{ color: tone }}>
+      <span className={`chip mono ${failed.length || self.withdrawn ? "gating" : overdue.length ? "waiting" : busyNodes.length ? "busy" : "info"}`}>
         {failed.length ? "update failed" : overdue.length ? "update overdue" : busyNodes.length ? "updating" : self.withdrawn ? "withdrawn release" : "update"}
       </span>
       {available ? (

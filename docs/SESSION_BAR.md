@@ -118,3 +118,14 @@ line, click to expand, TUI markdown when open), and its user lines carry
 the chat bubble's state as suffixes — sending, failed, *delivered
 mid-turn* / *queued in the harness* from the node's record, and an
 attachment count. Tool-run folding was already shared.
+
+## 6. v0.38 notes
+
+The bar sits on `--bg-panel` with a seam, and carries a travelling
+hairline along its bottom edge while a turn runs. A board pane's layout
+cluster after the hairline is pair · zoom · split right · split down ·
+close; *open as a page*, *change what this pane shows* and *zoom* are
+rows in the ⋯ under a `pane` group (`PaneMode.menu`). The charter and
+history drawers open one at a time. Every ⋯ panel, the context popover,
+the notices panel and the palette share one skin (`.panel-frame` recipe:
+square, strong line, one theme-specific shadow, a short enter).

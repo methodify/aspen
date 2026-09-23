@@ -204,6 +204,7 @@ export default function History() {
           {win ? ` · ${fmtClock(w0)}–${fmtClock(w1)}` : ""}
         </span>
         <span style={{ flex: 1 }} />
+        <span className="ctl-cluster" role="group" aria-label="range and filter">
         <button className="btn ghost sm" onClick={() => setDay((d) => d - 86400)} title="previous day ([)">◂</button>
         <span className="mono" style={{ minWidth: 120, textAlign: "center" }}>{isToday ? "today" : dayLabel}</span>
         <button className="btn ghost sm" disabled={isToday} onClick={() => setDay((d) => d + 86400)} title="next day (])">▸</button>
@@ -230,6 +231,7 @@ export default function History() {
           style={{ width: 180 }}
           aria-label="filter by agent"
         />
+        </span>
       </div>
       <div className="stage-body" ref={wrapRef}>
         <ErrorBar error={err} />

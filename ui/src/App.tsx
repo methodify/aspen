@@ -563,28 +563,33 @@ function MeshSwitcher({ node }: { node: NodeInfo | null }) {
   );
 }
 
+/** The status bar in zones: brand · context | spacer | the presence
+ *  strip | utilities (version, connection, install/reload, the bell).
+ *  Theme lives in the palette and the phone's More sheet. */
 function StatusBar() {
   const { agents, node } = useAppData();
-  const [theme, toggleTheme] = useTheme();
   const busy = agents.filter((a) => a.live && a.turn_state === "busy").length;
   const idle = agents.filter((a) => a.live && a.turn_state !== "busy").length;
   const off = agents.filter((a) => !a.live).length;
   return (
     <header className="statusbar">
-      <span className="brand"><img className="brand-mark" src={`${import.meta.env.BASE_URL}aspen-mark.svg`} alt="" width="18" height="18" />ASP<b>E</b>N</span>
-      <button type="button" className="btn ghost sm palette-btn" onClick={() => window.dispatchEvent(new Event("aspen:palette"))} title="command palette (⌘K / ctrl+K)" aria-label="open the command palette">⌘</button>
-      <MeshSwitcher node={node} />
+      <span className="sb-zone">
+        <span className="brand"><img className="brand-mark" src={`${import.meta.env.BASE_URL}aspen-mark.svg`} alt="" width="18" height="18" />ASP<b>E</b>N</span>
+        <button type="button" className="btn ghost sm palette-btn" onClick={() => window.dispatchEvent(new Event("aspen:palette"))} title="command palette (⌘K / ctrl+K)" aria-label="open the command palette">⌘</button>
+        <MeshSwitcher node={node} />
+      </span>
       <span className="spacer" />
-      <VersionBadge node={node} />
-      <span className="micro" style={{ color: "var(--live)" }}>{busy} BUSY</span>
-      <span className="micro" style={{ color: "var(--idle)" }}>{idle} IDLE</span>
-      <span className="micro" style={{ color: "var(--offline)" }}>{off} OFF</span>
-      <TunnelPill />
-      <PwaPill />
-      <NoticesBell />
-      <button className="btn ghost sm" onClick={toggleTheme} title={`theme: ${theme}`} aria-label="toggle theme">
-        {theme === "dark" ? "◑" : theme === "light" ? "◐" : "◒"}
-      </button>
+      <span className="presence-strip" title={`${busy} in a turn · ${idle} live and idle · ${off} not running`} aria-label="fleet presence">
+        <span><i className="presence-dot busy" /><b className="n">{busy}</b> busy</span>
+        <span><i className="presence-dot idle" /><b className="n">{idle}</b> idle</span>
+        <span className="off-count"><i className="presence-dot off" />{off} off</span>
+      </span>
+      <span className="sb-zone sb-utilities">
+        <VersionBadge node={node} />
+        <TunnelPill />
+        <PwaPill />
+        <NoticesBell />
+      </span>
     </header>
   );
 }

@@ -33,13 +33,21 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
 | D-11 | protocol | **TLS for nodes.** The mesh root as a CA for member nodes' TLS certs (browsers trust it only once installed per device — D-5's QR could carry that), or ACME via a tailnet/public name. | PROPOSALS-2026-09-D.md |
 | S-5, S-6, S-8 | sessions + console | **Names, tier 2.** The ⋯ "bookmarks" panel becomes "transcripts" sharing the Mesh row component with lineage in words (S-5); adoption verbs on the Mesh row beyond *ignore* (S-6); rename a name (S-8). | PROPOSALS-2026-09-J.md §5 |
-| L | console | **v0.38 polish: the console as a crafted studio.** Tokens with aliases → additive components (`.btn/.chip/.row/.field/.panel/.empty/.table`, `--surface-input`, one popover skin, label floor, amber subtraction) → page passes (session, boards, Now, Mesh, then the rest) → delete old classes → motion. Awaiting the operator's answers to §5 (accent, user-turn alignment, labels, density, scope). | PROPOSALS-2026-09-L.md; docs/proposals/AUDIT-2026-09-22-console*.md |
+| L-x | console | **Polish follow-ups (v0.38.x).** Slash autocomplete grouped by source; need-card verbs in one overflow on phones; Mesh map agents as rail-style pills; retire the old button classes once every caller is on `.btn`. | PROPOSALS-2026-09-L.md §6 |
 | K-3 | sessions + protocol | **Tell running agents when their board changes.** A bus notice per agent on membership change; costs a turn each under always-lands delivery. | PROPOSALS-2026-09-K.md §2 |
 | Q-5 | console | **Boards on a phone**: the panes stacked — a chip strip under the board head, one pane open at a time, layout editing desktop-only. | PROPOSALS-2026-09-I.md §2.3 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
+
+## Shipped — 2026-09-22: polish — the console as a crafted studio (L, v0.38)
+
+| id | shipped as |
+|---|---|
+| L | Token layer with aliases; type scale + label floor; `.btn` system, styled selects, `--surface-input`; chips by signal; `.row-item`, `.table`, `.empty`; one popover skin + motion; drift removed from every page sheet; status bar zones + presence strip + drawn bell; theme in the palette; session bar surface + busy hairline; tool cards in the bubble column; boards square, pane cluster trimmed, `pane` group in ⋯; notices inbox + settings fold; Now column + kind chips; Mesh onboarding folded; Usage segs labelled; History controls clustered; phone status bar reduced. See PROPOSALS-2026-09-L.md §6. |
+| draft | One composer draft per session per console (page, any board pane); mounted views follow each other. |
+| solo | `bare@repo@<hostname>` resolves as local on a node with no mesh (board panes made by hand or synced). |
 
 ## Shipped — 2026-09-22: start and stay; a board is a team (K-1, K-2, v0.37)
 

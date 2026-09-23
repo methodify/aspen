@@ -1,6 +1,6 @@
 # Proposal: polish — the console as a crafted studio (v0.38)
 
-**Status:** for the operator's read, 2026-09-22. Nothing built. Inputs:
+**Status:** decided and built as v0.38 (2026-09-22; §6). Inputs:
 a full audit of every surface in light and dark on the rig
 (`docs/proposals/AUDIT-2026-09-22-console.md`, 65 screenshots in
 `~/.cache/aspen-audit-2026-09-22/shots/`) and an independent review of
@@ -177,6 +177,36 @@ dark`), light must be as considered.
    Mesh, with the rest as v0.38.x (recommended), or everything in one
    release?
 
-## 6. Decisions
+## 6. Decisions (2026-09-22, the operator)
 
-(pending)
+1. Amber by subtraction. 2. User turns stay right-aligned. 3. Labels keep
+the display face at a larger size. 4. A dense modifier for panes and
+menus. 5. All at once.
+
+Built as v0.38: the token layer with aliases (`--surface-*`,
+`--surface-input`, `--line-strong`, `--shadow-panel`, `--accent`, the
+signal names by meaning, `--diff-*`, the previously undefined
+`--sig-error`/`--mono`/`--bg-1`); the seven-step type utilities and the
+label floor; one button system (`.btn` base/primary/quiet/danger, sizes,
+`icon`), styled selects, `--surface-input` for fields, chips by signal,
+`.row-item`, `.table`, `.empty`, one popover skin with enter motion;
+radius and hex drift removed from every page sheet; the status bar in
+zones with a presence strip and a drawn bell, theme as a palette command;
+the session bar on its own surface with a progress hairline while busy;
+tool cards capped to the bubble column with the status inline; the
+composer and send as a field and a primary; charter and history one at a
+time; boards square with an accent focus, the pane cluster trimmed to
+pair · zoom · split · close and *open as a page* / *change contents* /
+*zoom* in the ⋯ under a `pane` group; the notices bell as an inbox with a
+settings fold on the panel skin, closing on Esc and outside click; Now
+in a column with kind chips by meaning and a sans body; the Mesh page's
+onboarding behind its disclosure by default, prose in sans; Usage's
+segments labelled; History's controls in one cluster; the phone's
+status bar reduced to brand · ⌘ · bell and a shorter composer
+placeholder. Also: one draft per session on a console wherever it is
+shown (the operator's nit), and `bare@repo@<hostname>` resolving as
+local on a solo node (board panes).
+
+Left for v0.38.x: the slash autocomplete grouped by source; need-card
+verbs into one overflow on phones; the Mesh map's agent pills; retiring
+the old button classes once every caller is on `.btn`.

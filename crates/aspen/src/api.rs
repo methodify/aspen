@@ -625,7 +625,15 @@ async fn self_name_middleware(
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    if let Some(me) = s.node.inner.mesh().map(|m| m.identity.node.clone()) {
+    // This node's name: its mesh name, or the hostname the console shows
+    // when there is no mesh (a board pane on a solo node carries it).
+    let me = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| s.node_name.clone());
+    {
         let path = req.uri().path().to_owned();
         if let Some(rest) = path.strip_prefix("/api/agents/") {
             let (seg, tail) = match rest.find('/') {
@@ -780,10 +788,19 @@ fn err(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Value
 /// collapses to local. `name@repo` is always local.
 fn remote_parts(s: &AppState, name: &str) -> Option<(String, String)> {
     let node = aspen_node::addr::node_of(name)?;
-    let mesh = s.node.inner.mesh()?;
-    if node == mesh.identity.node {
+    // This node's own name — its mesh name, or the hostname the console
+    // was told when there is no mesh (a board pane on a solo node is
+    // addressed `bare@repo@<hostname>`) — means local.
+    let me = s
+        .node
+        .inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| s.node_name.clone());
+    if node == me {
         return None;
     }
+    s.node.inner.mesh()?;
     let key = aspen_node::addr::strip_node(name, node).to_owned();
     Some((key, node.to_owned()))
 }

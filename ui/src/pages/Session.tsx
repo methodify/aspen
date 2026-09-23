@@ -1350,6 +1350,8 @@ export interface PaneMode {
   chips?: ReactNode;
   /** The board's layout buttons, after a hairline at the end of the bar. */
   trailing?: ReactNode;
+  /** The board's rows for the ⋯ menu (open as a page, change contents, zoom). */
+  menu?: ReactNode;
   /** Drag-to-swap and the like: spread onto the bar element. */
   barProps?: React.HTMLAttributes<HTMLDivElement>;
 }
@@ -1386,16 +1388,36 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [exited, setExited] = useState<{ code: number | null } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // The composer draft survives leaving the view (PROPOSALS §1): per
-  // agent, per browser, cleared on send.
-  const draftKey = scoped(pane ? `aspen.draft.${name}.${pane.id}` : `aspen.draft.${name}`);
+  // agent, per browser, cleared on send. One draft per session on this
+  // console, wherever the session is shown — the page, a board pane, two
+  // panes of one board — not per view (a pane-scoped key used to split
+  // it). Views mounted at once follow each other through a window event.
+  const draftKey = scoped(`aspen.draft.${name}`);
   const [draft, setDraft] = useState(() => {
     try {
-      return localStorage.getItem(draftKey) ?? "";
+      const own = localStorage.getItem(draftKey);
+      if (own) return own;
+      // Adopt a draft an older pane-scoped key left behind, then drop it.
+      const prefix = `${draftKey}.`;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix)) {
+          const v = localStorage.getItem(k) ?? "";
+          localStorage.removeItem(k);
+          if (v) return v;
+        }
+      }
+      return "";
     } catch {
       return "";
     }
   });
+  const draftFromElsewhere = useRef(false);
   useEffect(() => {
+    if (draftFromElsewhere.current) {
+      draftFromElsewhere.current = false;
+      return;
+    }
     const t = window.setTimeout(() => {
       try {
         if (draft) localStorage.setItem(draftKey, draft);
@@ -1403,9 +1425,25 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       } catch {
         // storage unavailable: the draft just doesn't persist
       }
+      window.dispatchEvent(new CustomEvent("aspen:draft", { detail: { key: draftKey, draft } }));
     }, 300);
     return () => window.clearTimeout(t);
   }, [draft, draftKey]);
+  useEffect(() => {
+    // Another view of this session (a board pane beside the page, two
+    // panes of one session) edited the draft: follow it.
+    const onDraft = (e: Event) => {
+      const d = (e as CustomEvent<{ key: string; draft: string }>).detail;
+      if (!d || d.key !== draftKey) return;
+      setDraft((cur) => {
+        if (cur === d.draft) return cur;
+        draftFromElsewhere.current = true;
+        return d.draft;
+      });
+    };
+    window.addEventListener("aspen:draft", onDraft);
+    return () => window.removeEventListener("aspen:draft", onDraft);
+  }, [draftKey]);
   useEffect(() => {
     if (pane?.focused) composerRef.current?.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1700,6 +1738,14 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
   const [history, setHistory] = useState<BookmarksInfo | null>(null);
+  // One drawer under the bar at a time: opening the charter closes
+  // history and the other way round.
+  useEffect(() => {
+    if (charterOpen) setHistoryOpen(false);
+  }, [charterOpen]);
+  useEffect(() => {
+    if (historyOpen) setCharterOpen(false);
+  }, [historyOpen]);
   const [branching, setBranching] = useState(false);
   // The branch card (PROPOSALS-2026-09-J §4.2): open with a preselected
   // choice; null = closed. `undoable` = a move branch that has not taken a
@@ -3093,6 +3139,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         </span>
           <ActivityMenu agent={name} counts={agent?.activities ?? null} openSignal={activitySignal} />
         </MenuGroup>
+        {pane?.menu}
         <MenuGroup label="move">
           {!agent?.moved_to && (
             <MenuRow label="move or copy to another node…" hint="move this session to another node (it resumes there with its context), or copy it there as a fork" onClick={() => { closeMenu(); setMoveOpen(true); setMoveErr(null); void loadNodes(); }} />
@@ -3546,7 +3593,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                 ? agent?.harness === "codex"
                   ? "working… Enter steers this turn, Shift+Enter for a newline"
                   : "working… Enter queues for the next turn, Shift+Enter for a newline"
-                : `message @${name} — Enter sends, Shift+Enter for a newline, / for commands`
+                : window.matchMedia("(max-width: 720px)").matches
+                  ? `message @${bareName} — / for commands`
+                  : `message @${name} — Enter sends, Shift+Enter for a newline, / for commands`
           }
           disabled={composerDisabled}
           rows={2}
