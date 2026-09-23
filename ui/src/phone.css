@@ -60,6 +60,11 @@
   .catchup { padding: 6px var(--sp-3); }
   .catchup-row { flex-wrap: wrap; }
 
+  /* need-cards: the verbs drop to their own line, right-aligned */
+  .need-cue { row-gap: 6px; }
+  .need-cue > .btn:first-of-type { margin-left: auto; }
+  .need-cue > .btn { flex: 0 0 auto; }
+
   /* fleet, search, overlays */
   .work-grid { grid-template-columns: minmax(0, 1fr); }
   .search-form { max-width: none; flex-wrap: wrap; }

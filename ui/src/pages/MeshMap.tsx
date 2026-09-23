@@ -21,10 +21,10 @@ const PAD = 28;
 const NODE_GAP = 28;
 const NODE_W = 300;
 const INNER_PAD_X = 16;
-const COLS = 3;
+const COLS = 2;
 const CELL_W = (NODE_W - INNER_PAD_X * 2) / COLS;
 const MARKER = 22;
-const ROW_H = 60;
+const ROW_H = 40;
 const CH_HEADER = 24;
 const NODE_HEADER = 40;
 const NODE_BODY_TOP = NODE_HEADER + 10;
@@ -111,15 +111,6 @@ const presenceState: Record<Presence, string> = {
   off: "offline",
 };
 
-/** A chamfered square path (one machined corner, top-left) centered on (cx, cy). */
-function chamferSquare(cx: number, cy: number, size: number, chamfer = 5): string {
-  const h = size / 2;
-  const l = cx - h;
-  const r = cx + h;
-  const t = cy - h;
-  const b = cy + h;
-  return `M ${l + chamfer} ${t} L ${r} ${t} L ${r} ${b} L ${l} ${b} L ${l} ${t + chamfer} Z`;
-}
 
 /** Group sessions by node, preserving first-seen order. */
 function groupByNode(sessions: ActivitySession[]): [string, ActivitySession[]][] {
@@ -823,92 +814,47 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                       m.s.pending > 0 ? ` · ${m.s.pending} pending` : ""
                     }`}</title>
 
-                    {/* busy pulse ring */}
-                    {m.presence === "busy" && (
-                      <rect
-                        className="mm-pulse"
-                        x={m.x - MARKER / 2}
-                        y={m.y - MARKER / 2}
-                        width={MARKER}
-                        height={MARKER}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth={1.5}
-                      />
-                    )}
-
-                    {/* glow underlay for busy */}
-                    {m.presence === "busy" && (
-                      <path
-                        d={chamferSquare(m.x, m.y, MARKER + 8)}
-                        fill={color}
-                        opacity={0.18}
-                      />
-                    )}
-
-                    {/* recent-traffic accent */}
-                    {m.recent && (
-                      <path
-                        d={chamferSquare(m.x, m.y, MARKER + 6)}
-                        fill="none"
-                        stroke="var(--sig-normal)"
-                        strokeWidth={1.25}
-                        strokeOpacity={0.9}
-                      />
-                    )}
-
-                    {/* selection ring (connect) */}
-                    {selected.includes(agentEndpoint(m.s)) && (
-                      <path
-                        d={chamferSquare(m.x, m.y, MARKER + 10)}
-                        fill="none"
-                        stroke="var(--sig-notice)"
-                        strokeWidth={2}
-                      />
-                    )}
-
-                    {/* the contact */}
-                    <path
-                      d={chamferSquare(m.x, m.y, MARKER)}
-                      fill={color}
-                      stroke="var(--line-hi)"
-                      strokeWidth={1}
-                    />
-
-                    {/* pending badge */}
-                    {m.s.pending > 0 && (
-                      <>
-                        <circle
-                          cx={m.x + MARKER / 2}
-                          cy={m.y - MARKER / 2}
-                          r={8}
-                          fill="var(--sig-gate)"
-                          stroke="var(--bg-panel)"
-                          strokeWidth={1.5}
-                        />
-                        <text
-                          x={m.x + MARKER / 2}
-                          y={m.y - MARKER / 2 + 3.5}
-                          textAnchor="middle"
-                          fill="var(--text-hi)"
-                          style={{ font: "600 9px/1 var(--font-mono)" }}
-                        >
-                          {m.s.pending > 9 ? "9+" : m.s.pending}
-                        </text>
-                      </>
-                    )}
-
-                    {/* name label */}
-                    <text
-                      x={m.x}
-                      y={m.y + MARKER / 2 + 15}
-                      textAnchor="middle"
-                      fill="var(--text-mid)"
-                      style={{ font: "500 11px/1 var(--font-mono)" }}
-                    >
-                      @{name}
-                      {m.s.remote ? "*" : ""}
-                    </text>
+                    {/* the pill: a presence dot and the name, the rail's row in miniature */}
+                    {(() => {
+                      const label = `@${name.split("@")[0]}${m.s.remote ? "*" : ""}`;
+                      const w = Math.max(44, 24 + label.length * 6.6);
+                      const h = 20;
+                      const x0 = m.x - w / 2;
+                      const y0 = m.y - h / 2;
+                      const dotX = x0 + 11;
+                      return (
+                        <>
+                          {m.presence === "busy" && (
+                            <rect className="mm-pulse" x={x0 - 3} y={y0 - 3} width={w + 6} height={h + 6} fill="none" stroke={color} strokeWidth={1.5} />
+                          )}
+                          {m.recent && (
+                            <rect x={x0 - 3} y={y0 - 3} width={w + 6} height={h + 6} fill="none" stroke="var(--sig-normal)" strokeWidth={1.25} strokeOpacity={0.9} />
+                          )}
+                          {selected.includes(agentEndpoint(m.s)) && (
+                            <rect x={x0 - 5} y={y0 - 5} width={w + 10} height={h + 10} fill="none" stroke="var(--sig-notice)" strokeWidth={2} />
+                          )}
+                          <path
+                            d={`M ${x0 + 5} ${y0} H ${x0 + w} V ${y0 + h} H ${x0} V ${y0 + 5} Z`}
+                            fill="var(--bg-panel)"
+                            stroke={selected.includes(agentEndpoint(m.s)) ? "var(--sig-notice)" : m.presence === "busy" ? color : "var(--line-hi)"}
+                            strokeWidth={1}
+                          />
+                          <circle cx={dotX} cy={m.y} r={3.5} fill={color} />
+                          {m.presence === "busy" && <circle cx={dotX} cy={m.y} r={6} fill={color} opacity={0.22} />}
+                          <text x={x0 + 20} y={m.y + 3.5} fill="var(--text-hi)" style={{ font: "500 10.5px/1 var(--font-mono)" }}>
+                            {label}
+                          </text>
+                          {m.s.pending > 0 && (
+                            <>
+                              <circle cx={x0 + w} cy={y0} r={8} fill="var(--sig-gate)" stroke="var(--bg-panel)" strokeWidth={1.5} />
+                              <text x={x0 + w} y={y0 + 3.5} textAnchor="middle" fill="#fff" style={{ font: "600 9px/1 var(--font-mono)" }}>
+                                {m.s.pending > 9 ? "9+" : m.s.pending}
+                              </text>
+                            </>
+                          )}
+                        </>
+                      );
+                    })()}
                   </g>
                 );
               })}

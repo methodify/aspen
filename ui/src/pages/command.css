@@ -101,7 +101,8 @@
 .q-option {
   font: 500 0.8125rem/1.3 var(--font-body);
   text-align: left;
-  padding: var(--sp-2) var(--sp-3);
+  min-height: var(--ctl-h-sm);
+  padding: var(--sp-1) var(--sp-3);
   background: var(--bg-well);
   color: var(--text-mid);
   border: 1px solid var(--line-hi);

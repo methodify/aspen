@@ -1,5 +1,6 @@
 import { scoped } from "../profiles";
 import {
+  Fragment,
   memo,
   useEffect,
   useMemo,
@@ -2467,7 +2468,10 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   }, [draft, skills.length]);
   const acMatches = useMemo(() => {
     if (acDismissed) return [];
-    if (slashPartial !== null) return filterSlashCommands(commands, slashPartial);
+    if (slashPartial !== null) {
+      const rank = (x: SlashCommand) => (x.name.startsWith("$") ? 2 : x.name.includes(":") ? 1 : 0);
+      return [...filterSlashCommands(commands, slashPartial)].sort((a, b) => rank(a) - rank(b));
+    }
     if (skillPartial !== null) {
       const q = skillPartial.toLowerCase();
       return skills.filter((sk) => sk.name.slice(1).toLowerCase().startsWith(q));
@@ -3537,9 +3541,16 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         {acOpen && (
           <div className="ac-pop" role="listbox" aria-label="slash commands">
             <div className="ac-list">
-            {acMatches.map((c, i) => (
+            {acMatches.map((c, i) => {
+              // Grouped by where a command comes from: skills ($name), a
+              // plugin (namespace:command), or the harness's own.
+              const sourceOf = (x: SlashCommand) => (x.name.startsWith("$") ? "skills" : x.name.includes(":") ? "plugins" : "commands");
+              const src = sourceOf(c);
+              const head = i === 0 || sourceOf(acMatches[i - 1]!) !== src;
+              return (
+              <Fragment key={c.name}>
+              {head && <div className="ac-group label">{src}</div>}
               <div
-                key={c.name}
                 role="option"
                 aria-selected={i === acIdx}
                 className={i === acIdx ? "ac-item sel" : "ac-item"}
@@ -3558,7 +3569,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
                 {c.argumentHint && <span className="mono ac-args">{c.argumentHint}</span>}
                 {c.description && <span className="ac-desc">{c.description}</span>}
               </div>
-            ))}
+              </Fragment>
+              );
+            })}
             </div>
             <div className="ac-foot mono-meta">
               {acMatches.length} command{acMatches.length === 1 ? "" : "s"} · ↑↓ move · Tab/Enter pick · Esc close

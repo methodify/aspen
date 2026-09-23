@@ -215,6 +215,7 @@
 .q-opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .q-opt {
   font: 500 0.8125rem/1.3 var(--font-body);
+  min-height: var(--ctl-h-sm);
   padding: var(--sp-1) var(--sp-3);
   background: var(--bg-well);
   color: var(--text-mid);
@@ -240,16 +241,18 @@
 }
 .btn-answer {
   font: 600 0.8125rem/1 var(--font-body);
-  padding: var(--sp-2) var(--sp-4);
-  background: var(--sig-normal);
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-4);
+  background: var(--accent);
   color: var(--bg-well);
-  border: none;
+  border: 1px solid var(--accent);
   cursor: pointer;
 }
 .btn-answer:disabled { opacity: 0.4; cursor: default; }
 .btn-skip {
   font: 500 0.8125rem/1 var(--font-body);
-  padding: var(--sp-2) var(--sp-3);
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-3);
   background: transparent;
   color: var(--text-mid);
   border: 1px solid var(--line);
@@ -260,7 +263,8 @@
 /* ── Always-allow on permission cards ───────────────────────────────── */
 .btn-always {
   font: 600 0.8125rem/1 var(--font-body);
-  padding: var(--sp-2) var(--sp-4);
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-4);
   background: transparent;
   color: var(--live);
   border: 1px solid var(--live);
@@ -323,6 +327,8 @@
   min-width: 0;
   text-align: right;
 }
+.ac-group { padding: 6px var(--sp-3) 2px; color: var(--text-dim); }
+.ac-group + .ac-item { border-top: 0; }
 .ac-foot {
   padding: var(--sp-1) var(--sp-3);
   border-top: 1px solid var(--line);
@@ -331,8 +337,9 @@
 
 /* ── Charter drawer ─────────────────────────────────────────────────── */
 .charter-toggle {
-  font: 500 0.72rem/1 var(--font-body);
-  padding: 4px 8px;
+  font: 500 0.75rem/1 var(--font-body);
+  min-height: var(--ctl-h-sm);
+  padding: 0 8px;
   background: transparent;
   color: var(--text-mid);
   border: 1px solid var(--line);

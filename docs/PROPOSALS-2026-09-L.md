@@ -207,6 +207,8 @@ placeholder. Also: one draft per session on a console wherever it is
 shown (the operator's nit), and `bare@repo@<hostname>` resolving as
 local on a solo node (board panes).
 
-Left for v0.38.x: the slash autocomplete grouped by source; need-card
-verbs into one overflow on phones; the Mesh map's agent pills; retiring
-the old button classes once every caller is on `.btn`.
+v0.38.1: the slash autocomplete grouped by source; the Mesh map's agents
+as pills; need-card verbs on their own line on phones; the remaining
+button classes on the system's heights (the class names stay until
+their callers are migrated, which is not worth a rename for its own
+sake).
