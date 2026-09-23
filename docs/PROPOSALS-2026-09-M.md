@@ -357,3 +357,71 @@ Suggested shape: **v0.41** T-1 + T-2 · **v0.42** T-3 + T-4 + R-1 ·
   steps. Alternative: CLI only.
 - **(e) T-5** in this slate as the fourth release, or parked.
 - **(f) The rest of the slate:** D-5 and R-1 in, P-3 filler, D-6 optional.
+
+## 7. The rest of the slate, after v0.43 (2026-09-23)
+
+Shipped: T-1..T-4 (v0.41, v0.42), R-1 (v0.42), P-3 (v0.43). Open here:
+D-5, T-5, D-6.
+
+### 7.1 D-5 QR onboarding — a fork for the operator
+
+The phone must send its enroll blob to the root somewhere, before it is
+a peer. Two roads:
+
+- **(a) The node-served attach page.** The root's Mesh panel mints a
+  one-time enrol token (10 min, single use) and shows a QR of
+  `http://<lan-address>:<port>/attach?enrol=<token>` — the console the
+  node itself serves. The phone scans, the page creates its identity,
+  posts `{token, blob}` to `POST /api/mesh/enrol` (exempt from the node
+  token: the enrol token is the credential), which queues the usual
+  `certify` proposal; the operator runs `aspen mesh apply` (the
+  ceremony stays in a shell); the page polls `GET /api/mesh/enrol/<token>`
+  for the bundle, installs it, saves the relay connection, attaches.
+  Works today, LAN only, nothing to trust first (plain http, same
+  origin). The identity lands in the *node-served* origin, not the hosted
+  app: the phone keeps using `http://<node>:<port>` (an insecure context:
+  no push, no install) until it trusts the mesh CA and switches to
+  `https://<node>:<port>` — same origin family, so the identity carries
+  only if the origin is the same host and port, which it is not across
+  schemes. So the QR flow ends with "now trust the CA (download, steps)
+  and reopen at https://…" and a second identity, or we accept the
+  http origin as the phone's home on the LAN.
+- **(b) Enrol through the relay.** The relay worker (and the embedded
+  relay) accept an unauthenticated `enrol {token, blob, to: <root>}`
+  frame, deliver it to the named node, and carry the answer back; the
+  QR is `https://methodify.github.io/aspen/attach?enrol=<token>&relay=…&node=…`.
+  Works from the hosted app anywhere (the phone on cellular, a colleague
+  across town), one identity, push and install from the start. Costs: a
+  relay protocol addition (worker + `relayhost.rs` + `aspen-wire::relay`),
+  rate limiting on the unauthenticated frame, and a relay that must know
+  which node holds the root (the QR says).
+
+Recommendation: **(b)**, because the hosted app is where a phone should
+live, and (a)'s ending ("now trust the CA and start over at https://")
+is the wrong last step of an onboarding. (a) is a day; (b) is two or
+three. Decision §6(g).
+
+### 7.2 D-6 non-extractable console identity — a browser-support note
+
+WebCrypto Ed25519 is in Chrome 113+, Safari 17+, Firefox 130+; X25519 in
+Safari 17+, Firefox 130+, and Chrome only from 133 (2025). The identity
+needs both. Plan: generate both as non-extractable `CryptoKey`s where
+`crypto.subtle` supports them, store them in IndexedDB (a `CryptoKey`
+survives there; localStorage cannot hold one), sign with `subtle.sign`
+and seal with `subtle.deriveBits`; where either algorithm is missing,
+keep today's `@noble` raw keys and say so on the Attach page ("this
+browser keeps the identity as bytes"). Migration: a raw identity stays
+raw (its secret is already exposed; re-enrol to upgrade), a new one is
+non-extractable when it can be.
+
+### 7.3 T-5 direct first, relay when away
+
+As §3.6: with the CA trusted and `https_urls` advertised, the tunnel
+probes a node's direct addresses (HEAD `/api/ping`, 1 s, once per
+minute while attached) and routes that node's requests and
+subscriptions directly while keeping the relay registration; falls back
+on the first failure. The status bar says *direct* or *via relay*.
+
+## 6(g). Decision for the operator
+
+D-5 road (a) or (b) — §7.1.
