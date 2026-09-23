@@ -214,6 +214,19 @@ flapped: connected, "connection closed", reconnecting. The console now
 also sends a sealed `{t:"ping"}` routed to its node every 20 s; the node
 counts it as activity and ignores it.
 
+**"replaced" (v0.39.2).** The relay keeps one socket per registered name
+(§3): a newer registration of the same console identity closes the older
+socket with reason `replaced`. Two views of one identity — two tabs of
+the hosted console, the installed app beside a browser tab, a second
+device sharing the profile — used to evict each other in a loop, each
+reconnecting the moment it was closed ("link dropped" in the browser
+console, the pill flapping). A console closed as `replaced` now stands
+down until its tab is visible and focused again (or the operator presses
+*reconnect* on the Meshes page), at which point it takes the connection
+over and the other view stands down in turn. One view per identity is
+live at a time; the identity is per browser profile, so distinct devices
+never collide.
+
 **Restarts, precisely (2026-09-06).** Three more rules fell out of a
 restart storm run against the deployed worker (a node restarted three
 times, then both at once; every round must carry traffic afterwards):

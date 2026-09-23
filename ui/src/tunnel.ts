@@ -469,13 +469,23 @@ export class Tunnel {
         this.set("down", e instanceof Error ? e.message : String(e));
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       window.clearInterval(this.pingTimer);
       this.dropLink();
-      if (!this.stopped) {
-        this.set("down", this.error ?? "relay connection closed");
-        this.scheduleRetry();
+      if (this.stopped) return;
+      // The relay keeps one socket per console name: a newer registration
+      // of this identity — another tab, the installed app beside a tab,
+      // a second device sharing the profile — closes this one as
+      // "replaced". Reconnecting at once would evict *that* one, and the
+      // two would take turns forever (connecting, closed, connecting…).
+      // Stand down until this tab is looked at again; then it takes over.
+      if (ev.reason === "replaced") {
+        this.set("down", "another tab or device is using this console's connection — this one reconnects when you come back to it");
+        this.retryWhenVisible();
+        return;
       }
+      this.set("down", this.error ?? (ev.reason ? `relay connection closed (${ev.code} ${ev.reason})` : `relay connection closed (${ev.code})`));
+      this.scheduleRetry();
     };
     ws.onerror = () => {
       // onclose follows
@@ -502,6 +512,35 @@ export class Tunnel {
   private scheduleRetry() {
     window.clearTimeout(this.retryTimer);
     this.retryTimer = window.setTimeout(() => this.connect(), 4000);
+  }
+
+  /** After a "replaced" close: reconnect only once this tab is visible and
+   *  focused again (or the operator asks), so two views of one identity
+   *  never fight over the relay's single socket. */
+  private retryWhenVisible() {
+    window.clearTimeout(this.retryTimer);
+    const arm = () => {
+      if (this.stopped) return;
+      if (document.visibilityState === "visible" && document.hasFocus()) {
+        window.removeEventListener("focus", arm);
+        document.removeEventListener("visibilitychange", arm);
+        this.connect();
+      }
+    };
+    window.addEventListener("focus", arm);
+    document.addEventListener("visibilitychange", arm);
+  }
+
+  /** The operator's own "reconnect now". */
+  reconnect(): void {
+    if (this.stopped) return;
+    window.clearTimeout(this.retryTimer);
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this.connect();
   }
 
   private onFrame(p: Record<string, unknown>) {

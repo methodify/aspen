@@ -37,6 +37,12 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 | P-3 | protocol | Relay preference ordering (the list is ordered; nothing consumes it). | RELAY.md §10 |
 
+## Shipped — 2026-09-23: a replaced console stands down (v0.39.2)
+
+| id | shipped as |
+|---|---|
+| relay | The flapping's real close: the relay evicts an older socket of the same console identity as `replaced`, and two views of one identity (two tabs, the app + a tab) evicted each other forever. A replaced tunnel now waits until its tab is visible and focused before reconnecting; *reconnect* on the Meshes page forces it. Close codes and reasons surface in the pill. RELAY.md §8. |
+
 ## Shipped — 2026-09-23: console links no longer flap (v0.39.1)
 
 | id | shipped as |

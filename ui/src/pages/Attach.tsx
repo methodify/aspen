@@ -166,6 +166,11 @@ export default function Attach() {
             </div>
             <div className="attach-row">
               <span className={`chip mono attach-state s-${tunnel.state}`}>{tunnel.state}</span>
+              {tunnel.state === "down" && (
+                <button type="button" className="btn sm" onClick={() => tunnel.reconnect()} title="dial the relay again now — if another tab or device holds this console's connection, this one takes it over">
+                  reconnect
+                </button>
+              )}
               {tunnel.present.length > 0 && <span className="mono-meta">on the relay: {tunnel.present.filter((p) => !p.startsWith("console-")).join(", ") || "no nodes"}</span>}
               <span style={{ flex: 1 }} />
               {tunnel.enabled && tunnel.state !== "off" ? (
