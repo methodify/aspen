@@ -425,3 +425,114 @@ on the first failure. The status bar says *direct* or *via relay*.
 ## 6(g). Decision for the operator
 
 D-5 road (a) or (b) — §7.1.
+
+## 8. From the sofa: trust without a node, and direct when it is there (2026-09-23)
+
+The operator, on the hosted console over the relay, with the node in
+the next room on the same Wi-Fi. Two asks: make trusting the CA easy on
+a device that has no node (a phone; a laptop without Aspen), and let the
+hosted console take a direct path when one exists and fall back to the
+relay when it does not.
+
+### 8.1 T-6 Trust the CA from a device with no node
+
+The hosted console cannot write a trust store; it can hand the device
+the right thing for *that* device and then prove the result.
+
+- **Device-aware certificate row.** The row (T-4) already offers
+  download, copy and steps. It gains a device switch (from the user
+  agent, overridable): *iPhone/iPad*, *Android*, *Mac*, *Windows*,
+  *Linux*, each with one primary action and the two or three steps that
+  follow it:
+  - **iPhone / iPad:** a **configuration profile** (`.mobileconfig`, an
+    unsigned Apple plist with one `com.apple.security.root` payload
+    carrying the CA). Safari opens it into Settings → *Profile
+    Downloaded* → Install; then Settings → General → About →
+    *Certificate Trust Settings* → enable full trust. Two taps fewer
+    than a bare `.crt`, and the profile names the mesh. The full-trust
+    toggle cannot be skipped without MDM; we say so.
+  - **Android:** the `.crt`; Settings → Security → Encryption &
+    credentials → Install a certificate → CA certificate.
+  - **Mac without Aspen:** the `.crt` plus a copyable one-liner
+    (`security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db aspen-mesh-<name>.crt`),
+    or the same `.mobileconfig` (System Settings → Profiles).
+  - **Windows without Aspen:** the `.crt` (double-click → Install →
+    Current User → Trusted Root) plus the copyable `certutil -addstore
+    -user Root` line.
+  - **Linux:** the NSS and system one-liners.
+- **Get it onto the phone: a QR.** The CA is public material, so
+  `GET /api/tls/root.crt` and a new `GET /api/tls/root.mobileconfig`
+  are exempt from the node token and served over **plain http** too —
+  the one thing a phone can open before it trusts anything. The row
+  shows a QR of `http://<node's first advertised host>:<port>/api/tls/root.mobileconfig`
+  (or `.crt` for Android); scan, install. The fingerprint is printed
+  beside it for the careful.
+- **Prove it.** A **check** button fetches `https://<node>/api/ping`
+  from the page (CORS already admits the hosted origin). Success means
+  this browser trusts the mesh CA for that node: the row turns green,
+  the same signal T-5 uses. Failure names the likely cause (not trusted
+  yet, or the name does not resolve from here).
+- **Several meshes:** one CA per mesh, one row per mesh, as today.
+
+### 8.2 T-5, redesigned: direct when there is a path, relay when not
+
+**Which node.** Whichever is *useful*: the node that owns the session or
+data being asked for (fewest hops), else the node the console is
+attached to (it proxies to peers as it does over the relay). The
+console learns every node's `https_urls` from `GET /api/mesh`
+(`identity.advertised`, `peers[].advertised`) and keeps a per-node
+direct table.
+
+**Auth is the real problem.** Beyond loopback a node demands the node
+token on every https call; the hosted console has none, and must not
+(a token in a QR or a URL is a secret in the wrong place). Over the
+relay the console is *already* authenticated by its mesh identity. So:
+**the console asks the node, over the sealed link, for a console token**
+— `POST /api/console/token` (or the `console_token` op): the node mints
+a random token bound to the console's identity, with the console's
+grants (observe + control, never spawn or trust), a 24 h life, stored
+in memory (`console_tokens`), answered once; the console keeps it in
+its profile store and sends it as `X-Aspen-Token` on direct calls and
+as `?token=` on the events WebSocket. For a peer node, the same request
+rides the tunnel's existing proxying (`bare@node` addressing) so each
+node mints its own. Revocation is `aspen consoles revoke` (D-5's
+console registry) or simply the daemon restarting. Trust is
+bootstrapped over the channel that already proved who is asking; no
+secret ever crosses the relay in the clear (it is sealed end to end).
+
+**Probing.** For each node with `https_urls`: at attach, and again
+every 60 s while unreachable / every 5 min while reachable, `GET
+/api/ping` against each URL with a 1.5 s timeout, first success wins
+(prefer the last one that worked). A direct URL that fails once
+mid-flight is marked down at once and re-probed in 30 s. Names that do
+not resolve from this network (a WSL hostname, a `.local` from a phone)
+simply fail their probe.
+
+**Routing.** `Tunnel.http()` and `subscribe()` consult the table per
+call: node has a live direct entry → direct https / wss with the
+console token; else the relay as today. An in-flight direct request
+that fails with a network error is retried once over the relay. The
+relay registration is **never** dropped while attached: presence, mail
+and the fallback need it, and it costs one idle socket. A follower tab
+(C-1) asks its leader, which does the same choice.
+
+**What it looks like.** The status bar's connection zone reads
+*direct → anindor · relay standing by* or *via relay → anindor*; the
+Meshes page's peer rows show *direct* when the probe passed. A `prefer
+relay` toggle in the connection sheet for the operator who wants to
+test the relay path.
+
+**Not doing:** mTLS with the console key (browsers cannot use a raw
+Ed25519 key as a client certificate); a token in the QR; dropping the
+relay when direct is up.
+
+**Order:** T-6 first (a day: the profile, the http exemption, the QR,
+the check), then T-5 (two: the console token, the table and probes, the
+routing, the bar). Together they are v0.44.
+
+## 6(h). Decisions for the operator
+
+- T-5's auth by a console token minted over the sealed link (24 h,
+  console-scoped), or something else?
+- T-6's plain-http CA download (public material, no token) — acceptable?
+- Build both as v0.44 in that order?
