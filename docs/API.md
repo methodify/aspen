@@ -113,7 +113,7 @@ whoever messaged you are always allowed.
 | `POST /api/adoptions/{id}` | `{ action: carry\|split\|ignore\|revive, name?, node? }` | `{ ok, agent? }` | answer one. `carry`: the agent's name moves to the fork (old tip bookmarked; a live process is restarted onto it). `split`: a new agent `name` resumes the fork in place; the original keeps its session. `revive` (resumed): bring the agent back on its head. `ignore`: leave it. `node` answers on a peer |
 | `POST /api/adoptions/scan` | — | `{ ok, raised[] }` | run the detector now |
 | `POST /api/hooks/session` | Claude Code hook JSON | `{ ok }` | what `aspen hook` relays from the SessionStart/SessionEnd hooks: a nudge to scan (recorded as a `hook_session` event) |
-| `POST /api/needs/read` | — | `{}` | mark operator mail read, locally and on every connected peer |
+| `POST /api/needs/read` (body `{ids?, node?}` since v0.44.1: one card on one node; no body = everything everywhere) | — | `{}` | mark operator mail read, locally and on every connected peer |
 | `GET /api/dms` | — | `[{a,b,last_at,messages}]` | direct-message pairs (non-channel traffic), newest first |
 | `GET /api/dm?a=&b=&n=` | — | `BusMessage[]` | one direct conversation, chronological |
 | `GET /api/bus/post/{post}` | — | `BusMessage[]` | per-recipient receipts for one logical post — watch a routed message land (delivered/ingested per recipient) |

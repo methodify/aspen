@@ -400,7 +400,7 @@ export default function Now() {
               <PermCard key={`${p.agent}:${p.request_id}`} prompt={p} onAnswered={() => void needsPoll.refresh()} />
             ),
           )}
-          {inbox.map((m: BusMessage) => (
+          {inbox.map((m: BusMessage & { node?: string | null }) => (
             <div key={m.id} className="need-card">
               <MessageRow
                 urgency={m.urgency}
@@ -429,6 +429,7 @@ export default function Now() {
                   <span style={{ flex: 1 }} />
                   <button className="btn sm" onClick={() => setReplyTo(m.sender)}>reply</button>
                   <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(m.sender)}`)}>open</button>
+                  <button className="btn ghost sm" title="mark read: the card leaves this page (the message stays in the session and the bus log)" onClick={() => void api.markNeedsRead([m.id], m.node).then(() => needsPoll.refresh())}>dismiss</button>
                 </div>
               )}
             </div>

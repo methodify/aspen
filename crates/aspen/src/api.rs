@@ -4218,21 +4218,46 @@ async fn post_hook_session(State(s): S, Json(b): Json<Value>) -> impl IntoRespon
 }
 
 /// Mark the operator inbox read — locally and on every connected peer.
-async fn post_needs_read(State(s): S) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+struct NeedsReadBody {
+    /// Only these message ids (a dismissed card); absent = everything.
+    #[serde(default)]
+    ids: Vec<i64>,
+    /// The node the ids live on; absent = this node (and, with no ids,
+    /// every linked peer too).
+    #[serde(default)]
+    node: Option<String>,
+}
+
+/// POST /api/needs/read {ids?, node?} — mark the operator's mail read:
+/// all of it everywhere (no body), or one card (`ids` on `node`).
+async fn post_needs_read(State(s): S, body: Option<Json<NeedsReadBody>>) -> impl IntoResponse {
+    let Json(b) = body.unwrap_or_default();
     let store = &s.node.inner.store;
-    if let Ok(rows) = store.pending_for("operator") {
-        let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
-        let _ = store.mark_delivered(&ids, "operator-ui", None);
+    let local = b.node.as_deref().is_none_or(|n| is_self_node(&s, n));
+    if local {
+        if let Ok(rows) = store.pending_for("operator") {
+            let ids: Vec<i64> = rows
+                .iter()
+                .map(|m| m.id)
+                .filter(|id| b.ids.is_empty() || b.ids.contains(id))
+                .collect();
+            let _ = store.mark_delivered(&ids, "operator-ui", None);
+        }
     }
     if let Some(mesh) = s.node.inner.mesh() {
-        let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
+        let peers: Vec<String> = match &b.node {
+            Some(n) if !local => vec![n.clone()],
+            Some(_) => vec![],
+            None => mesh.links.lock().unwrap().keys().cloned().collect(),
+        };
         for peer in peers {
             let _ = mesh
                 .api_call(
                     &peer,
                     "inbox_read",
                     "",
-                    json!({}),
+                    json!({ "ids": if b.ids.is_empty() { Value::Null } else { json!(b.ids) } }),
                     std::time::Duration::from_secs(5),
                 )
                 .await;

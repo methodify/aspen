@@ -2479,10 +2479,19 @@ async fn serve_api_req(
             }))
         }
         "inbox_read" => {
+            // All of the operator's pending mail, or just the ids named
+            // (a card dismissed on the Now page).
             let rows = inner.store.pending_for("operator")?;
-            let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
+            let only: Option<Vec<i64>> = body
+                .get("ids")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let ids: Vec<i64> = rows
+                .iter()
+                .map(|m| m.id)
+                .filter(|id| only.as_ref().is_none_or(|o| o.contains(id)))
+                .collect();
             inner.store.mark_delivered(&ids, "operator-ui", None)?;
-            Ok(json!({}))
+            Ok(json!({ "read": ids.len() }))
         }
         "permission" => {
             node.answer_permission(

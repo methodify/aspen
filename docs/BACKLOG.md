@@ -35,6 +35,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-09-24: dismiss on Now, the chamfer's missing edge (v0.44.1)
+
+- Operator mail on the Now page can be **dismissed** per card (`POST /api/needs/read {ids, node}`; the `inbox_read` op takes `ids`), and a card leaves on its own once the operator answers that session (`send_operator_message` marks its pending mail `operator-replied`).
+- Every chamfered surface (strips, panels, boards, the class badges) now draws its diagonal edge, so the cut corner no longer reads as a bite out of the border.
+
 ## Shipped — 2026-09-24: trust from any device, direct when there is a path (T-6, T-5, v0.44)
 
 | id | shipped as |

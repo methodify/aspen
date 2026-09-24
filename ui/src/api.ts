@@ -1631,7 +1631,7 @@ export const api = {
     post<Record<string, never>>(`/api/agents/${enc(name)}/charter`, { charter }),
 
   needs: () => request<Needs>("/api/needs"),
-  markNeedsRead: () => post<Record<string, never>>("/api/needs/read"),
+  markNeedsRead: (ids?: number[], node?: string | null) => post<Record<string, never>>("/api/needs/read", ids ? { ids, node: node ?? undefined } : undefined),
 
   dms: () => request<DmPair[]>("/api/dms"),
   dmLog: (a: string, b: string, n = 200) =>

@@ -190,6 +190,37 @@ a { color: inherit; }
 .chamfer {
   clip-path: polygon(var(--chamfer) 0, 100% 0, 100% 100%, 0 100%, 0 var(--chamfer));
 }
+/* The clip removes the border along the cut, which reads as a bite out
+   of the box (2026-09-24). Every chamfered surface draws the diagonal
+   edge itself: a line from (0, chamfer) up to (chamfer, 0), in the
+   surface's own edge color. */
+.chamfer, .strip:not(.flat), .board-card, .hk-panel, .trust-panel, .pal-panel, .class-badge, .needs-kind { position: relative; }
+.chamfer::before, .strip:not(.flat)::before, .board-card::before, .hk-panel::before, .trust-panel::before, .pal-panel::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: calc(var(--chamfer) - 1px);
+  width: calc(var(--chamfer) * 1.4142);
+  height: 2px;
+  background: var(--line);
+  transform-origin: 0 0;
+  transform: rotate(-45deg);
+  pointer-events: none;
+}
+.hk-panel::before { background: var(--line-hi); }
+.trust-panel::before { background: var(--sig-normal); }
+.class-badge::before, .needs-kind::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 3px;
+  width: 5.66px;
+  height: 2px;
+  background: currentColor;
+  transform-origin: 0 0;
+  transform: rotate(-45deg);
+  pointer-events: none;
+}
 
 /* ── App shell ──────────────────────────────────────────────────────── */
 .shell { display: grid; grid-template-rows: var(--statusbar-h) 1fr; height: 100%; }
