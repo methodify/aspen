@@ -29,6 +29,9 @@ pub struct AppState {
     pub shutdown: Arc<tokio::sync::Notify>,
     /// The embedded rendezvous relay (relayhost.rs).
     pub relay: Arc<crate::relayhost::RelayHost>,
+    /// Per-process secret the http gateway stamps on requests it makes,
+    /// so `x-aspen-peer` is believed only from the gateway.
+    pub gateway_secret: String,
 }
 
 type S = State<Arc<AppState>>;
@@ -54,12 +57,18 @@ pub async fn serve(
         None
     };
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let gateway_secret = {
+        let mut b = [0u8; 16];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut b);
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    };
     let state = Arc::new(AppState {
         node,
         node_name: hostname(),
         token: token.clone(),
         shutdown: shutdown_notify.clone(),
         relay: Arc::new(crate::relayhost::RelayHost::default()),
+        gateway_secret: gateway_secret.clone(),
     });
 
     let api = Router::new()
@@ -224,6 +233,9 @@ pub async fn serve(
         .route("/tls", get(get_tls))
         .route("/tls/renew", post(post_tls_renew))
         .route("/tls/trust", post(post_tls_trust))
+        .route("/tls/root.mobileconfig", get(get_tls_mobileconfig))
+        .route("/console/token", post(post_console_token))
+        .route("/mesh/{node}/console-token", post(post_peer_console_token))
         .route("/tls/root.crt", get(get_tls_root))
         .with_state(state.clone());
 
@@ -261,6 +273,7 @@ pub async fn serve(
     {
         let gw_router = app.clone();
         let gw_token = token.clone();
+        let gw_secret = gateway_secret.clone();
         let gateway: aspen_node::node::HttpGateway = Arc::new(
             move |method: String,
                   path: String,
@@ -268,11 +281,13 @@ pub async fn serve(
                   headers: std::collections::HashMap<String, String>| {
                 let router = gw_router.clone();
                 let tk = gw_token.clone();
+                let secret = gw_secret.clone();
                 Box::pin(async move {
                     use tower::ServiceExt;
                     let mut req = axum::http::Request::builder()
                         .method(method.as_str())
-                        .uri(path.as_str());
+                        .uri(path.as_str())
+                        .header("x-aspen-gateway", secret.as_str());
                     if let Some(t) = tk.as_deref() {
                         req = req.header("x-aspen-token", t);
                     }
@@ -539,6 +554,151 @@ async fn post_tls_renew(State(s): S) -> Result<Json<Value>, (StatusCode, Json<Va
             ))
         }
     }
+}
+
+/// POST /api/console/token — a direct-call token for the console asking
+/// over the sealed link (TLS.md §8). Refused to anyone else.
+async fn post_console_token(
+    State(s): S,
+    req: axum::extract::Request,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let console = req
+        .headers()
+        .get("x-aspen-peer")
+        .and_then(|v| v.to_str().ok())
+        .filter(|c| c.starts_with("console-"))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "console tokens are minted only for a console asking over its mesh link" })),
+            )
+        })?;
+    let (token, expires) = s.node.inner.mint_console_token(&console);
+    let _ = s
+        .node
+        .inner
+        .store
+        .record_event("node", "console_token", json!({ "console": console }));
+    Ok(Json(
+        json!({ "token": token, "expires": expires, "node": s.node.inner.node_name() }),
+    ))
+}
+
+/// POST /api/mesh/{node}/console-token — the same, for a peer: this node
+/// vouches for the console over its link to the peer, which mints.
+async fn post_peer_console_token(
+    State(s): S,
+    Path(node): Path<String>,
+    req: axum::extract::Request,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if is_self_node(&s, &node) {
+        return post_console_token(State(s), req).await;
+    }
+    let console = req
+        .headers()
+        .get("x-aspen-peer")
+        .and_then(|v| v.to_str().ok())
+        .filter(|c| c.starts_with("console-"))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "console tokens are minted only for a console asking over its mesh link" })),
+            )
+        })?;
+    let mesh = s.node.inner.mesh().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "not in a mesh" })),
+        )
+    })?;
+    match mesh
+        .api_call(
+            &node,
+            "console_token",
+            "",
+            json!({ "console": console }),
+            std::time::Duration::from_secs(15),
+        )
+        .await
+    {
+        Ok(v) => Ok(Json(v)),
+        Err(e) => Err((
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("{e:#}") })),
+        )),
+    }
+}
+
+/// GET /api/tls/root.mobileconfig — the mesh CA as an Apple configuration
+/// profile (unsigned): one tap into Settings on an iPhone or a Mac; the
+/// full-trust switch still has to be flipped by hand (TLS.md §8).
+async fn get_tls_mobileconfig(State(s): S) -> axum::response::Response {
+    let Some(ca) = aspen_node::tls::known_ca(&s.node.inner) else {
+        return (StatusCode::NOT_FOUND, "this node knows no mesh TLS CA yet").into_response();
+    };
+    let mesh = ca.mesh.clone();
+    let fp = ca.fingerprint().replace(':', "").to_lowercase();
+    let uuid_of = |salt: &str| {
+        let h = &fp[..32];
+        format!(
+            "{}-{}-{}-{}-{}{}",
+            &h[0..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..30],
+            &salt[..2]
+        )
+    };
+    let b64 = aspen_wire::b64::encode(&ca.der);
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadCertificateFileName</key><string>aspen-mesh-{mesh}.crt</string>
+      <key>PayloadContent</key><data>{b64}</data>
+      <key>PayloadDescription</key><string>The certificate authority of Aspen mesh {mesh}</string>
+      <key>PayloadDisplayName</key><string>Aspen mesh {mesh} CA</string>
+      <key>PayloadIdentifier</key><string>aspen.mesh.{mesh}.ca</string>
+      <key>PayloadType</key><string>com.apple.security.root</string>
+      <key>PayloadUUID</key><string>{u1}</string>
+      <key>PayloadVersion</key><integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key><string>Trusts the certificates of the nodes in Aspen mesh {mesh}. After installing, enable full trust under Settings → General → About → Certificate Trust Settings.</string>
+  <key>PayloadDisplayName</key><string>Aspen mesh {mesh}</string>
+  <key>PayloadIdentifier</key><string>aspen.mesh.{mesh}</string>
+  <key>PayloadOrganization</key><string>Aspen</string>
+  <key>PayloadRemovalDisallowed</key><false/>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadUUID</key><string>{u2}</string>
+  <key>PayloadVersion</key><integer>1</integer>
+</dict>
+</plist>
+"#,
+        u1 = uuid_of("aa"),
+        u2 = uuid_of("bb"),
+    );
+    (
+        [
+            (
+                "content-type",
+                "application/x-apple-aspen-config".to_string(),
+            ),
+            (
+                "content-disposition",
+                format!("attachment; filename=\"aspen-mesh-{mesh}.mobileconfig\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// GET /api/tls/root.crt — the mesh CA certificate as a download, for a
@@ -915,16 +1075,32 @@ async fn cors_middleware(
 
 async fn auth_middleware(
     State(s): S,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // `x-aspen-peer` names the mesh peer a request came from over a sealed
+    // link; only the http gateway may say so (it stamps a per-process
+    // secret). Anyone else's claim is dropped here.
+    let from_gateway = req
+        .headers()
+        .get("x-aspen-gateway")
+        .and_then(|v| v.to_str().ok())
+        == Some(s.gateway_secret.as_str());
+    req.headers_mut().remove("x-aspen-gateway");
+    if !from_gateway {
+        req.headers_mut().remove("x-aspen-peer");
+    }
     let Some(expected) = &s.token else {
         return next.run(req).await;
     };
     // Federation carries sealed frames and authenticates cryptographically;
-    // the relay admits by cert + challenge and reads nothing it routes.
-    if req.uri().path().ends_with("/federation/ws")
-        || req.uri().path().ends_with("/federation/relay")
+    // the relay admits by cert + challenge and reads nothing it routes. The
+    // mesh CA is public material a device fetches before it trusts anything.
+    let path = req.uri().path();
+    if path.ends_with("/federation/ws")
+        || path.ends_with("/federation/relay")
+        || path.ends_with("/tls/root.crt")
+        || path.ends_with("/tls/root.mobileconfig")
     {
         return next.run(req).await;
     }
@@ -940,6 +1116,16 @@ async fn auth_middleware(
             })
         });
     if presented.as_deref() == Some(expected.as_str()) {
+        next.run(req).await
+    } else if let Some(console) = presented
+        .as_deref()
+        .and_then(|t| s.node.inner.console_for_token(t))
+    {
+        // A console calling directly over https with a token it was
+        // minted over the sealed link (TLS.md §8).
+        if let Ok(v) = axum::http::HeaderValue::from_str(&console) {
+            req.headers_mut().insert("x-aspen-peer", v);
+        }
         next.run(req).await
     } else {
         err(

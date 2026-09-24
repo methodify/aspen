@@ -1285,6 +1285,14 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-09-24 — v0.44: trust from any device, direct when there is a
+  path (T-6, T-5).** Decided: the CA is public material, so it is served
+  token-free over plain http and as an Apple profile — the one thing a
+  phone can fetch before it trusts anything; the hosted console never
+  holds the node token, it asks the node over the already-authenticated
+  sealed link for a 24 h console token and uses that directly; the relay
+  registration is never dropped while attached. `x-aspen-peer` is
+  trusted only when the http gateway stamped it.
 - **2026-09-23 — v0.43: relay preference order (P-3).** The ordered
   relay list is finally consumed: links and mail prefer the first relay
   by configured order; `--first` and a *queue prefer* verb set it.

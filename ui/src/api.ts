@@ -1087,7 +1087,7 @@ export interface MeshMembership {
 export interface TlsStatus {
   mesh: string | null;
   root_here: boolean;
-  ca: { mesh: string; fingerprint: string; not_after: number | null; root_sig_ok: boolean | null; here: boolean; pem: string } | null;
+  ca: { mesh: string; fingerprint: string; not_after: number | null; root_sig_ok: boolean | null; here: boolean; pem: string; urls?: { crt: string; mobileconfig: string } | null } | null;
   leaf: { names: string[]; not_before: number; not_after: number; fingerprint: string; issuer: string; covers_current_names: boolean; serving: boolean } | null;
   names: string[];
   https_port: number | null;

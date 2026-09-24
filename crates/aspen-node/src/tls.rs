@@ -720,7 +720,7 @@ pub fn stores_cached(inner: &NodeInner, force: bool) -> Vec<crate::truststore::S
 }
 
 /// `GET /api/tls`: the CA as known here, the leaf, the names, the loop.
-pub fn status_json(inner: &NodeInner) -> Value {
+pub fn status_json(inner: &Arc<NodeInner>) -> Value {
     let d = inner.data_dir.clone();
     let files = d.as_deref().map(MeshFiles::new);
     let mesh = inner.mesh();
@@ -732,6 +732,22 @@ pub fn status_json(inner: &NodeInner) -> Value {
     let ca = mesh_name
         .as_deref()
         .and_then(|m| files.as_ref().and_then(|f| f.tls_ca(m).ok().flatten()));
+    // Where a device with no node fetches the CA before it trusts anything:
+    // plain http, no token, at this node's first advertised host.
+    let http_base = d.as_deref().and_then(|dir| {
+        let listen = std::fs::read_to_string(dir.join("daemon.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v["listen"].as_str().map(str::to_owned))?;
+        let port = listen.parse::<std::net::SocketAddr>().ok()?.port();
+        let adv = crate::federation::advertised(inner);
+        let host = adv
+            .dial_urls
+            .first()
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_owned))?;
+        Some(format!("http://{host}:{port}"))
+    });
     let ca_json = ca.as_ref().map(|c| {
         json!({
             "mesh": c.mesh,
@@ -740,6 +756,10 @@ pub fn status_json(inner: &NodeInner) -> Value {
             "root_sig_ok": mesh.as_ref().map(|m| c.verify_against(&m.root_public()).is_ok()),
             "here": root_here,
             "pem": der_to_pem(&c.der),
+            "urls": http_base.as_ref().map(|b| json!({
+                "crt": format!("{b}/api/tls/root.crt"),
+                "mobileconfig": format!("{b}/api/tls/root.mobileconfig"),
+            })),
         })
     });
     let leaf = d.as_deref().and_then(|d| leaf_info(d).ok().flatten());

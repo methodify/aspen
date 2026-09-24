@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { consoleNodeName, createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
+import { Tunnel, consoleNodeName, createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
 import { activate, activeConnection, addConnection, connectionSummary, directUrlProblem, hosted, listConnections, markActive, probeMesh, removeConnection, type Connection } from "../connections";
 import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, readFrom, removeProfile, setProfileLabel, setProfileMesh, switchTo, type Profile } from "../profiles";
 import { ErrorBar } from "../components";
@@ -195,6 +195,27 @@ export default function Attach() {
  *  this machine reached directly, or a node reached through a relay as
  *  a mesh peer. Hosted, this is the front door; served by a node, it is
  *  a way to look at another node from this page. */
+/** Direct paths (TLS.md §8): once this browser trusts the mesh CA, the
+ *  console reaches a node straight over https when it can and keeps the
+ *  relay for presence and fallback. This switch pins it to the relay. */
+function PreferRelay() {
+  const [v, setV] = useState(() => Tunnel.preferRelay());
+  const [, setTick] = useState(0);
+  useEffect(() => tunnel.onChange(() => setTick((n) => n + 1)), []);
+  const direct = tunnel.directNodes;
+  return (
+    <div className="attach-row">
+      <label className="mono-meta" style={{ display: "flex", alignItems: "center", gap: 6 }} title="when off, the console probes each node's https address and goes direct when this browser trusts the mesh certificate; the relay stays registered for presence, mail and fallback">
+        <input type="checkbox" checked={v} onChange={(e) => { setV(e.target.checked); Tunnel.setPreferRelay(e.target.checked); }} />
+        stay on the relay
+      </label>
+      <span className="mono-meta">
+        {v ? "direct paths off" : direct.length ? `direct to ${direct.join(", ")}` : tunnel.state === "up" ? "no direct path yet (trust the mesh certificate — Meshes → certificate)" : ""}
+      </span>
+    </div>
+  );
+}
+
 function Connections({ relay, node, certified }: { relay: string; node: string; certified: boolean }) {
   const [list, setList] = useState<Connection[]>(() => listConnections());
   const active = activeConnection();
@@ -245,6 +266,7 @@ function Connections({ relay, node, certified }: { relay: string; node: string; 
   return (
     <section className="strip attach-step">
       <span className="label">Connections</span>
+      <PreferRelay />
       {list.length === 0 && <p className="dim">{hosted ? "None yet. Add the node on this machine below, or attach through a relay (steps 1–3) and save it as a connection." : "None saved. This page is served by a node and talks to it; a saved connection points it elsewhere."}</p>}
       {list.map((c) => (
         <div className="attach-row" key={c.id}>

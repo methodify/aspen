@@ -1,7 +1,7 @@
 # TLS for nodes: the mesh root as a certificate authority
 
 **Status:** reference for what is built (2026-09-23, v0.41: T-1, T-2;
-v0.42: T-3, T-4 of PROPOSALS-2026-09-M.md). Code:
+v0.42: T-3, T-4; 2026-09-24, v0.44: T-6, T-5 of PROPOSALS-2026-09-M.md). Code:
 `aspen-wire::identity::TlsCa`, `crates/aspen-node/src/tls.rs`,
 `crates/aspen-node/src/truststore.rs`, `crates/aspen/src/tlsserve.rs`,
 the `tls_csr` op and roster field in `federation.rs`, `aspen tls …` in
@@ -195,3 +195,71 @@ learned the CA from the first roster and had its 90-day leaf over the
 link 17 s after start; the offline blobs issued a second leaf; the
 member restarted with `--tls-listen` served plain on 7696 and TLS on
 7697, advertising the 7697 URLs.
+
+## 8. Trust from a device with no node, and direct when there is a path (v0.44, T-6 and T-5)
+
+**T-6 — a phone, or a laptop without Aspen.** The hosted console cannot
+write a trust store; it hands each device the right thing and proves
+the result:
+
+- `GET /api/tls/root.crt` and `GET /api/tls/root.mobileconfig` are
+  **token-free** (the CA is public material) and served over **plain
+  http** as well as https — the one thing a phone can open before it
+  trusts anything. `GET /api/tls` carries `ca.urls {crt, mobileconfig}`
+  at the node's first advertised host and its http port.
+- The `.mobileconfig` is an unsigned Apple configuration profile with
+  one `com.apple.security.root` payload (`application/x-apple-aspen-config`):
+  Safari opens it straight into Settings (iPhone) or System Settings →
+  Profiles (Mac). The full-trust switch (Settings → General → About →
+  Certificate Trust Settings) still has to be flipped by hand; only MDM
+  can skip it.
+- The certificate row's **on this device / a phone** panel picks the
+  device from the user agent (overridable): iPhone/iPad and Mac get
+  *install profile*, everyone gets *download .crt* and *copy link*, Mac,
+  Windows and Linux get the one-liner; a **QR** of the http link for a
+  phone to scan on the same network; the steps beneath.
+- **check** fetches `https://<node>:<https port>/api/tls/root.crt` from
+  the page: a 200 means this browser trusts the mesh CA for that node
+  (CORS already admits the hosted origin). The same test drives T-5.
+
+**T-5 — direct when there is a path, relay when not.** The console keeps
+the relay registration (presence, mail, fallback) and, once linked:
+
+- learns every node's `https_urls` from `GET /api/mesh` and **probes**
+  them (`/api/tls/root.crt`, 1.5 s each, first success wins, the last
+  good one first): at attach, every minute while a node is unreachable,
+  every five while reachable, and 30 s after a direct request fails.
+- **auth:** a node beyond loopback demands its token on every https
+  call, and the hosted console has none. Over the sealed link the
+  console is already authenticated by its identity, so it asks there for
+  a **console token**: `POST /api/console/token` (the attached node) or
+  `POST /api/mesh/{node}/console-token` (a peer, minted by that peer via
+  the `console_token` op with the attached node vouching). The node
+  mints 32 random bytes bound to the console name, good for 24 h, kept
+  in memory (`NodeInner.console_tokens`); the console keeps it in its
+  tunnel state and sends it as `X-Aspen-Token` on direct calls and
+  `?token=` on the events socket. `auth_middleware` accepts a live
+  console token like the node token and stamps `x-aspen-peer` with the
+  console's name. Fleet event `console_token {console, via?}`.
+- **`x-aspen-peer` is believed only from the http gateway**, which
+  stamps a per-process secret (`x-aspen-gateway`) on requests it makes
+  for the `http` op; the middleware strips both headers from anyone
+  else. The `http` op overwrites any `x-aspen-peer` a console put in its
+  request headers with the link's proven name.
+- **routing:** the tunnel's `http()` sends a request for `bare@repo@node`
+  (or, for a non-agent path, the attached node) straight to that node's
+  direct URL when it has one and a token; a network failure marks the
+  path down and the request goes over the relay. `subscribe()` opens a
+  `wss://` events socket directly under the same rule. Follower tabs
+  (C-1) ask their leader, which decides.
+- **the bar** reads *direct → anindor · relay standing by* or *via relay
+  → anindor · up*; the Attach page's **stay on the relay** switch pins
+  the relay (`aspen.console.preferRelay`) and lists the nodes reached
+  directly.
+
+Verified (rig, 2026-09-24): the CA and the profile served token-free over
+plain http; a spoofed `x-aspen-peer` on a direct call refused (403);
+the certificate panel's device switch, QR, profile link and check
+rendered; with the CA untrusted in the browser the probe failed quietly
+and the console stayed on the relay. The switch to direct itself is
+verified by the operator on the Mac after `aspen tls trust`.

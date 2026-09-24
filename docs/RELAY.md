@@ -462,8 +462,10 @@ timeout, on every attempt, while nodes named j1/j2/r never showed it.
 
 **Direct https (v0.41, TLS.md).** With the mesh CA trusted on a
 computer, the hosted console can attach to `https://<node>` on the home
-network directly — the relay is for when you are away. T-5
-(PROPOSALS-2026-09-M.md §3.6) is the automatic switch.
+network directly — the relay is for when you are away. Since v0.44 the
+switch is automatic (TLS.md §8): the console probes each node's
+advertised https URLs, fetches a console token over the sealed link, and
+routes direct while keeping the relay registered as the fallback.
 
 ## 12. Big frames travel in pieces (v0.27.3)
 

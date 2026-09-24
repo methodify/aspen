@@ -2229,10 +2229,14 @@ async fn serve_api_req(
                 return Err(anyhow!("http op serves /api/ paths only"));
             }
             let b = body.get("body").and_then(|b| b.as_str()).map(str::to_owned);
-            let headers: HashMap<String, String> = body
+            let mut headers: HashMap<String, String> = body
                 .get("headers")
                 .and_then(|h| serde_json::from_value(h.clone()).ok())
                 .unwrap_or_default();
+            // Who is asking, as the link proved it — set here, never by
+            // the caller (the gateway strips a client-supplied one).
+            headers.retain(|k, _| !k.eq_ignore_ascii_case("x-aspen-peer"));
+            headers.insert("x-aspen-peer".into(), peer.to_owned());
             Ok(gw(method, path, b, headers).await)
         }
         "templates" => Ok(json!(node.inner.store.templates(true)?)),
@@ -2518,6 +2522,22 @@ async fn serve_api_req(
         // mesh-wide view. Repos/sessions recovered here register on THIS
         // node; a peer that loses the mesh link stops seeing them, which is
         // the intended "remote content lives on its owning node" model.
+        "console_token" => {
+            // A member vouches for a console it is linked to (TLS.md §8):
+            // mint a token so that console may call this node directly.
+            let console = body
+                .get("console")
+                .and_then(|c| c.as_str())
+                .filter(|c| c.starts_with("console-"))
+                .ok_or_else(|| anyhow!("console_token needs a console name"))?;
+            let (token, expires) = node.inner.mint_console_token(console);
+            let _ = node.inner.store.record_event(
+                "node",
+                "console_token",
+                json!({ "console": console, "via": peer }),
+            );
+            Ok(json!({ "token": token, "expires": expires, "node": node.inner.node_name() }))
+        }
         "tls_csr" => {
             // A member asks the root holder for a leaf (docs/TLS.md §3): the
             // CSR is signed here, every name checked, the issue recorded.

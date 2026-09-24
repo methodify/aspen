@@ -17,6 +17,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import QRCode from "qrcode";
 import { api, attachedIsLocal, downloadText, type AutostartInfo, type BlobInfo, type MeshInfo, type MeshPeer, type TlsStatus, type TrustOutcome } from "./api";
 import { usePoll } from "./hooks";
 import { useAppData } from "./App";
@@ -215,6 +216,9 @@ function CertificateRow() {
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<TrustOutcome[] | null>(null);
   const [open, setOpen] = useState(false);
+  const [device, setDevice] = useState<Device>(() => guessDevice());
+  const [qr, setQr] = useState<string | null>(null);
+  const [check, setCheck] = useState<string | null>(null);
   const local = attachedIsLocal();
   const load = () => api.tls().then((v) => { setT(v); setErr(null); }).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => {
@@ -222,9 +226,40 @@ function CertificateRow() {
     const id = setInterval(() => void load(), 30_000);
     return () => clearInterval(id);
   }, []);
+  const qrText = t?.ca?.urls ? (device === "ios" || device === "mac" ? t.ca.urls.mobileconfig : t.ca.urls.crt) : null;
+  useEffect(() => {
+    if (!qrText || !open) {
+      setQr(null);
+      return;
+    }
+    QRCode.toDataURL(qrText, { margin: 1, width: 168 }).then(setQr).catch(() => setQr(null));
+  }, [qrText, open]);
   if (!t && !err) return null;
   const day = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toISOString().slice(0, 10) : "?");
   const ca = t?.ca ?? null;
+  // Proof from this browser: the CA download is token-free, so a 200 over
+  // https means reachable and trusted here — the same test the tunnel's
+  // direct switch uses.
+  async function verify() {
+    const base = t?.ca?.urls?.crt;
+    const port = t?.https_port;
+    if (!base || !port) {
+      setCheck("no https address advertised by this node");
+      return;
+    }
+    const u = new URL(base);
+    const url = `https://${u.hostname}:${port}/api/tls/root.crt`;
+    setCheck("checking…");
+    try {
+      const ctl = new AbortController();
+      const timer = window.setTimeout(() => ctl.abort(), 3000);
+      const r = await fetch(url, { cache: "no-store", signal: ctl.signal });
+      window.clearTimeout(timer);
+      setCheck(r.ok ? "✓ this browser trusts the mesh certificate for this node" : `answered ${r.status}`);
+    } catch {
+      setCheck("✗ not reachable over https from here — the certificate is not trusted yet, or the name does not resolve on this network");
+    }
+  }
   const stores = t?.stores ?? [];
   const todo = stores.filter((s) => s.writable && !s.needs_terminal && s.installed !== true);
   const allIn = stores.length > 0 && stores.filter((s) => !s.needs_terminal).every((s) => s.installed === true);
@@ -283,7 +318,9 @@ function CertificateRow() {
           )}
           <button className="btn ghost sm" onClick={() => downloadText(`aspen-mesh-${ca.mesh}.crt`, ca.pem)} title="the mesh CA as a .crt file — for a phone, or a store handled by hand">download CA</button>
           <Copy text={ca.pem} label="copy PEM" />
-          <button className="btn ghost sm" onClick={() => setOpen((o) => !o)} title="how to trust it by hand: phones, Firefox, Linux system anchors">{open ? "hide steps" : "steps"}</button>
+          <button className="btn ghost sm" onClick={() => setOpen((o) => !o)} title="trust it on a phone or a computer with no node: a profile, a QR, the steps">{open ? "hide" : "on this device / a phone"}</button>
+          <button className="btn ghost sm" onClick={() => void verify()} title="fetch the CA over https from this browser: works only once this browser trusts it">check</button>
+          {check && <span className="mono-meta" style={{ flexBasis: "100%" }}>{check}</span>}
         </>
       )}
       {results && (
@@ -292,11 +329,38 @@ function CertificateRow() {
         </span>
       )}
       {open && ca && (
+        <div className="mesh-row" style={{ flexBasis: "100%", alignItems: "flex-start", gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 260 }}>
+            <div className="mesh-row">
+              <span className="mono-meta">device</span>
+              {(["ios", "android", "mac", "windows", "linux"] as Device[]).map((d) => (
+                <button key={d} className={`btn sm ${device === d ? "" : "ghost"}`} onClick={() => setDevice(d)}>{DEVICE_LABEL[d]}</button>
+              ))}
+            </div>
+            <div className="mesh-row">
+              {(device === "ios" || device === "mac") && ca.urls && (
+                <a className="btn sm" href={ca.urls.mobileconfig} title="an Apple configuration profile carrying the CA: opens into Settings (iPhone) or System Settings → Profiles (Mac)">install profile</a>
+              )}
+              <button className="btn ghost sm" onClick={() => downloadText(`aspen-mesh-${ca.mesh}.crt`, ca.pem)}>download .crt</button>
+              {ca.urls && <Copy text={device === "ios" || device === "mac" ? ca.urls.mobileconfig : ca.urls.crt} label="copy link" />}
+            </div>
+            <span className="micro" style={{ color: "var(--text-dim)", lineHeight: 1.6 }}>{DEVICE_STEPS[device](ca.mesh)}</span>
+            {device !== "ios" && device !== "android" && (
+              <code className="micro" style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{DEVICE_CMD[device](ca.mesh)}</code>
+            )}
+          </div>
+          {qr && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <img src={qr} alt="QR: the mesh CA download" width={168} height={168} style={{ background: "#fff", padding: 4 }} />
+              <span className="micro" style={{ color: "var(--text-dim)" }}>scan on the phone (plain http, same network)</span>
+            </div>
+          )}
+          {!ca.urls && <span className="micro" style={{ color: "var(--text-dim)" }}>no QR: this node advertises no address (loopback only).</span>}
+        </div>
+      )}
+      {open && ca && stores.some((s) => s.needs_terminal && s.installed !== true) && (
         <div className="micro" style={{ flexBasis: "100%", color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: 6, lineHeight: 1.6 }}>
-          <span><b>iPhone / iPad:</b> open the downloaded .crt in Safari → Settings → Profile Downloaded → Install; then Settings → General → About → Certificate Trust Settings → enable full trust for <i>Aspen mesh {ca.mesh}</i>.</span>
-          <span><b>Android:</b> Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate → the downloaded file (Chrome honors it).</span>
-          <span><b>Windows:</b> double-click the .crt → Install Certificate → Current User → place in <i>Trusted Root Certification Authorities</i>. <b>macOS:</b> open it in Keychain Access (login), then set <i>Always Trust</i>. <b>Firefox:</b> Settings → Privacy &amp; Security → Certificates → View Certificates → Authorities → Import, or set <code>security.enterprise_roots.enabled</code> to true to read the system store.</span>
-          <span><b>Linux (Chrome):</b> <code>certutil -d sql:~/.pki/nssdb -A -t "C,," -n "Aspen mesh {ca.mesh}" -i aspen-mesh-{ca.mesh}.crt</code> (libnss3-tools). System tools: copy it to <code>/usr/local/share/ca-certificates/</code> and run <code>update-ca-certificates</code>.</span>
+          <span><b>On this node's computer, by hand:</b></span>
           {stores.filter((s) => s.needs_terminal && s.installed !== true).map((s) => (
             <span key={s.id}><b>{s.label}:</b> {s.detail}{s.command ? <> <code>{s.command}</code></> : null}</span>
           ))}
@@ -305,6 +369,32 @@ function CertificateRow() {
     </div>
   );
 }
+
+type Device = "ios" | "android" | "mac" | "windows" | "linux";
+const DEVICE_LABEL: Record<Device, string> = { ios: "iPhone / iPad", android: "Android", mac: "Mac", windows: "Windows", linux: "Linux" };
+function guessDevice(): Device {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) return "ios";
+  if (/Android/.test(ua)) return "android";
+  if (/Mac OS X/.test(ua)) return "mac";
+  if (/Windows/.test(ua)) return "windows";
+  return "linux";
+}
+const DEVICE_STEPS: Record<Device, (mesh: string) => string> = {
+  ios: (m) => `Open the profile in Safari → Settings shows "Profile Downloaded" → Install. Then Settings → General → About → Certificate Trust Settings → enable full trust for "Aspen mesh ${m} CA". The full-trust switch cannot be skipped without MDM.`,
+  android: () => "Download the .crt → Settings → Security → Encryption & credentials → Install a certificate → CA certificate → pick the file. Chrome honors it.",
+  mac: (m) => `Either install the profile (System Settings → Privacy & Security → Profiles) and set trust in Keychain Access, or run the command below; a Mac that runs a node can do 'aspen tls trust' instead. "Aspen mesh ${m}" then shows under login keychain → Certificates.`,
+  windows: () => "Double-click the .crt → Install Certificate → Current User → place it in Trusted Root Certification Authorities, or run the command below. A machine that runs a node can do 'aspen tls trust' instead.",
+  linux: () => "Chrome reads the NSS database, Firefox its profile; run the commands below (libnss3-tools / nss-tools). A machine that runs a node can do 'aspen tls trust' instead.",
+};
+const DEVICE_CMD: Record<Device, (mesh: string) => string> = {
+  ios: () => "",
+  android: () => "",
+  mac: (m) => `security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db aspen-mesh-${m}.crt`,
+  windows: (m) => `certutil -addstore -user Root aspen-mesh-${m}.crt`,
+  linux: (m) => `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "Aspen mesh ${m}" -i aspen-mesh-${m}.crt
+sudo cp aspen-mesh-${m}.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`,
+};
 
 function PeerRow({ p, selfVersion, onRemove, evacuateTargets }: { p: MeshPeer; selfVersion?: string; onRemove?: () => void; evacuateTargets?: string[] }) {
   const h = p.health;

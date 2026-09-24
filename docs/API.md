@@ -44,7 +44,10 @@ whoever messaged you are always allowed.
 | `GET /api/tls` | — | `{ mesh, root_here, ca{fingerprint,not_after,root_sig_ok,here,pem}, leaf{names,not_before,not_after,fingerprint,issuer,covers_current_names,serving}, names, https_port, separate_port, last_error, last_attempt, last_ok }` | TLS.md: the mesh CA as known here, this node's leaf, the renewal loop |
 | `POST /api/tls/renew` | — | `{ ok, summary }` | request (or mint, on the root) a leaf now; 400 when the root is not reachable |
 | `POST /api/tls/trust` | `{ stores?: [id], remove? }` | `{ ok, results[{id,ok,detail}], stores }` | TLS.md §6: put the mesh CA into this computer's trust stores (every writable one, or the named ones), behind the platform's own prompt; `GET /api/tls` carries `stores[]` |
-| `GET /api/tls/root.crt` | — | PEM, `application/x-x509-ca-cert` | the mesh CA as a download |
+| `GET /api/tls/root.crt` | — | PEM, `application/x-x509-ca-cert` | the mesh CA as a download; **token-free**, also over plain http |
+| `GET /api/tls/root.mobileconfig` | — | Apple configuration profile | the CA for an iPhone or a Mac; token-free (TLS.md §8) |
+| `POST /api/console/token` | — (over the mesh link) | `{ token, expires, node }` | a 24 h direct-call token for the console asking over its sealed link; 403 to anyone else |
+| `POST /api/mesh/{node}/console-token` | — (over the mesh link) | `{ token, expires, node }` | the same, minted by a peer (`console_token` op) with this node vouching |
 | `POST /api/mesh/inspect` | `{ blob }` | `BlobInfo` | read-only: what an enroll/cert/bundle blob is, fingerprints, warnings, what accepting it would do here |
 | `GET /api/mesh/pending` | — | `{ proposals, outcomes }` | the console-authored queue and recent `aspen mesh apply` results (with artifacts) |
 | `POST /api/mesh/pending` | `{ kind: init\|enroll\|certify\|join\|peers_add\|peers_remove\|relay\|leave, args }` | `{ ok, proposal, apply }` | queue a mesh change — the daemon never executes it; `aspen mesh apply` (a shell) does. `init {mesh, node}` creates a mesh here (mints the root key); `peers_remove {node}` forgets a peer; `relay {url, first: true}` makes a relay the preferred one (P-3); `leave {discard_root?}` drops membership (refused while holding the root key unless `discard_root`) |

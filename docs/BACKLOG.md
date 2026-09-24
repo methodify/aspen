@@ -31,10 +31,16 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | D-7 | servicing | **Relay-hosted console.** The hosted bundle served by the Cloudflare worker as its `/`. | PROPOSALS-2026-09-D.md §3 |
 | D-8 | protocol + console | **Viewer-grade share links.** Observe-only console certs as the first cut of N-5. | PROPOSALS-2026-09-D.md §5 |
 | D-9 | servicing | **API compatibility contract.** Minimum-version policy and a CI check against the previous minor. | CONSOLE_APP.md §3 |
-| T-5 | console | **Direct first, relay when away.** Probe a node's advertised https addresses and switch to direct when reachable and trusted. | PROPOSALS-2026-09-M.md §3.6 |
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
+
+## Shipped — 2026-09-24: trust from any device, direct when there is a path (T-6, T-5, v0.44)
+
+| id | shipped as |
+|---|---|
+| T-6 | Token-free CA downloads over plain http (`root.crt`, `root.mobileconfig` as an Apple profile), `ca.urls` in `GET /api/tls`; the certificate row's device panel (iPhone/Android/Mac/Windows/Linux), QR for a phone, *check* from the browser. TLS.md §8. |
+| T-5 | Console tokens minted over the sealed link (`POST /api/console/token`, `/api/mesh/{node}/console-token`, `console_token` op); `x-aspen-peer` believed only from the gateway; the tunnel probes advertised https URLs, routes requests and event sockets direct with the token, falls back to the relay on failure; *direct → node · relay standing by* in the bar; *stay on the relay* on Attach. TLS.md §8. |
 
 ## Shipped — 2026-09-23: relay preference order (P-3, v0.43; v0.43.1 fixes a deadlock)
 

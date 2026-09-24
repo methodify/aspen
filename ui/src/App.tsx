@@ -470,7 +470,7 @@ function TunnelPill() {
   const color = tunnel.state === "up" ? "var(--live)" : tunnel.state === "down" ? "var(--sig-gate)" : "var(--sig-normal)";
   return (
     <button className="btn ghost sm mono" style={{ color: tunnel.error ? "var(--sig-gate)" : color }} onClick={() => nav("/attach")} title={tunnel.error ?? `console attached through ${tunnel.config.relay}`}>
-      via relay → {tunnel.config.node} · {tunnel.state}{tunnel.error ? " · trouble" : ""}
+      {tunnel.directNode ? `direct → ${tunnel.directNode} · relay standing by` : `via relay → ${tunnel.config.node} · ${tunnel.state}`}{tunnel.error ? " · trouble" : ""}{!tunnel.directNode && tunnel.directNodes.length > 0 ? ` · direct to ${tunnel.directNodes.join(", ")}` : ""}
     </button>
   );
 }
@@ -615,6 +615,10 @@ function PwaPill() {
   }
   return null;
 }
+
+// For a browser-console check of the attached tunnel (docs/TLS.md §8,
+// MAINTAINING): `aspenTunnel.directNodes`, `aspenTunnel.probeDirect(true)`.
+(window as unknown as { aspenTunnel?: unknown }).aspenTunnel = tunnel;
 
 /** `web+aspen://…` links (the manifest's protocol handler) land here as
  *  `/open?u=`: session/<agent> opens the session; connect?relay=&node=

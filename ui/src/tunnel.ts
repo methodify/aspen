@@ -48,6 +48,15 @@ export interface TunnelConfig {
 
 const ID_KEY = "aspen.console.identity";
 const CFG_KEY = "aspen.console.tunnel";
+const PREFER_RELAY_KEY = "aspen.console.preferRelay";
+
+interface DirectEntry {
+  urls: string[];
+  url: string | null;
+  token: string | null;
+  expires: number;
+  nextProbe: number;
+}
 
 // ── base64 / bytes ──────────────────────────────────────────────────────
 
@@ -255,6 +264,14 @@ export class Tunnel {
   // the lock passes to a waiting tab, which dials. Without Web Locks
   // (old browsers) a tab just dials, as before.
   private role: "none" | "leader" | "follower" = "none";
+  // Direct paths (TLS.md §8, T-5): per node, its advertised https URLs,
+  // the one that answered last, and a console token minted over the
+  // sealed link. Requests for a node with a live direct path go straight
+  // to it over https; the relay registration stays up for presence, mail
+  // and the fallback.
+  private direct = new Map<string, DirectEntry>();
+  private probeTimer = 0;
+  private probing = false;
   private bc: BroadcastChannel | null = null;
   private readonly tabId = crypto.randomUUID();
   private lockRelease: (() => void) | null = null;
@@ -297,6 +314,151 @@ export class Tunnel {
   onChange(f: () => void): () => void {
     this.listeners.add(f);
     return () => this.listeners.delete(f);
+  }
+
+  /** Nodes reached directly right now (for the bar and the Meshes page). */
+  get directNodes(): string[] {
+    const out: string[] = [];
+    for (const [n, e] of this.direct) if (e.url && e.token) out.push(n);
+    return out.sort();
+  }
+  /** Is the attached node reached directly? */
+  get directNode(): string | null {
+    const e = this.direct.get(this.config.node);
+    return e?.url && e.token ? this.config.node : null;
+  }
+  /** The operator asked to stay on the relay (Attach page). */
+  static preferRelay(): boolean {
+    try {
+      return localStorage.getItem(PREFER_RELAY_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  static setPreferRelay(v: boolean): void {
+    try {
+      if (v) localStorage.setItem(PREFER_RELAY_KEY, "1");
+      else localStorage.removeItem(PREFER_RELAY_KEY);
+    } catch {
+      // storage blocked
+    }
+    void tunnel.probeDirect(true);
+  }
+
+  /** The node a request is for: `bare@repo@node` in an agent path, else
+   *  the attached node. */
+  private nodeOfPath(path: string): string {
+    const m = /^\/api\/agents\/([^/?]+)/.exec(path);
+    if (m) {
+      const name = decodeURIComponent(m[1]);
+      const parts = name.split("@");
+      if (parts.length === 3 && parts[2]) return parts[2];
+    }
+    return this.config.node;
+  }
+
+  /** Learn every node's https URLs (from /api/mesh over the relay) and
+   *  probe them; called at attach and on a timer. */
+  async probeDirect(force = false): Promise<void> {
+    if (this.role !== "leader" || this.state !== "up" || this.probing) return;
+    if (Tunnel.preferRelay()) {
+      if (this.direct.size) {
+        this.direct.clear();
+        this.emit();
+      }
+      return;
+    }
+    this.probing = true;
+    try {
+      const r = await this.http("GET", "/api/mesh");
+      if (r.status !== 200 || !r.body) return;
+      const m = JSON.parse(r.body) as { node?: string; identity?: { advertised?: { https_urls?: string[] } }; peers?: { node: string; advertised?: { https_urls?: string[] } | null }[] };
+      const cands = new Map<string, string[]>();
+      if (m.node) cands.set(m.node, m.identity?.advertised?.https_urls ?? []);
+      for (const p of m.peers ?? []) cands.set(p.node, p.advertised?.https_urls ?? []);
+      const now = Date.now();
+      for (const [node, urls] of cands) {
+        const e = this.direct.get(node) ?? { urls: [], url: null, token: null, expires: 0, nextProbe: 0 };
+        e.urls = urls;
+        this.direct.set(node, e);
+        if (!urls.length) {
+          e.url = null;
+          continue;
+        }
+        if (!force && now < e.nextProbe) continue;
+        const ordered = e.url ? [e.url, ...urls.filter((u) => u !== e.url)] : urls;
+        let ok: string | null = null;
+        for (const u of ordered) {
+          if (await this.ping(u)) {
+            ok = u;
+            break;
+          }
+        }
+        if (ok) {
+          if (!e.token || e.expires < now / 1000 + 600) {
+            try {
+              const path = node === this.config.node ? "/api/console/token" : `/api/mesh/${encodeURIComponent(node)}/console-token`;
+              const t = await this.http("POST", path, "{}", { "content-type": "application/json" });
+              if (t.status === 200 && t.body) {
+                const v = JSON.parse(t.body) as { token: string; expires: number };
+                e.token = v.token;
+                e.expires = v.expires;
+              } else {
+                e.token = null;
+              }
+            } catch {
+              e.token = null;
+            }
+          }
+          e.url = ok;
+          e.nextProbe = now + 5 * 60_000;
+        } else {
+          e.url = null;
+          e.nextProbe = now + 60_000;
+        }
+      }
+      for (const n of [...this.direct.keys()]) if (!cands.has(n)) this.direct.delete(n);
+      this.emit();
+    } catch {
+      // the relay side answers again later
+    } finally {
+      this.probing = false;
+    }
+  }
+
+  /** Does this browser reach `base` over https with a trusted certificate?
+   *  The CA download is token-free, so a 200 means: reachable and trusted. */
+  private async ping(base: string): Promise<boolean> {
+    try {
+      const ctl = new AbortController();
+      const t = window.setTimeout(() => ctl.abort(), 1500);
+      const r = await fetch(`${base}/api/tls/root.crt`, { cache: "no-store", signal: ctl.signal });
+      window.clearTimeout(t);
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** A direct call failed on the network: drop the path, re-probe soon. */
+  private directDown(node: string): void {
+    const e = this.direct.get(node);
+    if (e && e.url) {
+      e.url = null;
+      e.nextProbe = Date.now() + 30_000;
+      this.emit();
+    }
+  }
+
+  private startProbing(): void {
+    window.clearInterval(this.probeTimer);
+    void this.probeDirect(true);
+    this.probeTimer = window.setInterval(() => void this.probeDirect(), 60_000);
+  }
+  private stopProbing(): void {
+    window.clearInterval(this.probeTimer);
+    this.probeTimer = 0;
+    if (this.direct.size) this.direct.clear();
   }
   private emit() {
     for (const f of this.listeners) f();
@@ -476,6 +638,7 @@ export class Tunnel {
 
   stop(): void {
     this.stopped = true;
+    this.stopProbing();
     if (this.role === "leader") this.post({ t: "leader_gone" });
     else if (this.role === "follower") this.post({ t: "bye", from: this.tabId });
     for (const [, s] of this.servedSubs) s.unsub();
@@ -622,6 +785,8 @@ export class Tunnel {
               phase = "up";
               this.set("up");
               this.readyResolve?.();
+              // Direct paths (T-5): learn and probe once linked.
+              this.startProbing();
               // Two keepalives: the socket-level "ping" the relay answers
               // itself (so a dead relay is noticed), and a sealed link-level
               // ping routed to the node — the node closes any link silent
@@ -772,6 +937,25 @@ export class Tunnel {
       this.post({ t: "req", id, from: this.tabId, body: { method, path, body, headers } });
       return (await p) as HttpResult;
     }
+    const node = this.nodeOfPath(path);
+    const d = this.direct.get(node);
+    if (d?.url && d.token) {
+      try {
+        const h = new Headers(headers ?? {});
+        h.set("x-aspen-token", d.token);
+        if (body !== undefined && !h.has("content-type")) h.set("content-type", "application/json");
+        const r = await fetch(`${d.url}${path}`, { method, headers: h, body });
+        const ct = r.headers.get("content-type") ?? undefined;
+        const texty = !ct || ct.startsWith("application/json") || ct.startsWith("text/");
+        if (texty) return { status: r.status, content_type: ct, body: await r.text() };
+        const buf = new Uint8Array(await r.arrayBuffer());
+        return { status: r.status, content_type: ct, body_b64: b64e(buf) };
+      } catch {
+        // A network failure, not an HTTP status: the path is gone; the
+        // relay answers this one and the probe tries again in 30 s.
+        this.directDown(node);
+      }
+    }
     const id = crypto.randomUUID();
     const p = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -803,6 +987,36 @@ export class Tunnel {
       return () => {
         if (this.followerSubs.delete(id)) this.post({ t: "unsub", id, from: this.tabId });
       };
+    }
+    const dn = this.direct.get(this.nodeOfPath(`/api/agents/${encodeURIComponent(agent)}/`));
+    if (dn?.url && dn.token) {
+      // Straight to the node's events socket over wss (TLS.md §8).
+      const url = `${dn.url.replace(/^http/, "ws")}/api/agents/${encodeURIComponent(agent)}/events?token=${encodeURIComponent(dn.token)}`;
+      let ws: WebSocket | null = null;
+      let ended = false;
+      try {
+        ws = new WebSocket(url);
+        ws.onmessage = (e: MessageEvent) => {
+          try {
+            onEvent(JSON.parse(String(e.data)));
+          } catch {
+            onEvent(String(e.data));
+          }
+        };
+        ws.onclose = () => {
+          if (!ended) {
+            ended = true;
+            onEnd();
+          }
+        };
+        ws.onerror = () => ws?.close();
+        return () => {
+          ended = true;
+          ws?.close();
+        };
+      } catch {
+        // fall through to the relay
+      }
     }
     this.subs.set(id, { onEvent, onEnd });
     void this.waitUp()

@@ -166,6 +166,10 @@ pub struct NodeInner {
     /// TLS: the live certificate resolver and the renewal loop's state
     /// (docs/TLS.md).
     pub tls: crate::tls::TlsState,
+    /// Console tokens (TLS.md §8): token → (console name, expires at
+    /// epoch). Minted only for a console that proved itself over a sealed
+    /// link; lets that console call this node directly over https.
+    pub console_tokens: Mutex<HashMap<String, (String, f64)>>,
 }
 
 /// (method, path, body, headers) → `{status, content_type, body|body_b64}`.
@@ -181,7 +185,32 @@ pub type HttpGateway = Arc<
         + Sync,
 >;
 
+/// A console token lives a day; the console asks again over the link.
+pub const CONSOLE_TOKEN_SECS: f64 = 24.0 * 3600.0;
+
 impl NodeInner {
+    /// Mint a direct-call token for `console` (TLS.md §8). Returns
+    /// (token, expires_at).
+    pub fn mint_console_token(&self, console: &str) -> (String, f64) {
+        let mut bytes = [0u8; 32];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let expires = crate::store::now_epoch() + CONSOLE_TOKEN_SECS;
+        let mut m = self.console_tokens.lock().unwrap();
+        let now = crate::store::now_epoch();
+        m.retain(|_, (_, exp)| *exp > now);
+        m.insert(token.clone(), (console.to_owned(), expires));
+        (token, expires)
+    }
+
+    /// The console a live token belongs to, if any.
+    pub fn console_for_token(&self, token: &str) -> Option<String> {
+        let m = self.console_tokens.lock().unwrap();
+        m.get(token)
+            .filter(|(_, exp)| *exp > crate::store::now_epoch())
+            .map(|(c, _)| c.clone())
+    }
+
     /// The adapter for a harness (claude always; codex when built in).
     pub fn adapter(&self, harness: Harness) -> Option<Arc<dyn AgentAdapter>> {
         self.adapters.get(&harness).cloned()
@@ -1104,6 +1133,7 @@ impl Node {
             http_gateway: std::sync::OnceLock::new(),
             self_relay: std::sync::OnceLock::new(),
             tls: crate::tls::TlsState::default(),
+            console_tokens: Mutex::new(HashMap::new()),
             servicing: crate::servicing::Servicing::new(
                 crate::federation::VERSION
                     .get()
