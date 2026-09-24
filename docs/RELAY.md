@@ -374,7 +374,11 @@ the front; a peer present on several relays is linked through the first
 of them (`preferred_relay_for`: configured order, then discovered), and
 mail for an offline node goes to the first relay that is up
 (`preferred_relay_up`). The console marks the first of several
-*preferred*.
+*preferred*. v0.43.0 shipped this with a deadlock — the direct-link
+fallback held `relay_sessions` while `preferred_relay_for` locked it
+again, freezing the node's API once any direct link dropped; v0.43.1
+decides before locking, and the check uses `try_lock` so it can never
+block a relay task.
 
 
 ## 11. The console as a peer (v0.18)

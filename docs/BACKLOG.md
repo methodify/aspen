@@ -36,7 +36,12 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Shipped — 2026-09-23: relay preference order (P-3, v0.43)
+## Shipped — 2026-09-23: relay preference order (P-3, v0.43; v0.43.1 fixes a deadlock)
+
+v0.43.0 deadlocked every node whose direct link to a peer dropped: the
+fallback-to-relay path held the relay-sessions lock while the new
+preference check took it again, and the API hung behind it. v0.43.1
+decides before locking and makes the check non-blocking. Skip v0.43.0.
 
 | id | shipped as |
 |---|---|

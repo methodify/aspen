@@ -345,7 +345,12 @@ impl MeshState {
     /// The best connected relay where `peer` is present right now, by the
     /// order above; relays not in the list come last, in map order.
     pub fn preferred_relay_for(&self, peer: &str) -> Option<String> {
-        let sessions = self.relay_sessions.lock().unwrap();
+        // Never block here: a caller that already holds the sessions lock
+        // would deadlock the relay task and, behind it, the whole API. If
+        // the lock is busy, answer "no preference" and let the caller go.
+        let Ok(sessions) = self.relay_sessions.try_lock() else {
+            return None;
+        };
         let mut present: Vec<String> = sessions
             .iter()
             .filter(|(_, s)| s.present.contains(peer))
@@ -1376,13 +1381,17 @@ pub async fn run_link(
     // A direct link that dropped: fall back to any relay where the peer is
     // present (lower name starts it; the peer's side does the same).
     if kind == "direct" && mesh.identity.node.as_str() < peer.as_str() {
-        if let Some(url) = mesh.preferred_relay_for(&peer) {
+        // Decide before taking the sessions lock: `relay_link_allowed`
+        // reads presence under that same lock (v0.43.0 held it here and
+        // deadlocked every node whose direct link to a peer dropped).
+        let pick = mesh
+            .preferred_relay_for(&peer)
+            .filter(|url| mesh.relay_link_allowed(url, &peer));
+        if let Some(url) = pick {
             let sessions = mesh.relay_sessions.lock().unwrap();
             if let Some(s) = sessions.get(&url) {
-                if mesh.relay_link_allowed(&url, &peer) {
-                    start_relay_link(&inner, &mesh.identity.node, &peer, &url, &s.tx, &s.peer_ins);
-                    tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
-                }
+                start_relay_link(&inner, &mesh.identity.node, &peer, &url, &s.tx, &s.peer_ins);
+                tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
             }
         }
     }
