@@ -952,6 +952,7 @@ function RepositoriesSection({
                               names: [...new Set(sessions.filter((x) => x.agent).map((x) => x.agent!.split("@")[0]))],
                               onResumeNew: (sess, name) => void resumeSession(n.node, r.path, sess, name),
                               onOpen: (addr) => navigate(`/session/${encodeURIComponent(addr)}`),
+                              onPreview: (sess) => navigate(`/preview?repo=${encodeURIComponent(r.path)}&session=${encodeURIComponent(sess.session_id)}${sess.harness ? `&harness=${encodeURIComponent(sess.harness)}` : ""}${isSelf(n.node) ? "" : `&node=${encodeURIComponent(n.node)}`}`),
                               onRevive: (addr) => void reviveAgent(addr),
                               onMove: (agentKey, sess) => void moveNameHere(n.node, agentKey, sess),
                               onIgnore: (sess) => void ignoreBranch(n.node, sess),

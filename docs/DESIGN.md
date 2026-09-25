@@ -1285,6 +1285,12 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-09-24 — v0.45: preview, touch.** A transcript can be read
+  without resuming it (the operator has pre-Aspen repos to look through
+  before deciding); the preview is its own page with the chat's shape
+  and a *resume as* verb, never a live session. On touch devices fields
+  are 16px and controls opt out of double-tap zoom — the page zooming
+  on focus was the phone console's worst habit.
 - **2026-09-24 — v0.44: trust from any device, direct when there is a
   path (T-6, T-5).** Decided: the CA is public material, so it is served
   token-free over plain http and as an Apple profile — the one thing a

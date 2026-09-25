@@ -186,6 +186,19 @@ body {
 a { color: inherit; }
 ::selection { background: color-mix(in srgb, var(--accent) 28%, var(--bg-strip-2)); color: var(--text-hi); }
 
+/* ── Touch (2026-09-24) ─────────────────────────────────────────────── */
+/* iOS zooms the page when a focused field's text is under 16px, and
+   double-taps zoom anything; after either, the sheet slides around.
+   Fields are 16px on coarse pointers, controls opt out of double-tap
+   zoom, and the sheet never rubber-bands sideways. Pinch zoom stays. */
+html { -webkit-text-size-adjust: 100%; }
+body { overscroll-behavior-x: none; }
+button, a, input, select, textarea, label, [role="button"], .btn, .chip { touch-action: manipulation; }
+@media (pointer: coarse) {
+  input, textarea, select { font-size: 16px; }
+  input[type="checkbox"], input[type="radio"] { font-size: inherit; }
+}
+
 /* ── Chamfer + seam forms ───────────────────────────────────────────── */
 .chamfer {
   clip-path: polygon(var(--chamfer) 0, 100% 0, 100% 100%, 0 100%, 0 var(--chamfer));

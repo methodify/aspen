@@ -15,6 +15,7 @@ import Attach from "./pages/Attach";
 import { tunnel } from "./tunnel";
 import Mesh from "./pages/Mesh";
 import History from "./pages/History";
+import Preview from "./pages/Preview";
 import Search from "./pages/Search";
 import Palette from "./Palette";
 import { NoticesBell, NoticesProvider } from "./notices";
@@ -696,6 +697,7 @@ export default function App() {
               <Route path="/board/:id" element={<BoardPage />} />
               <Route path="/mesh" element={<Mesh />} />
               <Route path="/history" element={<History />} />
+              <Route path="/preview" element={<Preview />} />
               <Route path="/search" element={<Search />} />
               <Route path="/open" element={<OpenLink />} />
               {/* old surfaces → their new homes */}

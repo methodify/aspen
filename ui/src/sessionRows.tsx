@@ -62,6 +62,8 @@ export type SessionVerbs = {
   /** Every name in this repo (bare), for "move @x here". */
   names: string[];
   onResumeNew: (s: SessionInfo, name: string) => void;
+  /** Look at the transcript without resuming it. */
+  onPreview?: (s: SessionInfo) => void;
   onOpen: (addr: string) => void;
   onRevive: (addr: string) => void;
   onMove: (agentKey: string, s: SessionInfo) => void;
@@ -104,6 +106,9 @@ export function SessionRow({ session: s, v, indent }: { session: SessionInfo; v:
           <span className="mono-meta" title={new Date(s.modified * 1000).toLocaleString()}>{relTime(s.modified)}</span>
           <span className="mono-meta" title={s.session_id}>{s.session_id.slice(0, 8)}</span>
         </span>
+        {!chooser && v.onPreview && (
+          <button type="button" className="btn ghost sm" onClick={() => v.onPreview!(s)} title="read the transcript without starting anything">preview</button>
+        )}
         {!chooser && isCurrent && addr && (s.agent_live ? (
           <button type="button" className="btn sm" onClick={() => v.onOpen(addr)}>open</button>
         ) : (
@@ -265,6 +270,7 @@ export function TranscriptsPanel({ name, repo, node, selfNode, onError }: { name
           })();
         },
         onOpen: (addr) => nav(`/session/${encodeURIComponent(addr)}`),
+        onPreview: (s) => nav(`/preview?repo=${encodeURIComponent(repo!)}&session=${encodeURIComponent(s.session_id)}${s.harness ? `&harness=${encodeURIComponent(s.harness)}` : ""}${isSelf(node) ? "" : `&node=${encodeURIComponent(node)}`}`),
         onRevive: (addr) => {
           void api.revive(addr).then(() => reload()).catch(fail);
         },

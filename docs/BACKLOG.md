@@ -35,6 +35,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-09-24: preview a transcript, touch zoom (v0.45)
+
+- **Preview** on every transcript row of the Mesh list and the session's transcripts panel: `/preview?repo&session&harness&node` reads the transcript from the harness store (`session_preview` helper and op; `GET /api/sessions/preview`) and shows the turns read-only — for looking through pre-Aspen repos before deciding to resume; *resume as* starts a name on it from the same page.
+- **Touch:** fields are 16px on coarse pointers (iOS no longer zooms on focus), controls opt out of double-tap zoom (`touch-action: manipulation`), the sheet no longer rubber-bands sideways; pinch zoom stays.
+
 ## Shipped — 2026-09-24: dismiss on Now, the chamfer's missing edge (v0.44.1)
 
 - Operator mail on the Now page can be **dismissed** per card (`POST /api/needs/read {ids, node}`; the `inbox_read` op takes `ids`), and a card leaves on its own once the operator answers that session (`send_operator_message` marks its pending mail `operator-replied`).

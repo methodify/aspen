@@ -230,6 +230,7 @@ pub async fn serve(
         .route("/repos/untrust", post(post_repo_untrust))
         .route("/federation/ws", get(ws_federation))
         .route("/federation/relay", get(ws_relay))
+        .route("/sessions/preview", get(get_session_preview))
         .route("/tls", get(get_tls))
         .route("/tls/renew", post(post_tls_renew))
         .route("/tls/trust", post(post_tls_trust))
@@ -472,6 +473,68 @@ pub async fn serve(
         None => main.await?,
     }
     Ok(())
+}
+
+// --------------------------------------------------------------- preview
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    repo: String,
+    session: String,
+    #[serde(default)]
+    harness: Option<String>,
+    /// The node the repo lives on; absent or this node = local.
+    #[serde(default)]
+    node: Option<String>,
+}
+
+/// GET /api/sessions/preview?repo&session&harness&node — a transcript
+/// read without resuming it (the Mesh list's *preview*), local or from a
+/// peer over the `session_preview` op.
+async fn get_session_preview(
+    State(s): S,
+    Query(q): Query<PreviewQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({ "error": e })));
+    match q.node.as_deref().filter(|n| !is_self_node(&s, n)) {
+        Some(node) => {
+            let mesh = s
+                .node
+                .inner
+                .mesh()
+                .ok_or_else(|| bad("not in a mesh".into()))?;
+            mesh.api_call(
+                node,
+                "session_preview",
+                "",
+                json!({ "repo": q.repo, "session": q.session, "harness": q.harness }),
+                std::time::Duration::from_secs(20),
+            )
+            .await
+            .map(Json)
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+            })
+        }
+        None => {
+            let harness = q
+                .harness
+                .as_deref()
+                .and_then(aspen_core::Harness::parse)
+                .unwrap_or_default();
+            aspen_node::node::session_preview(
+                &s.node.inner,
+                std::path::Path::new(&q.repo),
+                &q.session,
+                harness,
+            )
+            .map(|v| Json(json!(v)))
+            .map_err(|e| bad(format!("{e:#}")))
+        }
+    }
 }
 
 // ------------------------------------------------------------------- TLS

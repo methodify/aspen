@@ -142,6 +142,7 @@ pub fn op_capability(op: &str) -> Capability {
         | "needs"
         | "node_repos"
         | "node_sessions"
+        | "session_preview"
         | "history"
         | "node_update_status"
         | "node_autostart"
@@ -1956,7 +1957,12 @@ fn exposure_precheck(
     }
     if matches!(
         op,
-        "spawn" | "node_sessions" | "node_repo_skip" | "node_repo_rename" | "node_repo_forget"
+        "spawn"
+            | "node_sessions"
+            | "session_preview"
+            | "node_repo_skip"
+            | "node_repo_rename"
+            | "node_repo_forget"
     ) {
         if let Some(r) = body
             .get("repo")
@@ -2717,6 +2723,27 @@ async fn serve_api_req(
                 .store
                 .remove_repo(&crate::node::normalize_repo(std::path::Path::new(path)))?;
             Ok(json!({ "ok": true }))
+        }
+        "session_preview" => {
+            let repo = body
+                .get("repo")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing repo"))?;
+            let session = body
+                .get("session")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing session"))?;
+            let harness = body
+                .get("harness")
+                .and_then(|h| h.as_str())
+                .and_then(aspen_core::Harness::parse)
+                .unwrap_or_default();
+            Ok(json!(crate::node::session_preview(
+                &node.inner,
+                std::path::Path::new(repo),
+                session,
+                harness
+            )?))
         }
         "node_sessions" => {
             let repo = body

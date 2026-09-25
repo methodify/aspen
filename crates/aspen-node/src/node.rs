@@ -842,6 +842,29 @@ pub fn split_segments(text: &str) -> Vec<(bool, String)> {
 /// from the input record where the harness consumed a write mid-turn
 /// without writing it (PROPOSALS-2026-09-H.md §4). `after` is the delta
 /// anchor (a user line uuid): items after it, and whether it was found.
+/// A transcript read straight from the harness's store, for looking at a
+/// session without resuming it (the Mesh list's *preview*): the same
+/// items the session view shows, minus the node's input record (there is
+/// no agent row to have one).
+pub fn session_preview(
+    inner: &Arc<NodeInner>,
+    repo: &Path,
+    session_id: &str,
+    harness: Harness,
+) -> Result<Vec<serde_json::Value>> {
+    let st = inner.store_for(harness);
+    let raw = st.rehydrate(repo, session_id)?;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for it in &raw {
+        if it.get("role").and_then(|r| r.as_str()) == Some("user") {
+            items.extend(split_user_item(it));
+        } else {
+            items.push(it.clone());
+        }
+    }
+    Ok(items)
+}
+
 pub fn transcript_with_record(
     inner: &Arc<NodeInner>,
     row: &crate::store::AgentRow,

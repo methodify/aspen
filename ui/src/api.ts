@@ -1642,6 +1642,11 @@ export const api = {
 
   mesh: () => request<MeshInfo>("/api/mesh"),
   tls: () => request<TlsStatus>("/api/tls"),
+  /** A transcript read without resuming it (Mesh list → preview). */
+  sessionPreview: (q: { repo: string; session: string; harness?: string | null; node?: string | null }) =>
+    request<HistoryItem[]>(
+      `/api/sessions/preview?repo=${enc(q.repo)}&session=${enc(q.session)}${q.harness ? `&harness=${enc(q.harness)}` : ""}${q.node ? `&node=${enc(q.node)}` : ""}`,
+    ),
   tlsTrust: (stores?: string[], remove?: boolean) =>
     post<{ ok: boolean; results: TrustOutcome[]; stores: TrustStore[] }>("/api/tls/trust", { stores: stores ?? [], remove: !!remove }),
   tlsRenew: () => post<{ ok: boolean; summary: string }>("/api/tls/renew"),
