@@ -26,6 +26,17 @@ export const pwa = {
     if (update) void update(true);
     else window.location.reload();
   },
+  /** Ask the worker for a newer build, then reload either way (the More
+   *  sheet's version row): a stale installed app gets unstuck by hand. */
+  checkAndReload() {
+    const done = () => window.location.reload();
+    if (!("serviceWorker" in navigator)) return done();
+    navigator.serviceWorker
+      .getRegistration()
+      .then((reg) => (reg ? reg.update() : undefined))
+      .catch(() => {})
+      .finally(() => window.setTimeout(done, 400));
+  },
   async install() {
     const p = installPrompt;
     if (!p) return;
@@ -45,6 +56,19 @@ export const pwa = {
       onNeedRefresh() {
         needRefresh = true;
         emit();
+      },
+      // An installed app (a phone's home screen) rarely navigates, so the
+      // browser rarely re-checks the worker on its own: ask on every
+      // return to the foreground, and hourly while open.
+      onRegisteredSW(_url, reg) {
+        if (!reg) return;
+        const check = () => void reg.update().catch(() => {});
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") check();
+        });
+        window.addEventListener("focus", check);
+        window.addEventListener("pageshow", check);
+        window.setInterval(check, 60 * 60_000);
       },
     });
     window.addEventListener("beforeinstallprompt", (e) => {

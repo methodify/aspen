@@ -221,3 +221,14 @@ All tabs of one browser profile hold one relay connection per mesh
 identity: a leader tab dials, the others multiplex through it, and the
 role passes when the leader closes (RELAY.md §8). Opening the console in
 several tabs, or as the installed app beside a tab, is fine.
+
+**A new build on an installed app (v0.45.1).** Browsers re-check a
+service worker on navigation; an app on a phone's home screen rarely
+navigates, so a new console could sit unnoticed for days. `pwa.ts` now
+calls `registration.update()` whenever the page returns to the
+foreground (`visibilitychange`, `focus`, `pageshow`) and hourly — and on
+request: the hosted bar's version chip, the More sheet's *console vX ·
+node vY* row and the palette's *check for a newer console* all run
+`pwa.checkAndReload()` (ask the worker, then reload). While a new build
+waits, the More button carries a pip and the sheet says *new console
+ready — reload*.

@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "./api";
 import type { Channel, Repo, Template } from "./api";
 import { useAppData } from "./App";
+import { pwa } from "./pwa";
 import { useSessionCommands } from "./sessionCommands";
 import { presenceOf, useTheme } from "./components";
 import type { Presence } from "./components";
@@ -489,6 +490,27 @@ export default function Palette() {
               await api.checkUpdatesAll();
               goto("/mesh?view=list#nodes");
             },
+          },
+        });
+      }
+    }
+
+    {
+      const s = Math.max(score(t, "check for a newer console"), score(t, "reload console"), score(t, "console version"));
+      if (s >= 0) {
+        ranked.push({
+          s,
+          order: order++,
+          item: {
+            key: "act:check-console",
+            section: "Actions",
+            node: (
+              <>
+                <span>Check for a newer console</span>
+                <span className="pal-sub">this is v{__ASPEN_UI_VERSION__} — ask the service worker, then reload</span>
+              </>
+            ),
+            run: () => pwa.checkAndReload(),
           },
         });
       }

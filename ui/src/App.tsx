@@ -85,6 +85,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean; phone?: bool
 function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const nav = useNavigate();
   const [theme, toggleTheme] = useTheme();
+  const { node } = useAppData();
   const [, setTick] = useState(0);
   useEffect(() => pwa.onChange(() => setTick((n) => n + 1)), []);
   const go = (to: string) => {
@@ -106,7 +107,11 @@ function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
         {hosted && <MenuRow label="meshes · connect" hint="the meshes this console is connected to, and how" onClick={() => go("/attach")} />}
         <MenuRow label="notifications & push" hint="notices, push to this device, outbound hooks" onClick={() => { onClose(); window.dispatchEvent(new Event("aspen:notices")); }} />
         {pwa.canInstall && <MenuRow label="install as app" hint="its own window, a dock icon with the needs-you count" onClick={() => { onClose(); void pwa.install(); }} />}
-        {pwa.needRefresh && <MenuRow label="new console — reload" onClick={() => pwa.reload()} />}
+        {pwa.needRefresh ? (
+          <MenuRow label={`new console ready — reload (this is v${__ASPEN_UI_VERSION__})`} hint="a newer build was published; take it now" onClick={() => pwa.reload()} />
+        ) : (
+          <MenuRow label={`console v${__ASPEN_UI_VERSION__}${node ? ` · node v${node.version}` : ""}`} hint={`build ${__ASPEN_UI_SHA__} · tap to check for a newer console and reload`} onClick={() => { onClose(); pwa.checkAndReload(); }} />
+        )}
         <MenuRow label={`theme: ${theme}`} hint="cycle system · light · dark" onClick={() => toggleTheme()} />
       </MenuGroup>
     </SessionMenu>
@@ -233,6 +238,8 @@ function MeshColumn() {
   const busy = agents.filter((a) => a.live && a.turn_state === "busy").length;
   const live = agents.filter((a) => a.live).length;
   const needs = inbox.length;
+  const [pwaTick, setPwaTick] = useState({ needRefresh: pwa.needRefresh });
+  useEffect(() => pwa.onChange(() => setPwaTick({ needRefresh: pwa.needRefresh })), []);
   const pinnedRows = ws.pinned.map((n) => byName.get(n)).filter((a): a is Agent => !!a);
   const recentRows = ws.recent
     .filter((n) => !ws.pinned.includes(n))
@@ -303,9 +310,10 @@ function MeshColumn() {
           {n.label === "Now" && needs > 0 && <span className="badge-count">{needs}</span>}
         </NavLink>
       ))}
-      <button type="button" className="nav-item nav-more" onClick={() => setMoreOpen(true)} title="More" aria-haspopup="menu" aria-expanded={moreOpen}>
+      <button type="button" className="nav-item nav-more" onClick={() => setMoreOpen(true)} title={pwaTick.needRefresh ? "More — a new console is ready" : "More"} aria-haspopup="menu" aria-expanded={moreOpen}>
         <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>⋯</span>
         <span>More</span>
+        {pwaTick.needRefresh && <span className="rail-wait-pip" title="a new console is ready — reload from More" />}
       </button>
       <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} />
       <div className="nav-section label" style={{ marginTop: 12 }} title="busy / live / registered">
@@ -373,8 +381,8 @@ function VersionBadge({ node }: { node: NodeInfo | null }) {
       <button
         type="button"
         className="btn ghost sm"
-        onClick={() => nav("/mesh?view=list#nodes")}
-        title={old ? `this node runs v${node.version}; this console needs v${MIN_NODE_VERSION} or newer — update the node` : `node v${node.version} · console v${ui} (${uiSha})`}
+        onClick={() => (old ? nav("/mesh?view=list#nodes") : pwa.checkAndReload())}
+        title={old ? `this node runs v${node.version}; this console needs v${MIN_NODE_VERSION} or newer — update the node` : `node v${node.version} · console v${ui} (${uiSha}) — click to check for a newer console and reload`}
         style={old ? { color: "var(--sig-gate)" } : undefined}
       >
         {old ? `node v${node.version} — too old for this console` : `node v${node.version} · console v${ui}`}
