@@ -127,6 +127,7 @@ pub fn op_capability(op: &str) -> Capability {
     match op {
         "transcript"
         | "activities"
+        | "workflow"
         | "subagent"
         | "artifacts"
         | "file_stat"
@@ -2304,6 +2305,13 @@ async fn serve_api_req(
             Ok(json!({ "head": rows.last().map(|n| n.id).unwrap_or(since), "notices": out }))
         }
         "activities" => Ok(json!(node.activities(agent).await?)),
+        "workflow" => {
+            let run = body
+                .get("run")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| anyhow!("missing run"))?;
+            node.workflow(agent, run).await
+        }
         "subagent" => {
             let rows = node.inner.store.agents()?;
             let row = rows

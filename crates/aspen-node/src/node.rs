@@ -101,6 +101,10 @@ pub struct ManagedSession {
     /// Activities the operator stopped from the console (by id or tool
     /// use id) with when: shown as stopped until the harness settles them.
     pub stopped_acts: Mutex<HashMap<String, f64>>,
+    /// The latest `system/task_progress` frame per task id (a workflow's
+    /// or an agent's live progress: tokens, tool uses, and for a workflow
+    /// its `workflow_progress` — phases and agents). PROPOSALS-2026-09-O §2.3.
+    pub task_progress: Mutex<HashMap<String, serde_json::Value>>,
     /// A recap in flight (PROPOSALS-2026-09-C.md §1): while set, the pump
     /// routes the side turn's events here instead of to observers and the
     /// ledger — the recap is an answer to the operator, not a turn of the
@@ -184,6 +188,48 @@ pub type HttpGateway = Arc<
         + Send
         + Sync,
 >;
+
+/// A streamed `task_progress` frame, summarized for a workflow's row: its
+/// agents by state, tokens and tool uses so far, the phase in progress.
+pub fn workflow_progress_summary(frame: &serde_json::Value) -> serde_json::Value {
+    let prog = frame
+        .get("workflow_progress")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let agents: Vec<&serde_json::Value> = prog
+        .iter()
+        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("workflow_agent"))
+        .collect();
+    let count = |s: &str| {
+        agents
+            .iter()
+            .filter(|a| a.get("state").and_then(|x| x.as_str()) == Some(s))
+            .count()
+    };
+    let phase = agents
+        .iter()
+        .find(|a| a.get("state").and_then(|x| x.as_str()) == Some("running"))
+        .and_then(|a| a.get("phaseTitle").cloned())
+        .or_else(|| {
+            prog.iter()
+                .rev()
+                .find(|p| p.get("type").and_then(|t| t.as_str()) == Some("workflow_phase"))
+                .and_then(|p| p.get("title").cloned())
+        });
+    serde_json::json!({
+        "agents": agents.len(),
+        "done": count("done"),
+        "running": count("running"),
+        "queued": count("queued"),
+        "failed": count("failed") + count("error"),
+        "phase": phase,
+        "tokens": frame.pointer("/usage/total_tokens"),
+        "tool_uses": frame.pointer("/usage/tool_uses"),
+        "duration_ms": frame.pointer("/usage/duration_ms"),
+        "last_tool": frame.get("last_tool_name"),
+    })
+}
 
 /// A console token lives a day; the console asks again over the link.
 pub const CONSOLE_TOKEN_SECS: f64 = 24.0 * 3600.0;
@@ -1539,6 +1585,7 @@ impl Node {
             mcp: Mutex::new(Vec::new()),
             mcp_refreshed_at: Mutex::new(0.0),
             stopped_acts: Mutex::new(HashMap::new()),
+            task_progress: Mutex::new(HashMap::new()),
             recap: Mutex::new(None),
             spawned_at: crate::store::now_epoch(),
             name: name.to_owned(),
@@ -3154,8 +3201,103 @@ impl Node {
                 }
             }
         }
+        // A running workflow's live picture (PROPOSALS-2026-09-O §2.3): the
+        // latest streamed progress, summarized onto its row.
+        if let Some(sess) = self.inner.live(name) {
+            let prog = sess.task_progress.lock().unwrap().clone();
+            for a in acts.iter_mut() {
+                if a.get("kind").and_then(|k| k.as_str()) != Some("workflow") {
+                    continue;
+                }
+                let id = a.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                if let Some(f) = prog.get(id) {
+                    a["detail"]["progress"] = workflow_progress_summary(f);
+                }
+            }
+        }
         acts.reverse();
         Ok(acts)
+    }
+
+    /// One workflow run of a session (PROPOSALS-2026-09-O §2.3): phases,
+    /// agents, results, logs; live from the streamed progress while it
+    /// runs, else from the harness's files.
+    pub async fn workflow(&self, name: &str, run_id: &str) -> Result<serde_json::Value> {
+        if run_id.contains(['/', '\\', '.']) || !run_id.starts_with("wf_") {
+            anyhow::bail!("bad run id");
+        }
+        let row = self.agent_row(name)?;
+        let sid = row
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("@{name} has no transcript yet"))?;
+        // The ledger row for this run: its task id (to find live progress),
+        // name, description, status and times.
+        let acts = self.activities(name).await.unwrap_or_default();
+        let act = acts
+            .iter()
+            .find(|a| {
+                a.get("kind").and_then(|k| k.as_str()) == Some("workflow")
+                    && a.pointer("/detail/run_id").and_then(|r| r.as_str()) == Some(run_id)
+            })
+            .cloned();
+        let task_id = act
+            .as_ref()
+            .and_then(|a| a.get("id").and_then(|i| i.as_str()))
+            .map(str::to_owned);
+        let live = self.inner.live(name).and_then(|s| {
+            task_id
+                .as_deref()
+                .and_then(|t| s.task_progress.lock().unwrap().get(t).cloned())
+        });
+        let running = act
+            .as_ref()
+            .and_then(|a| a.get("status").and_then(|s| s.as_str()))
+            == Some("running");
+        let progress = live
+            .as_ref()
+            .filter(|_| running)
+            .and_then(|f| f.get("workflow_progress").cloned());
+        let st = self.inner.store_for(row.harness);
+        let repo = row.repo.clone();
+        let run = run_id.to_owned();
+        let mut v =
+            tokio::task::spawn_blocking(move || st.workflow(&repo, &sid, &run, progress.as_ref()))
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| anyhow!("no workflow run {run_id} in @{name}'s session"))?;
+        if let Some(a) = &act {
+            v["task_id"] = a.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            if v.get("name").is_none_or(|n| n.is_null()) {
+                v["name"] = a.get("label").cloned().unwrap_or(serde_json::Value::Null);
+            }
+            if v.get("description").is_none_or(|n| n.is_null()) {
+                v["description"] = a
+                    .pointer("/detail/description")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+            }
+            // The ledger says whether it is still going (the state file is
+            // written only at the end).
+            if running || v.get("status").is_none_or(|n| n.is_null()) {
+                v["status"] = a.get("status").cloned().unwrap_or(serde_json::Value::Null);
+            }
+            if v.get("started_at").is_none_or(|n| n.is_null()) {
+                v["started_at"] = a
+                    .get("started_at")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+            }
+            v["attempts"] = a
+                .pointer("/detail/attempts")
+                .cloned()
+                .unwrap_or(serde_json::json!(1));
+        }
+        if let Some(f) = live.filter(|_| running) {
+            v["live"] = workflow_progress_summary(&f);
+        }
+        Ok(v)
     }
 
     /// The session's child processes (PROPOSALS-MCP.md §6.4): each with
@@ -3707,6 +3849,31 @@ async fn pump(
                 if raw.get("type").and_then(|t| t.as_str()) == Some("mcp_startup") =>
             {
                 schedule_mcp_refresh(&inner, &sess, 800);
+            }
+            SessionEvent::Status { raw }
+                if raw.get("subtype").and_then(|t| t.as_str()) == Some("task_progress") =>
+            {
+                if let Some(id) = raw.get("task_id").and_then(|t| t.as_str()) {
+                    let mut m = sess.task_progress.lock().unwrap();
+                    m.insert(id.to_owned(), raw.clone());
+                    // Bounded: the newest 64 tasks are plenty.
+                    if m.len() > 64 {
+                        let oldest = m
+                            .iter()
+                            .min_by(|a, b| {
+                                let t = |v: &serde_json::Value| {
+                                    v.pointer("/usage/duration_ms")
+                                        .and_then(|d| d.as_u64())
+                                        .unwrap_or(0)
+                                };
+                                t(a.1).cmp(&t(b.1)).reverse()
+                            })
+                            .map(|(k, _)| k.clone());
+                        if let Some(k) = oldest {
+                            m.remove(&k);
+                        }
+                    }
+                }
             }
             SessionEvent::RuntimeInit { raw, .. } => {
                 *sess.inventory.lock().unwrap() = Some(raw.clone());

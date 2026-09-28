@@ -344,6 +344,59 @@ export interface Activity {
   detail: Record<string, unknown>;
   has_transcript?: boolean;
 }
+/** A workflow run as `GET /api/agents/{name}/workflows/{run}` answers. */
+export interface WorkflowAgent {
+  agent_id: string;
+  label: string | null;
+  phase: string | null;
+  phase_index?: number | null;
+  model?: string | null;
+  /** queued | running | done | failed … as the harness says. */
+  state: string | null;
+  attempt?: number | null;
+  retry_reason?: string | null;
+  queued_at?: number | null;
+  /** epoch ms */
+  started_at?: number | null;
+  last_progress_at?: number | null;
+  duration_ms?: number | null;
+  tokens?: number | null;
+  tool_calls?: number | null;
+  last_tool?: string | null;
+  last_tool_summary?: string | null;
+  prompt_preview?: string | null;
+  result_preview?: string | null;
+  has_transcript: boolean;
+}
+export interface WorkflowPhase {
+  index: number;
+  title: string | null;
+  detail: string | null;
+  agents: WorkflowAgent[];
+}
+export interface WorkflowRun {
+  run_id: string;
+  task_id: string | null;
+  name: string | null;
+  description: string | null;
+  status: string | null;
+  /** epoch ms (state file) or ISO (ledger) */
+  started_at: number | string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  total_tokens: number | null;
+  total_tool_calls: number | null;
+  agent_count: number | null;
+  default_model?: string | null;
+  attempts?: number;
+  logs: string[];
+  phases: WorkflowPhase[];
+  results: { key: string; report: string }[];
+  script_path: string | null;
+  source: "live" | "state" | "journal";
+  live?: { agents: number; done: number; running: number; queued: number; failed: number; phase: string | null; tokens: number | null; tool_uses: number | null; duration_ms: number | null; last_tool: string | null };
+}
+
 /** One running item from `GET /api/activities` (PROPOSALS-B §2): a
  *  ledger entry tagged with its agent's full address and node. */
 export interface FleetActivityItem {
@@ -1406,6 +1459,8 @@ export const api = {
     request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
   activities: (name: string) => request<Activity[]>(`/api/agents/${enc(name)}/activities`),
+  /** One workflow run: phases, agents, results, logs (PROPOSALS-2026-09-O §2.3). */
+  workflow: (name: string, run: string) => request<WorkflowRun>(`/api/agents/${enc(name)}/workflows/${enc(run)}`),
   processes: (name: string) => request<{ pid: number | null; processes: ProcessInfo[] }>(`/api/agents/${enc(name)}/processes`),
   processStop: (name: string, what: { activity?: string; pid?: number }) =>
     post<{ ok: boolean; pid: number; cmdline: string }>(`/api/agents/${enc(name)}/processes/stop`, what),

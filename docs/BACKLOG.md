@@ -35,6 +35,17 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-09-28: workflows you can see into (W-1..W-4, v0.46)
+
+| id | shipped as |
+|---|---|
+| W-1 | The ledger keys a workflow by its Task ID (the notification's), keeps the run id, names it from the script's meta, folds resumes; the run's state file settles its end and carries totals. Runs no longer stay *running* forever. |
+| W-2 | The node keeps the streamed `task_progress` per task; a running workflow's row shows its phase, agents done and tokens. |
+| W-3 | `GET /api/agents/{name}/workflows/{run}` + `workflow` op (live, state file, or journal + agent transcripts); subagent transcripts found under `subagents/workflows/`. |
+| W-4 | The workflow page: phase rail, agents table, reports, logs, script; phone layout. ACTIVITY.md §Workflows. |
+
+W-5 (stop a run) and proposal O's repo bundles (X-1..X-5) are open.
+
 ## Shipped — 2026-09-25: the installed console notices a new build, and can be asked to (v0.45.1)
 
 - An installed app rarely navigates, so the browser rarely re-checked the service worker: the console now asks on every return to the foreground and hourly. And an explicit **check for a newer console** action: the hosted bar's version chip, the More sheet's *console vX · node vY* row, and a palette command; *new console ready — reload* when one waits, with a pip on the More button. CONSOLE_APP.md §2.

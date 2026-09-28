@@ -8,6 +8,7 @@ import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
 import View from "./pages/View";
+import Workflow from "./pages/Workflow";
 import BoardPage, { BoardsPage } from "./pages/Board";
 import Plugins from "./pages/Plugins";
 import Usage from "./pages/Usage";
@@ -697,6 +698,7 @@ export default function App() {
               <Route path="/flow/:channel" element={<Conversations />} />
               <Route path="/session/:name" element={<Session />} />
               <Route path="/session/:name/agent/:agentId" element={<Session />} />
+              <Route path="/session/:name/workflow/:run" element={<Workflow />} />
               <Route path="/view/:name" element={<View />} />
               <Route path="/boards" element={<BoardsPage />} />
               <Route path="/plugins" element={<Plugins />} />

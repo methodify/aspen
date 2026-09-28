@@ -87,6 +87,19 @@ pub trait SessionStore: Send + Sync {
     fn activity_counts(&self, repo: &Path, session_id: Option<&str>, since: Option<f64>) -> Value;
     /// A subagent's transcript, rehydrated.
     fn subagent(&self, repo: &Path, session_id: &str, agent_id: &str) -> Result<Vec<Value>>;
+    /// One workflow run (PROPOSALS-2026-09-O §2.3): phases, agents,
+    /// results, logs — from the harness's files, or from `progress` (the
+    /// latest streamed `workflow_progress`) when the run is live. None for
+    /// a harness without workflows.
+    fn workflow(
+        &self,
+        _repo: &Path,
+        _session_id: &str,
+        _run_id: &str,
+        _progress: Option<&Value>,
+    ) -> Option<Value> {
+        None
+    }
     fn project_dirs(&self, repo: &Path) -> ProjectDirs;
     /// Repos this harness has sessions for on this machine (discovery).
     fn discover_repos(&self) -> Vec<(PathBuf, usize)>;

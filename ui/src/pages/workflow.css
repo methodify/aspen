@@ -1,0 +1,45 @@
+/* Workflow — one run: phases, agents, logs, reports. */
+.wf-page { max-width: 1280px; }
+.wf-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.wf-name { font: 600 1.05rem/1.3 var(--font-mono); color: var(--text-hi); }
+.wf-desc { margin: 0 0 var(--sp-3); color: var(--text-mid); font: 400 0.9rem/1.5 var(--font-body); }
+.wf-phases { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.wf-phase { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; padding: 6px 12px; border: 1px solid var(--line); background: var(--bg-strip); color: var(--text-mid); cursor: pointer; min-width: 120px; }
+.wf-phase:hover { background: var(--bg-strip-2); }
+.wf-phase.active { border-color: var(--accent); color: var(--text-hi); background: var(--bg-panel); }
+.wf-phase.live .wf-phase-title::after { content: " ●"; color: var(--sig-busy); }
+.wf-phase-title { font: 600 0.72rem/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; }
+.wf-phase-detail { margin: 0 0 var(--sp-2); }
+.wf-agents { display: flex; flex-direction: column; border: 1px solid var(--line); background: var(--bg-panel); }
+.wf-agent + .wf-agent { border-top: 1px solid var(--line); }
+.wf-agent-row { display: grid; grid-template-columns: 10px 64px minmax(180px, 1.4fr) 110px 72px 80px 76px minmax(120px, 1.6fr); gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; }
+.wf-agent-row:hover { background: var(--bg-strip); }
+.wf-agent-label { display: flex; align-items: center; gap: 6px; min-width: 0; font: 500 0.88rem/1.3 var(--font-mono); color: var(--text-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-agent-label a { color: inherit; }
+.wf-col { white-space: nowrap; text-align: right; }
+.wf-last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sig-off); }
+.wf-dot.wf-running { background: var(--sig-busy); box-shadow: 0 0 6px var(--sig-busy); animation: pulse 1.2s ease-in-out infinite; }
+.wf-dot.wf-done { background: var(--sig-idle); }
+.wf-dot.wf-failed { background: var(--sig-gate); }
+.wf-dot.wf-queued { background: transparent; border: 1px solid var(--text-dim); }
+.chip.wf-running { color: var(--sig-busy); border-color: var(--sig-busy); }
+.chip.wf-done { color: var(--sig-idle); }
+.chip.wf-failed { color: var(--sig-gate); border-color: var(--sig-gate); }
+.wf-retry { color: var(--sig-waiting); }
+.wf-agent-detail { padding: 4px 12px 12px 96px; display: flex; flex-direction: column; gap: 8px; }
+.wf-kv { display: grid; grid-template-columns: 64px 1fr; gap: 10px; }
+.wf-kv .k { font: 600 0.68rem/1.6 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+.wf-pre { white-space: pre-wrap; font: 400 0.82rem/1.5 var(--font-mono); color: var(--text-mid); }
+.wf-kv .md { font: 400 0.9rem/1.55 var(--font-body); color: var(--text-hi); }
+.wf-kv .md :is(p, ul, ol, pre) { margin: 0 0 0.5em; }
+.wf-section { display: flex; flex-direction: column; gap: 4px; margin-top: var(--sp-4); }
+.wf-log { white-space: pre-wrap; }
+@media (max-width: 760px) {
+  .wf-agent-row { grid-template-columns: 10px minmax(0, 1fr) auto; row-gap: 2px; }
+  .wf-agent-state, .wf-model, .wf-tools { display: none; }
+  .wf-tok { grid-column: 3; grid-row: 2; }
+  .wf-last { grid-column: 2; grid-row: 2; }
+  .wf-agent-detail { padding-left: 12px; }
+  .wf-kv { grid-template-columns: 1fr; gap: 2px; }
+}

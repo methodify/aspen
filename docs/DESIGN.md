@@ -1285,6 +1285,16 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-09-28 — v0.46: workflows you can see into (proposal O §2).**
+  The ledger's workflow id was the run id while the harness ends a
+  workflow by its task id — every run stayed *running*. Decided: the
+  task id is the id, the run id keys the files; the harness's own state
+  file is trusted for how a run ended; live progress comes from the
+  streamed `task_progress` the node used to drop; a run is its own page
+  (phases, agents, reports), with each agent in the existing subagent
+  view. Bundles (§1) are next: the operator's calls — every repo mode
+  offered with *tracked + .git* the default, top-up behavior his choice,
+  optional passphrase encryption in the first cut.
 - **2026-09-24 — v0.45: preview, touch.** A transcript can be read
   without resuming it (the operator has pre-Aspen repos to look through
   before deciding); the preview is its own page with the chat's shape

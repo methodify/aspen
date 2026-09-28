@@ -776,6 +776,27 @@ function fmtElapsed(startIso: string | null, endIso: string | null): string {
 /** "activity ▾": the session's ledger (PROPOSALS §8) — background tasks,
  *  subagents, workflows, monitors — running first; agents open their own
  *  transcript. */
+/** A workflow's second line in the Activity menu: live progress while it
+ *  runs (from the streamed task_progress), its totals once it ended. */
+function workflowRowLine(a: Activity): string {
+  const p = a.detail["progress"] as { agents?: number; done?: number; running?: number; phase?: string | null; tokens?: number | null } | undefined;
+  const parts: string[] = [];
+  if (a.status === "running" && p && p.agents) {
+    if (p.phase) parts.push(p.phase);
+    parts.push(`${p.done ?? 0} of ${p.agents} done`);
+    if (p.tokens) parts.push(`${fmtTokens(p.tokens)} tok`);
+  } else {
+    const n = a.detail["agent_count"];
+    const tk = a.detail["total_tokens"];
+    if (typeof n === "number") parts.push(`${n} agent${n === 1 ? "" : "s"}`);
+    if (typeof tk === "number") parts.push(`${fmtTokens(tk)} tok`);
+  }
+  const att = a.detail["attempts"];
+  if (typeof att === "number" && att > 1) parts.push(`${att} attempts`);
+  const desc = typeof a.detail["description"] === "string" ? String(a.detail["description"]) : "";
+  return [parts.join(" · "), desc.slice(0, 110)].filter(Boolean).join(" — ");
+}
+
 function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: ActivityCounts | null; openSignal?: number }) {
   const [open, setOpen] = useState(false);
   const [acts, setActs] = useState<Activity[] | null>(null);
@@ -861,6 +882,10 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
                             <Link to={`/session/${encodeURIComponent(agent)}/agent/${encodeURIComponent(a.id)}`} onClick={() => setOpen(false)} title="open this agent's transcript">
                               {a.label}
                             </Link>
+                          ) : a.kind === "workflow" && typeof a.detail["run_id"] === "string" ? (
+                            <Link to={`/session/${encodeURIComponent(agent)}/workflow/${encodeURIComponent(String(a.detail["run_id"]))}`} onClick={() => setOpen(false)} title="open this workflow: its phases, agents and results">
+                              {a.label}
+                            </Link>
                           ) : (
                             a.label
                           )}
@@ -870,7 +895,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
                           {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
                           {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 120) : ""}
                           {a.kind === "monitor" && !script && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
-                          {typeof a.detail["summary"] === "string" ? ` — ${a.detail["summary"]}` : ""}
+                          {a.kind === "workflow" ? workflowRowLine(a) : typeof a.detail["summary"] === "string" ? ` — ${a.detail["summary"]}` : ""}
                         </span>
                       </span>
                       <span className={`mono-meta act-status ${a.status === "running" ? "live" : ""}`}>

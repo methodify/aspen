@@ -86,6 +86,7 @@ pub async fn serve(
         .route("/agents/{name}/revive", post(post_revive))
         .route("/agents/{name}/artifacts", get(get_artifacts))
         .route("/agents/{name}/activities", get(get_activities))
+        .route("/agents/{name}/workflows/{run}", get(get_workflow))
         .route("/activities", get(get_fleet_activities))
         .route("/notices", get(get_notices))
         .route("/push/vapid", get(get_push_vapid))
@@ -2429,6 +2430,18 @@ async fn get_activities(State(s): S, Path(name): Path<String>) -> impl IntoRespo
     match s.node.activities(&name).await {
         Ok(acts) => Json(json!(acts)).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+/// GET /api/agents/{name}/workflows/{run} — one workflow run: phases,
+/// agents, results, logs (PROPOSALS-2026-09-O §2.3).
+async fn get_workflow(State(s): S, Path((name, run)): Path<(String, String)>) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "workflow", &bare, json!({ "run": run })).await;
+    }
+    match s.node.workflow(&name, &run).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
     }
 }
 

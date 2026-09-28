@@ -470,6 +470,15 @@ impl SessionStore for ClaudeStore {
         };
         serde_json::to_value(c).unwrap_or(Value::Null)
     }
+    fn workflow(
+        &self,
+        repo: &Path,
+        sid: &str,
+        run_id: &str,
+        progress: Option<&Value>,
+    ) -> Option<Value> {
+        crate::activity::workflow_detail(repo, sid, run_id, progress)
+    }
     fn subagent(&self, repo: &Path, sid: &str, agent_id: &str) -> Result<Vec<Value>> {
         crate::transcript::rehydrate_file(&crate::activity::subagent_transcript(
             repo, sid, agent_id,

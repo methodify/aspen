@@ -15,7 +15,7 @@ A session's side work leaves a complete trail in its own transcript:
 |---|---|---|---|
 | task | `Bash` tool_use with `run_in_background: true` | its tool_result: "Command running in background with ID: X" | a `<task-notification>` user line with `<task-id>X</task-id>` and `<status>` |
 | agent | `Agent` (or `Task`) tool_use | its tool_result: "agentId: X" (async); a synchronous agent returns its result in the same call and is *done* at once | the notification, as above |
-| workflow | `Workflow` tool_use | "wf_…" in the result | the notification |
+| workflow | `Workflow` tool_use | "Task ID:" in the result (run id `wf_…` kept as `detail.run_id`; see §Workflows) | the notification, or the run's state file |
 | monitor | `ScheduleWakeup` / `CronCreate` / `Monitor` tool_use | the tool_use id | (a wakeup fires once; shown as scheduled) |
 
 A subagent's own transcript lives beside the session's: `<project>/
@@ -122,3 +122,58 @@ normalizer now drops a subagent's text, deltas and tool results; its
 tool calls pass, still marked, and the node and console ignore them for
 the transcript, the last tool and History. The subagent's work is in
 the activity panel (its own transcript opens from there).
+
+
+## Workflows (v0.46, PROPOSALS-2026-09-O §2)
+
+**The ledger.** A workflow's launch result reads `Workflow launched in
+background. Task ID: w… / Summary: … / Transcript dir: …/wf_<run>`. The
+row's id is the **Task ID** (the `<task-notification>` that ends it names
+that); `detail.run_id` is the run (`wf_<run>`, or the `resumeFromRunId`
+input on a resume); the label is the script's `meta.name` (quoted), else
+the saved script's file name on a resume, else the Summary line;
+`detail.description` is `meta.description` or the Summary. A resume is
+the same run under a new Task ID: the rows fold into the newest launch
+with `detail.attempts`. Before v0.46 the id was the run id, so no
+notification ever matched and every workflow read *running* until the
+process restarted; and the name parse stopped at the quote.
+
+**The state file as a second source.** When a run ends the harness
+writes `<session>/workflows/wf_<run>.json` (`status`, `workflowName`,
+`phases`, `workflowProgress`, `result`, `logs`, `agentCount`,
+`totalTokens`, `totalToolCalls`, `durationMs`, `scriptPath`). If it was
+written after the launch started, its status settles the row (so a run
+that ended across a restart reads *completed*, not *unknown*) and its
+totals land in `detail`.
+
+**Live progress.** Claude Code streams `system/task_progress {task_id,
+usage{total_tokens, tool_uses, duration_ms}, last_tool_name, summary,
+workflow_progress[]}`; the node keeps the latest frame per task on the
+live session (`task_progress`, 64 max) and summarizes a running
+workflow's onto its row as `detail.progress {agents, done, running,
+queued, failed, phase, tokens, tool_uses}`.
+
+**One run.** `GET /api/agents/{name}/workflows/{run}` (mesh op
+`workflow`) answers `{run_id, task_id, name, description, status,
+started_at, ended_at, duration_ms, total_tokens, total_tool_calls,
+agent_count, attempts, logs, phases[{index, title, detail, agents[{agent_id,
+label, phase, model, state, attempt, retry_reason, started_at,
+last_progress_at, duration_ms, tokens, tool_calls, last_tool,
+last_tool_summary, prompt_preview, result_preview, has_transcript}]}],
+results[{key, report}], script_path, source, live?}` — from the streamed
+progress while it runs (`source: live`), else the state file (`state`),
+else the live journal (`subagents/workflows/wf_<run>/journal.jsonl`:
+`started`, `result`) plus each agent's transcript, read for its start,
+model, tool calls, last tool and context size, cached by size and mtime
+(`journal`). An agent's *tokens* is its final context (input + cache of
+its last turn), as the harness counts it.
+
+**The page.** `/session/<name>/workflow/<run>` (from the Activity row's
+name): the header (status, elapsed, agents, tokens, tool calls, attempts,
+source), the phase rail (done / total, running), the selected phase's
+agents (state, label, model, elapsed, tokens, tools, last tool; a row
+expands to its prompt and report; the label opens its transcript in the
+subagent view, which now finds workflow agents under
+`subagents/workflows/`), the logs (retries, stalls) and the script.
+Polls every 3 s. On a phone the row keeps the label, elapsed, last tool
+and tokens.
