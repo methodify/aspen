@@ -344,6 +344,113 @@ export interface Activity {
   detail: Record<string, unknown>;
   has_transcript?: boolean;
 }
+/** Repo bundles (docs/BUNDLES.md). */
+export type BundleRepoMode = "tracked" | "untracked" | "all" | "none";
+export interface BundleSession {
+  id: string;
+  harness: string;
+  title: string | null;
+  name: string | null;
+  bytes: number;
+  sidecar_bytes: number;
+}
+export interface BundleExportPreflight {
+  repo: string;
+  is_git: boolean;
+  origin: string | null;
+  modes: Record<"tracked" | "untracked" | "all", { files: number; bytes: number }>;
+  largest_dirs: { name: string; bytes: number }[];
+  sessions: BundleSession[];
+  memory_bytes: number;
+  names: number;
+  notes: string[];
+}
+export interface BundleExportRequest {
+  path: string;
+  node?: string;
+  out?: string;
+  repo_mode: BundleRepoMode;
+  sessions?: string[] | null;
+  sidecars: boolean;
+  memory: boolean;
+  names: boolean;
+  passphrase?: string;
+}
+export interface BundleExportResult {
+  out: string;
+  bytes: number;
+  files: number;
+  sessions: number;
+  sealed: boolean;
+  notes: string[];
+  /** Set when written to the node's exports dir: the name to download. */
+  file?: string | null;
+}
+export interface BundleImportRequest {
+  file: string;
+  node?: string;
+  passphrase?: string;
+  target: string;
+  mode: "new" | "top_up";
+  repo_files: "none" | "missing";
+  names: boolean;
+}
+export interface BundleImportPlan {
+  staging_id: string;
+  manifest: { source_node: string; created_at: number; repo: { basename: string; branch: string | null; origin: string | null; head: string | null; is_git: boolean }; sealed: boolean; aspen_version: string; notes: string[] };
+  target: string;
+  mode: "new" | "top_up";
+  repo: { files: number; missing_here: number };
+  sessions: { id: string; harness: string; title: string | null; name: string | null; status: string; action: string }[];
+  memory: { new: number; conflicts: number };
+  names: { name: string; as: string; action: string }[];
+  blockers: string[];
+  warnings: string[];
+}
+export interface BundleImportReport {
+  repo: string;
+  handle: string;
+  repo_files_written: number;
+  sessions_installed: string[];
+  sessions_replaced: string[];
+  sessions_forked: [string, string][];
+  sessions_kept: string[];
+  memory_written: number;
+  memory_conflicts: string[];
+  names: string[];
+  residue: number;
+  notes: string[];
+}
+
+/** A bundle in this node's exports dir, as a download link (direct only). */
+export function bundleDownloadUrl(file: string): string {
+  const token = nodeToken();
+  return `${apiBase()}/api/repos/export/download?file=${encodeURIComponent(file)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+}
+
+/** Upload a bundle file to this node's imports dir (direct only; the relay
+ *  cannot carry a file this size). Answers the name for the preflight. */
+export async function bundleUpload(file: File, onProgress?: (sent: number) => void): Promise<{ file: string; bytes: number }> {
+  const token = nodeToken();
+  return await new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", `${apiBase()}/api/repos/import/upload`);
+    if (token) x.setRequestHeader("X-Aspen-Token", token);
+    x.upload.onprogress = (e) => onProgress?.(e.loaded);
+    x.onload = () => {
+      try {
+        const v = JSON.parse(x.responseText) as { file?: string; bytes?: number; error?: string };
+        if (x.status >= 200 && x.status < 300 && v.file) resolve({ file: v.file, bytes: v.bytes ?? 0 });
+        else reject(new Error(v.error ?? `upload failed (${x.status})`));
+      } catch {
+        reject(new Error(`upload failed (${x.status})`));
+      }
+    };
+    x.onerror = () => reject(new Error("upload failed: the connection dropped"));
+    x.send(file);
+  });
+}
+
 /** A workflow run as `GET /api/agents/{name}/workflows/{run}` answers. */
 export interface WorkflowAgent {
   agent_id: string;
@@ -1697,6 +1804,11 @@ export const api = {
 
   mesh: () => request<MeshInfo>("/api/mesh"),
   tls: () => request<TlsStatus>("/api/tls"),
+  // Repo bundles (docs/BUNDLES.md). `node` targets a peer's repo.
+  bundleExportPreflight: (path: string, node?: string | null) => post<BundleExportPreflight>("/api/repos/export/preflight", { path, node: node ?? undefined }),
+  bundleExport: (req: BundleExportRequest) => post<BundleExportResult>("/api/repos/export", req),
+  bundleImportPreflight: (req: BundleImportRequest) => post<BundleImportPlan>("/api/repos/import/preflight", req),
+  bundleImport: (req: BundleImportRequest & { staging_id: string }) => post<BundleImportReport>("/api/repos/import", req),
   /** A transcript read without resuming it (Mesh list → preview). */
   sessionPreview: (q: { repo: string; session: string; harness?: string | null; node?: string | null }) =>
     request<HistoryItem[]>(

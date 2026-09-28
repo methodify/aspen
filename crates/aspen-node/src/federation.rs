@@ -128,6 +128,7 @@ pub fn op_capability(op: &str) -> Capability {
         "transcript"
         | "activities"
         | "workflow"
+        | "repo_export_preflight"
         | "subagent"
         | "artifacts"
         | "file_stat"
@@ -165,7 +166,11 @@ pub fn op_capability(op: &str) -> Capability {
         | "sub"
         | "http" => Capability::Observe,
         "spawn" | "template_spawn" => Capability::Spawn,
-        "adoption" | "node_repo_skip" | "node_repo_add" => Capability::Trust,
+        "adoption"
+        | "node_repo_skip"
+        | "node_repo_add"
+        | "repo_import_preflight"
+        | "repo_import" => Capability::Trust,
         _ => Capability::Control,
     }
 }
@@ -2560,6 +2565,19 @@ async fn serve_api_req(
                 json!({ "console": console, "via": peer }),
             );
             Ok(json!({ "token": token, "expires": expires, "node": node.inner.node_name() }))
+        }
+        // Repo bundles (docs/BUNDLES.md): the verbs run on the repo's node.
+        "repo_export_preflight" | "repo_export" | "repo_import_preflight" | "repo_import" => {
+            let inner2 = node.inner.clone();
+            let op2 = op.to_owned();
+            tokio::task::spawn_blocking(move || match op2.as_str() {
+                "repo_export_preflight" => crate::repobundle::verb_export_preflight(&inner2, &body),
+                "repo_export" => crate::repobundle::verb_export(&inner2, &body),
+                "repo_import_preflight" => crate::repobundle::verb_import_preflight(&inner2, &body),
+                _ => crate::repobundle::verb_import(&inner2, &body),
+            })
+            .await
+            .map_err(|e| anyhow!("{e}"))?
         }
         "tls_csr" => {
             // A member asks the root holder for a leaf (docs/TLS.md §3): the

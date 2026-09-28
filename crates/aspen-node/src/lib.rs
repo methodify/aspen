@@ -27,6 +27,7 @@ pub mod procs;
 pub mod push;
 pub mod release;
 pub mod replicate;
+pub mod repobundle;
 pub mod search;
 pub mod servicing;
 pub mod settings;

@@ -13,6 +13,7 @@ import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
 import { SessionList } from "../sessionRows";
 import { MeshPanel } from "../meshPanel";
+import { ExportPanel, ImportPanel } from "../bundles";
 import { ServicingPanel, useMeshVersions, versionLabel } from "../servicing";
 
 function errText(e: unknown): string {
@@ -190,6 +191,29 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
       <ErrorBar error={error} />
     </form>
   );
+}
+
+/** "import a repo…": a bundle from another machine or mesh (docs/BUNDLES.md). */
+function ImportRow({ onDone }: { onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [nodes, setNodes] = useState<{ node: string; me: boolean }[]>([]);
+  useEffect(() => {
+    if (!open) return;
+    api
+      .mesh()
+      .then((m) => setNodes([{ node: m.node, me: true }, ...(m.peers ?? []).filter((p) => p.link_up).map((p) => ({ node: p.node, me: false }))]))
+      .catch(() => setNodes([{ node: "this node", me: true }]));
+  }, [open]);
+  if (!open) {
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -8 }}>
+        <button type="button" className="btn ghost sm" onClick={() => setOpen(true)} title="a repo with its sessions from an .aspen-repo file: a new repo, or on top of one that is here">
+          import a repo…
+        </button>
+      </div>
+    );
+  }
+  return nodes.length ? <ImportPanel nodes={nodes} onDone={onDone} onClose={() => setOpen(false)} /> : <div className="dim">…</div>;
 }
 
 function HarnessDefaults() {
@@ -383,6 +407,7 @@ function RepoStrip({
   const [namingNew, setNamingNew] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [handleDraft, setHandleDraft] = useState(repo.handle ?? "");
   const [renameBusy, setRenameBusy] = useState(false);
 
@@ -581,6 +606,15 @@ function RepoStrip({
             skills {skillsOpen ? "▴" : "▾"}
           </button>
         )}
+        <button
+          type="button"
+          className="btn ghost sm"
+          aria-expanded={exportOpen}
+          onClick={() => setExportOpen((v) => !v)}
+          title="write this repo with its sessions, memory and names to one file (docs/BUNDLES.md)"
+        >
+          export…
+        </button>
         {!confirmForget ? (
             <button
               type="button"
@@ -628,6 +662,8 @@ function RepoStrip({
           <SkillsSection repos={[repo]} />
         </div>
       )}
+
+      {exportOpen && <ExportPanel path={repo.path} node={node} onClose={() => setExportOpen(false)} />}
 
       {confirmForget && (
         <span className="micro" style={{ color: "var(--text-dim)" }}>
@@ -860,6 +896,7 @@ function RepositoriesSection({
       <MeshPanel />
       <ServicingPanel />
       <AddRepoForm onAdded={refresh} />
+      <ImportRow onDone={refresh} />
       <HarnessDefaults />
       <ReplicasSection />
       <LinksSection />

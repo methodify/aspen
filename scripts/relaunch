@@ -42,6 +42,11 @@ if [ -z "${RELAUNCH_DETACHED:-}" ]; then
 fi
 
 # ---- detached from here ----------------------------------------------------
+# The daemon started below — and every session it revives — must not
+# inherit the marker, or a relaunch run from inside one of those sessions
+# would think it is already detached and run in the foreground (killed with
+# the shell that ran it). Seen 2026-09-28.
+unset RELAUNCH_DETACHED
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*"; }
 log "==== relaunch: repo=$REPO data=$DATA_DIR head=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)"
 cd "$REPO" || { log "cannot cd to $REPO"; exit 1; }

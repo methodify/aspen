@@ -1285,6 +1285,16 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-09-28 — v0.47: repo bundles (proposal O §1).** A repo with its
+  context crosses any gap as a file, not a feature between meshes. The
+  operator's calls: every repo mode offered (default tracked + .git),
+  top-up is his choice at import, passphrase sealing in the first cut,
+  and a relay-attached console works with paths on the node (chunked
+  transfer through the relay is backlog X-6). Decided along the way:
+  transcripts compare by line identity (paths differ between copies);
+  a diverged copy is a fork, never an overwrite; a session a name already
+  holds in another repo on the node arrives under a new id (the
+  one-writer rule is keyed by id); source modification times travel.
 - **2026-09-28 — v0.46: workflows you can see into (proposal O §2).**
   The ledger's workflow id was the run id while the harness ends a
   workflow by its task id — every run stayed *running*. Decided: the

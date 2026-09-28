@@ -232,6 +232,21 @@ pub async fn serve(
         .route("/federation/ws", get(ws_federation))
         .route("/federation/relay", get(ws_relay))
         .route("/sessions/preview", get(get_session_preview))
+        .route(
+            "/repos/export/preflight",
+            post(post_bundle_export_preflight),
+        )
+        .route("/repos/export", post(post_bundle_export))
+        .route("/repos/export/download", get(get_bundle_download))
+        .route(
+            "/repos/import/upload",
+            post(post_bundle_upload).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/repos/import/preflight",
+            post(post_bundle_import_preflight),
+        )
+        .route("/repos/import", post(post_bundle_import))
         .route("/tls", get(get_tls))
         .route("/tls/renew", post(post_tls_renew))
         .route("/tls/trust", post(post_tls_trust))
@@ -474,6 +489,148 @@ pub async fn serve(
         None => main.await?,
     }
     Ok(())
+}
+
+// --------------------------------------------------------- repo bundles
+
+/// A repo bundle verb (docs/BUNDLES.md), on this node or — when the body
+/// names another node — on that one over the mesh. Bundles are big, so the
+/// remote call waits up to 30 minutes.
+async fn bundle_verb(s: &AppState, op: &'static str, body: Value) -> axum::response::Response {
+    if let Some(node) = body
+        .get("node")
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.is_empty() && !is_self_node(s, n))
+    {
+        let Some(mesh) = s.node.inner.mesh() else {
+            return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+        };
+        return match mesh
+            .api_call(
+                node,
+                op,
+                "",
+                body.clone(),
+                std::time::Duration::from_secs(1800),
+            )
+            .await
+        {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+        };
+    }
+    let inner = s.node.inner.clone();
+    let r = tokio::task::spawn_blocking(move || match op {
+        "repo_export_preflight" => aspen_node::repobundle::verb_export_preflight(&inner, &body),
+        "repo_export" => aspen_node::repobundle::verb_export(&inner, &body),
+        "repo_import_preflight" => aspen_node::repobundle::verb_import_preflight(&inner, &body),
+        _ => aspen_node::repobundle::verb_import(&inner, &body),
+    })
+    .await;
+    match r {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    }
+}
+
+async fn post_bundle_export_preflight(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
+    bundle_verb(&s, "repo_export_preflight", b).await
+}
+async fn post_bundle_export(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
+    bundle_verb(&s, "repo_export", b).await
+}
+async fn post_bundle_import_preflight(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
+    bundle_verb(&s, "repo_import_preflight", b).await
+}
+async fn post_bundle_import(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
+    bundle_verb(&s, "repo_import", b).await
+}
+
+#[derive(Deserialize)]
+struct DownloadQuery {
+    file: String,
+}
+
+/// GET /api/repos/export/download?file=<name> — a bundle from this node's
+/// exports dir, streamed (a direct connection; the relay cannot carry it).
+async fn get_bundle_download(
+    State(s): S,
+    Query(q): Query<DownloadQuery>,
+) -> axum::response::Response {
+    if q.file.contains(['/', '\\'])
+        || q.file.starts_with('.')
+        || !q.file.ends_with(aspen_node::repobundle::EXT)
+    {
+        return err(StatusCode::BAD_REQUEST, "bad file name").into_response();
+    }
+    let Some(dir) = s.node.inner.data_dir.as_deref() else {
+        return err(StatusCode::NOT_FOUND, "no data dir").into_response();
+    };
+    let p = aspen_node::repobundle::exports_dir(dir).join(&q.file);
+    let f = match tokio::fs::File::open(&p).await {
+        Ok(f) => f,
+        Err(_) => return err(StatusCode::NOT_FOUND, "no such export on this node").into_response(),
+    };
+    let len = f.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(f));
+    (
+        [
+            ("content-type", "application/octet-stream".to_string()),
+            ("content-length", len.to_string()),
+            (
+                "content-disposition",
+                format!("attachment; filename=\"{}\"", q.file),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// POST /api/repos/import/upload — the raw bundle as the request body
+/// (a direct connection), saved to this node's imports dir. Answers the
+/// name to pass to the preflight as `file`.
+async fn post_bundle_upload(State(s): S, body: axum::body::Body) -> axum::response::Response {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let Some(dir) = s.node.inner.data_dir.clone() else {
+        return err(StatusCode::NOT_FOUND, "no data dir").into_response();
+    };
+    let dir = aspen_node::repobundle::imports_dir(&dir);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response();
+    }
+    let name = format!(
+        "upload-{}.{}",
+        uuid::Uuid::new_v4().simple(),
+        aspen_node::repobundle::EXT
+    );
+    let path = dir.join(&name);
+    let mut f = match tokio::fs::File::create(&path).await {
+        Ok(f) => f,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    };
+    let mut stream = body.into_data_stream();
+    let mut n: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(b) => {
+                n += b.len() as u64;
+                if let Err(e) = f.write_all(&b).await {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response();
+                }
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&path).await;
+                return err(StatusCode::BAD_REQUEST, format!("upload interrupted: {e}"))
+                    .into_response();
+            }
+        }
+    }
+    let _ = f.flush().await;
+    Json(json!({ "file": name, "path": path.to_string_lossy(), "bytes": n })).into_response()
 }
 
 // --------------------------------------------------------------- preview

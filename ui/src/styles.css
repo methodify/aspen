@@ -885,3 +885,29 @@ body.rail-narrow .body-grid { grid-template-columns: 52px 1fr; }
 .sess-pending { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 button.link { background: none; border: 0; padding: 0; color: var(--text-hi); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; font: inherit; }
 button.link:hover { text-decoration-style: solid; }
+
+/* ── Repo bundles (docs/BUNDLES.md) ─────────────────────────────────── */
+.bundle-panel { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.bundle-panel.strip { border-top: var(--seam); }
+.bundle-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.bundle-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bundle-k { font: 600 0.68rem/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); width: 84px; flex: 0 0 auto; }
+.bundle-choices { display: flex; gap: 6px; flex-wrap: wrap; }
+.bundle-choice { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); background: var(--bg-strip); cursor: pointer; font-size: 0.85rem; }
+.bundle-choice.on { border-color: var(--accent); background: var(--bg-panel); }
+.bundle-flag { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-mid); }
+.bundle-sessions { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; max-height: 220px; overflow: auto; }
+.bundle-session, .bundle-plan-row { display: grid; grid-template-columns: auto 120px minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 0.85rem; }
+.bundle-plan-row { grid-template-columns: 120px minmax(0, 1fr) auto minmax(160px, 1.2fr); }
+.bundle-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mid); }
+.bundle-action { font-size: 0.8rem; color: var(--text-mid); }
+.bundle-plan-row.st-diverged .bundle-action, .bundle-plan-row.st-incoming_longer .bundle-action { color: var(--sig-waiting); }
+.bundle-plan { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); background: var(--bg-strip); padding: 8px 10px; }
+.bundle-warn { color: var(--sig-waiting); }
+.bundle-done { display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 760px) {
+  .bundle-k { width: 100%; }
+  .bundle-session, .bundle-plan-row { grid-template-columns: auto minmax(0, 1fr); }
+  .bundle-session .mono-meta, .bundle-plan-row .mono-meta { grid-column: 2; }
+  .bundle-plan-row .bundle-action { grid-column: 1 / -1; }
+}

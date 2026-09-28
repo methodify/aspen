@@ -286,6 +286,59 @@ enum ReposCommand {
     /// Find repos from Claude Code's session store (~/.claude/projects)
     /// and add them to this node's registry.
     Discover,
+    /// Write a repo *with its context* to one file (docs/BUNDLES.md): the
+    /// working tree, every session (paths made portable), memory, names.
+    Export {
+        /// The repo directory.
+        path: PathBuf,
+        /// Output file or directory (default: <data-dir>/exports/<repo>-<stamp>.aspen-repo).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// tracked (git files + .git, default) | untracked (+ new files, honoring
+        /// .gitignore) | all (everything, dotfiles and ignored files) | none (context only)
+        #[arg(long, default_value = "tracked")]
+        repo: String,
+        /// Only these session ids (comma-separated); default: all.
+        #[arg(long)]
+        sessions: Option<String>,
+        /// Leave out the sidecar folders (tool results, subagent and workflow transcripts).
+        #[arg(long)]
+        no_sidecars: bool,
+        #[arg(long)]
+        no_memory: bool,
+        /// Leave out the Aspen names, charters, bookmarks and lineage.
+        #[arg(long)]
+        no_names: bool,
+        /// Seal the file with a passphrase (asked for twice).
+        #[arg(long)]
+        seal: bool,
+        /// Read the passphrase from this environment variable instead of asking.
+        #[arg(long)]
+        passphrase_env: Option<String>,
+    },
+    /// Import a repo bundle: a new repo at --to, or on top of one there.
+    Import {
+        file: PathBuf,
+        /// Where the repo goes (new: absent or empty; --top-up: an existing repo).
+        #[arg(long)]
+        to: PathBuf,
+        /// Merge into the repo at --to instead of creating it.
+        #[arg(long)]
+        top_up: bool,
+        /// With --top-up: also write the bundle's repo files this repo lacks.
+        #[arg(long)]
+        missing_files: bool,
+        /// Do not register the bundle's names.
+        #[arg(long)]
+        no_names: bool,
+        /// Show the plan and stop.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(short = 'y', long)]
+        yes: bool,
+        #[arg(long)]
+        passphrase_env: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -615,6 +668,165 @@ async fn main() -> Result<()> {
                         if sessions == 1 { "" } else { "s" },
                     );
                 }
+                Ok(())
+            }
+            ReposCommand::Export {
+                path,
+                out,
+                repo,
+                sessions,
+                no_sidecars,
+                no_memory,
+                no_names,
+                seal,
+                passphrase_env,
+            } => {
+                let abs = |p: &std::path::Path| {
+                    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+                };
+                let passphrase = if let Some(var) = passphrase_env {
+                    Some(std::env::var(&var).map_err(|_| anyhow::anyhow!("${var} is not set"))?)
+                } else if seal {
+                    let a = rpassword::prompt_password("passphrase: ")?;
+                    let b = rpassword::prompt_password("again: ")?;
+                    if a != b {
+                        anyhow::bail!("the passphrases differ");
+                    }
+                    if a.is_empty() {
+                        anyhow::bail!("an empty passphrase seals nothing");
+                    }
+                    Some(a)
+                } else {
+                    None
+                };
+                println!("exporting {} …", abs(&path).display());
+                let v = local_api_post(
+                    &cli.data_dir,
+                    "/api/repos/export",
+                    serde_json::json!({
+                        "path": abs(&path),
+                        "out": out.as_deref().map(abs),
+                        "repo_mode": repo,
+                        "sessions": sessions.map(|s| s.split(',').map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect::<Vec<_>>()),
+                        "sidecars": !no_sidecars,
+                        "memory": !no_memory,
+                        "names": !no_names,
+                        "passphrase": passphrase,
+                    }),
+                    3600,
+                )?;
+                println!(
+                    "wrote {} — {} files, {} session{}, {:.1} MB{}",
+                    v["out"].as_str().unwrap_or("?"),
+                    v["files"],
+                    v["sessions"],
+                    if v["sessions"].as_u64() == Some(1) {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    v["bytes"].as_f64().unwrap_or(0.0) / 1_048_576.0,
+                    if v["sealed"].as_bool() == Some(true) {
+                        ", sealed"
+                    } else {
+                        ""
+                    }
+                );
+                for n in v["notes"].as_array().into_iter().flatten() {
+                    println!("  note: {}", n.as_str().unwrap_or(""));
+                }
+                Ok(())
+            }
+            ReposCommand::Import {
+                file,
+                to,
+                top_up,
+                missing_files,
+                no_names,
+                dry_run,
+                yes,
+                passphrase_env,
+            } => {
+                let abs = |p: &std::path::Path| {
+                    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+                };
+                let file = abs(&file);
+                let passphrase = if let Some(var) = passphrase_env {
+                    Some(std::env::var(&var).map_err(|_| anyhow::anyhow!("${var} is not set"))?)
+                } else if aspen_node::repobundle::is_sealed(&file)? {
+                    Some(rpassword::prompt_password(
+                        "this bundle is sealed — passphrase: ",
+                    )?)
+                } else {
+                    None
+                };
+                let opts = serde_json::json!({
+                    "file": file,
+                    "passphrase": passphrase,
+                    "target": abs(&to),
+                    "mode": if top_up { "top_up" } else { "new" },
+                    "repo_files": if missing_files { "missing" } else { "none" },
+                    "names": !no_names,
+                });
+                println!("reading {} …", file.display());
+                let plan = local_api_post(
+                    &cli.data_dir,
+                    "/api/repos/import/preflight",
+                    opts.clone(),
+                    3600,
+                )?;
+                print_bundle_plan(&plan);
+                let blockers = plan["blockers"].as_array().cloned().unwrap_or_default();
+                if !blockers.is_empty() {
+                    anyhow::bail!(
+                        "cannot import: {}",
+                        blockers
+                            .iter()
+                            .filter_map(|b| b.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                }
+                if dry_run {
+                    return Ok(());
+                }
+                if !yes {
+                    print!("import? [y/N] ");
+                    use std::io::Write as _;
+                    std::io::stdout().flush().ok();
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).ok();
+                    if !matches!(line.trim(), "y" | "Y" | "yes") {
+                        println!("left as is.");
+                        return Ok(());
+                    }
+                }
+                let mut body = opts;
+                body["staging_id"] = plan["staging_id"].clone();
+                let r = local_api_post(&cli.data_dir, "/api/repos/import", body, 3600)?;
+                println!(
+                    "imported into {} (#{})",
+                    r["repo"].as_str().unwrap_or("?"),
+                    r["handle"].as_str().unwrap_or("?")
+                );
+                let n = |k: &str| r[k].as_array().map(|a| a.len()).unwrap_or(0);
+                println!(
+                    "  repo files written {} · sessions installed {} · replaced {} · forked {} · kept {} · memory written {} · names {}",
+                    r["repo_files_written"], n("sessions_installed"), n("sessions_replaced"), n("sessions_forked"), n("sessions_kept"), r["memory_written"], n("names")
+                );
+                for c in r["memory_conflicts"].as_array().into_iter().flatten() {
+                    println!(
+                        "  memory conflict kept beside: {}",
+                        c.as_str().unwrap_or("")
+                    );
+                }
+                if r["residue"].as_u64().unwrap_or(0) > 0 {
+                    println!("  note: {} path(s) from the source machine could not be rewritten (advisory)", r["residue"]);
+                }
+                for x in r["notes"].as_array().into_iter().flatten() {
+                    println!("  note: {}", x.as_str().unwrap_or(""));
+                }
+                println!("names are registered, not started — resume them from the console or `aspen resume`.");
                 Ok(())
             }
         },
@@ -1862,6 +2074,68 @@ pub(crate) fn relative(epoch: f64) -> String {
         format!("{}m ago", s / 60)
     } else {
         format!("{}h ago", s / 3600)
+    }
+}
+
+/// The import preflight, for a terminal.
+fn print_bundle_plan(p: &serde_json::Value) {
+    let m = &p["manifest"];
+    println!(
+        "bundle from {} · repo {} ({}) · aspen v{}{}",
+        m["source_node"].as_str().unwrap_or("?"),
+        m["repo"]["basename"].as_str().unwrap_or("?"),
+        m["repo"]["branch"].as_str().unwrap_or("-"),
+        m["aspen_version"].as_str().unwrap_or("?"),
+        if m["sealed"].as_bool() == Some(true) {
+            " · sealed"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "into {} as {} · repo files in bundle {} ({} missing here)",
+        p["target"].as_str().unwrap_or("?"),
+        p["mode"].as_str().unwrap_or("?"),
+        p["repo"]["files"],
+        p["repo"]["missing_here"]
+    );
+    for s in p["sessions"].as_array().into_iter().flatten() {
+        println!(
+            "  session {} {} — {}{}",
+            s["id"]
+                .as_str()
+                .unwrap_or("?")
+                .chars()
+                .take(8)
+                .collect::<String>(),
+            s["name"]
+                .as_str()
+                .map(|n| format!("@{n}"))
+                .unwrap_or_else(|| "(no name)".into()),
+            s["action"].as_str().unwrap_or(""),
+            s["title"]
+                .as_str()
+                .map(|t| format!(" · {}", t.chars().take(50).collect::<String>()))
+                .unwrap_or_default()
+        );
+    }
+    println!(
+        "  memory: {} new, {} conflicting (kept beside)",
+        p["memory"]["new"], p["memory"]["conflicts"]
+    );
+    for n in p["names"].as_array().into_iter().flatten() {
+        println!(
+            "  name @{} → @{} ({})",
+            n["name"].as_str().unwrap_or("?"),
+            n["as"].as_str().unwrap_or("?"),
+            n["action"].as_str().unwrap_or("")
+        );
+    }
+    for w in p["warnings"].as_array().into_iter().flatten() {
+        println!("  warning: {}", w.as_str().unwrap_or(""));
+    }
+    for b in p["blockers"].as_array().into_iter().flatten() {
+        println!("  BLOCKED: {}", b.as_str().unwrap_or(""));
     }
 }
 

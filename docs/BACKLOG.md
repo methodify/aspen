@@ -22,6 +22,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
 | H-11 | sessions | **Incremental activity derive.** The ledger is rebuilt from the whole transcript whenever it changed; keep the last offset and parse only the appended tail. Cached at turn boundaries since v0.23.2, so this is cost, not correctness. | aspen-claude `activity.rs` |
 | N-1 | servicing | **A supervisor for the daemon.** The `aspen up -d` parent stays as a watchdog: ping, and on silence take a thread dump and restart; peers show a deaf node as such. Parked 2026-09-09: two hangs were bugs, now fixed; revisit if it recurs. | SERVICING.md "Diagnosing a hang" |
+| X-6 | console + protocol | **Chunked bundle transfer through the relay.** Download and upload an `.aspen-repo` from a console on the relay in small sealed pieces (resumable), so a phone on cellular can export or import; today a relay console works with paths on the node. | BUNDLES.md §5 |
 | N-2 | sessions + console | **A queue per session.** Hand a session the next item when it goes idle, from a list the operator keeps or from the bus; pairs with templates and boards. | — |
 | N-3 | sessions + servicing | **Scheduled sessions.** A template plus a cron: "every morning, run triage in repo X on node Y." | PLUGINS.md §templates |
 | N-4 | console + sessions | **Budgets.** Usage is measured; nothing acts on it. A ceiling per repo or mesh with a notice at 80% and a stop at 100%. | USAGE.md |
@@ -34,6 +35,18 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
+
+## Shipped — 2026-09-28: repo bundles — a repo with its context, as one file (X-1..X-5, v0.47)
+
+| id | shipped as |
+|---|---|
+| X-1 | `repobundle.rs`: `.aspen-repo` (gzip'd tar: manifest, repo per mode, every session canonical, sidecars, memory, names, sums); Claude and Codex; one name per transcript; source times kept. |
+| X-2 | Import as a new repo or a top-up: install / replace (`.bak`) / keep / fork on divergence / new id when the node has the session in another repo; memory kept beside; names land as `bare-2` when taken; plan before, report after; every checksum verified. |
+| X-3 | `aspen repos export|import`; `POST /api/repos/export[/preflight]`, `GET /api/repos/export/download`, `POST /api/repos/import[/upload|/preflight]`; mesh ops for a peer's repo. |
+| X-4 | Console: *export…* on each repo row (modes, sessions, options, seal, download or path), *import a repo…* on the Mesh list (upload or path, new or top-up, preview, import). |
+| X-5 | Optional passphrase sealing: scrypt + XChaCha20-Poly1305 in 1 MiB chunks, truncation detected. |
+
+Also: `scripts/relaunch` clears its detach marker before starting the daemon (sessions it revived inherited it, so a relaunch run from one of them ran in the foreground).
 
 ## Shipped — 2026-09-28: workflows you can see into (W-1..W-4, v0.46)
 

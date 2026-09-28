@@ -1,7 +1,8 @@
 # Proposal O — A repo with its context, as a file; and workflows you can see into
 
 **Status:** accepted 2026-09-28. W-1..W-4 shipped as v0.46 (ACTIVITY.md
-§Workflows). Operator's decisions: workflows first; bundles offer every
+§Workflows); X-1..X-5 as v0.47 (BUNDLES.md); chunked relay transfer is
+backlog X-6. Operator's decisions: workflows first; bundles offer every
 repo mode (default *tracked + .git*), top-up is the user's choice at
 import, passphrase encryption is in the first cut (optional); the relay
 question (e) is being talked through.

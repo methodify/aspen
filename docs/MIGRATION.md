@@ -131,6 +131,10 @@ mode (`/session/<name>?bring=1` opens it too), so pulling work to the
 machine in front of you is one click and one confirm. A node's *evacuate*
 (SERVICING.md §13b) is the same move applied to every session there.
 
+**A whole repo (v0.47).** BUNDLES.md: the same path rules applied to
+every session of a repo at once, with the working tree, memory and names,
+as one file that imports as a new repo or on top of one.
+
 ## 5. What was verified (rig, 2026-09-06)
 
 - Move over the mesh, j2 → j1, into a **different repo path**: 4 files,
