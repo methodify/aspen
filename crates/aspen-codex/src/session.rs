@@ -181,6 +181,12 @@ impl CodexSession {
             .and_then(|i| i.as_str())
             .ok_or_else(|| anyhow!("codex {method}: no thread id in response"))?
             .to_owned();
+        // Keep the thread's settings, not its history: `thread/resume`
+        // answers with every turn, and a long session's turns (generated
+        // images inline) ran to 147 MB — copied three times into the
+        // runtime info, so the console's request never finished and its
+        // model and mode menus fell back to "default" (2026-10-02).
+        let started = without_turns(started);
         let model_now = started
             .get("model")
             .and_then(|m| m.as_str())
@@ -1381,5 +1387,35 @@ fn codex_mcp_state(v: &Value) -> aspen_core::McpServerState {
         server,
         tools,
         plugin: s("pluginId"),
+    }
+}
+
+/// A thread response with `thread.turns` replaced by their count — the
+/// history lives in the rollout; the runtime info needs only the settings.
+fn without_turns(mut started: Value) -> Value {
+    if let Some(thread) = started.get_mut("thread").and_then(|t| t.as_object_mut()) {
+        if let Some(turns) = thread.remove("turns") {
+            let n = turns.as_array().map_or(0, |a| a.len());
+            thread.insert("turnCount".into(), json!(n));
+        }
+    }
+    started
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resumed_threads_turns_are_dropped() {
+        let started = json!({
+            "model": "gpt-6-astra",
+            "thread": { "id": "t1", "cwd": "/w", "turns": [{ "items": ["big"] }, { "items": [] }] },
+        });
+        let slim = without_turns(started);
+        assert_eq!(slim["thread"]["id"], "t1");
+        assert_eq!(slim["thread"]["turnCount"], 2);
+        assert!(slim["thread"].get("turns").is_none());
+        assert_eq!(slim["model"], "gpt-6-astra");
     }
 }

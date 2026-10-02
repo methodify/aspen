@@ -36,6 +36,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-02: a long Codex session's menus fill (v0.48.4)
+
+- The operator's Codex pane still offered only "default" for model and mode after v0.48.3. Codex answers `thread/resume` with the whole thread, every turn included, and Aspen kept that answer as the session's handshake. A long session that generates images (@artist@cloud-nebula, 18 turns) came to 147 MB, held three times in the runtime info (handshake, inventory, raw), so `/api/agents/{name}/runtime` was 440 MB and took 13 s even over loopback. The console's request never finished and its menus fell back to their defaults. The node now keeps the thread's settings and the number of turns (`turnCount`), not the turns themselves (the history is read from the rollout). Rig sessions were small, so the earlier checks never saw it. Verified on the rig: a resumed Codex session's runtime response dropped from 39.8 KB to 12.6 KB, still listing all five models.
+
 ## Shipped — 2026-10-02: the model menu fills when a session comes up (v0.48.3)
 
 - A session view asked for the runtime (model list, commands, mode) once, when it opened. Opened on a stopped session, it asked a harness that was not running and never asked again after the session was started — the operator's Codex pane kept "default" as its only model after v0.48.2. It now asks again whenever the session comes up (twice, 1.5 s and 6 s after, since the harness lists its models a moment after starting). Verified on the rig: a stopped Codex session's menu went from "default" to all six models when the session was started from outside the page.
