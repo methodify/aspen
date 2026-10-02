@@ -528,12 +528,49 @@ export interface ActivityCounts {
 }
 
 /** Plugins (PROPOSALS §7). */
-export type MarketSource = { source: "github"; repo: string } | { source: "git"; url: string } | { source: "directory"; path: string };
+export type MarketSource = { source: "github"; repo: string } | { source: "git"; url: string } | { source: "directory"; path: string; node?: string | null };
 export interface Marketplace {
   name: string;
   source: MarketSource;
   added_at: number;
   updated_at: number;
+  /** `all`: wholly in the library; `picked`: only what was added; absent:
+   *  by size (PROPOSALS-2026-10-P.md L-1). */
+  library?: "all" | "picked" | null;
+}
+/** What a plugin brings into a session (L-5). */
+export interface PluginProvides {
+  skills: number;
+  commands: number;
+  agents: number;
+  hooks: boolean;
+  mcp: number;
+  lsp: number;
+}
+export interface LibraryMember {
+  marketplace: string;
+  plugin: string;
+  why: "picked" | "rule" | "marketplace";
+}
+/** One node's plugin state (L-7). */
+export interface NodePluginStatus {
+  node: string;
+  ok: boolean;
+  error?: string;
+  legacy?: boolean;
+  status?: {
+    node: string | null;
+    version: string | null;
+    marketplaces: {
+      name: string;
+      source: MarketSource | null;
+      checkout: boolean | null;
+      synced_at: number | null;
+      error: string | null;
+      plugins: number;
+      plugin_errors: { plugin: string; error: string }[];
+    }[];
+  };
 }
 export interface PluginRule {
   id: string;
@@ -555,6 +592,10 @@ export interface CatalogPlugin {
   current: string;
   source: unknown;
   cached: string[];
+  display_name?: string | null;
+  author?: string | null;
+  homepage?: string | null;
+  provides?: PluginProvides | null;
 }
 export interface PluginCatalog {
   synced_at: Record<string, number>;
@@ -566,6 +607,9 @@ export interface PluginRegistry {
   rules: PluginRule[];
   catalog: PluginCatalog;
   node: string | null;
+  /** Absent from a node before v0.49. */
+  library_members?: LibraryMember[];
+  whole_library?: string[];
 }
 export interface ActivePlugin {
   marketplace: string;
@@ -1600,8 +1644,24 @@ export const api = {
   plugins: () => request<PluginRegistry>("/api/plugins"),
   pluginsSync: (marketplace?: string) =>
     request<PluginCatalog>(`/api/plugins/sync${marketplace ? `?marketplace=${enc(marketplace)}` : ""}`, { method: "POST" }),
-  putMarketplace: (name: string, source: MarketSource) =>
-    request<{ ok: boolean }>(`/api/plugins/marketplaces/${enc(name)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source }) }),
+  putMarketplace: (name: string, source: MarketSource, library?: "all" | "picked" | null) =>
+    request<{ ok: boolean }>(`/api/plugins/marketplaces/${enc(name)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source, library: library ?? null }) }),
+  setMarketplaceLibrary: (name: string, library: "all" | "picked" | null) =>
+    request<{ ok: boolean }>(`/api/plugins/marketplaces/${enc(name)}/library`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ library }) }),
+  addToLibrary: (marketplace: string, plugin: string) =>
+    request<{ ok: boolean }>(`/api/plugins/library/${enc(marketplace)}/${enc(plugin)}`, { method: "PUT" }),
+  removeFromLibrary: (marketplace: string, plugin: string) =>
+    request<{ ok: boolean }>(`/api/plugins/library/${enc(marketplace)}/${enc(plugin)}`, { method: "DELETE" }),
+  pluginsInspect: (marketplace: string, plugin: string) =>
+    request<{ provides: PluginProvides }>("/api/plugins/inspect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ marketplace, plugin }) }),
+  pluginsStatus: () => request<{ nodes: NodePluginStatus[] }>("/api/plugins/status"),
+  /** Sync every node (no `node`) or one node; each remote node gets this
+   *  node's registry first (L-7). */
+  pluginsSyncMesh: (node?: string, marketplace?: string) => {
+    const q = new URLSearchParams(node ? { node } : { scope: "mesh" });
+    if (marketplace) q.set("marketplace", marketplace);
+    return request<{ nodes: { node: string; ok: boolean; error?: string; errors?: Record<string, string> | null; synced_at?: Record<string, number> | null }[] }>(`/api/plugins/sync?${q}`, { method: "POST" });
+  },
   deleteMarketplace: (name: string) => request<{ ok: boolean }>(`/api/plugins/marketplaces/${enc(name)}`, { method: "DELETE" }),
   putPluginRule: (r: PluginRule) =>
     request<{ ok: boolean }>(`/api/plugins/rules/${enc(r.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(r) }),

@@ -140,6 +140,7 @@ pub fn op_capability(op: &str) -> Capability {
         | "boards"
         | "plugin_registry"
         | "plugins_registry_view"
+        | "plugins_status"
         | "templates"
         | "needs"
         | "node_repos"
@@ -1937,6 +1938,7 @@ fn exposure_precheck(
                 | "plugin_registry"
                 | "plugins_sync"
                 | "plugins_registry_view"
+                | "plugins_status"
                 | "templates"
                 | "template_spawn"
                 | "memory_files"
@@ -2341,11 +2343,17 @@ async fn serve_api_req(
                 .unwrap_or_default()))
         }
         "boards" => Ok(json!(node.inner.store.boards(true)?)),
-        "plugin_registry" => Ok(json!({
-            "marketplaces": node.inner.store.marketplaces(true)?,
-            "rules": node.inner.store.plugin_rules(true)?,
-        })),
+        "plugin_registry" => Ok(crate::plugins::registry_tables(&node.inner)),
+        "plugins_status" => Ok(crate::plugins::node_status(&node.inner)),
         "plugins_sync" => {
+            // A console's "sync the mesh" pushes its registry first, so a
+            // node the roster sync never reached gets it now (L-7).
+            if let Some(reg) = body.get("registry") {
+                if crate::plugins::merge_registry(&node.inner, reg, "push") {
+                    tracing::info!("plugin registry merged from a sync push");
+                    broadcast_roster(&node.inner);
+                }
+            }
             let c = crate::plugins::spawn_sync(
                 node.inner.clone(),
                 body.get("marketplace")
@@ -3364,7 +3372,7 @@ async fn sync_harness_defaults_from(inner: &Arc<NodeInner>, peer: &str) {
 /// cached here.
 async fn sync_plugin_registry_from(inner: &Arc<NodeInner>, peer: &str) {
     let Some(mesh) = inner.mesh() else { return };
-    let Ok(v) = mesh
+    let v = match mesh
         .api_call(
             peer,
             "plugin_registry",
@@ -3373,34 +3381,16 @@ async fn sync_plugin_registry_from(inner: &Arc<NodeInner>, peer: &str) {
             std::time::Duration::from_secs(20),
         )
         .await
-    else {
-        return;
+    {
+        Ok(v) => v,
+        Err(e) => {
+            // Was silent: a node whose pulls kept failing never learned
+            // a marketplace, and nothing said so (L-7).
+            tracing::warn!(peer, error = %e, "plugin registry pull failed");
+            return;
+        }
     };
-    let mut changed = false;
-    if let Some(ms) = v
-        .get("marketplaces")
-        .and_then(|m| serde_json::from_value::<Vec<crate::plugins::Marketplace>>(m.clone()).ok())
-    {
-        for m in &ms {
-            if inner.store.upsert_marketplace(m).unwrap_or(false) {
-                changed = true;
-                if m.deleted {
-                    let _ = crate::plugins::remove_marketplace(inner, &m.name);
-                }
-            }
-        }
-    }
-    if let Some(rs) = v
-        .get("rules")
-        .and_then(|r| serde_json::from_value::<Vec<crate::plugins::Rule>>(r.clone()).ok())
-    {
-        for r in &rs {
-            if inner.store.upsert_plugin_rule(r).unwrap_or(false) {
-                changed = true;
-            }
-        }
-    }
-    if changed {
+    if crate::plugins::merge_registry(inner, &v, peer) {
         tracing::info!(peer, "plugin registry synced from peer");
         broadcast_roster(inner);
         // spawn_blocking runs at once; the handle is not awaited here.

@@ -116,7 +116,16 @@ CREATE TABLE IF NOT EXISTS marketplaces(
   source     TEXT NOT NULL,
   added_at   REAL NOT NULL,
   updated_at REAL NOT NULL,
-  deleted    INTEGER NOT NULL DEFAULT 0
+  deleted    INTEGER NOT NULL DEFAULT 0,
+  library    TEXT
+);
+CREATE TABLE IF NOT EXISTS plugin_library(
+  marketplace TEXT NOT NULL,
+  plugin      TEXT NOT NULL,
+  added_at    REAL NOT NULL,
+  updated_at  REAL NOT NULL,
+  deleted     INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(marketplace, plugin)
 );
 CREATE TABLE IF NOT EXISTS plugin_rules(
   id          TEXT PRIMARY KEY,
@@ -486,6 +495,7 @@ pub struct BusStore {
 fn additive_columns(conn: &Connection) -> Result<()> {
     for stmt in [
         "ALTER TABLE messages ADD COLUMN post TEXT",
+        "ALTER TABLE marketplaces ADD COLUMN library TEXT",
         "ALTER TABLE agents ADD COLUMN title TEXT",
         "ALTER TABLE agents ADD COLUMN extra_args TEXT",
         "ALTER TABLE agents ADD COLUMN live INTEGER NOT NULL DEFAULT 0",
@@ -558,6 +568,7 @@ impl BusStore {
             "SELECT COALESCE(MAX(updated_at), 0) FROM boards",
             "SELECT COALESCE(MAX(updated_at), 0) FROM marketplaces",
             "SELECT COALESCE(MAX(updated_at), 0) FROM plugin_rules",
+            "SELECT COALESCE(MAX(updated_at), 0) FROM plugin_library",
             "SELECT COALESCE(MAX(updated_at), 0) FROM templates",
         ] {
             if let Ok(v) = conn.query_row(sql, [], |r| r.get::<_, f64>(0)) {
@@ -1816,7 +1827,7 @@ impl BusStore {
     pub fn marketplaces(&self, with_deleted: bool) -> Result<Vec<crate::plugins::Marketplace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, source, added_at, updated_at, deleted FROM marketplaces ORDER BY name",
+            "SELECT name, source, added_at, updated_at, deleted, library FROM marketplaces ORDER BY name",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1826,19 +1837,27 @@ impl BusStore {
                     r.get::<_, f64>(2)?,
                     r.get::<_, f64>(3)?,
                     r.get::<_, i64>(4)? != 0,
+                    r.get::<_, Option<String>>(5)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
-            .filter_map(|(name, source, added_at, updated_at, deleted)| {
-                let source = serde_json::from_str(&source).ok()?;
+            .filter_map(|(name, source, added_at, updated_at, deleted, library)| {
+                let source = match serde_json::from_str(&source) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(marketplace = %name, error = %e, "marketplace row with an unreadable source skipped");
+                        return None;
+                    }
+                };
                 (with_deleted || !deleted).then_some(crate::plugins::Marketplace {
                     name,
                     source,
                     added_at,
                     updated_at,
                     deleted,
+                    library,
                 })
             })
             .collect())
@@ -1858,9 +1877,52 @@ impl BusStore {
             return Ok(false);
         }
         conn.execute(
-            "INSERT INTO marketplaces(name, source, added_at, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(name) DO UPDATE SET source=?2, updated_at=?4, deleted=?5",
-            params![m.name, serde_json::to_string(&m.source)?, m.added_at, m.updated_at, m.deleted as i64],
+            "INSERT INTO marketplaces(name, source, added_at, updated_at, deleted, library) VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(name) DO UPDATE SET source=?2, updated_at=?4, deleted=?5, library=?6",
+            params![m.name, serde_json::to_string(&m.source)?, m.added_at, m.updated_at, m.deleted as i64, m.library],
+        )?;
+        Ok(true)
+    }
+
+    pub fn plugin_library(&self, with_deleted: bool) -> Result<Vec<crate::plugins::LibraryEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT marketplace, plugin, added_at, updated_at, deleted FROM plugin_library ORDER BY marketplace, plugin",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::plugins::LibraryEntry {
+                    marketplace: r.get(0)?,
+                    plugin: r.get(1)?,
+                    added_at: r.get(2)?,
+                    updated_at: r.get(3)?,
+                    deleted: r.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| with_deleted || !r.deleted)
+            .collect())
+    }
+
+    pub fn upsert_library_entry(&self, l: &crate::plugins::LibraryEntry) -> Result<bool> {
+        self.hlc_observe(l.updated_at);
+        let conn = self.conn.lock().unwrap();
+        let cur: Option<f64> = conn
+            .query_row(
+                "SELECT updated_at FROM plugin_library WHERE marketplace=?1 AND plugin=?2",
+                params![l.marketplace, l.plugin],
+                |x| x.get(0),
+            )
+            .ok();
+        if cur.is_some_and(|t| t >= l.updated_at) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO plugin_library(marketplace, plugin, added_at, updated_at, deleted) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(marketplace, plugin) DO UPDATE SET added_at=?3, updated_at=?4, deleted=?5",
+            params![l.marketplace, l.plugin, l.added_at, l.updated_at, l.deleted as i64],
         )?;
         Ok(true)
     }
@@ -1940,6 +2002,17 @@ impl BusStore {
             {
                 for (n, t) in rows.flatten() {
                     feed(&format!("r{n}{t:.3}"));
+                }
+            }
+        }
+        if let Ok(mut st) = conn.prepare(
+            "SELECT marketplace || '/' || plugin, updated_at FROM plugin_library ORDER BY marketplace, plugin",
+        ) {
+            if let Ok(rows) =
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+            {
+                for (n, t) in rows.flatten() {
+                    feed(&format!("l{n}{t:.3}"));
                 }
             }
         }
@@ -2959,5 +3032,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.channel_members("proj").unwrap(), vec!["a", "b"]);
+    }
+}
+
+#[cfg(test)]
+mod plugin_library_tests {
+    use super::*;
+
+    #[test]
+    fn a_library_row_moves_the_registry_digest_and_merges_last_writer_wins() {
+        let s = BusStore::open_in_memory().unwrap();
+        let before = s.plugin_registry_digest();
+        let mut l = crate::plugins::LibraryEntry {
+            marketplace: "m".into(),
+            plugin: "p".into(),
+            added_at: 10.0,
+            updated_at: 10.0,
+            deleted: false,
+        };
+        assert!(s.upsert_library_entry(&l).unwrap());
+        assert_ne!(s.plugin_registry_digest(), before);
+        // An older write loses; a newer tombstone wins.
+        l.updated_at = 5.0;
+        l.deleted = true;
+        assert!(!s.upsert_library_entry(&l).unwrap());
+        l.updated_at = 20.0;
+        assert!(s.upsert_library_entry(&l).unwrap());
+        assert!(s.plugin_library(false).unwrap().is_empty());
+        assert_eq!(s.plugin_library(true).unwrap().len(), 1);
     }
 }

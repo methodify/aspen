@@ -31,9 +31,28 @@ pub enum MarketSource {
     Github { repo: String },
     /// Any git URL.
     Git { url: String },
-    /// A directory on this node (a local marketplace; not synced by us).
-    Directory { path: String },
+    /// A directory on one node (a local marketplace; not synced by us).
+    /// `node` is where the path exists; other nodes cannot use it.
+    Directory {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
+    },
 }
+
+/// One sync at a time per process. Each sync reads `catalog.json`,
+/// rewrites its marketplace's part and saves the whole file, so two at
+/// once (three marketplaces added together; the timer beside a rule
+/// change) lost each other's entries and errors.
+static SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn sync_guard() -> std::sync::MutexGuard<'static, ()> {
+    SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Marketplaces of at most this many plugins are wholly in the library
+/// unless the operator says otherwise (PROPOSALS-2026-10-P.md L-1).
+pub const WHOLE_LIBRARY_MAX: usize = 24;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Marketplace {
@@ -43,6 +62,35 @@ pub struct Marketplace {
     pub updated_at: f64,
     #[serde(default)]
     pub deleted: bool,
+    /// `all`: every plugin it offers is in the library; `picked`: only
+    /// those added or named by a rule; None: decided by size
+    /// (`WHOLE_LIBRARY_MAX`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<String>,
+}
+
+/// A plugin the operator put in the library (PROPOSALS-2026-10-P.md L-1).
+/// Synced like rules: last writer wins, tombstones.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryEntry {
+    pub marketplace: String,
+    pub plugin: String,
+    pub added_at: f64,
+    pub updated_at: f64,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// What a plugin brings into a session (L-5): known for a plugin whose
+/// source is in the marketplace checkout, or once it is cached here.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Provides {
+    pub skills: usize,
+    pub commands: usize,
+    pub agents: usize,
+    pub hooks: bool,
+    pub mcp: usize,
+    pub lsp: usize,
 }
 
 /// One activation: `plugin@marketplace` enabled (or explicitly disabled)
@@ -98,6 +146,15 @@ pub struct CatalogPlugin {
     /// (`<version>-<hash8>`, PROPOSALS-2026-09-E.md §1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// The publisher as the marketplace states it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provides: Option<Provides>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -132,20 +189,104 @@ fn save_catalog(data_dir: &Path, c: &Catalog) -> Result<()> {
     Ok(())
 }
 
+/// Run git for the plugin sync: never interactive (a credential prompt
+/// with nobody to answer it held a sync, and every sync behind it,
+/// forever), and never longer than `GIT_LIMIT`.
 fn git(args: &[&str], cwd: Option<&Path>) -> Result<String> {
     let mut c = crate::gitstate::quiet_command("git");
     if let Some(d) = cwd {
         c.arg("-C").arg(d);
     }
-    let out = c.args(args).output()?;
+    c.args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = c.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow!("git is not on this node's PATH")
+        } else {
+            anyhow!("git: {e}")
+        }
+    })?;
+    let out = wait_limited(child, GIT_LIMIT)
+        .map_err(|e| anyhow!("git {}: {e}", args.first().copied().unwrap_or("")))?;
     if !out.status.success() {
-        return Err(anyhow!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+        let url = args.iter().find(|a| a.contains("://") || a.contains('@'));
+        return Err(anyhow!("{}", git_failure(args, &err, url.copied())));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+const GIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Wait for a child up to `limit`, killing it after; stdout and stderr
+/// are drained on threads so a chatty child cannot block on a full pipe.
+fn wait_limited(
+    mut child: std::process::Child,
+    limit: std::time::Duration,
+) -> Result<std::process::Output> {
+    use std::io::Read;
+    let mut so = child.stdout.take();
+    let mut se = child.stderr.take();
+    let t_out = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        if let Some(s) = so.as_mut() {
+            let _ = s.read_to_end(&mut b);
+        }
+        b
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        if let Some(s) = se.as_mut() {
+            let _ = s.read_to_end(&mut b);
+        }
+        b
+    });
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("did not finish in {}s (stopped)", limit.as_secs()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: t_out.join().unwrap_or_default(),
+        stderr: t_err.join().unwrap_or_default(),
+    })
+}
+
+/// A git failure in the operator's terms: a missing credential is the
+/// usual reason one node cannot fetch what the others can.
+fn git_failure(args: &[&str], stderr: &str, url: Option<&str>) -> String {
+    let low = stderr.to_ascii_lowercase();
+    let auth = [
+        "terminal prompts disabled",
+        "could not read username",
+        "could not read password",
+        "authentication failed",
+        "permission denied (publickey)",
+        "repository not found",
+        "invalid username or password",
+    ]
+    .iter()
+    .any(|k| low.contains(k));
+    if auth {
+        return format!(
+            "this node has no git credentials for {} (or the repository does not exist): {}",
+            url.unwrap_or("the repository"),
+            stderr.lines().last().unwrap_or(stderr).trim()
+        );
+    }
+    format!("git {}: {}", args.first().copied().unwrap_or(""), stderr)
 }
 
 fn safe(s: &str) -> String {
@@ -161,11 +302,20 @@ fn safe(s: &str) -> String {
 }
 
 /// Bring the checkout up to date; returns its path and short commit.
-fn checkout(data_dir: &Path, m: &Marketplace) -> Result<(PathBuf, String)> {
+fn checkout(
+    data_dir: &Path,
+    m: &Marketplace,
+    this_node: Option<&str>,
+) -> Result<(PathBuf, String)> {
     match &m.source {
-        MarketSource::Directory { path } => {
+        MarketSource::Directory { path, node } => {
             let p = PathBuf::from(path);
             if !p.is_dir() {
+                if let Some(n) = node.as_deref().filter(|n| Some(*n) != this_node) {
+                    return Err(anyhow!(
+                        "a directory on {n} ({path}); other nodes need this marketplace as a git repository"
+                    ));
+                }
                 return Err(anyhow!("marketplace directory missing: {path}"));
             }
             let sha = git(&["rev-parse", "--short=12", "HEAD"], Some(&p))
@@ -328,6 +478,7 @@ fn materialize(data_dir: &Path, checkout_dir: &Path, cp: &CatalogPlugin) -> Resu
         .join(safe(&cp.current));
     if dest.join(".claude-plugin").join("plugin.json").is_file()
         || dest.join("plugin.json").is_file()
+        || dest.join(".aspen-cached").is_file()
     {
         // Record the content hash on a dir cached before hashing existed.
         if let Some(h) = &cp.content {
@@ -394,6 +545,9 @@ fn materialize(data_dir: &Path, checkout_dir: &Path, cp: &CatalogPlugin) -> Resu
     if let Some(h) = &cp.content {
         let _ = std::fs::write(tmp.join(".aspen-content"), h);
     }
+    // A plugin need not ship a manifest (the marketplace entry can be
+    // its manifest); this marks the copy complete either way.
+    let _ = std::fs::write(tmp.join(".aspen-cached"), "");
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -408,8 +562,9 @@ pub fn sync_marketplace(
     m: &Marketplace,
     rules: &[Rule],
     catalog: &mut Catalog,
+    this_node: Option<&str>,
 ) -> Result<usize> {
-    let (dir, sha) = checkout(data_dir, m)?;
+    let (dir, sha) = checkout(data_dir, m, this_node)?;
     let manifest = read_manifest(&dir)?;
     let mut n = 0usize;
     let mut fresh: Vec<CatalogPlugin> = Vec::new();
@@ -446,6 +601,20 @@ pub fn sync_marketplace(
             source,
             cached: Vec::new(),
             content: content.clone(),
+            display_name: p
+                .get("displayName")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned),
+            author: match p.get("author") {
+                Some(Value::String(a)) => Some(a.clone()),
+                Some(Value::Object(o)) => o.get("name").and_then(|n| n.as_str()).map(str::to_owned),
+                _ => None,
+            },
+            homepage: p
+                .get("homepage")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned),
+            provides: None,
         };
         cp.current = current_key(data_dir, &cp, content.as_deref());
         let wanted = rules
@@ -462,6 +631,7 @@ pub fn sync_marketplace(
             }
         }
         cp.cached = cached_versions(data_dir, &m.name, name);
+        cp.provides = provides_of(data_dir, &dir, &cp, &p);
         fresh.push(cp);
     }
     catalog.plugins.retain(|c| c.marketplace != m.name);
@@ -482,13 +652,15 @@ pub fn sync_all(
     markets: &[Marketplace],
     rules: &[Rule],
     only: Option<&str>,
+    this_node: Option<&str>,
 ) -> Catalog {
+    let _turn = sync_guard();
     let mut catalog = load_catalog(data_dir);
     for m in markets.iter().filter(|m| !m.deleted) {
         if only.is_some_and(|o| o != m.name) {
             continue;
         }
-        match sync_marketplace(data_dir, m, rules, &mut catalog) {
+        match sync_marketplace(data_dir, m, rules, &mut catalog, this_node) {
             Ok(n) => {
                 catalog.errors.remove(&m.name);
                 tracing::info!(marketplace = %m.name, materialized = n, "marketplace synced");
@@ -501,6 +673,233 @@ pub fn sync_all(
     }
     let _ = save_catalog(data_dir, &catalog);
     catalog
+}
+
+// ------------------------------------------------------------ contents
+
+/// What a plugin brings, from its files: the checkout copy for a source
+/// inside the marketplace, else the cached copy of its current (or
+/// newest) version; plus what the marketplace entry declares itself.
+/// None when neither copy is on this node and the entry declares nothing.
+fn provides_of(
+    data_dir: &Path,
+    checkout: &Path,
+    cp: &CatalogPlugin,
+    entry: &Value,
+) -> Option<Provides> {
+    let dir = match &cp.source {
+        Value::String(rel) => Some(checkout.join(rel.trim_start_matches("./"))),
+        _ => None,
+    }
+    .filter(|d| d.is_dir())
+    .or_else(|| {
+        let base = cache_root(data_dir)
+            .join(safe(&cp.marketplace))
+            .join(safe(&cp.name));
+        let v = if cp.cached.contains(&cp.current) {
+            Some(cp.current.clone())
+        } else {
+            cp.cached.first().cloned()
+        };
+        v.map(|v| base.join(safe(&v))).filter(|d| d.is_dir())
+    });
+    let declared = scan_entry(entry);
+    match dir {
+        Some(d) => {
+            let mut p = scan_plugin_dir(&d);
+            p.skills = p.skills.max(declared.skills);
+            p.commands = p.commands.max(declared.commands);
+            p.agents = p.agents.max(declared.agents);
+            p.hooks |= declared.hooks;
+            p.mcp = p.mcp.max(declared.mcp);
+            p.lsp = p.lsp.max(declared.lsp);
+            Some(p)
+        }
+        None if declared != Provides::default() => Some(declared),
+        None => None,
+    }
+}
+
+fn count_keys(v: Option<&Value>) -> usize {
+    match v {
+        Some(Value::Object(o)) => o.len(),
+        Some(Value::Array(a)) => a.len(),
+        Some(Value::String(_)) => 1,
+        _ => 0,
+    }
+}
+
+/// Components a manifest (plugin.json, or a marketplace entry acting as
+/// one) declares inline.
+fn scan_entry(e: &Value) -> Provides {
+    Provides {
+        skills: count_keys(e.get("skills")),
+        commands: count_keys(e.get("commands")),
+        agents: count_keys(e.get("agents")),
+        hooks: e.get("hooks").is_some_and(|h| !h.is_null()),
+        mcp: match e.get("mcpServers") {
+            Some(Value::Object(o)) => o.len(),
+            Some(Value::String(_)) => 1,
+            _ => 0,
+        },
+        lsp: match e.get("lspServers") {
+            Some(Value::Object(o)) => o.len(),
+            Some(Value::String(_)) => 1,
+            _ => 0,
+        },
+    }
+}
+
+fn md_files(dir: &Path) -> usize {
+    let mut n = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "md") {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Count what a plugin directory holds, the way the harness loads it:
+/// `skills/<name>/SKILL.md`, `commands/**/*.md`, `agents/**/*.md`,
+/// `hooks/hooks.json`, `.mcp.json`, and the manifest's own declarations.
+pub fn scan_plugin_dir(dir: &Path) -> Provides {
+    let manifest = std::fs::read(dir.join(".claude-plugin").join("plugin.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .unwrap_or(Value::Null);
+    let mut p = scan_entry(&manifest);
+    // The manifest's component fields name paths; only inline objects
+    // are counted from it, the default dirs from disk.
+    if !matches!(manifest.get("skills"), Some(Value::Object(_))) {
+        p.skills = 0;
+    }
+    if !matches!(manifest.get("commands"), Some(Value::Object(_))) {
+        p.commands = 0;
+    }
+    if !matches!(manifest.get("agents"), Some(Value::Object(_))) {
+        p.agents = 0;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir.join("skills")) {
+        p.skills += rd
+            .flatten()
+            .filter(|e| e.path().join("SKILL.md").is_file())
+            .count();
+    }
+    p.commands += md_files(&dir.join("commands"));
+    p.agents += md_files(&dir.join("agents"));
+    p.hooks |= dir.join("hooks").join("hooks.json").is_file();
+    if let Some(v) = std::fs::read(dir.join(".mcp.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    {
+        let servers = v.get("mcpServers").unwrap_or(&v);
+        p.mcp = p.mcp.max(count_keys(Some(servers)));
+    }
+    if let Some(v) = std::fs::read(dir.join(".lsp.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    {
+        p.lsp = p.lsp.max(count_keys(Some(&v)));
+    }
+    p
+}
+
+/// Look inside a plugin (L-5): put its current version in this node's
+/// cache without activating it, then record what it brings.
+pub fn inspect(
+    data_dir: &Path,
+    markets: &[Marketplace],
+    market: &str,
+    plugin: &str,
+    this_node: Option<&str>,
+) -> Result<Provides> {
+    let m = markets
+        .iter()
+        .find(|m| m.name == market && !m.deleted)
+        .ok_or_else(|| anyhow!("no marketplace {market} on this node"))?;
+    let _turn = sync_guard();
+    let (dir, _) = checkout(data_dir, m, this_node)?;
+    let manifest = read_manifest(&dir)?;
+    let entry = manifest
+        .get("plugins")
+        .and_then(|p| p.as_array())
+        .and_then(|a| {
+            a.iter()
+                .find(|p| p.get("name").and_then(|n| n.as_str()) == Some(plugin))
+        })
+        .cloned()
+        .ok_or_else(|| anyhow!("{market} offers no plugin {plugin}"))?;
+    let mut catalog = load_catalog(data_dir);
+    let idx = catalog
+        .plugins
+        .iter()
+        .position(|c| c.marketplace == market && c.name == plugin)
+        .ok_or_else(|| {
+            anyhow!("{plugin}@{market} is not in this node's catalog yet — sync first")
+        })?;
+    let cp = catalog.plugins[idx].clone();
+    materialize(data_dir, &dir, &cp)?;
+    let mut cp = cp;
+    cp.cached = cached_versions(data_dir, market, plugin);
+    let p = provides_of(data_dir, &dir, &cp, &entry).unwrap_or_default();
+    cp.provides = Some(p.clone());
+    catalog.plugins[idx] = cp;
+    save_catalog(data_dir, &catalog)?;
+    Ok(p)
+}
+
+// -------------------------------------------------------------- library
+
+/// Why a plugin is in the library: `picked` (added), `rule` (a rule names
+/// it), `marketplace` (its marketplace is wholly in the library).
+pub fn library_members(
+    markets: &[Marketplace],
+    rules: &[Rule],
+    library: &[LibraryEntry],
+    catalog: &Catalog,
+) -> Vec<(String, String, &'static str)> {
+    let mut out: std::collections::BTreeMap<(String, String), &'static str> = Default::default();
+    for m in markets.iter().filter(|m| !m.deleted) {
+        if whole_library(m, catalog) {
+            for c in catalog.plugins.iter().filter(|c| c.marketplace == m.name) {
+                out.insert((c.marketplace.clone(), c.name.clone()), "marketplace");
+            }
+        }
+    }
+    for r in rules.iter().filter(|r| !r.deleted) {
+        out.insert((r.marketplace.clone(), r.plugin.clone()), "rule");
+    }
+    for l in library.iter().filter(|l| !l.deleted) {
+        out.insert((l.marketplace.clone(), l.plugin.clone()), "picked");
+    }
+    out.into_iter().map(|((m, p), w)| (m, p, w)).collect()
+}
+
+/// Is every plugin of this marketplace in the library?
+pub fn whole_library(m: &Marketplace, catalog: &Catalog) -> bool {
+    match m.library.as_deref() {
+        Some("all") => true,
+        Some(_) => false,
+        None => {
+            // Not yet synced (or failing) offers nothing: not "whole".
+            let n = catalog
+                .plugins
+                .iter()
+                .filter(|c| c.marketplace == m.name)
+                .count();
+            n > 0 && n <= WHOLE_LIBRARY_MAX
+        }
+    }
 }
 
 // --------------------------------------------------------- effective set
@@ -611,10 +1010,13 @@ pub fn resolve(
                     via,
                 });
             }
-            None => missing.push(format!(
-                "{plugin}@{market}{}",
-                pin.map(|p| format!(" (pinned {p})")).unwrap_or_default()
-            )),
+            None => {
+                let why = missing_reason(&catalog, &market, &plugin);
+                missing.push(format!(
+                    "{plugin}@{market}{} ({why})",
+                    pin.map(|p| format!(", pinned {p}")).unwrap_or_default()
+                ))
+            }
         }
     }
     (active, missing)
@@ -704,21 +1106,148 @@ pub fn remove_marketplace(inner: &Arc<NodeInner>, name: &str) -> Result<usize> {
     Ok(n)
 }
 
-/// The registry as the console and peers see it.
+/// The registry as the console and peers see it: the synced tables, this
+/// node's catalog, and who is in the library and why.
 pub fn registry_json(inner: &Arc<NodeInner>) -> Value {
     let markets = inner.store.marketplaces(false).unwrap_or_default();
     let rules = inner.store.plugin_rules(false).unwrap_or_default();
+    let library = inner.store.plugin_library(false).unwrap_or_default();
     let catalog = inner
         .data_dir
         .as_deref()
         .map(load_catalog)
         .unwrap_or_default();
+    let members: Vec<Value> = library_members(&markets, &rules, &library, &catalog)
+        .into_iter()
+        .map(|(m, p, why)| json!({ "marketplace": m, "plugin": p, "why": why }))
+        .collect();
+    let whole: Vec<&str> = markets
+        .iter()
+        .filter(|m| whole_library(m, &catalog))
+        .map(|m| m.name.as_str())
+        .collect();
     json!({
         "marketplaces": markets,
         "rules": rules,
+        "library": library,
+        "library_members": members,
+        "whole_library": whole,
         "catalog": catalog,
         "node": inner.mesh().map(|m| m.identity.node.clone()),
     })
+}
+
+/// This node's plugin state in brief (L-7): every marketplace it knows,
+/// whether it has a checkout, when it synced, and why it failed.
+pub fn node_status(inner: &Arc<NodeInner>) -> Value {
+    let markets = inner.store.marketplaces(false).unwrap_or_default();
+    let dd = inner.data_dir.clone();
+    let catalog = dd.as_deref().map(load_catalog).unwrap_or_default();
+    let rows: Vec<Value> = markets
+        .iter()
+        .map(|m| {
+            let checkout = match &m.source {
+                MarketSource::Directory { path, .. } => Path::new(path).is_dir(),
+                _ => dd
+                    .as_deref()
+                    .is_some_and(|d| checkouts_root(d).join(safe(&m.name)).join(".git").is_dir()),
+            };
+            let plugin_errors: Vec<Value> = catalog
+                .errors
+                .iter()
+                .filter(|(k, _)| k.ends_with(&format!("@{}", m.name)))
+                .map(|(k, v)| json!({ "plugin": k.trim_end_matches(&format!("@{}", m.name)), "error": v }))
+                .collect();
+            json!({
+                "name": m.name,
+                "source": m.source,
+                "checkout": checkout,
+                "synced_at": catalog.synced_at.get(&m.name),
+                "error": catalog.errors.get(&m.name),
+                "plugins": catalog.plugins.iter().filter(|c| c.marketplace == m.name).count(),
+                "plugin_errors": plugin_errors,
+            })
+        })
+        .collect();
+    json!({
+        "node": inner.mesh().map(|m| m.identity.node.clone()),
+        "version": env!("CARGO_PKG_VERSION"),
+        "digest": inner.store.plugin_registry_digest(),
+        "marketplaces": rows,
+    })
+}
+
+/// The synced tables, for a peer to merge (`plugins_sync` push).
+pub fn registry_tables(inner: &Arc<NodeInner>) -> Value {
+    json!({
+        "marketplaces": inner.store.marketplaces(true).unwrap_or_default(),
+        "rules": inner.store.plugin_rules(true).unwrap_or_default(),
+        "library": inner.store.plugin_library(true).unwrap_or_default(),
+    })
+}
+
+/// Merge a peer's registry, last writer wins, row by row: one row this
+/// node cannot read is skipped and logged, never the whole update (it
+/// used to drop every row with it). Returns whether anything changed.
+pub fn merge_registry(inner: &Arc<NodeInner>, v: &Value, peer: &str) -> bool {
+    let mut changed = false;
+    let rows = |k: &str| {
+        v.get(k)
+            .and_then(|a| a.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    for row in rows("marketplaces") {
+        match serde_json::from_value::<Marketplace>(row.clone()) {
+            Ok(m) => {
+                if inner.store.upsert_marketplace(&m).unwrap_or(false) {
+                    changed = true;
+                    if m.deleted {
+                        let _ = remove_marketplace(inner, &m.name);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(peer, error = %e, row = %row, "plugin registry: marketplace row skipped")
+            }
+        }
+    }
+    for row in rows("rules") {
+        match serde_json::from_value::<Rule>(row.clone()) {
+            Ok(r) => changed |= inner.store.upsert_plugin_rule(&r).unwrap_or(false),
+            Err(e) => tracing::warn!(peer, error = %e, "plugin registry: rule row skipped"),
+        }
+    }
+    for row in rows("library") {
+        match serde_json::from_value::<LibraryEntry>(row.clone()) {
+            Ok(l) => changed |= inner.store.upsert_library_entry(&l).unwrap_or(false),
+            Err(e) => tracing::warn!(peer, error = %e, "plugin registry: library row skipped"),
+        }
+    }
+    changed
+}
+
+/// Why a plugin was left out of a spawn, from this node's catalog: its
+/// marketplace's sync error, the plugin's own, or that this node does not
+/// know the marketplace at all.
+pub fn missing_reason(catalog: &Catalog, market: &str, plugin: &str) -> String {
+    if let Some(e) = catalog.errors.get(market) {
+        return format!("{market} failed to sync on this node: {e}");
+    }
+    if let Some(e) = catalog.errors.get(&format!("{plugin}@{market}")) {
+        return format!("could not be cached: {e}");
+    }
+    if !catalog.synced_at.contains_key(market) {
+        return format!("this node has never synced {market} — does it know the marketplace? (Plugins → Marketplaces shows each node)");
+    }
+    if !catalog
+        .plugins
+        .iter()
+        .any(|c| c.marketplace == market && c.name == plugin)
+    {
+        return format!("{market} does not offer it (as of this node's last sync)");
+    }
+    "not cached on this node yet".into()
 }
 
 /// Sync before a spawn (PROPOSALS-2026-09-E.md §1): the marketplaces the
@@ -754,10 +1283,12 @@ pub async fn sync_for_spawn(
     }
     let all = inner.store.marketplaces(false).unwrap_or_default();
     let rules = rules.to_vec();
+    let me = inner.mesh().map(|m| m.identity.node.clone());
     let job = tokio::task::spawn_blocking(move || {
+        let _turn = sync_guard();
         let mut catalog = load_catalog(&dd);
         for m in all.iter().filter(|m| !m.deleted && stale.contains(&m.name)) {
-            if let Err(e) = sync_marketplace(&dd, m, &rules, &mut catalog) {
+            if let Err(e) = sync_marketplace(&dd, m, &rules, &mut catalog, me.as_deref()) {
                 tracing::warn!(marketplace = %m.name, error = %e, "pre-spawn plugin sync failed");
                 catalog.errors.insert(m.name.clone(), format!("{e:#}"));
             }
@@ -780,7 +1311,8 @@ pub fn spawn_sync(inner: Arc<NodeInner>, only: Option<String>) -> tokio::task::J
         };
         let markets = inner.store.marketplaces(false).unwrap_or_default();
         let rules = inner.store.plugin_rules(false).unwrap_or_default();
-        sync_all(&dd, &markets, &rules, only.as_deref())
+        let me = inner.mesh().map(|m| m.identity.node.clone());
+        sync_all(&dd, &markets, &rules, only.as_deref(), me.as_deref())
     })
 }
 
@@ -799,4 +1331,173 @@ pub fn spawn_sync_timer(inner: Arc<NodeInner>) {
             tokio::time::sleep(std::time::Duration::from_secs(mins * 60)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn touch(p: &Path, body: &str) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, body).unwrap();
+    }
+
+    fn market(name: &str, library: Option<&str>) -> Marketplace {
+        Marketplace {
+            name: name.into(),
+            source: MarketSource::Git {
+                url: "https://example.invalid/m.git".into(),
+            },
+            added_at: 1.0,
+            updated_at: 1.0,
+            deleted: false,
+            library: library.map(str::to_owned),
+        }
+    }
+
+    fn plugin(m: &str, n: &str) -> CatalogPlugin {
+        CatalogPlugin {
+            marketplace: m.into(),
+            name: n.into(),
+            description: None,
+            category: None,
+            version: None,
+            current: "1".into(),
+            source: Value::Null,
+            cached: vec![],
+            content: None,
+            display_name: None,
+            author: None,
+            homepage: None,
+            provides: None,
+        }
+    }
+
+    #[test]
+    fn a_plugin_dir_is_counted_the_way_the_harness_loads_it() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        touch(&d.join("skills/a/SKILL.md"), "");
+        touch(&d.join("skills/b/SKILL.md"), "");
+        touch(&d.join("skills/not-a-skill/notes.txt"), "");
+        touch(&d.join("commands/one.md"), "");
+        touch(&d.join("commands/sub/two.md"), "");
+        touch(&d.join("agents/reviewer.md"), "");
+        touch(&d.join("hooks/hooks.json"), "{}");
+        touch(&d.join(".mcp.json"), r#"{"mcpServers":{"x":{},"y":{}}}"#);
+        touch(
+            &d.join(".claude-plugin/plugin.json"),
+            r#"{"name":"p","lspServers":{"rust":{}}}"#,
+        );
+        let p = scan_plugin_dir(d);
+        assert_eq!(
+            p,
+            Provides {
+                skills: 2,
+                commands: 2,
+                agents: 1,
+                hooks: true,
+                mcp: 2,
+                lsp: 1
+            }
+        );
+    }
+
+    #[test]
+    fn the_library_is_picks_rules_and_small_marketplaces() {
+        let mut cat = Catalog::default();
+        for i in 0..30 {
+            cat.plugins.push(plugin("store", &format!("p{i}")));
+        }
+        cat.plugins.push(plugin("mine", "a"));
+        cat.plugins.push(plugin("mine", "b"));
+        let markets = vec![market("store", None), market("mine", None)];
+        let rules = vec![Rule {
+            id: "r".into(),
+            marketplace: "store".into(),
+            plugin: "p3".into(),
+            scope_kind: "session".into(),
+            scope: "x@y".into(),
+            enabled: false,
+            pin: None,
+            updated_at: 1.0,
+            deleted: false,
+        }];
+        let lib = vec![LibraryEntry {
+            marketplace: "store".into(),
+            plugin: "p7".into(),
+            added_at: 1.0,
+            updated_at: 1.0,
+            deleted: false,
+        }];
+        let m = library_members(&markets, &rules, &lib, &cat);
+        let got: Vec<_> = m.iter().map(|(a, b, w)| format!("{b}@{a}:{w}")).collect();
+        assert_eq!(
+            got,
+            vec![
+                "a@mine:marketplace",
+                "b@mine:marketplace",
+                "p3@store:rule",
+                "p7@store:picked"
+            ]
+        );
+        // Over the line, "all" puts the whole store in; "picked" keeps a
+        // small one out.
+        assert!(whole_library(&market("store", Some("all")), &cat));
+        assert!(!whole_library(&market("mine", Some("picked")), &cat));
+        assert!(!whole_library(&market("store", None), &cat));
+    }
+
+    #[test]
+    fn a_missing_credential_reads_as_one() {
+        let m = git_failure(
+            &[
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/acme/private.git",
+                "/x",
+            ],
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            Some("https://github.com/acme/private.git"),
+        );
+        assert!(
+            m.starts_with(
+                "this node has no git credentials for https://github.com/acme/private.git"
+            ),
+            "{m}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_past_its_limit_is_stopped() {
+        let child = std::process::Command::new("sleep") // quiet: unix-only test
+            .arg("5")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let t = std::time::Instant::now();
+        let r = wait_limited(child, std::time::Duration::from_millis(300));
+        assert!(r.is_err());
+        assert!(t.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_directory_elsewhere_says_where_it_lives() {
+        let t = tempfile::tempdir().unwrap();
+        let m = Marketplace {
+            source: MarketSource::Directory {
+                path: "/nowhere/here".into(),
+                node: Some("laptop".into()),
+            },
+            ..market("local", None)
+        };
+        let e = checkout(t.path(), &m, Some("server"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("a directory on laptop"), "{e}");
+    }
 }

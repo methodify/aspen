@@ -1,0 +1,11 @@
+/* Shared by every plugin surface (PROPOSALS-2026-10-P.md): what a plugin
+   brings, and the find-a-plugin field. */
+.pl-provides { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.pl-provides .chip { font-size: 0.7rem; padding: 1px 5px; }
+.pl-provides .chip.pl-weighty { color: var(--sig-notice); border-color: var(--sig-notice); background: var(--sig-notice-dim); }
+.pl-finder { display: flex; flex-direction: column; gap: 2px; width: 100%; }
+.pl-finder-input { width: 100%; font: inherit; padding: 5px 8px; border: 1px solid var(--line-hi); background: var(--surface-input); color: var(--text-hi); border-radius: 0; }
+.pl-finder-empty { padding: 4px 2px; }
+.pl-finder-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-bottom: 1px solid var(--line); min-width: 0; }
+.pl-finder-body { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.pl-finder-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

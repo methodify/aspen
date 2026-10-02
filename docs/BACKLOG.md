@@ -36,6 +36,14 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-02: a plugin library you chose, and every node's plugin state (v0.49.0)
+
+PROPOSALS-2026-10-P.md L-1..L-7; PLUGINS.md §6b.
+- Adding the official marketplace put 315 plugins into every plugin surface. Now the **library** (added, named by a rule, or a marketplace of 24 or fewer) is what is offered at hand; the marketplaces are a store to **browse** (search, category and publisher filters, cards) and to **find** from the session menu and template editor. Adding a marketplace asks whether to keep it as a store or shelve it whole.
+- **What a plugin brings** (skills, commands, subagents, MCP and LSP servers, hooks) is counted from its files; *look inside* fetches an external one without turning it on. The session menu sums what is on.
+- **A work-mesh node never got a marketplace** and *sync now* changed nothing: sync was per node and its errors invisible elsewhere. The Marketplaces tab now shows every node's state; **sync the mesh** pushes the registry to each node and reports back; git cannot prompt or hang and says when a node lacks credentials; registry pulls log failures and merge row by row; directory marketplaces say where they live; the spawn note says why a plugin was left out. Also fixed: concurrent syncs overwrote each other's catalog.
+- Verified on the rig (two nodes): three marketplaces (315, 4, and one that cannot authenticate) synced on both nodes from one *sync the mesh*, with the credential message per node; library picks reached the other node; *look inside* counted an external plugin (15 skills, 1 MCP server); a session's menu turned on a plugin found by search; pages checked in both themes and at 400 px.
+
 ## Shipped — 2026-10-02: no false "not offered here" on Claude sessions (v0.48.6)
 
 - v0.48.5 flagged every Claude session's default model "not offered here". Claude's model list names aliases (`opus`, `sonnet`), never the resolved id it reports for default, so the check could not match. The flag now applies only when the default is Codex's recorded start model (`default_model`).

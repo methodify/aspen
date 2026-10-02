@@ -125,6 +125,16 @@ pub async fn serve(
             axum::routing::put(put_plugin_rule).delete(delete_plugin_rule),
         )
         .route("/plugins/effective", get(get_plugins_effective))
+        .route("/plugins/status", get(get_plugins_status))
+        .route("/plugins/inspect", post(post_plugins_inspect))
+        .route(
+            "/plugins/library/{marketplace}/{plugin}",
+            axum::routing::put(put_library_entry).delete(delete_library_entry),
+        )
+        .route(
+            "/plugins/marketplaces/{name}/library",
+            post(post_marketplace_library),
+        )
         .route("/boards", get(get_boards))
         .route(
             "/boards/{id}",
@@ -2212,21 +2222,283 @@ async fn get_plugins(State(s): S) -> impl IntoResponse {
 #[derive(Deserialize, Default)]
 struct SyncQuery {
     marketplace: Option<String>,
+    /// `mesh`: every node (L-7); with `node`, that one node.
+    scope: Option<String>,
+    node: Option<String>,
 }
 
+/// Sync plugins here (the console's node), on one node, or on every
+/// node of the mesh. A remote sync pushes this node's registry first, so
+/// a node the roster sync never reached gets it (PROPOSALS-2026-10-P L-7).
 async fn post_plugins_sync(
     State(s): S,
     axum::extract::Query(q): axum::extract::Query<SyncQuery>,
 ) -> impl IntoResponse {
-    match aspen_node::plugins::spawn_sync(s.node.inner.clone(), q.marketplace).await {
-        Ok(c) => Json(json!(c)).into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    let inner = s.node.inner.clone();
+    let me = inner.mesh().map(|m| m.identity.node.clone());
+    let targets: Vec<String> = match (q.scope.as_deref(), q.node.as_deref()) {
+        (_, Some(n)) => vec![n.to_owned()],
+        (Some("mesh"), None) => {
+            let mut v: Vec<String> = me.iter().cloned().collect();
+            if let Some(mesh) = inner.mesh() {
+                // Consoles enrol as peers; they hold no plugins.
+                v.extend(
+                    mesh.peers()
+                        .into_iter()
+                        .map(|p| p.cert.node)
+                        .filter(|n| !n.starts_with("console-")),
+                );
+            }
+            v.sort();
+            v.dedup();
+            v
+        }
+        _ => {
+            return match aspen_node::plugins::spawn_sync(inner, q.marketplace).await {
+                Ok(c) => Json(json!(c)).into_response(),
+                Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+            };
+        }
+    };
+    let registry = aspen_node::plugins::registry_tables(&inner);
+    let calls = targets.into_iter().map(|n| {
+        let inner = inner.clone();
+        let me = me.clone();
+        let registry = registry.clone();
+        let only = q.marketplace.clone();
+        async move {
+            let r: Result<Value, String> = if Some(&n) == me.as_ref() {
+                aspen_node::plugins::spawn_sync(inner, only)
+                    .await
+                    .map(|c| json!(c))
+                    .map_err(|e| e.to_string())
+            } else if let Some(mesh) = inner.mesh() {
+                mesh.api_call(
+                    &n,
+                    "plugins_sync",
+                    "",
+                    json!({ "marketplace": only, "registry": registry }),
+                    std::time::Duration::from_secs(240),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            } else {
+                Err("not in a mesh".into())
+            };
+            match r {
+                Ok(c) => json!({
+                    "node": n, "ok": true,
+                    "errors": c.get("errors"), "synced_at": c.get("synced_at"),
+                }),
+                Err(e) => json!({ "node": n, "ok": false, "error": e }),
+            }
+        }
+    });
+    let nodes = futures_util::future::join_all(calls).await;
+    Json(json!({ "nodes": nodes })).into_response()
+}
+
+/// Every node's plugin state (L-7): which marketplaces it knows, its
+/// checkouts, sync times and errors. Nodes that do not answer are listed
+/// with why.
+async fn get_plugins_status(State(s): S) -> impl IntoResponse {
+    let inner = s.node.inner.clone();
+    let me = inner.mesh().map(|m| m.identity.node.clone());
+    let mut out = vec![
+        json!({ "node": me, "ok": true, "local": true, "status": aspen_node::plugins::node_status(&inner) }),
+    ];
+    if let Some(mesh) = inner.mesh() {
+        let mut peers: Vec<String> = mesh
+            .peers()
+            .into_iter()
+            .map(|p| p.cert.node)
+            .filter(|n| !n.starts_with("console-"))
+            .collect();
+        peers.sort();
+        peers.dedup();
+        let calls = peers.into_iter().map(|p| {
+            let mesh = mesh.clone();
+            async move {
+                let r = mesh
+                    .api_call(&p, "plugins_status", "", json!({}), LIST_TIMEOUT)
+                    .await;
+                match r {
+                    Ok(v) => json!({ "node": p, "ok": true, "status": v }),
+                    Err(e) => {
+                        // A node before v0.49 has no plugins_status; its
+                        // registry view carries the same facts, in full.
+                        match mesh
+                            .api_call(&p, "plugins_registry_view", "", json!({}), LIST_TIMEOUT)
+                            .await
+                        {
+                            Ok(v) => json!({ "node": p, "ok": true, "legacy": true, "status": legacy_status(&p, &v) }),
+                            Err(_) => json!({ "node": p, "ok": false, "error": e.to_string() }),
+                        }
+                    }
+                }
+            }
+        });
+        out.extend(futures_util::future::join_all(calls).await);
+    }
+    Json(json!({ "nodes": out })).into_response()
+}
+
+/// `node_status`'s shape from an older node's full registry view.
+fn legacy_status(node: &str, v: &Value) -> Value {
+    let cat = v.get("catalog").cloned().unwrap_or(Value::Null);
+    let rows: Vec<Value> = v
+        .get("marketplaces")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| {
+            let name = m
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let count = cat
+                .get("plugins")
+                .and_then(|p| p.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|c| {
+                            c.get("marketplace").and_then(|x| x.as_str()) == Some(name.as_str())
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            json!({
+                "name": name,
+                "source": m.get("source"),
+                "checkout": Value::Null,
+                "synced_at": cat.get("synced_at").and_then(|s| s.get(&name)),
+                "error": cat.get("errors").and_then(|s| s.get(&name)),
+                "plugins": count,
+                "plugin_errors": [],
+            })
+        })
+        .collect();
+    json!({ "node": node, "version": Value::Null, "marketplaces": rows })
+}
+
+#[derive(Deserialize)]
+struct PluginInspectBody {
+    marketplace: String,
+    plugin: String,
+}
+
+/// Look inside a plugin (L-5): cache it on this node without turning it
+/// on, and report what it brings.
+async fn post_plugins_inspect(State(s): S, Json(b): Json<PluginInspectBody>) -> impl IntoResponse {
+    let inner = s.node.inner.clone();
+    let Some(dd) = inner.data_dir.clone() else {
+        return err(StatusCode::BAD_REQUEST, "no data dir").into_response();
+    };
+    let markets = inner.store.marketplaces(false).unwrap_or_default();
+    let me = inner.mesh().map(|m| m.identity.node.clone());
+    let r = tokio::task::spawn_blocking(move || {
+        aspen_node::plugins::inspect(&dd, &markets, &b.marketplace, &b.plugin, me.as_deref())
+    })
+    .await;
+    match r {
+        Ok(Ok(p)) => Json(json!({ "provides": p })).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn put_library_entry(
+    State(s): S,
+    Path((marketplace, plugin)): Path<(String, String)>,
+) -> impl IntoResponse {
+    library_write(&s, marketplace, plugin, false)
+}
+
+async fn delete_library_entry(
+    State(s): S,
+    Path((marketplace, plugin)): Path<(String, String)>,
+) -> impl IntoResponse {
+    library_write(&s, marketplace, plugin, true)
+}
+
+fn library_write(
+    s: &Arc<AppState>,
+    marketplace: String,
+    plugin: String,
+    deleted: bool,
+) -> axum::response::Response {
+    let store = &s.node.inner.store;
+    let added_at = store
+        .plugin_library(true)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|l| l.marketplace == marketplace && l.plugin == plugin)
+        .map(|l| l.added_at);
+    let now = store.hlc_now();
+    let l = aspen_node::plugins::LibraryEntry {
+        marketplace,
+        plugin,
+        added_at: added_at.filter(|_| !deleted).unwrap_or(now),
+        updated_at: now,
+        deleted,
+    };
+    match store.upsert_library_entry(&l) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MarketLibraryBody {
+    /// `all` | `picked` | null (by size)
+    library: Option<String>,
+}
+
+async fn post_marketplace_library(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<MarketLibraryBody>,
+) -> impl IntoResponse {
+    if b.library
+        .as_deref()
+        .is_some_and(|l| l != "all" && l != "picked")
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "library must be all | picked | null",
+        )
+        .into_response();
+    }
+    let store = &s.node.inner.store;
+    let Some(mut m) = store
+        .marketplaces(false)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|m| m.name == name)
+    else {
+        return err(StatusCode::NOT_FOUND, "no such marketplace").into_response();
+    };
+    m.library = b.library;
+    m.updated_at = store.hlc_now();
+    match store.upsert_marketplace(&m) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 #[derive(Deserialize)]
 struct MarketBody {
     source: aspen_node::plugins::MarketSource,
+    #[serde(default)]
+    library: Option<String>,
 }
 
 async fn put_marketplace(
@@ -2235,12 +2507,32 @@ async fn put_marketplace(
     Json(b): Json<MarketBody>,
 ) -> impl IntoResponse {
     let now = s.node.inner.store.hlc_now();
+    let existing = s
+        .node
+        .inner
+        .store
+        .marketplaces(true)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|m| m.name == name && !m.deleted);
+    // A directory is a path on this node; say so, so other nodes can tell
+    // the operator where it lives instead of "directory missing".
+    let source = match b.source {
+        aspen_node::plugins::MarketSource::Directory { path, node: None } => {
+            aspen_node::plugins::MarketSource::Directory {
+                path,
+                node: s.node.inner.mesh().map(|m| m.identity.node.clone()),
+            }
+        }
+        other => other,
+    };
     let m = aspen_node::plugins::Marketplace {
         name,
-        source: b.source,
-        added_at: now,
+        source,
+        added_at: existing.as_ref().map_or(now, |e| e.added_at),
         updated_at: now,
         deleted: false,
+        library: b.library.or_else(|| existing.and_then(|e| e.library)),
     };
     match s.node.inner.store.upsert_marketplace(&m) {
         Ok(_) => {

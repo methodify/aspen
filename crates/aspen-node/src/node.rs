@@ -1462,10 +1462,7 @@ impl Node {
         };
         let plugin_dirs: Vec<String> = active_plugins.iter().map(|a| a.path.clone()).collect();
         if !missing_plugins.is_empty() {
-            let note = format!(
-                "plugins not cached yet, started without: {}",
-                missing_plugins.join(", ")
-            );
+            let note = format!("started without plugins: {}", missing_plugins.join(", "));
             spawn_note = Some(match spawn_note {
                 Some(prev) => format!("{prev}; {note}"),
                 None => note,

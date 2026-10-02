@@ -118,6 +118,62 @@ its own. *Reload* stays for the parts the harness hot-reloads.
   `POST /api/plugins/sync`, `GET /api/plugins/effective?agent=` (local or
   via the `plugins_effective` mesh op).
 
+## 6b. The library, the store, and every node (v0.49)
+
+PROPOSALS-2026-10-P.md. A marketplace is a **store**; the **library** is
+what the operator keeps at hand. A plugin is in the library when it was
+**added** (`plugin_library` row, synced like rules: LWW, tombstones, in
+`plugins_digest`), when **a rule names it**, or when **its marketplace is
+wholly in the library**: `library: all`, or unset with 1–24 plugins
+(`WHOLE_LIBRARY_MAX`; a marketplace that offers nothing yet is not
+whole). `GET /api/plugins` carries `library`, `library_members [{marketplace,
+plugin, why: picked|rule|marketplace}]` and `whole_library`; `PUT/DELETE
+/api/plugins/library/{marketplace}/{plugin}`; `POST
+/api/plugins/marketplaces/{name}/library {library: all|picked|null}`.
+The library decides only what is offered at hand; turning a plugin on
+is still a rule (§4).
+
+**What a plugin brings** (`provides: {skills, commands, agents, hooks,
+mcp, lsp}` in the catalog): counted at sync from the plugin's files
+(`skills/*/SKILL.md`, `commands/**/*.md`, `agents/**/*.md`,
+`hooks/hooks.json`, `.mcp.json`, `.lsp.json`, the manifest's inline
+declarations) for a source inside the checkout or a cached copy, plus
+what the marketplace entry declares. `POST /api/plugins/inspect
+{marketplace, plugin}` (*look inside*) caches an external plugin on this
+node without activating it and counts it. The catalog also keeps the
+entry's `displayName`, `author` (as stated; no badge) and `homepage`.
+
+**Surfaces.** `/plugins` has tabs (`?tab=`): **Library** (the shelf:
+versions, *active for*, why it is there, *activate…*, *remove* for an
+added one); **Browse** (search ranked name › display name › publisher /
+category › description, category chips with counts, marketplace and
+publisher filters, cards with where the code lives and what it brings,
+40 at a time); **Marketplaces** (each one's library setting and counts;
+adding one asks "keep it as a store, or put all N in the library?";
+every node's state); **Templates** (the picker lists the library, plus
+*find a plugin*). The session's *plugins ▾* lists what is on, then the
+rest of the library, then *find a plugin…* (top 8 from every
+marketplace; *on here* writes the session rule). Its header sums what the
+plugins that are on bring.
+
+**Every node (L-7).** Sync is per node, so the Marketplaces tab asks
+every node (`GET /api/plugins/status`: the `plugins_status` op, or an
+older node's `plugins_registry_view`) which marketplaces it knows,
+whether it has a copy, when it synced and why it failed. **Sync the
+mesh** (`POST /api/plugins/sync?scope=mesh`, or `?node=` for one) sends
+this node's registry with the `plugins_sync` op; the receiver merges it
+(LWW, row by row) and then syncs, and each node reports back. Git for
+plugins never prompts (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`)
+and is stopped after 180 s; an authentication failure reads "this node
+has no git credentials for <url>". A directory marketplace records the
+node it lives on (`source.node`); elsewhere it reads "a directory on
+<node>; other nodes need this marketplace as a git repository". Syncs
+take turns (one lock per process): concurrent syncs used to overwrite
+each other's catalog. A registry pull that fails is logged, and one bad
+row is skipped rather than the whole update. A spawn's note names why
+each plugin was left out ("started without plugins: x@m (m failed to
+sync on this node: …)").
+
 ## 7. Verified (rig, 2026-09-07)
 
 A directory marketplace registered on j2 (six plugins parsed); a
@@ -150,6 +206,7 @@ as for any spawn. Templates are edited on the Plugins page.
 ## 8. Not built
 
 Per-plugin usage from transcripts; marketplace auth (private git over
-https needs a credential helper on the node); zip (`--plugin-url`)
+https needs a credential helper on the node — the sync now says when one
+is missing); zip (`--plugin-url`)
 sources; showing plugin counts on node and repo rows in Mesh; carrying a
 pin through a move (the rules travel; the target resolves them).

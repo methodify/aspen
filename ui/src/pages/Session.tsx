@@ -13,6 +13,7 @@ import {
 } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
+import { libraryIndex, PluginFinder, ProvidesChips, providesParts, sumProvides } from "../pluginLib";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -30,6 +31,7 @@ import {
   type ActivePlugin,
   type PluginUpdate,
   type CatalogPlugin,
+  type PluginRegistry,
   type PluginRule,
   type Activity,
   type UsageRow,
@@ -1102,12 +1104,12 @@ function McpMenu({ agent, summary, openSignal }: { agent: string; summary: { tot
   );
 }
 
-/** "plugins ▾": what this session runs with (PROPOSALS §7), what it
- *  would start with now, and a link to the matrix. */
-/** The session's plugin surface (PROPOSALS-2026-09-E.md): every plugin
- *  the library knows, on/off for this session (a session-scope rule),
- *  the version running vs the latest cached, update = sync + restart in
- *  place; below, what the harness loaded from its own configuration. */
+/** The session's plugin surface (PROPOSALS-2026-09-E.md, reshaped by
+ *  PROPOSALS-2026-10-P.md L-2): what is on for this session (running or
+ *  starting next time, with versions, update and restart), the rest of
+ *  the library with an on toggle (a session-scope rule), and a search
+ *  over every marketplace; never the whole store. Below, what the harness
+ *  loaded from its own configuration. */
 function PluginsMenu({
   agent,
   bare,
@@ -1133,6 +1135,7 @@ function PluginsMenu({
   const [eff, setEff] = useState<{ would_start_with: ActivePlugin[]; missing: string[] } | null>(null);
   const [catalog, setCatalog] = useState<CatalogPlugin[] | null>(null);
   const [rules, setRules] = useState<PluginRule[]>([]);
+  const [reg, setReg] = useState<PluginRegistry | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [at, setAt] = useState({ top: 0, left: 0 });
@@ -1149,6 +1152,7 @@ function PluginsMenu({
     api
       .plugins()
       .then((r) => {
+        setReg(r);
         setCatalog(r.catalog.plugins);
         setRules(r.rules.filter((x) => !x.deleted));
       })
@@ -1198,11 +1202,46 @@ function PluginsMenu({
       setBusy(null);
     }
   }
-  const rows = (catalog ?? []).slice().sort((a, b) => {
-    const ra = runningOf(a.marketplace, a.name) ? 0 : nextOf(a.marketplace, a.name) ? 1 : 2;
-    const rb = runningOf(b.marketplace, b.name) ? 0 : nextOf(b.marketplace, b.name) ? 1 : 2;
-    return ra - rb || a.name.localeCompare(b.name);
-  });
+  const lib = libraryIndex(reg);
+  const isOn = (c: CatalogPlugin) => !!(runningOf(c.marketplace, c.name) || nextOf(c.marketplace, c.name));
+  const onRows = (catalog ?? []).filter(isOn).sort((a, b) => a.name.localeCompare(b.name));
+  const shelfRows = (catalog ?? []).filter((c) => !isOn(c) && lib.has(key(c.marketplace, c.name))).sort((a, b) => a.name.localeCompare(b.name));
+  const weight = providesParts(sumProvides(onRows.map((c) => c.provides)));
+  const renderRow = (c: CatalogPlugin) => {
+    const k = key(c.marketplace, c.name);
+    const run = runningOf(c.marketplace, c.name);
+    const next = nextOf(c.marketplace, c.name);
+    const on = !!(run || next);
+    const via = next?.via ?? run?.via;
+    const latest = c.current;
+    const newer = run && run.version !== latest && c.cached.includes(latest);
+    return (
+      <div className="row plug-row" key={k}>
+        <label className="plug-toggle" title={via ? `decided by the ${via} rule; this toggle writes a session rule, which wins` : "off for this session; turning it on writes a session rule"}>
+          <input type="checkbox" checked={on} disabled={busy === k} onChange={(e) => void toggle(c, e.target.checked)} />
+        </label>
+        <span className="plug-body">
+          <span className="mono">{c.name}<span className="mono-meta"> @{c.marketplace}{via ? ` · via ${via}` : ""}</span></span>
+          <span className="mono-meta plug-versions">
+            {run ? `running ${run.version}` : next ? `starts with ${next.version} next time` : `off · ${latest}`}
+            {run && !newer && run.version === latest ? " · latest" : ""}
+            {newer ? ` · latest ${latest}` : ""}
+          </span>
+          {on && c.provides && <ProvidesChips p={c.provides} />}
+        </span>
+        {newer && (
+          <button className="btn sm primary" disabled={busy === k || restarting} onClick={() => void update(c)} title="sync this marketplace and restart the session in place on the latest version">
+            {busy === k ? "…" : "update"}
+          </button>
+        )}
+        {!run && next && (
+          <button className="btn ghost sm" disabled={restarting} onClick={() => void onRestart()} title="restart in place so the process starts with it">
+            restart
+          </button>
+        )}
+      </div>
+    );
+  };
   return (
     <span className="artifacts-wrap">
       <button
@@ -1220,48 +1259,37 @@ function PluginsMenu({
       {open && (
         <PanelFrame at={at} width={580} className="plugins-menu" onClose={() => setOpen(false)}>
             <div className="row">
-              <span className="label">the library</span>
+              <span className="label">on for this session</span>
+              <span className="mono-meta" title="what the plugins that are on bring into the session, where known">{onRows.length ? `${onRows.length}${weight.length ? ` · ${weight.join(" · ")}` : ""}` : ""}</span>
               <span style={{ flex: 1 }} />
               <Link to="/plugins" className="mono-meta" onClick={() => setOpen(false)}>manage plugins…</Link>
             </div>
             {catalog === null && <div className="row dim">loading…</div>}
-            {catalog?.length === 0 && <div className="row dim">no plugins in the library yet — add a marketplace on the Plugins page</div>}
-            {rows.map((c) => {
-              const k = key(c.marketplace, c.name);
-              const run = runningOf(c.marketplace, c.name);
-              const next = nextOf(c.marketplace, c.name);
-              const on = !!(run || next);
-              const via = next?.via ?? run?.via;
-              const latest = c.current;
-              const newer = run && run.version !== latest && c.cached.includes(latest);
-              const cachedNow = c.cached.length > 0;
-              return (
-                <div className="row plug-row" key={k}>
-                  <label className="plug-toggle" title={via ? `decided by the ${via} rule; this toggle writes a session rule, which wins` : "no rule names this plugin for this session"}>
-                    <input type="checkbox" checked={on} disabled={busy === k} onChange={(e) => void toggle(c, e.target.checked)} />
-                  </label>
-                  <span className="plug-body">
-                    <span className="mono">{c.name}<span className="mono-meta"> @{c.marketplace}{via ? ` · via ${via}` : ""}</span></span>
-                    <span className="mono-meta plug-versions">
-                      {run ? `running ${run.version}` : next ? `starts with ${next.version} next time` : on ? "not cached yet" : `off · ${latest} in the library${cachedNow ? "" : " (cached when turned on)"}`}
-                      {run && !newer && run.version === latest ? " · latest" : ""}
-                      {newer ? ` · latest ${latest}` : ""}
-                    </span>
-                  </span>
-                  {newer && (
-                    <button className="btn sm primary" disabled={busy === k || restarting} onClick={() => void update(c)} title="sync this marketplace and restart the session in place on the latest version">
-                      {busy === k ? "…" : "update"}
-                    </button>
-                  )}
-                  {!run && next && (
-                    <button className="btn ghost sm" disabled={restarting} onClick={() => void onRestart()} title="restart in place so the process starts with it">
-                      restart
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-            {eff && eff.missing.length > 0 && <div className="row error-text mono-meta">not cached yet: {eff.missing.join(", ")} — sync on the Plugins page</div>}
+            {catalog?.length === 0 && <div className="row dim">no plugins yet — add a marketplace on the Plugins page</div>}
+            {catalog !== null && catalog.length > 0 && onRows.length === 0 && <div className="row dim">none</div>}
+            {onRows.map((c) => renderRow(c))}
+            {shelfRows.length > 0 && (
+              <div className="row" style={{ marginTop: 4 }}>
+                <span className="label">in your library</span>
+                <span className="mono-meta">off here · turn one on for this session</span>
+              </div>
+            )}
+            {shelfRows.map((c) => renderRow(c))}
+            {catalog !== null && catalog.length > 0 && (
+              <div className="row" style={{ display: "block" }}>
+                <PluginFinder
+                  catalog={catalog}
+                  library={lib}
+                  limit={8}
+                  action={(c) =>
+                    isOn(c)
+                      ? null
+                      : { label: busy === key(c.marketplace, c.name) ? "…" : "on here", disabled: busy === key(c.marketplace, c.name), run: () => toggle(c, true) }
+                  }
+                />
+              </div>
+            )}
+            {eff && eff.missing.length > 0 && <div className="row error-text mono-meta">would start without: {eff.missing.join("; ")}</div>}
             <div className="row" style={{ marginTop: 6 }}>
               <span className="label">from the harness's own configuration</span>
               <span className="mono-meta" title="what the runtime loaded from its own plugin tree; Aspen shows these but does not manage them (PLUGINS.md §1)">read-only</span>
