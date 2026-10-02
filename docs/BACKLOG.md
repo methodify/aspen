@@ -17,11 +17,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | H-4 | sessions + console | **Codex plugins and skills in the library.** `$CODEX_HOME/plugins` and skills roots as library scopes beside Claude's marketplaces; activation per mesh / node / repo / session like PLUGINS.md. | PLUGINS.md |
 | H-5 | sessions + console | **`turn/steer` as a first-class control.** Today a mid-turn message steers by default; expose "queue for next turn" vs "steer now" in the composer, for both harnesses where they can. | CODEX_RUNTIME_REFERENCE.md §4 |
 | H-6 | sessions + console | **Third-party MCP elicitations.** Codex forwards a server's own form/url elicitations; Aspen declines them today. Surface as a prompt kind (`elicitation`) with a generic form card. | HARNESSES.md §1 (`PromptKind`) |
-| H-7 | sessions | **Deny message to Codex.** The console's deny text is not delivered to Codex (the approval reply has no channel for it); consider a follow-up user message carrying it, or drop the field for Codex prompts. | CODEX_RUNTIME_REFERENCE.md §6.1 |
 | H-8 | sessions + console | **Codex activity ledger.** `collabAgentToolCall` / `subAgentActivity` items show as tool cards; fold them into the activity ledger (ACTIVITY.md) with counts and a drawer, and read the agent threads' rollouts. | HARNESSES.md §6 |
-| H-9 | console | **Harness badge on Usage rows.** Session and fleet rows carry the chip; the Usage table does not yet. | — |
 | H-11 | sessions | **Incremental activity derive.** The ledger is rebuilt from the whole transcript whenever it changed; keep the last offset and parse only the appended tail. Cached at turn boundaries since v0.23.2, so this is cost, not correctness. | aspen-claude `activity.rs` |
 | N-1 | servicing | **A supervisor for the daemon.** The `aspen up -d` parent stays as a watchdog: ping, and on silence take a thread dump and restart; peers show a deaf node as such. Parked 2026-09-09: two hangs were bugs, now fixed; revisit if it recurs. | SERVICING.md "Diagnosing a hang" |
+| B-5 | console + sessions | **Tell me when a board goes quiet.** A per-board notice when its last busy member goes idle (or a member exits), so a team can be left alone and called back. | BOARDS.md §10 |
+| B-6 | console | **A board's spend.** Usage rolled up per board (its members' window cost and tokens) on the board header and the Usage page's grouping. | USAGE.md |
 | X-6 | console + protocol | **Chunked bundle transfer through the relay.** Download and upload an `.aspen-repo` from a console on the relay in small sealed pieces (resumable), so a phone on cellular can export or import; today a relay console works with paths on the node. | BUNDLES.md §5 |
 | N-2 | sessions + console | **A queue per session.** Hand a session the next item when it goes idle, from a list the operator keeps or from the bus; pairs with templates and boards. | — |
 | N-3 | sessions + servicing | **Scheduled sessions.** A template plus a cron: "every morning, run triage in repo X on node Y." | PLUGINS.md §templates |
@@ -35,6 +35,13 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
+
+## Shipped — 2026-10-01: a board at a glance, and small things (v0.48)
+
+- **Board meters** (BOARDS.md §10): one bar per member, busy first, on the rail's board rows (the row's icon, narrow rail included), the Boards page's cards, a board's header, and a new *Boards* band on Now; waiting and background-work pips on board rows; **start the stopped (n)** on a board's header.
+- **The tab title's count**: one number, the bell's unseen notices — a remount (mesh switch, reconnect) used to fold the old count into the base title, stacking `(81) (7) (7) …` for ever.
+- **H-7**: a Codex prompt's deny is one click (Codex's approval reply carries no reason).
+- **H-9**: a harness chip on Usage's session rows (Codex only; Claude is the default).
 
 ## Shipped — 2026-09-28: repo bundles — a repo with its context, as one file (X-1..X-5, v0.47)
 

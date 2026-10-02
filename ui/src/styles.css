@@ -380,6 +380,13 @@ button, a, input, select, textarea, label, [role="button"], .btn, .chip { touch-
 .meter.busy i:nth-child(2) { animation: vu 0.42s steps(3) infinite 0.1s; }
 .meter.busy i:nth-child(3) { animation: vu 0.42s steps(3) infinite 0.05s; }
 .meter.busy i:nth-child(4) { animation: vu 0.42s steps(3) infinite 0.16s; }
+/* A board's meter: a bar per member (BOARDS.md §10). */
+.board-meter { display: inline-flex; gap: 1px; align-items: flex-end; height: 12px; min-width: 14px; flex-shrink: 0; }
+.board-meter i { width: 2px; height: 12px; display: block; background: var(--idle); }
+.board-meter i.busy { background: var(--live); animation: vu 0.42s steps(3) infinite; }
+.board-meter i.busy:nth-child(2n) { animation-delay: 0.1s; }
+.board-meter i.busy:nth-child(3n) { animation-delay: 0.05s; }
+.board-meter i.off { height: 2px; background: var(--offline); align-self: center; }
 .meter.off { gap: 0; height: 12px; align-items: center; }
 .meter.off i { height: 2px; width: 14px; background: var(--offline); }
 @keyframes vu { 0% { height: 3px; } 50% { height: 12px; } 100% { height: 6px; } }
@@ -571,6 +578,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 /* ── Reduced motion ─────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .meter.busy i { animation: none !important; height: 9px; }
+  .board-meter i.busy { animation: none !important; height: 9px; }
   * { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
 }
 
@@ -911,3 +919,10 @@ button.link:hover { text-decoration-style: solid; }
   .bundle-session .mono-meta, .bundle-plan-row .mono-meta { grid-column: 2; }
   .bundle-plan-row .bundle-action { grid-column: 1 / -1; }
 }
+
+/* The rail's board rows (BOARDS.md §10): the meter is the row's icon,
+   in the narrow rail too; a board with nothing live reads dimmer. */
+.nav-item.rail-board .board-key { width: 22px !important; display: inline-flex; justify-content: flex-start; align-items: center; }
+.rail-board-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rail-board-name.off { color: var(--text-dim); }
+.mesh-col.narrow .nav-item.rail-board .board-key { justify-content: center; }

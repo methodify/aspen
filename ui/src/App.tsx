@@ -1,9 +1,10 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { scoped } from "./profiles";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, type Agent, type Board, type BoardNode, type BusMessage, type NodeInfo } from "./api";
+import { api, type Agent, type Board, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
-import { Meter, presenceOf, useTheme } from "./components";
+import { BoardMeter, Meter, presenceOf, useTheme } from "./components";
+import { boardStatus, describeStatus } from "./boardStatus";
 import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
@@ -198,19 +199,6 @@ function MeshColumn() {
   const location = useLocation();
   const [ws, setWs] = useState<WorkingSet>(loadWorkingSet);
   const [moreOpen, setMoreOpen] = useState(false);
-  // A board's pip is the net of its panes' (the operator's ask): any
-  // session pane waiting on the operator lights the board.
-  const boardWaiting = (b: Board): number => {
-    if (b.query) return 0;
-    let n = 0;
-    const walk = (node: BoardNode) => {
-      if (node.kind === "split") node.children.forEach(walk);
-      else if (node.kind === "session" && node.agent && waiting.has(node.agent)) n++;
-    };
-    walk(b.layout);
-    return n;
-  };
-
   // Visiting a session adds it to the recents.
   useEffect(() => {
     const m = /^\/session\/(.+)$/.exec(location.pathname);
@@ -324,15 +312,26 @@ function MeshColumn() {
       {boards.length > 0 && (
         <>
           <div className="nav-section label" style={{ marginTop: 6 }}>Boards</div>
-          {boards.map((b) => (
-            <NavLink key={b.id} to={`/board/${b.id}`} className={({ isActive }) => `nav-item${isActive ? " active" : ""}`} title={b.name}>
-              <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>▦</span>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
-              {boardWaiting(b) > 0 && (
-                <span className="rail-wait-pip" title={`${boardWaiting(b)} session${boardWaiting(b) === 1 ? "" : "s"} on this board waiting on you`} aria-label="a session on this board is waiting on you" />
-              )}
-            </NavLink>
-          ))}
+          {boards.map((b) => {
+            // The board's members at a glance (BOARDS.md §10): a bar each,
+            // busy first; the pips say who waits on you and who runs
+            // background work.
+            const st = boardStatus(b, agents, waiting);
+            return (
+              <NavLink key={b.id} to={`/board/${b.id}`} className={({ isActive }) => `nav-item rail-board${isActive ? " active" : ""}`} title={`${b.name} — ${describeStatus(st)}`}>
+                <span className="nav-key board-key">
+                  <BoardMeter bars={st.bars} label={describeStatus(st)} />
+                </span>
+                <span className={`rail-board-name ${st.presence}`}>{b.name}</span>
+                {st.waiting > 0 && (
+                  <span className="rail-wait-pip" title={`${st.waiting} session${st.waiting === 1 ? "" : "s"} on this board waiting on you`} aria-label="a session on this board is waiting on you" />
+                )}
+                {st.activity > 0 && (
+                  <span className="rail-activity-pip" title={`${st.activity} session${st.activity === 1 ? "" : "s"} on this board running background work — subagents, tasks, workflows`} aria-label="background activity on this board" />
+                )}
+              </NavLink>
+            );
+          })}
         </>
       )}
       {pinnedRows.length > 0 && (

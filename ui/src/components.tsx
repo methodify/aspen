@@ -36,6 +36,42 @@ export function Meter({ presence }: { presence: Presence }) {
   );
 }
 
+/** Up to this many bars; a bigger board's members share bars in proportion. */
+const BOARD_BARS = 6;
+
+/** A board's meter (BOARDS.md §10): one bar per member, busy first — a
+ *  busy member's bar dances, a live idle one stands full, a stopped one
+ *  lies flat — so a board reads at a glance as "two working, one idle,
+ *  three down". Past six members the bars are shared in proportion, never
+ *  dropping a state that is present. No members: the flat line of the
+ *  plain meter. */
+export function BoardMeter({ bars, label }: { bars: Presence[]; label?: string }) {
+  if (bars.length === 0) return <Meter presence="off" />;
+  let shown = bars;
+  if (bars.length > BOARD_BARS) {
+    const count = (p: Presence) => bars.filter((b) => b === p).length;
+    const share = (n: number) => (n ? Math.max(1, Math.round((n * BOARD_BARS) / bars.length)) : 0);
+    let b = share(count("busy"));
+    let i = share(count("idle"));
+    let o = share(count("off"));
+    // Trim the biggest share until it fits (each present state keeps ≥ 1).
+    while (b + i + o > BOARD_BARS) {
+      if (o >= i && o >= b && o > 1) o--;
+      else if (i >= b && i > 1) i--;
+      else if (b > 1) b--;
+      else break;
+    }
+    shown = [...Array<Presence>(b).fill("busy"), ...Array<Presence>(i).fill("idle"), ...Array<Presence>(o).fill("off")];
+  }
+  return (
+    <span className="board-meter" role="img" aria-label={label ?? `${bars.length} sessions`}>
+      {shown.map((p, k) => (
+        <i key={k} className={p} />
+      ))}
+    </span>
+  );
+}
+
 export function PresenceDot({ presence }: { presence: Presence }) {
   return <span className={`presence-dot ${presence}`} aria-hidden />;
 }

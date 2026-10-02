@@ -10,6 +10,7 @@ import { api, type UsageRow } from "../api";
 import { usePoll } from "../hooks";
 import { useHotkeys } from "../hotkeys";
 import { ErrorBar } from "../components";
+import { useAppData } from "../App";
 import "./usage.css";
 
 type Range = "today" | "week" | "all";
@@ -95,6 +96,9 @@ function aggregate(rows: UsageRow[], group: Group): Agg[] {
 
 export default function Usage() {
   const [range, setRange] = useState<Range>("today");
+  // Which runtime a session runs on (H-9): from the fleet the console knows.
+  const { agents } = useAppData();
+  const harnessOf = (name: string) => agents.find((a) => a.name === name)?.harness ?? null;
   const [group, setGroup] = useState<Group>("session");
   const from = rangeFrom(range);
   const poll = usePoll<UsageRow[]>(() => api.usage(from), 10000);
@@ -177,6 +181,9 @@ export default function Usage() {
                       `#${a.key}`
                     ) : (
                       a.key
+                    )}
+                    {group === "session" && harnessOf(a.key) && harnessOf(a.key) !== "claude" && (
+                      <span className="chip mono harness-chip" title={`a ${harnessOf(a.key)} session`}> {harnessOf(a.key)}</span>
                     )}
                     {group === "session" && a.rows[0]?.title && <span className="dim usage-title"> {a.rows[0].title}</span>}
                   </td>

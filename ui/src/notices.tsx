@@ -90,7 +90,10 @@ export function NoticesProvider({ children }: { children: ReactNode }) {
   const cursors = useRef<Record<string, number>>(loadCursors());
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
-  const baseTitle = useRef(document.title);
+  // The page's own title, without any "(N) " a previous mount left on it:
+  // the provider remounts on a mesh switch or a reconnect, and taking the
+  // title as it stood stacked one count per remount — "(81) (7) (7) …".
+  const baseTitle = useRef(document.title.replace(/^(\(\d+\)\s*)+/, ""));
 
   const setPrefs = useCallback((p: Prefs) => {
     setPrefsRaw(p);
@@ -172,7 +175,8 @@ export function NoticesProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(t);
   }, [toasts]);
 
-  // The tab title carries the unseen count.
+  // The tab title carries the unseen count — the same number as the
+  // bell's badge, cleared when the bell is opened.
   useEffect(() => {
     document.title = unseen > 0 ? `(${unseen}) ${baseTitle.current}` : baseTitle.current;
   }, [unseen]);

@@ -9,7 +9,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type Agent, type Board, type BoardNode, type BoardPane, type BusMessage, type OpenPrompt } from "../api";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
-import { ErrorBar, relTime } from "../components";
+import { BoardMeter, ErrorBar, relTime } from "../components";
+import { boardStatus, describeStatus, matchQuery, type DynamicQuery } from "../boardStatus";
 import { MenuGroup, MenuRow } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
@@ -149,38 +150,16 @@ function autoLayout(panes: BoardPane[], style: "grid" | "main"): BoardNode {
 
 // ------------------------------------------------------------ dynamic
 
-export interface DynamicQuery {
-  node?: string;
-  channel?: string;
-  state?: "busy" | "live" | "attention" | "activity" | "any";
-  name?: string;
-  style?: "grid" | "main";
-}
-
-function matchQuery(a: Agent, q: DynamicQuery, attention: Set<string>): boolean {
-  if (q.node && a.node !== q.node) return false;
-  if (q.channel && a.channel !== q.channel) return false;
-  if (q.name && !a.name.toLowerCase().includes(q.name.toLowerCase())) return false;
-  switch (q.state ?? "live") {
-    case "busy":
-      return a.live && a.turn_state === "busy";
-    case "live":
-      return a.live;
-    case "attention":
-      return attention.has(a.name);
-    case "activity":
-      return (a.activities?.running ?? 0) > 0;
-    default:
-      return true;
-  }
-}
+export type { DynamicQuery } from "../boardStatus";
 
 // ------------------------------------------------------------ the page
 
 export default function BoardPage() {
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
-  const { agents } = useAppData();
+  const { agents, waiting, refreshAgents } = useAppData();
+  const [reviving, setReviving] = useState(false);
+  const [reviveNote, setReviveNote] = useState<string | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
@@ -574,7 +553,47 @@ export default function BoardPage() {
           </button>
         )}
         {dynamic && <span className="chip mono" title={JSON.stringify(board.query)}>dynamic · {panes.length}</span>}
-        <span className="mono-meta">{sessionPanes.length} session{sessionPanes.length === 1 ? "" : "s"}</span>
+        {(() => {
+          // The board's members at a glance (BOARDS.md §10), and the one
+          // verb a stopped team wants: start the stopped ones.
+          const st = boardStatus(board, agents, waiting);
+          const down = st.members.filter((a) => !a.live && !a.moved_to);
+          return (
+            <>
+              <BoardMeter bars={st.bars} label={describeStatus(st)} />
+              <span className="mono-meta" title={st.unknown ? `${st.unknown} pane(s) name a session this console cannot see` : undefined}>{describeStatus(st)}</span>
+              {down.length > 0 && !dynamic && (
+                <button
+                  className="btn ghost sm"
+                  disabled={reviving}
+                  title={`start the stopped sessions on this board: ${down.map((a) => `@${a.bare ?? a.name.split("@")[0]}`).join(", ")}`}
+                  onClick={() => {
+                    setReviving(true);
+                    setReviveNote(null);
+                    void (async () => {
+                      let ok = 0;
+                      const skipped: string[] = [];
+                      for (const a of down) {
+                        try {
+                          await api.revive(a.name);
+                          ok++;
+                        } catch {
+                          skipped.push(`@${a.bare ?? a.name.split("@")[0]}`);
+                        }
+                      }
+                      await refreshAgents();
+                      setReviving(false);
+                      setReviveNote(skipped.length ? `started ${ok}; ${skipped.join(", ")} need a choice — open ${skipped.length === 1 ? "it" : "them"}` : `started ${ok}`);
+                    })();
+                  }}
+                >
+                  {reviving ? "starting…" : `start the stopped (${down.length})`}
+                </button>
+              )}
+              {reviveNote && <span className="mono-meta">{reviveNote}</span>}
+            </>
+          );
+        })()}
         <span style={{ flex: 1 }} />
         <label className={`bcast-toggle${broadcast ? " on" : ""}`} title="send the focused pane's messages to every session pane on this board">
           <input
@@ -807,7 +826,7 @@ function Picker({
 
 export function BoardsPage() {
   const nav = useNavigate();
-  const { agents } = useAppData();
+  const { agents, waiting } = useAppData();
   const [boards, setBoards] = useState<Board[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [preset, setPreset] = useState("1|2");
@@ -866,10 +885,14 @@ export function BoardsPage() {
       <div className="boards-grid">
         {boards.map((b) => (
           <Link key={b.id} className="board-card" to={`/board/${b.id}`}>
-            <span className="board-card-name">{b.name}</span>
+            <span className="board-card-head">
+              <BoardMeter bars={boardStatus(b, agents, waiting).bars} />
+              <span className="board-card-name">{b.name}</span>
+            </span>
             <span className="mono-meta">
               {b.query ? `dynamic · ${describeQuery(b.query)}` : `${panesOf(b.layout).length} panes`}
             </span>
+            <span className="mono-meta">{describeStatus(boardStatus(b, agents, waiting))}</span>
           </Link>
         ))}
         {boards.length === 0 && <div className="dim">no boards yet</div>}

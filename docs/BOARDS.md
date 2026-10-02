@@ -165,3 +165,29 @@ whose set of board-mates changed gets one `notice` from the operator on
 thread `board:<id>` ("@x joined. With you now: …", "you are no longer on
 the board …"); layout-only edits send nothing. Under always-lands
 delivery that is one turn per affected agent per membership change.
+
+
+## 10. A board at a glance (v0.48)
+
+A board's members are its session panes (a laid-out board) or whatever its
+fleet query matches (a dynamic one); `ui/src/boardStatus.ts` resolves
+them — a pane naming `bare@repo@<this node>` is the local session — and
+counts busy, live-and-idle, down (a pane naming a session this console
+cannot see counts as down), waiting on the operator, and running
+background work.
+
+- **The board meter** (`BoardMeter`): one bar per member, busy first — a
+  busy member's bar dances like the session meter, a live idle one stands
+  full, a stopped one lies flat. Past six members the bars are shared in
+  proportion, never dropping a state that is present. A board with no
+  members shows the flat line. Reduced motion stills the bars.
+- **The rail**: each board row's icon is its meter (in the narrow rail too);
+  the name dims when nothing on it runs; the pips say who waits on you
+  (red) and who runs background work (green); the title spells it out
+  ("1 busy · 1 idle · 1 down · 1 with background work").
+- **Now**: a *Boards* band above the fleet — one tile per board with
+  members, working ones first: meter, name, counts, the waiting pip.
+- **The Boards page**: each card carries the meter and the counts.
+- **A board's header**: the meter and the counts, and **start the stopped
+  (n)** on a laid-out board — revives every member that is down; a member
+  the one-writer gate holds back is named, to open and decide.

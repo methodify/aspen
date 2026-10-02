@@ -31,12 +31,14 @@ import {
 } from "../api";
 import { usePoll } from "../hooks";
 import { useAppData } from "../App";
+import { boardStatus, describeStatus, useBoards } from "../boardStatus";
 import { useHotkeys } from "../hotkeys";
 import { useLiveGate, useTrustedStart } from "../trust";
 import { NewSessionPanel } from "../sessionStart";
 import { AdoptionCard, MemoryConflictCard, NodeChip, PermCard, QuestionCard } from "../needs";
 import { UpdateCard } from "../servicing";
 import {
+  BoardMeter,
   ClassBadge,
   ClassSelect,
   Empty,
@@ -472,6 +474,9 @@ export default function Now() {
         {/* ─────────────────────────── ACTIVITY ─────────────────────────── */}
         {(fleetActs.data?.length ?? 0) > 0 && <ActivityBand items={fleetActs.data ?? []} />}
 
+        {/* ─────────────────────────── BOARDS ─────────────────────────────── */}
+        <BoardsBand />
+
         {/* ─────────────────────────── THE FLEET ─────────────────────────── */}
         <section className="now-band">
           <div className="now-band-head">
@@ -609,6 +614,41 @@ function ActivityBand({ items }: { items: FleetActivityItem[] }) {
               </div>
             ))}
           </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Every board as one line (BOARDS.md §10): its meter, its name, what its
+ *  members are doing, and whether one waits on the operator — the teams
+ *  at a glance, above the fleet's cards. */
+function BoardsBand() {
+  const boards = useBoards();
+  const { agents, waiting } = useAppData();
+  const rows = boards
+    .map((b) => ({ b, st: boardStatus(b, agents, waiting) }))
+    .filter(({ st }) => st.bars.length > 0);
+  if (rows.length === 0) return null;
+  // Working boards first, then idle, then quiet.
+  const rank = { busy: 0, idle: 1, off: 2 } as const;
+  rows.sort((x, y) => rank[x.st.presence] - rank[y.st.presence] || x.b.name.localeCompare(y.b.name));
+  return (
+    <section className="now-band">
+      <div className="now-band-head">
+        <span className="label">Boards</span>
+        <span className="mono-meta">{rows.filter((r) => r.st.presence === "busy").length} working · {rows.length} total</span>
+      </div>
+      <div className="now-boards">
+        {rows.map(({ b, st }) => (
+          <Link key={b.id} to={`/board/${b.id}`} className={`now-board ${st.presence}`} title={describeStatus(st)}>
+            <BoardMeter bars={st.bars} label={describeStatus(st)} />
+            <span className="now-board-name">{b.name}</span>
+            <span className="mono-meta">
+              {[st.busy && `${st.busy} busy`, st.idle && `${st.idle} idle`, st.off && `${st.off} down`].filter(Boolean).join(" · ")}
+            </span>
+            {st.waiting > 0 && <span className="rail-wait-pip" title={`${st.waiting} waiting on you`} />}
+          </Link>
         ))}
       </div>
     </section>

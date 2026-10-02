@@ -82,3 +82,5 @@
 .pair-body { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
 .pair-compose { display: flex; gap: 6px; padding: 4px 10px 8px; }
 .pair-compose input { flex: 1; }
+
+.board-card-head { display: flex; align-items: center; gap: 8px; }

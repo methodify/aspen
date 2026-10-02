@@ -7,6 +7,7 @@ import { useNavigate } from "react-router-dom";
 import {
   type MemoryConflict, api, type Adoption, type OpenPrompt } from "./api";
 import { relTime } from "./components";
+import { useAppData } from "./App";
 import { buildQuestionUpdatedInput, parseQuestions, type QuestionSpec } from "./pages/sessionExtras";
 import "./pages/command.css";
 
@@ -66,6 +67,10 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
   const allowDecisions = decisions.filter((d) => d.allow);
   const denyDecision = decisions.find((d) => !d.allow);
   const [denyId, setDenyId] = useState<string | undefined>(undefined);
+  // Codex's approval reply has no channel for a reason (H-7): deny is
+  // one click there, with no text field that would go nowhere.
+  const { agents } = useAppData();
+  const noDenyText = agents.find((a) => a.name === prompt.agent)?.harness === "codex";
 
   async function answer(a: { allow: boolean; message?: string; updated_permissions?: unknown; decision_id?: string }) {
     setBusy(true);
@@ -151,12 +156,17 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
               <button
                 className="btn ghost sm"
                 disabled={busy}
+                title={noDenyText ? "Codex takes no reason with a denial" : undefined}
                 onClick={() => {
+                  if (noDenyText) {
+                    void answer({ allow: false, decision_id: denyDecision?.id });
+                    return;
+                  }
                   setDenyId(denyDecision?.id);
                   setDenying(true);
                 }}
               >
-                {denyDecision?.label ?? "deny"}…
+                {denyDecision?.label ?? "deny"}{noDenyText ? "" : "…"}
               </button>
             </>
           ) : (

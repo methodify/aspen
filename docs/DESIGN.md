@@ -1285,6 +1285,14 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-10-01 — v0.48: a board at a glance.** The operator wanted the
+  rail's boards to read like its sessions. Decided: a meter with a bar
+  per member (busy first, shared in proportion past six) rather than one
+  aggregate reading, because "two working, one idle, three down" is what
+  a team looks like; it is the row's icon so the narrow rail keeps it.
+  Implied and built: the same on the Boards page, the board header (with
+  *start the stopped*) and a Boards band on Now. Also fixed the tab
+  title's stacking counts (one number, the bell's).
 - **2026-09-28 — v0.47: repo bundles (proposal O §1).** A repo with its
   context crosses any gap as a file, not a feature between meshes. The
   operator's calls: every repo mode offered (default tracked + .git),
