@@ -386,6 +386,22 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
                             }
                         }
                     }
+                    // A turn that ended in an error leaves no agent message —
+                    // only this. Without it the history showed a question
+                    // Codex never answered (a sign-in failure, say).
+                    "task_complete" | "turn_aborted" => {
+                        if let Some(msg) = payload
+                            .get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                        {
+                            items.push(json!({
+                                "role": "assistant", "text": format!("⚠ Codex: {msg}"), "tools": [],
+                                "uuid": format!("err-{}", payload.get("turn_id").and_then(|t| t.as_str()).unwrap_or(&ts)),
+                                "timestamp": ts, "usage": null, "model": model, "error": true,
+                            }));
+                        }
+                    }
                     "token_count" => {
                         if let Some(last) =
                             payload.get("info").and_then(|i| i.get("last_token_usage"))
@@ -770,5 +786,17 @@ mod tests {
         assert_eq!(items[1]["model"], "gpt-6");
         let u = usage_of(&lines, "th");
         assert_eq!(u["total"]["input"], 10);
+    }
+
+    #[test]
+    fn a_failed_turn_shows_its_error() {
+        let lines = vec![
+            json!({"timestamp":"t1","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"hi"}]}}}),
+            json!({"timestamp":"t2","type":"event_msg","payload":{"type":"task_complete","turn_id":"tr1","last_agent_message":null,"error":{"message":"sign in again"}}}),
+        ];
+        let items = rehydrate_lines(&lines);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1]["role"], "assistant");
+        assert!(items[1]["text"].as_str().unwrap().contains("sign in again"));
     }
 }

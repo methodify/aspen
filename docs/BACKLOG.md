@@ -39,6 +39,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 ## Shipped — 2026-10-02: Codex model picking (v0.48.2)
 
 - A Codex session's model menu offered only "default": the console read the model list from the raw handshake, where Claude keeps it, but Codex's lives in the runtime info (`model/list` at session start). Every Codex session ran on its default (gpt-6-astra). The menu now reads either place; "default" names what it resolves to from Codex's `isDefault` entry. Verified on the rig: the six models listed, gpt-5.6-luna picked, and the next turn ran on it (per Codex's own rollout).
+- A Codex turn that ended in an error (that test turn: the machine's Codex sign-in had expired) left nothing in the session's history — the rebuild from the rollout skipped `task_complete`'s error. It now shows as "⚠ Codex: <message>" where the reply would be.
 
 ## Shipped — 2026-10-01: the phone stops sliding (v0.48.1)
 
