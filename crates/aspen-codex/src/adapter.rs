@@ -381,11 +381,16 @@ mod tests {
         touch(&npm.join("codex.cmd"));
         let (plat, tr) = triple();
         let exe = npm
-            .join("node_modules/@openai/codex/node_modules/@openai")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("node_modules")
+            .join("@openai")
             .join(plat)
             .join("vendor")
             .join(tr)
-            .join("bin/codex.exe");
+            .join("bin")
+            .join("codex.exe");
         touch(&exe);
         touch(&app.join("codex.exe"));
         let l = resolve_in("codex", &[npm.clone(), app], true).unwrap();
