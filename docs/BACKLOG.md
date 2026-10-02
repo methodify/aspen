@@ -36,6 +36,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-02: no false "not offered here" on Claude sessions (v0.48.6)
+
+- v0.48.5 flagged every Claude session's default model "not offered here". Claude's model list names aliases (`opus`, `sonnet`), never the resolved id it reports for default, so the check could not match. The flag now applies only when the default is Codex's recorded start model (`default_model`).
+
 ## Shipped — 2026-10-02: Aspen runs the Codex the operator's shell runs (v0.48.5)
 
 - On the operator's Windows node every turn of @writer@cloud-nebula failed: "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account." The operator had picked gpt-6.1-sol in the Codex CLI, which saved it as the default in Codex's `config.toml`. That CLI is npm's codex-cli 0.160.0. Aspen was running the Codex app's bundled codex.exe 0.154.0, further down PATH, because a spawn by bare name on Windows finds only `codex.exe` and npm installs only `.cmd`/`.ps1` shims. 0.154.0's model list has no gpt-6.1-sol, and the backend refused the model to it. The node now resolves `codex` like a shell: the first PATH entry, and for an npm shim, the native `codex.exe` in its package (nested, hoisted and older vendor layouts), with the launcher's variables. `ASPEN_CODEX_BIN` also reaches the version probe now (it was applied after the probe had started).

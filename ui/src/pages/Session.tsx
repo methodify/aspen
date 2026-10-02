@@ -2581,7 +2581,10 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // name a model this sign-in or this Codex cannot use; every turn then
   // fails) is flagged on the menu.
   const defaultOffered = useMemo(() => {
-    if (!defaultResolves) return true;
+    // Only Codex's recorded start model is comparable with its list: Claude's
+    // list names aliases ("opus"), never the resolved id it reports.
+    const started = runtime?.inventory?.["default_model"];
+    if (!defaultResolves || typeof started !== "string" || started !== defaultResolves) return true;
     const ids = normalizeModels(runtimeModels(runtime)).map((o) => o.id);
     return ids.length === 0 || ids.includes(defaultResolves);
   }, [runtime, defaultResolves]);
