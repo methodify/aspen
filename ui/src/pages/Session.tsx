@@ -1844,6 +1844,28 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
 
+  // A session opened while stopped has no runtime to ask; when it comes up
+  // (revived here, from the rail, or by another console) ask again — the
+  // model list, commands and mode come from the running harness. Without
+  // this a pane opened on a stopped session kept an empty model menu after
+  // the session was started (2026-10-02).
+  const liveNow = !!agent?.live;
+  const wasLiveRef = useRef(liveNow);
+  useEffect(() => {
+    if (liveNow && !wasLiveRef.current) {
+      // The harness answers its model list a moment after it starts.
+      const t1 = window.setTimeout(() => void loadRuntime(), 1500);
+      const t2 = window.setTimeout(() => void loadRuntime(), 6000);
+      wasLiveRef.current = liveNow;
+      return () => {
+        window.clearTimeout(t1);
+        window.clearTimeout(t2);
+      };
+    }
+    wasLiveRef.current = liveNow;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveNow]);
+
   // Context on mount, but only once the agent is known idle (never mid-turn).
   // Opened mid-turn, the page starts busy: the composer locks and the
   // active tool card opens, exactly as if the turn had begun on screen;

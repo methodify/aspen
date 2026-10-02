@@ -36,6 +36,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-02: the model menu fills when a session comes up (v0.48.3)
+
+- A session view asked for the runtime (model list, commands, mode) once, when it opened. Opened on a stopped session, it asked a harness that was not running and never asked again after the session was started — the operator's Codex pane kept "default" as its only model after v0.48.2. It now asks again whenever the session comes up (twice, 1.5 s and 6 s after, since the harness lists its models a moment after starting). Verified on the rig: a stopped Codex session's menu went from "default" to all six models when the session was started from outside the page.
+
 ## Shipped — 2026-10-02: Codex model picking (v0.48.2)
 
 - A Codex session's model menu offered only "default": the console read the model list from the raw handshake, where Claude keeps it, but Codex's lives in the runtime info (`model/list` at session start). Every Codex session ran on its default (gpt-6-astra). The menu now reads either place; "default" names what it resolves to from Codex's `isDefault` entry. Verified on the rig: the six models listed, gpt-5.6-luna picked, and the next turn ran on it (per Codex's own rollout).
