@@ -192,6 +192,14 @@ impl CodexSession {
             .and_then(|m| m.as_str())
             .map(str::to_owned);
 
+        // What "default" means here: the model Codex chose with none asked
+        // for (its config's `model`, which need not be the entry its model
+        // list marks default). The console names it on the menu's default.
+        let default_model = if cfg.model.is_none() {
+            model_now.clone()
+        } else {
+            None
+        };
         let session = Arc::new(Self {
             id: cfg.session_id,
             rpc: rpc.clone(),
@@ -203,7 +211,7 @@ impl CodexSession {
             runtime: Mutex::new(RuntimeInfo {
                 model: model_now.clone(),
                 mode: Some(mode_now.id.into()),
-                raw: json!({ "thread": started, "method": method }),
+                raw: json!({ "thread": started, "method": method, "default_model": default_model }),
                 ..Default::default()
             }),
             items: Mutex::new(HashMap::new()),
@@ -263,6 +271,7 @@ impl CodexSession {
             json!({
                 "session_id": thread_id, "model": rt.model, "mode": rt.mode,
                 "harness": "codex", "models": rt.models, "skills": rt.skills,
+                "default_model": default_model,
                 "thread": started,
             })
         };

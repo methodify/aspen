@@ -114,6 +114,9 @@ pub fn mode(id: &str) -> Option<&'static Mode> {
 
 pub struct CodexAdapter {
     pub bin: String,
+    /// What `bin` launches: the executable a shell would run, and any
+    /// environment the npm launcher would have set.
+    launch: Launch,
     store: Arc<CodexStore>,
     /// `codex --version`, probed once per daemon (no window on Windows).
     version: std::sync::Arc<std::sync::OnceLock<Option<String>>>,
@@ -121,8 +124,18 @@ pub struct CodexAdapter {
 
 impl CodexAdapter {
     pub fn new() -> Self {
+        Self::with_bin("codex")
+    }
+
+    /// The adapter for a binary name or path (`ASPEN_CODEX_BIN`).
+    pub fn with_bin(bin: &str) -> Self {
+        let launch = resolve(bin).unwrap_or_else(|| Launch {
+            path: bin.into(),
+            env: Vec::new(),
+        });
         let me = Self {
-            bin: "codex".into(),
+            bin: bin.into(),
+            launch,
             store: Arc::new(CodexStore::new()),
             version: Default::default(),
         };
@@ -134,9 +147,10 @@ impl CodexAdapter {
     /// probe inside the first API request stalled every request behind it).
     fn probe_version(&self) {
         let cell = self.version.clone();
-        let bin = self.bin.clone();
+        let launch = self.launch.clone();
         std::thread::spawn(move || {
-            let v = aspen_core::quiet_command(&bin)
+            let v = aspen_core::quiet_command(&launch.path)
+                .envs(launch.env.iter().map(|(k, v)| (k, v)))
                 .arg("--version")
                 .output()
                 .ok()
@@ -153,7 +167,7 @@ impl CodexAdapter {
     }
     /// Is the binary on PATH?
     pub fn available(&self) -> bool {
-        which(&self.bin).is_some()
+        resolve(&self.bin).is_some()
     }
 }
 
@@ -163,26 +177,98 @@ impl Default for CodexAdapter {
     }
 }
 
-pub fn which(bin: &str) -> Option<std::path::PathBuf> {
-    if bin.contains(std::path::MAIN_SEPARATOR) {
+/// What a binary name launches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Launch {
+    pub path: String,
+    pub env: Vec<(String, String)>,
+}
+
+/// Resolve the Codex binary the way the operator's shell would: the first
+/// PATH entry that has it. On Windows a process spawn by bare name finds
+/// only `codex.exe`, but an npm install puts only `codex.cmd`/`codex.ps1`
+/// shims on PATH — so the spawn skipped the operator's npm Codex and ran
+/// an older one further down PATH (the Codex app's), which the backend
+/// refused newer models for (2026-10-02). A shim resolves to the native
+/// `codex.exe` its package ships, with the variables its launcher sets.
+pub fn resolve(bin: &str) -> Option<Launch> {
+    let plain = |p: std::path::PathBuf| Launch {
+        path: p.to_string_lossy().into_owned(),
+        env: Vec::new(),
+    };
+    if bin.contains('/') || bin.contains(std::path::MAIN_SEPARATOR) {
         let p = std::path::PathBuf::from(bin);
-        return p.is_file().then_some(p);
+        return p.is_file().then(|| plain(p));
     }
     let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let p = dir.join(bin);
-        if p.is_file() {
-            return Some(p);
-        }
-        #[cfg(windows)]
-        for ext in ["exe", "cmd", "bat"] {
-            let p = dir.join(format!("{bin}.{ext}"));
+    let dirs: Vec<_> = std::env::split_paths(&path).collect();
+    resolve_in(bin, &dirs, cfg!(windows))
+}
+
+fn resolve_in(bin: &str, dirs: &[std::path::PathBuf], windows: bool) -> Option<Launch> {
+    for dir in dirs {
+        if !windows {
+            let p = dir.join(bin);
             if p.is_file() {
-                return Some(p);
+                return Some(Launch {
+                    path: p.to_string_lossy().into_owned(),
+                    env: Vec::new(),
+                });
+            }
+            continue;
+        }
+        let exe = dir.join(format!("{bin}.exe"));
+        if exe.is_file() {
+            return Some(Launch {
+                path: exe.to_string_lossy().into_owned(),
+                env: Vec::new(),
+            });
+        }
+        let shim = ["cmd", "ps1", "bat"]
+            .iter()
+            .any(|ext| dir.join(format!("{bin}.{ext}")).is_file());
+        if shim {
+            if let Some(l) = npm_native(dir) {
+                return Some(l);
             }
         }
     }
     None
+}
+
+/// The native binary inside an npm-installed `@openai/codex` next to its
+/// shim, in the layouts its launcher (`bin/codex.js`) looks in.
+fn npm_native(dir: &std::path::Path) -> Option<Launch> {
+    let pkg = dir.join("node_modules").join("@openai").join("codex");
+    if !pkg.is_dir() {
+        return None;
+    }
+    let (plat, triple) = if std::env::consts::ARCH == "aarch64" {
+        ("codex-win32-arm64", "aarch64-pc-windows-msvc")
+    } else {
+        ("codex-win32-x64", "x86_64-pc-windows-msvc")
+    };
+    let vendor = |root: std::path::PathBuf| root.join("vendor").join(triple);
+    let nested = pkg.join("node_modules").join("@openai").join(plat);
+    let hoisted = dir.join("node_modules").join("@openai").join(plat);
+    let candidates = [
+        vendor(nested).join("bin").join("codex.exe"),
+        vendor(hoisted).join("bin").join("codex.exe"),
+        vendor(pkg.clone()).join("bin").join("codex.exe"),
+        vendor(pkg.clone()).join("codex").join("codex.exe"),
+    ];
+    let exe = candidates.into_iter().find(|p| p.is_file())?;
+    let root = std::fs::canonicalize(&pkg).unwrap_or(pkg);
+    Some(Launch {
+        path: exe.to_string_lossy().into_owned(),
+        env: vec![
+            ("CODEX_MANAGED_BY_NPM".into(), "1".into()),
+            (
+                "CODEX_MANAGED_PACKAGE_ROOT".into(),
+                root.to_string_lossy().into_owned(),
+            ),
+        ],
+    })
 }
 
 #[async_trait]
@@ -233,8 +319,12 @@ impl AgentAdapter for CodexAdapter {
             policy: spec.policy,
             charter: spec.charter.clone(),
             extra_args: spec.extra_args.clone(),
-            env: spec.env.clone(),
-            codex_bin: self.bin.clone(),
+            env: {
+                let mut env = self.launch.env.clone();
+                env.extend(spec.env.iter().cloned());
+                env
+            },
+            codex_bin: self.launch.path.clone(),
             agent: spec.agent.clone(),
             bridge: spec.node_api.clone().map(|api| crate::session::Bridge {
                 node_api: api,
@@ -261,5 +351,70 @@ impl AgentAdapter for CodexAdapter {
     }
     fn binary(&self) -> &'static str {
         "codex"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn touch(p: &Path) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, b"").unwrap();
+    }
+
+    fn triple() -> (&'static str, &'static str) {
+        if std::env::consts::ARCH == "aarch64" {
+            ("codex-win32-arm64", "aarch64-pc-windows-msvc")
+        } else {
+            ("codex-win32-x64", "x86_64-pc-windows-msvc")
+        }
+    }
+
+    #[test]
+    fn an_npm_shim_earlier_on_path_wins_over_a_later_exe() {
+        let t = tempfile::tempdir().unwrap();
+        let npm = t.path().join("nodejs");
+        let app = t.path().join("app");
+        touch(&npm.join("codex.cmd"));
+        let (plat, tr) = triple();
+        let exe = npm
+            .join("node_modules/@openai/codex/node_modules/@openai")
+            .join(plat)
+            .join("vendor")
+            .join(tr)
+            .join("bin/codex.exe");
+        touch(&exe);
+        touch(&app.join("codex.exe"));
+        let l = resolve_in("codex", &[npm.clone(), app], true).unwrap();
+        assert_eq!(l.path, exe.to_string_lossy());
+        assert!(l
+            .env
+            .iter()
+            .any(|(k, v)| k == "CODEX_MANAGED_BY_NPM" && v == "1"));
+    }
+
+    #[test]
+    fn a_shim_without_its_native_binary_is_passed_over() {
+        let t = tempfile::tempdir().unwrap();
+        let npm = t.path().join("nodejs");
+        let app = t.path().join("app");
+        touch(&npm.join("codex.cmd"));
+        touch(&app.join("codex.exe"));
+        let l = resolve_in("codex", &[npm, app.clone()], true).unwrap();
+        assert_eq!(l.path, app.join("codex.exe").to_string_lossy());
+        assert!(l.env.is_empty());
+    }
+
+    #[test]
+    fn elsewhere_the_first_plain_binary_on_path() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("a");
+        let b = t.path().join("b");
+        touch(&b.join("codex"));
+        let l = resolve_in("codex", &[a, b.clone()], false).unwrap();
+        assert_eq!(l.path, b.join("codex").to_string_lossy());
     }
 }

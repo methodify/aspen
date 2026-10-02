@@ -118,7 +118,21 @@ fields.
 anyone driving Codex headless; CODEX_RUNTIME_REFERENCE.md is the field-verified
 wire and disk reference). Registered by the node when the `codex` binary
 resolves on PATH (`ASPEN_CODEX_BIN` overrides the name); `GET /api/node`
-lists it with its version, capabilities and modes.
+lists it with its version, capabilities and modes. The binary is the one
+the operator's shell would run: the first PATH entry that has it. On
+Windows an npm install puts only `codex.cmd`/`codex.ps1` shims on PATH,
+which a process spawn by bare name never finds (it looks only for
+`codex.exe`), so a shim resolves to the native `codex.exe` its
+`@openai/codex` package ships, launched with the variables the package's
+launcher sets (`CODEX_MANAGED_BY_NPM`, `CODEX_MANAGED_PACKAGE_ROOT`).
+Before v0.48.5 such a node ran an older `codex.exe` further down PATH (the
+Codex app's), whose model list and backend support lagged the operator's.
+
+"default" on a Codex session's model menu names what Codex chose with no
+model asked for: its `config.toml` `model`, or the thread's own, recorded
+at start as `default_model` in the session's inventory. That need not be
+the entry Codex's model list marks `isDefault`, and when it is not in the
+list at all the menu says so ("not offered here"): turns on it fail.
 
 - **Process**: `codex app-server --listen stdio://` per session
   (`rpc.rs`: JSON-RPC line client, request correlation, server→client

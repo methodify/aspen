@@ -2569,10 +2569,22 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     const d = list.map(rec).find((m) => m?.["value"] === "default");
     const r = d?.["resolvedModel"];
     if (typeof r === "string" && r) return r;
+    // Codex: what it started on with no model asked for (its config's
+    // model), which need not be the entry its list marks default.
+    const started = runtime?.inventory?.["default_model"];
+    if (typeof started === "string" && started) return started;
     const def = list.map(rec).find((m) => m?.["isDefault"] === true);
     const v = def?.["value"];
     return typeof v === "string" && v ? v : null;
   }, [runtime]);
+  // A default the harness's own list does not offer (Codex's config can
+  // name a model this sign-in or this Codex cannot use; every turn then
+  // fails) is flagged on the menu.
+  const defaultOffered = useMemo(() => {
+    if (!defaultResolves) return true;
+    const ids = normalizeModels(runtimeModels(runtime)).map((o) => o.id);
+    return ids.length === 0 || ids.includes(defaultResolves);
+  }, [runtime, defaultResolves]);
   const modelInUse = useMemo(() => {
     const live = agent?.summary?.model;
     if (live) return live;
@@ -3106,7 +3118,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             onChange={(e) => void changeModel(e.target.value)}
             title={`switch model — takes effect next turn${modelInUse ? `; the latest reply came from ${modelInUse}` : ""}`}
           >
-            <option value="default">{defaultResolves ? `default · ${defaultResolves}` : "default"}</option>
+            <option value="default">{defaultResolves ? `default · ${defaultResolves}${defaultOffered ? "" : " (not offered here)"}` : "default"}</option>
             {modelOptions.map((o) => (
               <option key={o.id} value={o.id} title={o.description}>
                 {o.label}

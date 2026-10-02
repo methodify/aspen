@@ -1181,12 +1181,10 @@ impl Node {
         );
         // Codex is listed when its binary resolves (HARNESSES.md: a node
         // lists what it can run); `ASPEN_CODEX_BIN` overrides the name.
-        let mut codex = aspen_codex::CodexAdapter::new();
-        if let Ok(b) = std::env::var("ASPEN_CODEX_BIN") {
-            if !b.trim().is_empty() {
-                codex.bin = b;
-            }
-        }
+        let codex = match std::env::var("ASPEN_CODEX_BIN") {
+            Ok(b) if !b.trim().is_empty() => aspen_codex::CodexAdapter::with_bin(b.trim()),
+            _ => aspen_codex::CodexAdapter::new(),
+        };
         if codex.available() {
             adapters.insert(Harness::Codex, Arc::new(codex));
         }
