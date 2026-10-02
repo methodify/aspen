@@ -36,6 +36,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-01: the phone stops sliding (v0.48.1)
+
+- A transcript never scrolls sideways: long words break, the bus line's header shrinks, code blocks and tables scroll inside themselves (a long record path made the whole conversation wider than the pane — 649 px in a 368 px pane on the rig).
+- Fields are 16 px on touch screens even in a board pane (its composer's own 12.5 px beat the v0.45 rule, so iOS still zoomed on focus), and the page scale is pinned (`maximum-scale=1`).
+
 ## Shipped — 2026-10-01: a board at a glance, and small things (v0.48)
 
 - **Board meters** (BOARDS.md §10): one bar per member, busy first, on the rail's board rows (the row's icon, narrow rail included), the Boards page's cards, a board's header, and a new *Boards* band on Now; waiting and background-work pips on board rows; **start the stopped (n)** on a board's header.

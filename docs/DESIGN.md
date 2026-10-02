@@ -1285,6 +1285,13 @@ cleaner lane for roster updates than user-message headers.
   when attached to a loopback node, and a download plus steps otherwise
   (a phone never gets automation). Relay links to a peer join the reach
   memory with backoff, reset by a fresh presence.
+- **2026-10-01 — v0.48.1: the phone stops sliding.** Two causes the
+  operator spotted on a board pane: a transcript that scrolled sideways
+  because one long path or bus record widened it, and a pane composer
+  whose smaller font made iOS zoom on focus. Decided: the transcript
+  itself never scrolls sideways (content wraps or scrolls inside its own
+  block), touch fields are 16 px without exception, and the page scale is
+  pinned so the shell never zooms.
 - **2026-10-01 — v0.48: a board at a glance.** The operator wanted the
   rail's boards to read like its sessions. Decided: a meter with a bar
   per member (busy first, shared in proportion past six) rather than one

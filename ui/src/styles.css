@@ -195,7 +195,9 @@ html { -webkit-text-size-adjust: 100%; }
 body { overscroll-behavior-x: none; }
 button, a, input, select, textarea, label, [role="button"], .btn, .chip { touch-action: manipulation; }
 @media (pointer: coarse) {
-  input, textarea, select { font-size: 16px; }
+  /* !important: a board pane's composer sets its own smaller size, and any
+     field under 16px makes iOS zoom the page on focus (2026-10-01). */
+  input, textarea, select { font-size: 16px !important; }
   input[type="checkbox"], input[type="radio"] { font-size: inherit; }
 }
 
@@ -662,7 +664,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .bubble-user .user-text { white-space: pre-wrap; }
 .bubble-bus { align-self: stretch; max-width: none; background: color-mix(in srgb, var(--sig-notice-dim) 50%, var(--bg-strip)); border-left: 2px solid var(--sig-notice); padding: 2px var(--sp-3) 2px var(--sp-4); }
 .bubble-bus.open { padding-bottom: var(--sp-2); }
-.bubble-bus .bus-header { color: var(--sig-notice); font-size: 0.72rem; white-space: nowrap; flex: 0 0 auto; }
+.bubble-bus .bus-header { color: var(--sig-notice); font-size: 0.72rem; white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .bubble-bus .bus-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .bubble-bus.open .bus-row { margin-bottom: 4px; }
 .bubble-bus .bus-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-mid); font-size: 0.85rem; }
@@ -926,3 +928,13 @@ button.link:hover { text-decoration-style: solid; }
 .rail-board-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .rail-board-name.off { color: var(--text-dim); }
 .mesh-col.narrow .nav-item.rail-board .board-key { justify-content: center; }
+
+/* Nothing in a transcript is wider than the transcript (2026-10-01): on a
+   phone one long path or bus record pushed the whole conversation sideways
+   — the "slip and slide". The transcript never scrolls sideways; long
+   words break; code blocks and tables scroll inside themselves. */
+.transcript { overflow-x: hidden; overflow-wrap: anywhere; }
+.transcript > :where(*) { min-width: 0; }
+.transcript :where(pre) { max-width: 100%; overflow-x: auto; overflow-wrap: normal; }
+.transcript :where(.md table, .tui-md table) { display: block; max-width: 100%; overflow-x: auto; }
+.transcript :where(img, video) { max-width: 100%; height: auto; }
