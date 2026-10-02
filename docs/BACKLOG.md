@@ -36,6 +36,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-02: Codex model picking (v0.48.2)
+
+- A Codex session's model menu offered only "default": the console read the model list from the raw handshake, where Claude keeps it, but Codex's lives in the runtime info (`model/list` at session start). Every Codex session ran on its default (gpt-6-astra). The menu now reads either place; "default" names what it resolves to from Codex's `isDefault` entry. Verified on the rig: the six models listed, gpt-5.6-luna picked, and the next turn ran on it (per Codex's own rollout).
+
 ## Shipped — 2026-10-01: the phone stops sliding (v0.48.1)
 
 - A transcript never scrolls sideways: long words break, the bus line's header shrinks, code blocks and tables scroll inside themselves (a long record path made the whole conversation wider than the pane — 649 px in a 368 px pane on the rig).

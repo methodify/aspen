@@ -85,6 +85,7 @@ import {
   hasSuggestions,
   loadRenderMode,
   normalizeModels,
+  runtimeModels,
   parseQuestions,
   slashCommandsOf,
   slashPartialOf,
@@ -2526,7 +2527,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // --- model options ---
 
   const modelOptions = useMemo(() => {
-    const opts = normalizeModels(runtime?.handshake?.models).filter(
+    const opts = normalizeModels(runtimeModels(runtime)).filter(
       (o) => o.id !== "default",
     );
     if (modelValue !== "default" && !opts.some((o) => o.id === modelValue)) {
@@ -2540,11 +2541,15 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // is really running on: the model named in the latest reply — live from
   // the node's summary, else from the transcript.
   const defaultResolves = useMemo(() => {
-    const list = runtime?.handshake?.models;
-    if (!Array.isArray(list)) return null;
-    const d = list.find((m) => m && typeof m === "object" && (m as Record<string, unknown>)["value"] === "default") as Record<string, unknown> | undefined;
+    const list = runtimeModels(runtime);
+    const rec = (m: unknown) => (m && typeof m === "object" ? (m as Record<string, unknown>) : null);
+    // Claude names it on its "default" entry; Codex marks one entry isDefault.
+    const d = list.map(rec).find((m) => m?.["value"] === "default");
     const r = d?.["resolvedModel"];
-    return typeof r === "string" && r ? r : null;
+    if (typeof r === "string" && r) return r;
+    const def = list.map(rec).find((m) => m?.["isDefault"] === true);
+    const v = def?.["value"];
+    return typeof v === "string" && v ? v : null;
   }, [runtime]);
   const modelInUse = useMemo(() => {
     const live = agent?.summary?.model;

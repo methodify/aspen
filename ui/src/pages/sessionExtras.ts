@@ -224,6 +224,17 @@ export interface ModelOption {
   description?: string;
 }
 
+/** The harness's model list, wherever it put it: Claude's in the raw
+ *  handshake, Codex's in the neutral runtime info (its handshake is the
+ *  thread). Reading only the handshake left every Codex session with just
+ *  "default" — no way to pick, so everything ran on the default model. */
+export function runtimeModels(rt: { handshake?: { models?: unknown[] } | null; runtime?: { models?: unknown[] } | null } | null | undefined): unknown[] {
+  const h = rt?.handshake?.models;
+  if (Array.isArray(h) && h.length) return h;
+  const r = rt?.runtime?.models;
+  return Array.isArray(r) ? r : [];
+}
+
 export function normalizeModels(models: unknown): ModelOption[] {
   if (!Array.isArray(models)) return [];
   const out: ModelOption[] = [];

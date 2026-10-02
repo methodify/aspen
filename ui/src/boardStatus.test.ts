@@ -42,3 +42,15 @@ describe("boardStatus", () => {
     expect(st.busy).toBe(1);
   });
 });
+
+import { normalizeModels, runtimeModels } from "./pages/sessionExtras";
+
+describe("runtimeModels", () => {
+  it("takes Claude's list from the handshake and Codex's from the runtime info", () => {
+    const claude = { handshake: { models: [{ value: "default" }, { value: "opus" }] }, runtime: { models: [] } };
+    const codex = { handshake: { thread: {} } as { models?: unknown[] }, runtime: { models: [{ value: "gpt-6-astra", isDefault: true }, { value: "gpt-5.6-sol" }] } };
+    expect(runtimeModels(claude).length).toBe(2);
+    expect(normalizeModels(runtimeModels(codex)).map((m) => m.id)).toEqual(["gpt-6-astra", "gpt-5.6-sol"]);
+    expect(runtimeModels(null)).toEqual([]);
+  });
+});
