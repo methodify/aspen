@@ -162,6 +162,9 @@ export interface TranscriptState {
   nextId: number;
   /** Item id of the single open streaming bubble, or null. */
   openBubbleId: number | null;
+  /** History before the first item that is not loaded: the cursor for
+   *  the page before (`api.transcriptPage`), absent when it all is. */
+  earlier?: string | null;
 }
 
 export function emptyTranscript(): TranscriptState {
@@ -236,6 +239,7 @@ export function taskNoticeItem(id: number, text: string): TaskNoticeItem {
 }
 
 export function seedFromHistory(history: HistoryItem[]): TranscriptState {
+  if (!Array.isArray(history)) throw new Error("the history the node sent is not a list of items");
   const items: TranscriptItem[] = [];
   let nextId = 1;
   for (const [hi, h] of history.entries()) {
@@ -877,7 +881,17 @@ export function mergeAfter(state: TranscriptState, head: string, history: Histor
   const fresh = seedFromHistory(history);
   let nextId = state.nextId;
   const renumbered = fresh.items.map((it) => ({ ...it, id: nextId++ }));
-  return { items: [...kept, ...renumbered], nextId, openBubbleId: null };
+  return { items: [...kept, ...renumbered], nextId, openBubbleId: null, earlier: state.earlier ?? null };
+}
+
+/** Put an earlier page of history in front (load earlier history). The
+ *  page's items take fresh ids after the current ones; order is by
+ *  position, and ids already handed out (the open bubble) keep theirs. */
+export function prependHistory(state: TranscriptState, history: HistoryItem[], earlier: string | null): TranscriptState {
+  const fresh = seedFromHistory(history);
+  let nextId = state.nextId;
+  const renumbered = fresh.items.map((it) => ({ ...it, id: nextId++ }));
+  return { ...state, items: [...renumbered, ...state.items], nextId, earlier };
 }
 
 // ---- persisted across page loads (IndexedDB: transcripts run to MBs, past

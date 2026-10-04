@@ -2547,7 +2547,36 @@ async fn serve_api_req(
                 return Err(anyhow!("no session on record"));
             }
             let after = body.get("after").and_then(|a| a.as_str());
-            let (items, found) = crate::node::transcript_with_record(&node.inner, row, after);
+            let before = body.get("before").and_then(|a| a.as_str());
+            let tail = body
+                .get("tail_bytes")
+                .and_then(|t| t.as_u64())
+                .map(|t| t as usize);
+            let (items, found) = crate::node::transcript_with_record(
+                &node.inner,
+                row,
+                after.filter(|_| before.is_none()),
+            );
+            if let Some(budget) = tail {
+                // Paged (the console's `tail_bytes`): see the HTTP route.
+                let budget = budget.clamp(256 * 1024, 48 * 1024 * 1024);
+                let found = found && after.is_some() && before.is_none();
+                if found {
+                    let size: usize = items.iter().map(|i| i.to_string().len()).sum();
+                    if size <= budget {
+                        return Ok(
+                            json!({ "items": items, "after_found": true, "earlier": Value::Null }),
+                        );
+                    }
+                }
+                let all = if found {
+                    crate::node::transcript_with_record(&node.inner, row, None).0
+                } else {
+                    items
+                };
+                let (page, earlier) = crate::node::transcript_page(all, before, budget);
+                return Ok(json!({ "items": page, "after_found": false, "earlier": earlier }));
+            }
             if after.is_some() {
                 return Ok(json!({ "items": items, "after_found": found }));
             }

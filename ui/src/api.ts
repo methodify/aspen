@@ -1475,6 +1475,9 @@ import { tunnel } from "./tunnel";
 /** Hosted console: a direct connection prefixes every request (connections.ts). */
 import { apiBase, connectionToken } from "./connections";
 
+/** How much history one transcript request asks for (bytes of JSON). */
+export const TRANSCRIPT_PAGE_BYTES = 8 * 1024 * 1024;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (tunnel.enabled) {
     let r: { status: number; body?: string; body_b64?: string };
@@ -1608,6 +1611,28 @@ export const api = {
    *  line is no longer there (`after_found: false`). */
   transcriptAfter: (name: string, after: string) =>
     request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
+  /** A page of history (the newest ~8 MB, or the page before `before`),
+   *  or the delta after `after` when it fits. `earlier` is the cursor for
+   *  the page before, null when this reaches the start. A node before
+   *  v0.49.1 answers whole (no `earlier`). Anything that is not a list of
+   *  items is an error, never an empty history (an over-cap relay reply
+   *  once arrived as `{}`). */
+  transcriptPage: async (name: string, opts: { after?: string | null; before?: string | null } = {}) => {
+    const q = new URLSearchParams({ tail_bytes: String(TRANSCRIPT_PAGE_BYTES) });
+    if (opts.after) q.set("after", opts.after);
+    if (opts.before) q.set("before", opts.before);
+    const r = await request<unknown>(`/api/agents/${enc(name)}/transcript?${q}`);
+    if (Array.isArray(r)) return { items: r as HistoryItem[], after_found: false, earlier: null as string | null };
+    const o = r as { items?: unknown; after_found?: unknown; earlier?: unknown } | null;
+    if (!o || !Array.isArray(o.items)) {
+      throw new ApiError(502, "the node sent no history (the reply was empty or not a list — possibly too large for the relay)");
+    }
+    return {
+      items: o.items as HistoryItem[],
+      after_found: o.after_found === true,
+      earlier: typeof o.earlier === "string" ? o.earlier : null,
+    };
+  },
   artifacts: (name: string) => request<Artifact[]>(`/api/agents/${enc(name)}/artifacts`),
   activities: (name: string) => request<Activity[]>(`/api/agents/${enc(name)}/activities`),
   /** One workflow run: phases, agents, results, logs (PROPOSALS-2026-09-O §2.3). */

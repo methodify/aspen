@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Measure what a session's transcript costs to fetch from this node:
+# total bytes, item count, how much of it is inline images, and the
+# largest items. Prints sizes only (never the node token).
+#
+#   scripts/transcript-size impl@plank          # an agent on this node
+#   scripts/transcript-size                     # every agent on this node
+#
+# Reads the API port from ~/.aspen/daemon.json and the token from
+# ~/.aspen/api-token (override with ASPEN_DATA). Needs curl and python3.
+set -euo pipefail
+DATA="${ASPEN_DATA:-$HOME/.aspen}"
+PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["listen"].rsplit(":",1)[1])' "$DATA/daemon.json")
+TOKEN_FILE="$DATA/api-token"
+BASE="http://127.0.0.1:$PORT/api"
+
+fetch() { curl -sf -H "X-Aspen-Token: $(cat "$TOKEN_FILE")" "$@"; }
+
+agents=("$@")
+if [ ${#agents[@]} -eq 0 ]; then
+  mapfile -t agents < <(fetch "$BASE/agents" | python3 -c 'import json,sys; [print(a["name"]) for a in json.load(sys.stdin) if not a.get("remote")]')
+fi
+
+for a in "${agents[@]}"; do
+  enc=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$a")
+  tmp=$(mktemp)
+  if ! fetch "$BASE/agents/$enc/transcript" -o "$tmp"; then
+    echo "$a: could not fetch the transcript"; rm -f "$tmp"; continue
+  fi
+  python3 - "$a" "$tmp" <<'PY'
+import json, sys
+name, path = sys.argv[1], sys.argv[2]
+raw = open(path, "rb").read()
+try:
+    items = json.loads(raw)
+except Exception as e:
+    print(f"{name}: {len(raw)/1e6:.1f} MB, not JSON ({e})"); sys.exit()
+if not isinstance(items, list):
+    print(f"{name}: {len(raw)/1e6:.1f} MB, not a list: {type(items).__name__} keys={list(items)[:5]}"); sys.exit()
+img = sum(len(json.dumps(i.get("images") or [])) for i in items if isinstance(i, dict))
+big = sorted(items, key=lambda i: -len(json.dumps(i)))[:3]
+flag = "  OVER the 64 MB relay cap" if len(raw) > 64 * 1024 * 1024 else ""
+print(f"{name}: {len(raw)/1e6:.1f} MB, {len(items)} items, images {img/1e6:.1f} MB{flag}")
+for b in big:
+    print(f"    largest: {b.get('role')} {len(json.dumps(b))/1e6:.2f} MB ({b.get('timestamp','')})")
+PY
+  rm -f "$tmp"
+done

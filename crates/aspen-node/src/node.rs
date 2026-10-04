@@ -911,6 +911,66 @@ pub fn session_preview(
     Ok(items)
 }
 
+/// The most recent part of a transcript, at most about `budget` bytes of
+/// JSON, starting at a user line so the page reads from a turn's start;
+/// with `before`, the part just before that line instead. Returns the page
+/// and, when earlier items remain, the cursor for the page before it (the
+/// uuid of the page's first item). A transcript sent whole ran past the
+/// relay's 64 MB response cap on long sessions with screenshots, and the
+/// phone got an empty history (2026-10-04). The newest turn is always
+/// included, however large.
+pub fn transcript_page(
+    items: Vec<serde_json::Value>,
+    before: Option<&str>,
+    budget: usize,
+) -> (Vec<serde_json::Value>, Option<String>) {
+    let mut items = items;
+    if let Some(b) = before {
+        match items
+            .iter()
+            .position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(b))
+        {
+            Some(p) => items.truncate(p),
+            None => return (Vec::new(), None),
+        }
+    }
+    let is_turn_start = |v: &serde_json::Value| {
+        v.get("role").and_then(|r| r.as_str()) == Some("user")
+            && v.get("uuid").and_then(|u| u.as_str()).is_some()
+    };
+    let mut total = 0usize;
+    let mut start = items.len();
+    // The newest turn start at or before the end: always kept.
+    let mut kept_one_turn = false;
+    for idx in (0..items.len()).rev() {
+        total += items[idx].to_string().len();
+        if total > budget && kept_one_turn {
+            break;
+        }
+        start = idx;
+        if is_turn_start(&items[idx]) {
+            kept_one_turn = true;
+        }
+    }
+    // Begin the page at a turn start (or the very beginning).
+    while start > 0 && start < items.len() && !is_turn_start(&items[start]) {
+        start += 1;
+    }
+    if start >= items.len() && !items.is_empty() {
+        start = 0;
+    }
+    let cursor = (start > 0)
+        .then(|| {
+            items[start]
+                .get("uuid")
+                .and_then(|u| u.as_str())
+                .map(str::to_owned)
+        })
+        .flatten();
+    let page = items.split_off(start);
+    (page, cursor)
+}
+
 pub fn transcript_with_record(
     inner: &Arc<NodeInner>,
     row: &crate::store::AgentRow,
@@ -3940,7 +4000,44 @@ async fn pump(
 
 #[cfg(test)]
 mod title_tests {
-    use super::clean_title;
+    fn turn(n: usize, filler: usize) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({ "role": "user", "uuid": format!("u{n}"), "text": format!("q{n}") }),
+            serde_json::json!({ "role": "assistant", "text": "x".repeat(filler) }),
+        ]
+    }
+
+    #[test]
+    fn a_long_transcript_is_paged_newest_first_from_a_turn_start() {
+        let items: Vec<_> = (0..10).flat_map(|n| turn(n, 1000)).collect();
+        let (page, cursor) = transcript_page(items.clone(), None, 3500);
+        // About three turns fit; the page starts at a user line.
+        assert_eq!(page.first().unwrap()["uuid"], "u7");
+        assert_eq!(page.len(), 6);
+        assert_eq!(cursor.as_deref(), Some("u7"));
+        // The page before it ends just before u7.
+        let (prev, c2) = transcript_page(items.clone(), cursor.as_deref(), 3500);
+        assert_eq!(prev.first().unwrap()["uuid"], "u4");
+        assert_eq!(prev.last().unwrap()["text"].as_str().unwrap().len(), 1000);
+        assert_eq!(c2.as_deref(), Some("u4"));
+        // Everything fits: no cursor.
+        let (all, none) = transcript_page(items, None, 1 << 20);
+        assert_eq!(all.len(), 20);
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn the_newest_turn_is_kept_however_large_and_an_unknown_cursor_is_empty() {
+        let mut items: Vec<_> = (0..3).flat_map(|n| turn(n, 10)).collect();
+        items.extend(turn(3, 50_000));
+        let (page, cursor) = transcript_page(items.clone(), None, 1000);
+        assert_eq!(page.first().unwrap()["uuid"], "u3");
+        assert_eq!(cursor.as_deref(), Some("u3"));
+        let (none, c) = transcript_page(items, Some("nope"), 1000);
+        assert!(none.is_empty() && c.is_none());
+    }
+
+    use super::{clean_title, transcript_page};
 
     #[test]
     fn command_markup_becomes_the_command() {

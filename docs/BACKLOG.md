@@ -23,6 +23,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | B-5 | console + sessions | **Tell me when a board goes quiet.** A per-board notice when its last busy member goes idle (or a member exits), so a team can be left alone and called back. | BOARDS.md §10 |
 | B-6 | console | **A board's spend.** Usage rolled up per board (its members' window cost and tokens) on the board header and the Usage page's grouping. | USAGE.md |
 | X-6 | console + protocol | **Chunked bundle transfer through the relay.** Download and upload an `.aspen-repo` from a console on the relay in small sealed pieces (resumable), so a phone on cellular can export or import; today a relay console works with paths on the node. | BUNDLES.md §5 |
+| I-1 | node + console | **Transcript images by reference.** Inline base64 images are about half a long session's history bytes; serve them as `{media_type, ref}` with a `GET …/image` endpoint (through the tunnel as blob URLs), so a page carries text and images load as they scroll into view. | API.md transcript |
 | N-2 | sessions + console | **A queue per session.** Hand a session the next item when it goes idle, from a list the operator keeps or from the bus; pairs with templates and boards. | — |
 | N-3 | sessions + servicing | **Scheduled sessions.** A template plus a cron: "every morning, run triage in repo X on node Y." | PLUGINS.md §templates |
 | N-4 | console + sessions | **Budgets.** Usage is measured; nothing acts on it. A ceiling per repo or mesh with a notice at 80% and a stop at 100%. | USAGE.md |
@@ -35,6 +36,14 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-7 | console + sessions | **Adopt the harness's own plugins into the library.** A plugin Claude reports from its own tree, offered as "manage this in Aspen". | PROPOSALS-2026-09-E.md §3 |
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
+
+## Shipped — 2026-10-04: long sessions open over the relay (v0.49.1)
+
+- On the work mesh, opening @impl@plank (87% context) from the phone showed "history: e.entries is not a function" and "no transcript yet", in a board pane, the session view, and on *reload transcript*. A console on the relay reaches its node through the node's HTTP gateway, which read each reply with a 64 MB cap and, past it, answered **200 with an empty body**. The console turned an empty body into `{}` and seeded the transcript from it. A long session's whole history is tens of MB (this session: 32.7 MB, half inline images).
+- The gateway now answers an over-cap reply with a 502 that says so. The console treats a history that is not a list as an error ("the node sent no history…"). History comes **a page at a time**: `GET …/transcript?tail_bytes=` returns the newest ~8 MB from a turn's start, with an `earlier` cursor, and **load earlier history** at the top fetches the page before. This works on the local route, the mesh `transcript` op and the replica path; older nodes answer whole, and the console accepts that.
+- `scripts/transcript-size [agent…]` prints what each session's transcript costs to fetch from a node (size, items, inline images, largest items).
+- Verified on the rig with a 32.6 MB history: the first page was 8.1 MB (1,174 items from a user line), the cursor chain walked back page by page, and the console loaded the newest page and then two earlier pages on request, also from its cached copy after a reload.
+- Not done here: images still ride inline in the history (half its bytes). Serving them by reference is backlog **I-1**.
 
 ## Shipped — 2026-10-02: a plugin library you chose, and every node's plugin state (v0.49.0)
 

@@ -342,9 +342,25 @@ pub async fn serve(
                                 .get("content-type")
                                 .and_then(|v| v.to_str().ok())
                                 .map(str::to_owned);
-                            let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024)
-                                .await
-                                .unwrap_or_default();
+                            // A body over the cap used to come back as an
+                            // empty 200, which the console read as `{}` (a
+                            // long session's history: "e.entries is not a
+                            // function", 2026-10-04). Say what happened.
+                            let bytes = match axum::body::to_bytes(
+                                resp.into_body(),
+                                64 * 1024 * 1024,
+                            )
+                            .await
+                            {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    return json!({
+                                        "status": 502,
+                                        "content_type": "application/json",
+                                        "body": json!({ "error": format!("the response is too large to send over the relay (over 64 MB): {e}") }).to_string(),
+                                    });
+                                }
+                            };
                             let texty = ct
                                 .as_deref()
                                 .map(|c| {
@@ -3814,6 +3830,34 @@ struct TranscriptQuery {
     /// Return only items after this user line (a delta); the response is
     /// then `{items, after_found}` rather than a bare array.
     after: Option<String>,
+    /// Page the history (`node::transcript_page`): at most about this many
+    /// bytes, newest first; the response is then `{items, after_found,
+    /// earlier}`, `earlier` the cursor for the page before.
+    tail_bytes: Option<usize>,
+    /// With `tail_bytes`: the page just before this user line.
+    before: Option<String>,
+}
+
+/// A transcript answer for the query: a bare array (no paging asked), or
+/// `{items, after_found, earlier}`. A delta that outgrew the page budget is
+/// answered as a fresh tail (`after_found: false`) so the console reseeds.
+fn transcript_answer(items: Vec<Value>, found: bool, q: &TranscriptQuery) -> Value {
+    match q.tail_bytes {
+        None if q.after.is_some() => json!({ "items": items, "after_found": found }),
+        None => json!(items),
+        Some(budget) => {
+            let budget = budget.clamp(256 * 1024, 48 * 1024 * 1024);
+            if q.after.is_some() && found && q.before.is_none() {
+                let size: usize = items.iter().map(|i| i.to_string().len()).sum();
+                if size <= budget {
+                    return json!({ "items": items, "after_found": true, "earlier": Value::Null });
+                }
+            }
+            let (page, earlier) =
+                aspen_node::node::transcript_page(items, q.before.as_deref(), budget);
+            json!({ "items": page, "after_found": false, "earlier": earlier })
+        }
+    }
 }
 
 async fn get_transcript(
@@ -3830,25 +3874,42 @@ async fn get_transcript(
             if let Some(r) = aspen_node::replicate::find(&s.node.inner, &node, &bare) {
                 if let Some(main) = r.main.as_deref() {
                     let st = s.node.inner.store_for(r.harness);
-                    if let Some(after) = q.after.as_deref() {
-                        let items = st.rehydrate_file(main).unwrap_or_default();
-                        let idx = items
-                            .iter()
-                            .position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(after));
-                        return match idx {
-                            Some(i) => {
-                                Json(json!({ "items": items[i + 1..], "after_found": true }))
-                                    .into_response()
+                    let all = st.rehydrate_file(main).unwrap_or_default();
+                    // With paging asked, the whole file is the input (a
+                    // delta is cut from it below); without, as before.
+                    let (items, found) = match q.after.as_deref() {
+                        Some(after) if q.before.is_none() => {
+                            match all
+                                .iter()
+                                .position(|i| i.get("uuid").and_then(|u| u.as_str()) == Some(after))
+                            {
+                                Some(i) => (all[i + 1..].to_vec(), true),
+                                None => (all, false),
                             }
-                            None => Json(json!({ "items": items, "after_found": false }))
-                                .into_response(),
-                        };
+                        }
+                        _ => (all, false),
+                    };
+                    if q.tail_bytes.is_some() && !found {
+                        // Not a delta: page the whole file.
+                        return Json(transcript_answer(
+                            items,
+                            false,
+                            &TranscriptQuery { after: None, ..q },
+                        ))
+                        .into_response();
                     }
-                    return Json(st.rehydrate_file(main).unwrap_or_default()).into_response();
+                    return Json(transcript_answer(items, found, &q)).into_response();
                 }
             }
         }
-        return proxy(&s, &node, "transcript", &bare, json!({ "after": q.after })).await;
+        return proxy(
+            &s,
+            &node,
+            "transcript",
+            &bare,
+            json!({ "after": q.after, "tail_bytes": q.tail_bytes, "before": q.before }),
+        )
+        .await;
     }
     let rows = match s.node.inner.store.agents() {
         Ok(r) => r,
@@ -3858,18 +3919,29 @@ async fn get_transcript(
         return err(StatusCode::NOT_FOUND, format!("no agent named @{name}")).into_response();
     };
     if agent.session_id.is_none() {
-        return Json(Vec::<Value>::new()).into_response();
+        return Json(transcript_answer(Vec::new(), false, &q)).into_response();
     }
     let q_after_given = q.after.is_some();
     // Whole-file reads: off the runtime workers. The merged view: split
     // lines and the input record (node.rs transcript_with_record).
     let inner = s.node.inner.clone();
     let row = agent.clone();
-    let after = q.after.map(|a| a.to_owned());
+    // A page before a cursor reads the whole history; a delta reads after.
+    let after = q.after.clone().filter(|_| q.before.is_none());
     let r = tokio::task::spawn_blocking(move || {
         aspen_node::node::transcript_with_record(&inner, &row, after.as_deref())
     })
     .await;
+    if q.tail_bytes.is_some() {
+        return match r {
+            Ok((items, found)) => {
+                let found = found && q.after.is_some() && q.before.is_none();
+                Json(transcript_answer(items, found, &q)).into_response()
+            }
+            Err(_) => Json(json!({ "items": [], "after_found": false, "earlier": Value::Null }))
+                .into_response(),
+        };
+    }
     match (r, q_after_given) {
         (Ok((items, found)), true) => {
             Json(json!({ "items": items, "after_found": found })).into_response()

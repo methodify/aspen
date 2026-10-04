@@ -32,6 +32,7 @@ import {
   type PluginUpdate,
   type CatalogPlugin,
   type PluginRegistry,
+  type HistoryItem,
   type PluginRule,
   type Activity,
   type UsageRow,
@@ -68,6 +69,7 @@ import {
   persistTranscript,
   transcriptHead,
   mergeAfter,
+  prependHistory,
 } from "./../transcript";
 import { useAppData } from "./../App";
 import { relTime } from "./../components";
@@ -136,6 +138,7 @@ interface PendingAttachment {
 
 type Action =
   | { type: "seed"; state: TranscriptState }
+  | { type: "prepend"; history: HistoryItem[]; earlier: string | null }
   | { type: "event"; ev: SessionEvent }
   | { type: "local_send"; text: string; localKey: string; images?: HistoryImage[] }
   | { type: "sent"; localKey: string; uuid: string }
@@ -147,6 +150,8 @@ function reducer(state: TranscriptState, action: Action): TranscriptState {
   switch (action.type) {
     case "seed":
       return action.state;
+    case "prepend":
+      return prependHistory(state, action.history, action.earlier);
     case "event":
       return applyEvent(state, action.ev);
     case "local_send":
@@ -1438,6 +1443,21 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   }, [name]);
   const [wsState, setWsState] = useState<WsState>("connecting");
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  /** The page of history before what is loaded (v0.49.1 paging). */
+  async function loadEarlier() {
+    const cursor = transcriptRef.current.earlier;
+    if (!cursor || loadingEarlier) return;
+    setLoadingEarlier(true);
+    try {
+      const page = await api.transcriptPage(name, { before: cursor });
+      dispatch({ type: "prepend", history: page.items, earlier: page.earlier });
+    } catch (e) {
+      setActionError(`earlier history: ${errText(e)}`);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }
   const [busy, setBusy] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [lastTurn, setLastTurn] = useState<TurnInfo | null>(null);
@@ -2026,16 +2046,20 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         if (cached) dispatch({ type: "seed", state: cached });
         // Whatever was fetched is persisted at once — the moment we have
         // it, not at teardown, which a hard reload may skip.
+        // History comes a page at a time (the newest ~8 MB): a long
+        // session sent whole outgrew the relay's reply cap (v0.49.1).
         if (cached && head) {
-          const delta = await api.transcriptAfter(name, head);
+          const delta = await api.transcriptPage(name, { after: head });
           if (disposed) return;
-          const merged = delta.after_found ? mergeAfter(cached, head, delta.items) : seedFromHistory(delta.items);
+          const merged = delta.after_found
+            ? mergeAfter(cached, head, delta.items)
+            : { ...seedFromHistory(delta.items), earlier: delta.earlier };
           dispatch({ type: "seed", state: merged });
           if (delta.items.length || !delta.after_found) persistTranscript(name, merged);
         } else {
-          const history = await api.transcript(name);
+          const page = await api.transcriptPage(name);
           if (disposed) return;
-          const seeded = seedFromHistory(history);
+          const seeded = { ...seedFromHistory(page.items), earlier: page.earlier };
           dispatch({ type: "seed", state: seeded });
           persistTranscript(name, seeded);
         }
@@ -2404,11 +2428,11 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     setCtlNote("reloading transcript…");
     try {
       await forgetTranscript(name);
-      const history = await api.transcript(name);
-      const seeded = settleTools(seedFromHistory(history));
+      const page = await api.transcriptPage(name);
+      const seeded = { ...settleTools(seedFromHistory(page.items)), earlier: page.earlier };
       dispatch({ type: "seed", state: seeded });
       persistTranscript(name, seeded, true);
-      setCtlNote(`transcript reloaded — ${history.length} items`);
+      setCtlNote(`transcript reloaded — ${page.items.length} items${page.earlier ? " (the newest; earlier history loads from the top)" : ""}`);
     } catch (e) {
       setCtlError(`reload transcript: ${errText(e)}`);
     } finally {
@@ -3513,8 +3537,15 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
         }}
       >
-        {transcript.items.length === 0 && (
+        {transcript.items.length === 0 && !historyError && (
           <div className="empty">no transcript yet — say something below.</div>
+        )}
+        {hiddenEarlier === 0 && transcript.earlier && (
+          <div className="earlier-bar">
+            <button className="btn sm" disabled={loadingEarlier} onClick={() => void loadEarlier()} title="fetch the page of history before this one from the node">
+              {loadingEarlier ? "loading earlier history…" : "load earlier history"}
+            </button>
+          </div>
         )}
         {hiddenEarlier > 0 && (
           <div className="earlier-bar">
