@@ -24,6 +24,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | B-6 | console | **A board's spend.** Usage rolled up per board (its members' window cost and tokens) on the board header and the Usage page's grouping. | USAGE.md |
 | X-6 | console + protocol | **Chunked bundle transfer through the relay.** Download and upload an `.aspen-repo` from a console on the relay in small sealed pieces (resumable), so a phone on cellular can export or import; today a relay console works with paths on the node. | BUNDLES.md §5 |
 | I-1 | node + console | **Transcript images by reference.** Inline base64 images are about half a long session's history bytes; serve them as `{media_type, ref}` with a `GET …/image` endpoint (through the tunnel as blob URLs), so a page carries text and images load as they scroll into view. | API.md transcript |
+| I-2 | node + console | **Tool inputs and results on demand.** The session that hit the relay cap (@impl@plank, 2026-10-04) was 79.6 MB: 69 MB tool inputs and results over ~20,000 Bash calls, 0.3 MB images. Send each tool call's input and result trimmed (a few hundred bytes) with a ref, and fetch the full text when a card is opened, so a page holds many more turns. | API.md transcript |
 | N-2 | sessions + console | **A queue per session.** Hand a session the next item when it goes idle, from a list the operator keeps or from the bus; pairs with templates and boards. | — |
 | N-3 | sessions + servicing | **Scheduled sessions.** A template plus a cron: "every morning, run triage in repo X on node Y." | PLUGINS.md §templates |
 | N-4 | console + sessions | **Budgets.** Usage is measured; nothing acts on it. A ceiling per repo or mesh with a notice at 80% and a stop at 100%. | USAGE.md |
@@ -43,7 +44,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 - The gateway now answers an over-cap reply with a 502 that says so. The console treats a history that is not a list as an error ("the node sent no history…"). History comes **a page at a time**: `GET …/transcript?tail_bytes=` returns the newest ~8 MB from a turn's start, with an `earlier` cursor, and **load earlier history** at the top fetches the page before. This works on the local route, the mesh `transcript` op and the replica path; older nodes answer whole, and the console accepts that.
 - `scripts/transcript-size [agent…]` prints what each session's transcript costs to fetch from a node (size, items, inline images, largest items).
 - Verified on the rig with a 32.6 MB history: the first page was 8.1 MB (1,174 items from a user line), the cursor chain walked back page by page, and the console loaded the newest page and then two earlier pages on request, also from its cached copy after a reload.
-- Not done here: images still ride inline in the history (half its bytes). Serving them by reference is backlog **I-1**.
+- Measured on the work mesh afterwards: @impl@plank's history was 79.6 MB (31,372 items; 69 MB of it tool inputs and results across ~20,000 Bash calls, 0.3 MB images), over the 64 MB cap. Not done here: tool text and images still ride inline; backlog **I-2** (tool text on demand) and **I-1** (images by reference).
 
 ## Shipped — 2026-10-02: a plugin library you chose, and every node's plugin state (v0.49.0)
 
