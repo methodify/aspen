@@ -38,6 +38,14 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-04: history that scales — compactions, pages that follow them, reading from the end (v0.49.2)
+
+PROPOSALS-2026-10-Q.md Q-1..Q-3; API.md transcript.
+- **Compactions show:** a divider across the transcript (both renderers, and the preview), "context compacted · auto · 967.3k → 12.5k tokens", with the summary the harness continued from behind a disclosure. Before, the summary line was dropped and the boundary ignored, so history read as one unbroken conversation. Claude: `compact_boundary` and `isCompactSummary` lines. Codex: `compacted` records and `context_compacted` events.
+- **Pages follow compactions:** the newest page is everything since the last compaction (at least 256 KB, at most 8 MB), and *load earlier history* steps back one compaction at a time.
+- **Claude transcripts are read from the end:** the node reads a window before the cursor or the end of the file instead of the whole file; a delta finds its line from the end. On a 146 MB transcript: newest page 0.46 s (whole file 2.9 s), earlier pages 0.5–0.7 s, a delta 0.32 s. Codex and replicas keep the whole-file read, with compaction-aware pages.
+- Verified on the rig with that transcript (each page began at a compaction; the cursor chain walked back); the divider and summary checked in the browser in both themes.
+
 ## Shipped — 2026-10-04: long sessions open over the relay (v0.49.1)
 
 - On the work mesh, opening @impl@plank (87% context) from the phone showed "history: e.entries is not a function" and "no transcript yet", in a board pane, the session view, and on *reload transcript*. A console on the relay reaches its node through the node's HTTP gateway, which read each reply with a 64 MB cap and, past it, answered **200 with an empty body**. The console turned an empty body into `{}` and seeded the transcript from it. A long session's whole history is tens of MB (this session: 32.7 MB, half inline images).

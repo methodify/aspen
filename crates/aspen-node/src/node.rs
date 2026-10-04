@@ -919,6 +919,80 @@ pub fn session_preview(
 /// relay's 64 MB response cap on long sessions with screenshots, and the
 /// phone got an empty history (2026-10-04). The newest turn is always
 /// included, however large.
+/// A page smaller than this takes the stretch before it too (Q-2), so a
+/// fresh open right after a compaction is not only its summary.
+pub const PAGE_FLOOR: usize = 256 * 1024;
+
+/// One page of a session's history for the console (PROPOSALS-2026-10-Q.md):
+/// the delta after `after` when it fits the budget, else the page before
+/// `before` (a cursor), else the newest page. Claude transcripts are read
+/// from the end of the file (cursor `o:<byte offset>`); other stores read
+/// whole and page the items (cursor: an item's uuid). Returns the items,
+/// whether they are a delta, and the cursor for the page before.
+pub fn transcript_paged(
+    inner: &Arc<NodeInner>,
+    row: &crate::store::AgentRow,
+    after: Option<&str>,
+    before: Option<&str>,
+    budget: usize,
+) -> (Vec<serde_json::Value>, bool, Option<String>) {
+    let Some(sid) = row.session_id.as_deref() else {
+        return (Vec::new(), false, None);
+    };
+    let st = inner.store_for(row.harness);
+    let path = st.main_path(&row.repo, sid);
+    // Raw transcript lines run ~4-5x their rehydrated size.
+    let window = (budget as u64).saturating_mul(4);
+    let floor = (PAGE_FLOOR as u64) * 4;
+    let before_off = before
+        .and_then(|b| b.strip_prefix("o:"))
+        .and_then(|n| n.parse::<u64>().ok());
+    let first_ts = |items: &[serde_json::Value]| {
+        items.iter().find_map(|i| {
+            i.get("timestamp")
+                .and_then(|t| t.as_str())
+                .map(str::to_owned)
+        })
+    };
+    let size =
+        |items: &[serde_json::Value]| items.iter().map(|i| i.to_string().len()).sum::<usize>();
+    if let (Some(a), None) = (after, before) {
+        let base = a.split('#').next().unwrap_or(a);
+        if let Some(Ok(Some(raw))) = st.rehydrate_from_uuid(&path, base, window) {
+            let from = first_ts(&raw);
+            let items = merge_record(inner, row, raw, from.as_deref());
+            let (delta, found) = after_slice(items, Some(a));
+            if found && size(&delta) <= budget {
+                return (delta, true, None);
+            }
+        }
+    }
+    if before.is_none() || before_off.is_some() {
+        if let Some(Ok((raw, start))) = st.rehydrate_tail(&path, before_off, window, floor) {
+            // The newest page takes the input record for its span; an
+            // earlier page none (those inputs are newer than it).
+            let from = if before_off.is_some() {
+                Some("~".to_owned())
+            } else if start.is_some() {
+                first_ts(&raw)
+            } else {
+                None
+            };
+            let items = merge_record(inner, row, raw, from.as_deref());
+            return (items, false, start.map(|o| format!("o:{o}")));
+        }
+    }
+    let (items, _) = transcript_with_record(inner, row, None);
+    if let (Some(a), None) = (after, before) {
+        let (delta, found) = after_slice(items.clone(), Some(a));
+        if found && size(&delta) <= budget {
+            return (delta, true, None);
+        }
+    }
+    let (page, earlier) = transcript_page(items, before.filter(|b| !b.starts_with("o:")), budget);
+    (page, false, earlier)
+}
+
 pub fn transcript_page(
     items: Vec<serde_json::Value>,
     before: Option<&str>,
@@ -935,9 +1009,36 @@ pub fn transcript_page(
         }
     }
     let is_turn_start = |v: &serde_json::Value| {
-        v.get("role").and_then(|r| r.as_str()) == Some("user")
-            && v.get("uuid").and_then(|u| u.as_str()).is_some()
+        matches!(
+            v.get("role").and_then(|r| r.as_str()),
+            Some("user") | Some("compaction")
+        ) && v.get("uuid").and_then(|u| u.as_str()).is_some()
     };
+    // Q-2: a page is what follows the latest compaction, when that is at
+    // least the floor and within the budget.
+    {
+        let mut size = 0usize;
+        for idx in (0..items.len()).rev() {
+            size += items[idx].to_string().len();
+            if size > budget {
+                break;
+            }
+            if items[idx].get("role").and_then(|r| r.as_str()) == Some("compaction")
+                && size >= PAGE_FLOOR.min(budget)
+            {
+                let cursor = (idx > 0)
+                    .then(|| {
+                        items[idx]
+                            .get("uuid")
+                            .and_then(|u| u.as_str())
+                            .map(str::to_owned)
+                    })
+                    .flatten();
+                let page = items.split_off(idx);
+                return (page, cursor);
+            }
+        }
+    }
     let mut total = 0usize;
     let mut start = items.len();
     // The newest turn start at or before the end: always kept.
@@ -981,6 +1082,19 @@ pub fn transcript_with_record(
     };
     let st = inner.store_for(row.harness);
     let raw = st.rehydrate(&row.repo, sid).unwrap_or_default();
+    let items = merge_record(inner, row, raw, None);
+    after_slice(items, after)
+}
+
+/// Split merged user lines and add the input record (inputs the
+/// transcript does not contain, at their time). `from_ts`: the history is
+/// a slice starting then, so earlier inputs are left out.
+fn merge_record(
+    inner: &Arc<NodeInner>,
+    row: &crate::store::AgentRow,
+    raw: Vec<serde_json::Value>,
+    from_ts: Option<&str>,
+) -> Vec<serde_json::Value> {
     // Split first, so an anchor that names a merged line's first segment
     // still matches, and later segments carry derived uuids.
     let mut items: Vec<serde_json::Value> = Vec::new();
@@ -1014,6 +1128,10 @@ pub fn transcript_with_record(
         let mut synth: Vec<serde_json::Value> = Vec::new();
         for inp in inputs {
             if inp.source == "boundary" || uuids.contains(&inp.ingest_uuid) {
+                continue;
+            }
+            // A slice of the history only takes the inputs of its span.
+            if from_ts.is_some_and(|f| iso_of(inp.ts).as_str() < f) {
                 continue;
             }
             let t = inp.text.trim();
@@ -1050,6 +1168,14 @@ pub fn transcript_with_record(
             }
         }
     }
+    items
+}
+
+/// The items after the user line `after` (and whether it was there).
+fn after_slice(
+    items: Vec<serde_json::Value>,
+    after: Option<&str>,
+) -> (Vec<serde_json::Value>, bool) {
     match after {
         Some(a) => {
             let idx = items.iter().position(|i| {
@@ -4024,6 +4150,16 @@ mod title_tests {
         let (all, none) = transcript_page(items, None, 1 << 20);
         assert_eq!(all.len(), 20);
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn an_item_page_starts_at_the_latest_compaction_past_the_floor() {
+        let mut items: Vec<_> = (0..4).flat_map(|n| turn(n, 1000)).collect();
+        items.push(serde_json::json!({ "role": "compaction", "uuid": "c1" }));
+        items.extend((4..300).flat_map(|n| turn(n, 1000)));
+        let (page, cursor) = transcript_page(items, None, 1 << 22);
+        assert_eq!(page[0]["role"], "compaction");
+        assert_eq!(cursor.as_deref(), Some("c1"));
     }
 
     #[test]

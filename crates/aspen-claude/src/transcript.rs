@@ -332,15 +332,21 @@ pub fn rehydrate(project_path: &Path, session_id: &str) -> Result<Vec<Value>> {
 pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading transcript {}", path.display()))?;
-    let mut items: Vec<Value> = Vec::new();
-    let mut last_assistant_id: Option<String> = None;
-
     // A subagent's file is all sidechain lines; only skip sidechains in a
     // main transcript (where they are the odd stray).
     let sidechain_file = path
         .parent()
         .and_then(|p| p.file_name())
         .is_some_and(|n| n == "subagents");
+    Ok(rehydrate_text(&text, sidechain_file))
+}
+
+/// Rehydrate transcript lines (a whole file, or a slice of one that starts
+/// at a line: `rehydrate_tail`). A tool result follows its call, so a slice
+/// holds the result of every call in it.
+pub fn rehydrate_text(text: &str, sidechain_file: bool) -> Vec<Value> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut last_assistant_id: Option<String> = None;
     // Pass 1: tool results, keyed by tool_use_id. They ride user lines that
     // follow the assistant's call; the card wants them attached to the call.
     let mut results: std::collections::HashMap<String, (String, bool)> =
@@ -378,9 +384,39 @@ pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        // A compaction (PROPOSALS-2026-10-Q.md Q-1): the boundary line is a
+        // history item; the summary line after it is its text, never
+        // something the operator typed.
+        if !sidechain_file && v.get("subtype").and_then(|t| t.as_str()) == Some("compact_boundary")
+        {
+            let meta = v.get("compactMetadata");
+            let num = |k: &str| meta.and_then(|m| m.get(k)).and_then(|x| x.as_u64());
+            items.push(json!({
+                "role": "compaction",
+                "uuid": str_field(&v, "uuid"),
+                "timestamp": str_field(&v, "timestamp"),
+                "trigger": meta.and_then(|m| m.get("trigger")).and_then(|t| t.as_str()),
+                "pre_tokens": num("preTokens"),
+                "post_tokens": num("postTokens"),
+                "summary": Value::Null,
+            }));
+            last_assistant_id = None;
+            continue;
+        }
+        if v.get("isCompactSummary").and_then(|b| b.as_bool()) == Some(true) {
+            if let Some(last) = items.last_mut() {
+                if last.get("role").and_then(|r| r.as_str()) == Some("compaction")
+                    && last.get("summary").is_none_or(|s| s.is_null())
+                {
+                    if let Some(t) = extract_text(&v) {
+                        last["summary"] = json!(cap_text(&t, REHYDRATE_TOOL_CAP));
+                    }
+                }
+            }
+            continue;
+        }
         if (!sidechain_file && v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true))
             || v.get("isMeta").and_then(|b| b.as_bool()) == Some(true)
-            || v.get("isCompactSummary").and_then(|b| b.as_bool()) == Some(true)
         {
             continue;
         }
@@ -483,7 +519,131 @@ pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
             _ => {}
         }
     }
-    Ok(items)
+    items
+}
+
+/// Read `[start, end)` of a file.
+fn read_range(path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)
+        .with_context(|| format!("reading transcript {}", path.display()))?;
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = vec![0u8; (end - start) as usize];
+    f.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    if needle.is_empty() || hay.len() < needle.len() {
+        return out;
+    }
+    let mut i = 0;
+    while i + needle.len() <= hay.len() {
+        if &hay[i..i + needle.len()] == needle {
+            out.push(i);
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn line_start(buf: &[u8], at: usize) -> usize {
+    buf[..at]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |p| p + 1)
+}
+
+/// The last page of a transcript read from the end (PROPOSALS-2026-10-Q.md
+/// Q-3): only a window of `window` bytes before `before` (or the end of
+/// the file) is read. The page starts at the latest compaction that leaves
+/// at least `floor` bytes after it; else at the start of the file, if the
+/// window reaches it; else at the first operator line in the window.
+/// Returns the items and, when the file has more before the page, the
+/// page's starting byte offset (the cursor for the page before).
+pub fn rehydrate_tail(
+    path: &Path,
+    before: Option<u64>,
+    window: u64,
+    floor: u64,
+) -> Result<(Vec<Value>, Option<u64>)> {
+    let len = std::fs::metadata(path)
+        .with_context(|| format!("reading transcript {}", path.display()))?
+        .len();
+    let end = before.unwrap_or(len).min(len);
+    let from = end.saturating_sub(window);
+    let buf = read_range(path, from, end)?;
+    // The window's first whole line.
+    let first = if from == 0 {
+        0
+    } else {
+        buf.iter()
+            .position(|b| *b == b'\n')
+            .map_or(buf.len(), |p| p + 1)
+    };
+    let boundaries: Vec<usize> = find_all(&buf, br#""subtype":"compact_boundary""#)
+        .into_iter()
+        .map(|i| line_start(&buf, i))
+        .filter(|s| *s >= first)
+        .collect();
+    let at_compaction = boundaries
+        .iter()
+        .rev()
+        .find(|b| (buf.len() - **b) as u64 >= floor)
+        .copied();
+    let start = match at_compaction {
+        Some(b) => b,
+        None if from == 0 => 0,
+        None => {
+            // Cut by size: begin at an operator's line, so the page reads
+            // from a turn's start and nothing before it is split.
+            let mut off = first;
+            let mut found = None;
+            for line in buf[first..].split(|b| *b == b'\n') {
+                if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                    if v.get("type").and_then(|t| t.as_str()) == Some("user")
+                        && v.get("isMeta").and_then(|b| b.as_bool()) != Some(true)
+                        && v.get("isCompactSummary").and_then(|b| b.as_bool()) != Some(true)
+                        && is_real_user_line_in(&v, false)
+                    {
+                        found = Some(off);
+                        break;
+                    }
+                }
+                off += line.len() + 1;
+            }
+            found.unwrap_or(first)
+        }
+    };
+    let text = String::from_utf8_lossy(&buf[start.min(buf.len())..]);
+    let items = rehydrate_text(&text, false);
+    let abs = from + start as u64;
+    Ok((items, (abs > 0).then_some(abs)))
+}
+
+/// The history from the line carrying `uuid` to the end of the file, read
+/// from the end within `window` bytes (Q-3: a delta). None when that line
+/// is not within the window.
+pub fn rehydrate_from_uuid(path: &Path, uuid: &str, window: u64) -> Result<Option<Vec<Value>>> {
+    let len = std::fs::metadata(path)
+        .with_context(|| format!("reading transcript {}", path.display()))?
+        .len();
+    let from = len.saturating_sub(window);
+    let buf = read_range(path, from, len)?;
+    let needle = format!("\"uuid\":\"{uuid}\"");
+    let Some(at) = find_all(&buf, needle.as_bytes()).last().copied() else {
+        return Ok(None);
+    };
+    let start = line_start(&buf, at);
+    if from > 0 && start == 0 {
+        // The line began before the window: not wholly read.
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&buf[start..]);
+    Ok(Some(rehydrate_text(&text, false)))
 }
 
 /// A repo found under ~/.claude/projects: its real working directory,
@@ -729,5 +889,95 @@ mod origin_tests {
         assert_eq!(t as i64, 1788480000);
         let t = super::chrono_free_parse("1970-01-01T00:00:10Z").unwrap();
         assert_eq!(t as i64, 10);
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+
+    fn user(uuid: &str, text: &str) -> String {
+        json!({"type":"user","uuid":uuid,"timestamp":"2026-10-04T00:00:00Z","message":{"role":"user","content":text}}).to_string()
+    }
+    fn assistant(uuid: &str, id: &str, text: &str) -> String {
+        json!({"type":"assistant","uuid":uuid,"timestamp":"2026-10-04T00:00:01Z","message":{"id":id,"role":"assistant","content":[{"type":"text","text":text}]}}).to_string()
+    }
+    fn boundary(uuid: &str) -> String {
+        json!({"type":"system","subtype":"compact_boundary","uuid":uuid,"timestamp":"2026-10-04T00:00:02Z","compactMetadata":{"trigger":"auto","preTokens":900000,"postTokens":12000}}).to_string()
+    }
+    fn summary(text: &str) -> String {
+        json!({"type":"user","isCompactSummary":true,"uuid":"s","message":{"role":"user","content":text}}).to_string()
+    }
+    fn write(lines: &[String]) -> tempfile::NamedTempFile {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), lines.join("\n") + "\n").unwrap();
+        f
+    }
+
+    #[test]
+    fn a_compaction_is_an_item_with_its_summary_never_a_typed_line() {
+        let text = [
+            user("u1", "hello"),
+            assistant("a1", "m1", "hi"),
+            boundary("c1"),
+            summary("we did things"),
+            user("u2", "next"),
+        ]
+        .join("\n");
+        let items = rehydrate_text(&text, false);
+        let roles: Vec<_> = items.iter().map(|i| i["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "compaction", "user"]);
+        assert_eq!(items[2]["summary"], "we did things");
+        assert_eq!(items[2]["pre_tokens"], 900000);
+        assert_eq!(items[2]["trigger"], "auto");
+    }
+
+    #[test]
+    fn the_tail_starts_at_the_last_compaction_that_clears_the_floor() {
+        let pad = "x".repeat(200);
+        let mut lines = vec![user("u0", "start")];
+        for k in 0..3 {
+            lines.push(boundary(&format!("c{k}")));
+            for n in 0..20 {
+                lines.push(user(&format!("u{k}-{n}"), "q"));
+                lines.push(assistant(&format!("a{k}-{n}"), &format!("m{k}-{n}"), &pad));
+            }
+        }
+        let f = write(&lines);
+        // Small floor: the page is what follows the last compaction.
+        let (items, cursor) = rehydrate_tail(f.path(), None, 1 << 20, 100).unwrap();
+        assert_eq!(items[0]["role"], "compaction");
+        assert_eq!(items[0]["uuid"], "c2");
+        let off = cursor.unwrap();
+        // The page before it starts at the compaction before.
+        let (prev, c2) = rehydrate_tail(f.path(), Some(off), 1 << 20, 100).unwrap();
+        assert_eq!(prev[0]["uuid"], "c1");
+        assert!(c2.unwrap() < off);
+        // A floor larger than the last stretch takes the one before too.
+        let (bigger, _) = rehydrate_tail(f.path(), None, 1 << 20, 12_000).unwrap();
+        assert_eq!(bigger[0]["uuid"], "c1");
+        // A window too small for any compaction starts at an operator line.
+        let (cut, cur) = rehydrate_tail(f.path(), None, 3_000, 100_000).unwrap();
+        assert_eq!(cut[0]["role"], "user");
+        assert!(cur.is_some());
+    }
+
+    #[test]
+    fn a_delta_reads_from_its_line_and_misses_outside_the_window() {
+        let pad = "y".repeat(500);
+        let mut lines = vec![];
+        for n in 0..50 {
+            lines.push(user(&format!("u{n}"), "q"));
+            lines.push(assistant(&format!("a{n}"), &format!("m{n}"), &pad));
+        }
+        let f = write(&lines);
+        let got = rehydrate_from_uuid(f.path(), "u48", 1 << 20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got[0]["uuid"], "u48");
+        assert_eq!(got.len(), 4);
+        assert!(rehydrate_from_uuid(f.path(), "u1", 2_000)
+            .unwrap()
+            .is_none());
     }
 }

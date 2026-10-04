@@ -148,7 +148,20 @@ export interface TurnEndItem {
   durationMs: number | null;
 }
 
+/** The harness compacted its context here (PROPOSALS-2026-10-Q.md Q-1). */
+export interface CompactionItem {
+  kind: "compaction";
+  id: number;
+  uuid: string | null;
+  timestamp: string | null;
+  trigger: string | null;
+  preTokens: number | null;
+  postTokens: number | null;
+  summary: string | null;
+}
+
 export type TranscriptItem =
+  | CompactionItem
   | AssistantBubbleItem
   | UserBubbleItem
   | BusBubbleItem
@@ -245,6 +258,19 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
   for (const [hi, h] of history.entries()) {
     const lastHistory = hi === history.length - 1;
     const text = typeof h.text === "string" ? h.text : "";
+    if (h.role === "compaction") {
+      items.push({
+        kind: "compaction",
+        id: nextId++,
+        uuid: typeof h.uuid === "string" ? h.uuid : null,
+        timestamp: typeof h.timestamp === "string" ? h.timestamp : null,
+        trigger: typeof h.trigger === "string" ? h.trigger : null,
+        preTokens: typeof h.pre_tokens === "number" ? h.pre_tokens : null,
+        postTokens: typeof h.post_tokens === "number" ? h.post_tokens : null,
+        summary: typeof h.summary === "string" ? h.summary : null,
+      });
+      continue;
+    }
     if (h.role === "user") {
       const segs = h.bus === true && !text.includes(BUS_END) ? [{ bus: true, text }] : splitSegments(text);
       for (const [si, seg] of segs.entries()) {

@@ -56,6 +56,7 @@ import {
   type PermissionCardItem,
   type ToolCardItem,
   type TranscriptItem,
+  type CompactionItem,
   type TranscriptState,
   type TurnEndItem,
   type UserBubbleItem,
@@ -1313,6 +1314,30 @@ function PluginsMenu({
         </PanelFrame>
       )}
     </span>
+  );
+}
+
+/** Where the harness compacted its context (PROPOSALS-2026-10-Q.md Q-1):
+ *  a rule across the transcript, with the summary it continued from
+ *  behind a disclosure. The same in chat and console renderings. */
+function CompactionDivider({ item, tui }: { item: CompactionItem; tui?: boolean }) {
+  const tokens =
+    item.preTokens != null && item.postTokens != null ? ` · ${fmtTokens(item.preTokens)} → ${fmtTokens(item.postTokens)} tokens` : "";
+  const when = item.timestamp ? new Date(item.timestamp).toLocaleString() : "";
+  return (
+    <div className={`compaction${tui ? " tui" : ""}`} title={when}>
+      <div className="compaction-rule">
+        <span className="compaction-label">context compacted{item.trigger ? ` · ${item.trigger}` : ""}{tokens}</span>
+      </div>
+      {item.summary && (
+        <details className="compaction-summary">
+          <summary className="mono-meta">the summary it continued from</summary>
+          <div className="md">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.summary}</ReactMarkdown>
+          </div>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -2682,6 +2707,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       }
       case "notice":
         return <NoticeCard key={item.id} item={item} tui />;
+      case "compaction":
+        return <CompactionDivider key={item.id} item={item} tui />;
       case "bus":
         // The same folded row as chat mode (sender + first line, click to
         // expand); the body renders as TUI markdown when open.
@@ -2842,6 +2869,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         return <UserBubble key={item.id} item={item} />;
       case "notice":
         return <NoticeCard key={item.id} item={item} />;
+      case "compaction":
+        return <CompactionDivider key={item.id} item={item} />;
       case "bus":
         return <BusBubble key={item.id} item={item} source={source} agent={name} />;
       case "tool":

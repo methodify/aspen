@@ -717,7 +717,8 @@ export interface HistoryImage {
 
 /** REST `TranscriptItem`: rehydrated history from the runtime's on-disk transcript. */
 export interface HistoryItem {
-  role: "user" | "assistant";
+  /** `compaction` (v0.49.2): the harness replaced its context here. */
+  role: "user" | "assistant" | "compaction";
   text: string;
   /** user items only: an [aspen bus] injection */
   bus?: boolean;
@@ -732,6 +733,12 @@ export interface HistoryItem {
   /** user items from the node's input record: "mid-turn" (consumed by the
    *  harness without a transcript line) or "queued" (still held). */
   via?: string | null;
+  /** compaction items: what started it, the context before and after, and
+   *  the summary the harness continued from (capped). */
+  trigger?: string | null;
+  pre_tokens?: number | null;
+  post_tokens?: number | null;
+  summary?: string | null;
 }
 
 export interface SessionInfo {

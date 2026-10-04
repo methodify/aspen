@@ -2552,31 +2552,14 @@ async fn serve_api_req(
                 .get("tail_bytes")
                 .and_then(|t| t.as_u64())
                 .map(|t| t as usize);
-            let (items, found) = crate::node::transcript_with_record(
-                &node.inner,
-                row,
-                after.filter(|_| before.is_none()),
-            );
             if let Some(budget) = tail {
                 // Paged (the console's `tail_bytes`): see the HTTP route.
                 let budget = budget.clamp(256 * 1024, 48 * 1024 * 1024);
-                let found = found && after.is_some() && before.is_none();
-                if found {
-                    let size: usize = items.iter().map(|i| i.to_string().len()).sum();
-                    if size <= budget {
-                        return Ok(
-                            json!({ "items": items, "after_found": true, "earlier": Value::Null }),
-                        );
-                    }
-                }
-                let all = if found {
-                    crate::node::transcript_with_record(&node.inner, row, None).0
-                } else {
-                    items
-                };
-                let (page, earlier) = crate::node::transcript_page(all, before, budget);
-                return Ok(json!({ "items": page, "after_found": false, "earlier": earlier }));
+                let (items, found, earlier) =
+                    crate::node::transcript_paged(&node.inner, row, after, before, budget);
+                return Ok(json!({ "items": items, "after_found": found, "earlier": earlier }));
             }
+            let (items, found) = crate::node::transcript_with_record(&node.inner, row, after);
             if after.is_some() {
                 return Ok(json!({ "items": items, "after_found": found }));
             }

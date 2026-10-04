@@ -938,3 +938,15 @@ button.link:hover { text-decoration-style: solid; }
 .transcript :where(pre) { max-width: 100%; overflow-x: auto; overflow-wrap: normal; }
 .transcript :where(.md table, .tui-md table) { display: block; max-width: 100%; overflow-x: auto; }
 .transcript :where(img, video) { max-width: 100%; height: auto; }
+
+/* where the harness compacted its context (PROPOSALS-2026-10-Q.md Q-1) */
+.compaction { margin: 14px 0; }
+.compaction-rule { display: flex; align-items: center; gap: 10px; }
+.compaction-rule::before, .compaction-rule::after { content: ""; flex: 1 1 auto; border-top: 1px dashed var(--line-hi); }
+.compaction-label { flex: 0 1 auto; min-width: 0; font: 600 0.7rem/1.3 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-mid); text-align: center; overflow-wrap: anywhere; }
+.compaction-summary { margin: 4px auto 0; max-width: 72ch; }
+.compaction-summary > summary { cursor: pointer; text-align: center; list-style: none; }
+.compaction-summary > summary::-webkit-details-marker { display: none; }
+.compaction-summary[open] > summary { margin-bottom: 6px; }
+.compaction-summary .md { padding: 8px 12px; border: 1px solid var(--line); background: var(--bg-well); font-size: 12.5px; max-height: 50vh; overflow: auto; }
+.compaction.tui .compaction-label { font-family: var(--font-mono); text-transform: none; letter-spacing: 0; }

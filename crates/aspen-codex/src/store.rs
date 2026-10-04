@@ -326,7 +326,32 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
             .to_owned();
         let ty = line.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let payload = line.get("payload").cloned().unwrap_or(Value::Null);
+        // A compaction (PROPOSALS-2026-10-Q.md Q-1): the rollout's
+        // `compacted` record carries the summary; the `context_compacted`
+        // event may come with it. One item either way.
+        let compaction = |items: &mut Vec<Value>, summary: Option<&str>| {
+            if let Some(last) = items.last_mut() {
+                if last.get("role").and_then(|r| r.as_str()) == Some("compaction") {
+                    if let (Some(sm), true) = (summary, last["summary"].is_null()) {
+                        last["summary"] = json!(sm.chars().take(16 * 1024).collect::<String>());
+                    }
+                    return;
+                }
+            }
+            items.push(json!({
+                "role": "compaction",
+                "uuid": format!("compaction-{ts}"),
+                "timestamp": ts,
+                "trigger": Value::Null,
+                "pre_tokens": Value::Null,
+                "post_tokens": Value::Null,
+                "summary": summary.map(|s| s.chars().take(16 * 1024).collect::<String>()),
+            }));
+        };
         match ty {
+            "compacted" => {
+                compaction(&mut items, payload.get("message").and_then(|m| m.as_str()));
+            }
             "turn_context" => {
                 if let Some(m) = payload.get("model").and_then(|m| m.as_str()) {
                     model = Some(m.to_owned());
@@ -334,6 +359,10 @@ pub fn rehydrate_lines(lines: &[Value]) -> Vec<Value> {
             }
             "event_msg" => {
                 let pt = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if pt == "context_compacted" {
+                    compaction(&mut items, None);
+                    continue;
+                }
                 match pt {
                     "item_completed" => {
                         let item = payload.get("item").cloned().unwrap_or(Value::Null);
@@ -751,6 +780,18 @@ impl SessionStore for CodexStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_codex_compaction_is_one_item_with_its_summary() {
+        let lines = vec![
+            json!({"timestamp":"t1","type":"compacted","payload":{"message":"what happened so far"}}),
+            json!({"timestamp":"t1","type":"event_msg","payload":{"type":"context_compacted"}}),
+        ];
+        let items = rehydrate_lines(&lines);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["role"], "compaction");
+        assert_eq!(items[0]["summary"], "what happened so far");
+    }
+
     use super::*;
 
     #[test]

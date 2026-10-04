@@ -3926,22 +3926,35 @@ async fn get_transcript(
     // lines and the input record (node.rs transcript_with_record).
     let inner = s.node.inner.clone();
     let row = agent.clone();
-    // A page before a cursor reads the whole history; a delta reads after.
-    let after = q.after.clone().filter(|_| q.before.is_none());
-    let r = tokio::task::spawn_blocking(move || {
-        aspen_node::node::transcript_with_record(&inner, &row, after.as_deref())
-    })
-    .await;
-    if q.tail_bytes.is_some() {
+    if let Some(budget) = q.tail_bytes {
+        // Paged (PROPOSALS-2026-10-Q.md): read from the end where the
+        // store can, following compactions.
+        let budget = budget.clamp(256 * 1024, 48 * 1024 * 1024);
+        let (after, before) = (q.after.clone(), q.before.clone());
+        let r = tokio::task::spawn_blocking(move || {
+            aspen_node::node::transcript_paged(
+                &inner,
+                &row,
+                after.as_deref(),
+                before.as_deref(),
+                budget,
+            )
+        })
+        .await;
         return match r {
-            Ok((items, found)) => {
-                let found = found && q.after.is_some() && q.before.is_none();
-                Json(transcript_answer(items, found, &q)).into_response()
+            Ok((items, found, earlier)) => {
+                Json(json!({ "items": items, "after_found": found, "earlier": earlier }))
+                    .into_response()
             }
             Err(_) => Json(json!({ "items": [], "after_found": false, "earlier": Value::Null }))
                 .into_response(),
         };
     }
+    let after = q.after.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        aspen_node::node::transcript_with_record(&inner, &row, after.as_deref())
+    })
+    .await;
     match (r, q_after_given) {
         (Ok((items, found)), true) => {
             Json(json!({ "items": items, "after_found": found })).into_response()

@@ -69,7 +69,12 @@ export default function Preview() {
       {items === null && !err && <div className="dim">loading…</div>}
       {items && items.length === 0 && <div className="empty">this transcript has no turns</div>}
       <div className="preview-body">
-        {items?.map((it, i) => (
+        {items?.map((it, i) =>
+          it.role === "compaction" ? (
+            <div key={it.uuid ?? i} className="pv-item mono-meta" style={{ textAlign: "center" }} title={it.timestamp ?? undefined}>
+              — context compacted{it.trigger ? ` · ${it.trigger}` : ""} —
+            </div>
+          ) : (
           <div key={it.uuid ?? i} className={`pv-item ${it.role}${it.bus ? " pv-bus" : ""}`}>
             <div className="pv-who mono-meta">
               {it.role === "user" ? (it.bus ? "bus" : "you") : (it.model ?? "assistant")}
@@ -91,7 +96,8 @@ export default function Preview() {
               </div>
             )}
           </div>
-        ))}
+          ),
+        )}
       </div>
       {trust.dialog}
     </div>

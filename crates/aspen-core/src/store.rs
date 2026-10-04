@@ -75,6 +75,29 @@ pub trait SessionStore: Send + Sync {
     /// Rehydrate any transcript file of this harness's format (a replica,
     /// a subagent's).
     fn rehydrate_file(&self, path: &Path) -> Result<Vec<Value>>;
+    /// The last page of a transcript, read from the end of its file
+    /// (PROPOSALS-2026-10-Q.md Q-3): items, and the byte offset the page
+    /// starts at when there is more before it. None: this store reads
+    /// whole files only (the caller pages the items).
+    fn rehydrate_tail(
+        &self,
+        _path: &Path,
+        _before: Option<u64>,
+        _window: u64,
+        _floor: u64,
+    ) -> Option<Result<(Vec<Value>, Option<u64>)>> {
+        None
+    }
+    /// The history from the line carrying `uuid` on, read from the end;
+    /// `Some(Ok(None))` when that line is not within `window` bytes.
+    fn rehydrate_from_uuid(
+        &self,
+        _path: &Path,
+        _uuid: &str,
+        _window: u64,
+    ) -> Option<Result<Option<Vec<Value>>>> {
+        None
+    }
     fn origin(&self, repo: &Path, session_id: &str) -> Option<SessionOrigin>;
     /// Every file that makes up the session, as `(rel, path)` — for
     /// replication and migration. `rel` is the path under the project dir.

@@ -408,6 +408,25 @@ impl SessionStore for ClaudeStore {
     fn rehydrate_file(&self, path: &Path) -> Result<Vec<Value>> {
         crate::transcript::rehydrate_file(path)
     }
+    fn rehydrate_tail(
+        &self,
+        path: &Path,
+        before: Option<u64>,
+        window: u64,
+        floor: u64,
+    ) -> Option<Result<(Vec<Value>, Option<u64>)>> {
+        Some(crate::transcript::rehydrate_tail(
+            path, before, window, floor,
+        ))
+    }
+    fn rehydrate_from_uuid(
+        &self,
+        path: &Path,
+        uuid: &str,
+        window: u64,
+    ) -> Option<Result<Option<Vec<Value>>>> {
+        Some(crate::transcript::rehydrate_from_uuid(path, uuid, window))
+    }
     fn origin(&self, repo: &Path, sid: &str) -> Option<SessionOrigin> {
         let o = crate::transcript::session_origin(repo, sid);
         Some(SessionOrigin {
