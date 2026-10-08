@@ -35,10 +35,19 @@ pub fn claude_home() -> PathBuf {
 }
 
 pub fn transcript_path(project_path: &Path, session_id: &str) -> PathBuf {
-    claude_home()
+    let dir = claude_home()
         .join("projects")
-        .join(project_slug(project_path))
-        .join(format!("{session_id}.jsonl"))
+        .join(project_slug(project_path));
+    // A session id names one file in the project dir. One that is not a
+    // plain name (`../other-project/<id>`, an absolute path) came from a
+    // peer or the API and must not reach the filesystem: it becomes a
+    // name with a NUL, which every file operation refuses. (A peer read
+    // another repo's transcripts through session_preview; the 2026-10
+    // quality pass.)
+    if !aspen_core::paths::safe_id(session_id) {
+        return dir.join("\0invalid-session-id.jsonl");
+    }
+    dir.join(format!("{session_id}.jsonl"))
 }
 
 /// One session discovered on disk.
@@ -214,10 +223,6 @@ fn extract_text(v: &Value) -> Option<String> {
     }
 }
 
-/// Rehydrate a transcript into displayable items, filtered to what the user
-/// experienced (reference §10.2): skip meta/sidechain/compact lines and
-/// harness wrappers; merge consecutive same-id assistant lines; text in
-/// full, tool traffic as name-level cards.
 /// Per-item cap on tool inputs and results carried by rehydration: enough
 /// to open a card and read what happened, small enough that a long
 /// session's history stays a quick fetch. Larger values are cut and marked.
@@ -334,16 +339,23 @@ pub fn rehydrate_file(path: &Path) -> Result<Vec<Value>> {
         .with_context(|| format!("reading transcript {}", path.display()))?;
     // A subagent's file is all sidechain lines; only skip sidechains in a
     // main transcript (where they are the odd stray).
+    // Anywhere under subagents/: a workflow's agents sit deeper
+    // (subagents/workflows/wf_<run>/agent-<id>.jsonl) and read empty when
+    // only the parent folder was checked (the 2026-10 quality pass).
     let sidechain_file = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .is_some_and(|n| n == "subagents");
+        .ancestors()
+        .skip(1)
+        .any(|a| a.file_name().is_some_and(|n| n == "subagents"));
     Ok(rehydrate_text(&text, sidechain_file))
 }
 
 /// Rehydrate transcript lines (a whole file, or a slice of one that starts
-/// at a line: `rehydrate_tail`). A tool result follows its call, so a slice
-/// holds the result of every call in it.
+/// at a line: `rehydrate_tail`) into displayable items, filtered to what
+/// the user experienced (reference §10.2): skip meta and sidechain lines
+/// and harness wrappers; a compaction becomes one item with its summary;
+/// merge consecutive same-id assistant lines; text in full, tool traffic as
+/// cards. A tool result follows its call, so a slice holds the result of
+/// every call in it.
 pub fn rehydrate_text(text: &str, sidechain_file: bool) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
     let mut last_assistant_id: Option<String> = None;
@@ -833,7 +845,8 @@ pub fn session_origin(project_path: &Path, session_id: &str) -> Origin {
                         continue;
                     };
                     out.last_entrypoint = Some(ep);
-                    out.last_ts = str_field(&v, "timestamp").and_then(|t| chrono_free_parse(&t));
+                    out.last_ts =
+                        str_field(&v, "timestamp").and_then(|t| aspen_core::time::parse_iso(&t));
                     break;
                 }
             }
@@ -861,33 +874,13 @@ pub fn shared_prefix(child: &[String], parent: &[String]) -> usize {
     child.iter().zip(parent).take_while(|(a, b)| a == b).count()
 }
 
-/// RFC3339 → epoch seconds without a date crate: "2026-09-04T01:02:03.456Z".
-fn chrono_free_parse(ts: &str) -> Option<f64> {
-    let (date, rest) = ts.split_once('T')?;
-    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
-    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
-    let time = rest.trim_end_matches('Z');
-    let mut t = time.split(':');
-    let h: i64 = t.next()?.parse().ok()?;
-    let mi: i64 = t.next()?.parse().ok()?;
-    let s: f64 = t.next()?.parse().ok()?;
-    // days from civil (Howard Hinnant)
-    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (m - 3) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days as f64 * 86400.0 + h as f64 * 3600.0 + mi as f64 * 60.0 + s)
-}
-
 #[cfg(test)]
 mod origin_tests {
     #[test]
     fn rfc3339_epoch() {
-        let t = super::chrono_free_parse("2026-09-04T00:00:00.000Z").unwrap();
+        let t = aspen_core::time::parse_iso("2026-09-04T00:00:00.000Z").unwrap();
         assert_eq!(t as i64, 1788480000);
-        let t = super::chrono_free_parse("1970-01-01T00:00:10Z").unwrap();
+        let t = aspen_core::time::parse_iso("1970-01-01T00:00:10Z").unwrap();
         assert_eq!(t as i64, 10);
     }
 }

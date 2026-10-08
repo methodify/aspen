@@ -462,7 +462,16 @@ impl<R: Read> OpenReader<R> {
             }
             Err(e) => return Err(e),
         }
-        let mut ct = vec![0u8; u32::from_be_bytes(len) as usize];
+        // A chunk is at most CHUNK bytes plus the 16-byte tag; a length
+        // past that is damage or a crafted file, never an allocation.
+        let n = u32::from_be_bytes(len) as usize;
+        if n > CHUNK + 16 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "sealed bundle chunk is larger than any this version writes",
+            ));
+        }
+        let mut ct = vec![0u8; n];
         self.inner.read_exact(&mut ct)?;
         let nonce = nonce_for(&self.prefix, self.counter);
         self.counter += 1;
@@ -535,13 +544,14 @@ fn open_stream(file: &Path, pass: Option<&str>) -> Result<Box<dyn Read>> {
         f.read_exact(&mut p)?;
         let mut prefix = [0u8; 16];
         f.read_exact(&mut prefix)?;
-        let key = derive_key(
-            pass,
-            &salt,
-            ln[0],
-            u32::from_be_bytes(r),
-            u32::from_be_bytes(p),
-        )?;
+        // The file names its own key-derivation cost; a crafted header
+        // asked for terabytes and aborted the daemon. Only what this
+        // writer produces is accepted (the 2026-10 quality pass).
+        let (r, p) = (u32::from_be_bytes(r), u32::from_be_bytes(p));
+        if ln[0] != SCRYPT_LOG_N || r != 8 || p != 1 {
+            bail!("the sealed bundle's header asks for key-derivation parameters this version does not write");
+        }
+        let key = derive_key(pass, &salt, ln[0], r, p)?;
         Box::new(OpenReader {
             inner: f,
             cipher: chacha20poly1305::XChaCha20Poly1305::new((&key).into()),
@@ -974,6 +984,40 @@ pub fn staging_dir(data_dir: &Path, id: &str) -> PathBuf {
 
 /// Unpack a bundle into staging, verifying every checksum. Returns the
 /// staging id and the manifest.
+/// The prefixes install() cuts off a file's `rel` before joining the rest
+/// onto a destination directory.
+const REL_PREFIXES: [&str; 3] = ["context/claude/memory/", "context/codex/", "repo/"];
+
+/// Refuse a manifest that names anything but plain relative paths and
+/// plain ids, or a file the bundle does not hold. install() joins these
+/// onto real directories: a `rel` of `context/claude/memory//home/u/x`
+/// trimmed to `/home/u/x` replaced the base and wrote anywhere (the
+/// 2026-10 quality pass).
+fn check_manifest_paths<'a>(
+    rels: impl Iterator<Item = &'a str>,
+    session_ids: impl Iterator<Item = &'a str>,
+    dir: &Path,
+) -> Result<()> {
+    for rel in rels {
+        aspen_core::paths::safe_rel(rel).map_err(|e| anyhow!("the bundle's manifest: {e}"))?;
+        for p in REL_PREFIXES {
+            if let Some(rest) = rel.strip_prefix(p) {
+                aspen_core::paths::safe_rel(rest)
+                    .map_err(|e| anyhow!("the bundle's manifest: {e}"))?;
+            }
+        }
+        if std::fs::symlink_metadata(dir.join(rel)).is_err() {
+            bail!("the bundle's manifest names a file it does not hold: {rel}");
+        }
+    }
+    for id in session_ids {
+        if !aspen_core::paths::safe_id(id) {
+            bail!("the bundle's manifest names an unsafe session id: {id:?}");
+        }
+    }
+    Ok(())
+}
+
 pub fn stage(data_dir: &Path, file: &Path, pass: Option<&str>) -> Result<(String, Manifest)> {
     let id = uuid::Uuid::new_v4().to_string();
     let dir = staging_dir(data_dir, &id);
@@ -993,6 +1037,11 @@ pub fn stage(data_dir: &Path, file: &Path, pass: Option<&str>) -> Result<(String
             }
         }
         let m: Manifest = serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)?;
+        check_manifest_paths(
+            m.files.iter().map(|f| f.rel.as_str()),
+            m.sessions.iter().map(|s| s.id.as_str()),
+            &dir,
+        )?;
         let sums: Value = serde_json::from_slice(
             &std::fs::read(dir.join("sums.json")).context("the bundle has no sums (truncated?)")?,
         )?;
@@ -1268,7 +1317,11 @@ pub fn plan(
     }))
 }
 
-fn target_handle(store: &crate::store::BusStore, target: &Path) -> String {
+/// A repo's handle on this node, matched on normalized paths (`~/src/hub/`
+/// and `~/src/hub` are one repo); its basename when not registered. Shared
+/// with session-bundle import, whose copy compared raw paths and missed
+/// registered handles (the 2026-10 quality pass).
+pub(crate) fn target_handle(store: &crate::store::BusStore, target: &Path) -> String {
     let t = crate::node::normalize_repo(target);
     store
         .repos()
@@ -1893,6 +1946,37 @@ pub fn verb_import(inner: &crate::node::NodeInner, body: &Value) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manifest_path_that_escapes_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        std::fs::create_dir_all(d.join("context/claude/memory/home/u")).unwrap();
+        std::fs::write(d.join("context/claude/memory/home/u/x"), "evil").unwrap();
+        std::fs::create_dir_all(d.join("context/claude/memory")).unwrap();
+        std::fs::write(d.join("context/claude/memory/notes.md"), "ok").unwrap();
+        let ok = check_manifest_paths(
+            ["context/claude/memory/notes.md"].into_iter(),
+            ["0a1b-2c"].into_iter(),
+            d,
+        );
+        assert!(ok.is_ok());
+        // The prefix-trim trick: whole path looks relative, the rest is absolute.
+        let evil = check_manifest_paths(
+            ["context/claude/memory//home/u/x"].into_iter(),
+            std::iter::empty(),
+            d,
+        );
+        assert!(evil.is_err());
+        assert!(check_manifest_paths(["../outside"].into_iter(), std::iter::empty(), d).is_err());
+        assert!(check_manifest_paths(
+            ["context/claude/memory/missing.md"].into_iter(),
+            std::iter::empty(),
+            d
+        )
+        .is_err());
+        assert!(check_manifest_paths(std::iter::empty(), ["../x"].into_iter(), d).is_err());
+    }
 
     #[test]
     fn seal_round_trip_and_wrong_passphrase() {

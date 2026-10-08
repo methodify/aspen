@@ -825,17 +825,6 @@ export interface GitState {
   checked_at: number;
 }
 
-/** A Web Push subscription as the node keeps it (keys withheld). */
-export interface PushSubInfo {
-  id: number;
-  console: string;
-  endpoint: string;
-  kinds: string[];
-  created_at: number;
-  last_ok: number | null;
-  last_error: string | null;
-}
-
 /** One entry in the fleet event log (GET /api/history). */
 export interface FleetEvent {
   id: number;
@@ -1485,6 +1474,30 @@ import { apiBase, connectionToken } from "./connections";
 /** How much history one transcript request asks for (bytes of JSON). */
 export const TRANSCRIPT_PAGE_BYTES = 8 * 1024 * 1024;
 
+/** A response, however it came (relay tunnel or fetch): a non-2xx status
+ *  throws ApiError with the body's `error`/`message` when it is JSON;
+ *  otherwise the JSON body. One copy (there were two; the 2026-10 quality
+ *  pass). */
+function finish<T>(status: number, statusText: string, text: string): T {
+  if (status < 200 || status >= 300) {
+    let detail = text.trim();
+    let parsedBody: Record<string, unknown> | null = null;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        parsedBody = parsed as Record<string, unknown>;
+        const msg = parsedBody["error"] ?? parsedBody["message"];
+        if (typeof msg === "string" && msg) detail = msg;
+      }
+    } catch {
+      // plain-text body; keep as-is
+    }
+    throw new ApiError(status, detail || `${status}${statusText ? ` ${statusText}` : ""}`, parsedBody);
+  }
+  if (!text) return {} as T;
+  return JSON.parse(text) as T;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (tunnel.enabled) {
     let r: { status: number; body?: string; body_b64?: string };
@@ -1498,23 +1511,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       throw new ApiError(0, e instanceof Error ? e.message : "tunnel error");
     }
     const text = r.body ?? (r.body_b64 ? atob(r.body_b64) : "");
-    if (r.status < 200 || r.status >= 300) {
-      let detail = text.trim();
-      let parsedBody: Record<string, unknown> | null = null;
-      try {
-        const parsed: unknown = JSON.parse(text);
-        if (parsed && typeof parsed === "object") {
-          parsedBody = parsed as Record<string, unknown>;
-          const msg = parsedBody["error"] ?? parsedBody["message"];
-          if (typeof msg === "string" && msg) detail = msg;
-        }
-      } catch {
-        // plain text
-      }
-      throw new ApiError(r.status, detail || `${r.status}`, parsedBody);
-    }
-    if (!text) return {} as T;
-    return JSON.parse(text) as T;
+    return finish<T>(r.status, "", text);
   }
   let res: Response;
   try {
@@ -1526,26 +1523,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch (e) {
     throw new ApiError(0, e instanceof Error ? e.message : "network error");
   }
-  const text = await res.text();
-  if (!res.ok) {
-    let detail = text.trim();
-    let parsedBody: Record<string, unknown> | null = null;
-    // If the body is JSON with an error/message field, prefer that.
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (parsed && typeof parsed === "object") {
-        const obj = parsed as Record<string, unknown>;
-        parsedBody = obj;
-        const msg = obj["error"] ?? obj["message"];
-        if (typeof msg === "string" && msg) detail = msg;
-      }
-    } catch {
-      // plain-text body; keep as-is
-    }
-    throw new ApiError(res.status, detail || `${res.status} ${res.statusText}`, parsedBody);
-  }
-  if (!text) return {} as T;
-  return JSON.parse(text) as T;
+  return finish<T>(res.status, res.statusText, await res.text());
 }
 
 function post<T>(path: string, body?: unknown): Promise<T> {
@@ -1586,9 +1564,6 @@ export const api = {
   /** Undo a branch before its first turn: the name goes back in place. */
   undoBranch: (name: string) => post<Agent>(`/api/agents/${enc(name)}/branch/undo`, {}),
   bookmarks: (name: string) => request<BookmarksInfo>(`/api/agents/${enc(name)}/bookmarks`),
-  resumeBookmark: (name: string, id: number, as?: string) =>
-    post<Agent>(`/api/agents/${enc(name)}/bookmarks/${id}/resume`, as ? { as } : {}),
-  adoptions: () => request<Adoption[]>("/api/adoptions"),
   resolveAdoption: (id: number, action: Adoption["resolved"] & string, name?: string, node?: string | null) =>
     post<{ ok: boolean; agent?: string }>(`/api/adoptions/${id}`, {
       action,
@@ -1612,12 +1587,6 @@ export const api = {
       `/api/agents/${enc(name)}/permission/${enc(requestId)}`,
       answer,
     ),
-  transcript: (name: string) =>
-    request<HistoryItem[]>(`/api/agents/${enc(name)}/transcript`),
-  /** Items after the user line `after` (a delta), or everything when that
-   *  line is no longer there (`after_found: false`). */
-  transcriptAfter: (name: string, after: string) =>
-    request<{ items: HistoryItem[]; after_found: boolean }>(`/api/agents/${enc(name)}/transcript?after=${enc(after)}`),
   /** A page of history (the newest ~8 MB, or the page before `before`),
    *  or the delta after `after` when it fits. `earlier` is the cursor for
    *  the page before, null when this reaches the start. A node before
@@ -1664,14 +1633,12 @@ export const api = {
   usage: (from: number) => request<UsageRow[]>(`/api/usage?from=${from}`),
   agentUsage: (name: string) => request<UsageRow[]>(`/api/agents/${enc(name)}/usage`),
   notices: (since: string) => request<NoticesPage>(`/api/notices?since=${encodeURIComponent(since)}`),
-  /** Web Push (CONSOLE_APP.md §5): the node's VAPID key, subscribe/unsubscribe, a test. */
-  pushVapid: () => request<{ public_key: string }>("/api/push/vapid"),
+  /** Web Push (CONSOLE_APP.md §5): subscribe/unsubscribe, a test. */
   pushSubscribe: (subscription: unknown, consoleName: string, kinds: string[], vapid?: { private_key: string; public_key: string }) =>
     post<{ ok: boolean; kinds: string[] }>("/api/push/subscribe", { subscription, console: consoleName, kinds, vapid }),
   pushUnsubscribe: (endpoint: string) =>
     request<{ ok: boolean; found: boolean }>("/api/push/subscribe", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint }) }),
   pushTest: (endpoint: string) => post<{ ok: boolean }>("/api/push/test", { endpoint }),
-  pushSubscriptions: () => request<{ subscriptions: PushSubInfo[] }>("/api/push/subscriptions"),
   subagent: (name: string, id: string) => request<HistoryItem[]>(`/api/agents/${enc(name)}/subagent/${enc(id)}`),
   plugins: () => request<PluginRegistry>("/api/plugins"),
   pluginsSync: (marketplace?: string) =>
@@ -1861,7 +1828,6 @@ export const api = {
     }),
 
   inbox: () => request<BusMessage[]>("/api/operator/inbox"),
-  markInboxRead: () => post<Record<string, never>>("/api/operator/inbox/read"),
 
   activity: () => request<Activity>("/api/activity"),
 
@@ -1908,7 +1874,6 @@ export const api = {
     ),
   tlsTrust: (stores?: string[], remove?: boolean) =>
     post<{ ok: boolean; results: TrustOutcome[]; stores: TrustStore[] }>("/api/tls/trust", { stores: stores ?? [], remove: !!remove }),
-  tlsRenew: () => post<{ ok: boolean; summary: string }>("/api/tls/renew"),
 
   // servicing (docs/SERVICING.md)
   update: (node?: string) => request<UpdateStatus>(`/api/update${node ? `?node=${enc(node)}` : ""}`),
@@ -1940,13 +1905,10 @@ export const api = {
   logs: (node?: string, lines = 200) =>
     request<{ lines: string[] }>(`/api/logs?lines=${lines}${node ? `&node=${enc(node)}` : ""}`),
   meshInspect: (blob: string) => post<BlobInfo>("/api/mesh/inspect", { blob }),
-  meshPending: () => request<MeshPending>("/api/mesh/pending"),
   meshPropose: (kind: string, args: Record<string, unknown>) =>
     post<{ ok: boolean; proposal: MeshProposal; apply: string }>("/api/mesh/pending", { kind, args }),
   meshWithdraw: (id: string) => request<{ ok: boolean }>(`/api/mesh/pending/${enc(id)}`, { method: "DELETE" }),
   meshClearOutcomes: () => request<{ ok: boolean }>("/api/mesh/pending/outcomes", { method: "DELETE" }),
-  trustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/trust", { path }),
-  untrustRepo: (path: string) => post<{ ok: boolean }>("/api/repos/untrust", { path }),
 
   addChannelMember: (name: string, member: string) =>
     post<{ ok: boolean }>(`/api/channels/${enc(name)}/members`, { member }),

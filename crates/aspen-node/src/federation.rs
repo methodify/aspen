@@ -582,12 +582,10 @@ impl MeshState {
         self.mesh_name()
     }
     /// What a peer may do here: every capability for a "full" mesh; reads
-    /// only for "observe"; a console peer reads and controls, never spawns
-    /// or trusts (MESHES.md).
+    /// only for "observe" (MESHES.md §4). A console peer gets what its mesh
+    /// grants, like any member: a name starting `console-` is not itself a
+    /// credential (another mesh's root could certify a node so named).
     pub fn allows(&self, peer: &str, cap: Capability) -> bool {
-        if peer.starts_with("console-") {
-            return matches!(cap, Capability::Observe | Capability::Control);
-        }
         let mesh = self.mesh_of_peer(peer).unwrap_or_else(|| self.mesh_name());
         match self.policy_of(&mesh).as_str() {
             "full" => true,
@@ -762,6 +760,12 @@ pub fn fragment(frame: &str) -> Vec<String> {
         .collect()
 }
 
+/// At most this many pieces to one frame (about 1.5 GB at the default
+/// piece size).
+const MAX_FRAG_PIECES: usize = 8192;
+/// At most this many frames being reassembled on one link at once.
+const MAX_FRAG_ASSEMBLIES: usize = 64;
+
 /// Per-link reassembly: pieces by id until all `n` are in. A frame that
 /// is not a fragment passes straight through.
 #[derive(Default)]
@@ -782,12 +786,19 @@ impl Reassembler {
         let i = f.get("i")?.as_u64()? as usize;
         let n = f.get("n")?.as_u64()? as usize;
         let d = f.get("d")?.as_str()?.to_owned();
-        if n == 0 || i >= n {
+        // `n` comes off the wire and sizes an allocation: a frame claiming
+        // 2^60 pieces aborted the daemon (the 2026-10 quality pass). Real
+        // frames are far smaller (an 80 MB reply is ~420 pieces).
+        if n == 0 || i >= n || n > MAX_FRAG_PIECES {
             return None;
         }
         // Forget assemblies nobody finished (a link that dropped mid-frame).
         self.parts
             .retain(|_, (_, _, at)| at.elapsed() < std::time::Duration::from_secs(120));
+        if !self.parts.contains_key(&id) && self.parts.len() >= MAX_FRAG_ASSEMBLIES {
+            tracing::warn!("too many frames in assembly on one link; dropping a fragment");
+            return None;
+        }
         let entry = self
             .parts
             .entry(id.clone())
@@ -811,6 +822,14 @@ impl Reassembler {
 #[cfg(test)]
 mod frag_tests {
     use super::*;
+
+    #[test]
+    fn a_fragment_claiming_absurd_piece_counts_is_dropped() {
+        let mut r = Reassembler::default();
+        let huge = json!({ "frag": { "id": "x", "i": 0, "n": 1u64 << 60, "d": "a" } }).to_string();
+        assert!(r.feed(huge).is_none());
+        assert!(r.parts.is_empty());
+    }
 
     #[test]
     fn fragments_round_trip() {
@@ -1000,7 +1019,8 @@ fn hostname_is_ours(host: &str, port: u16, ours: &[std::net::Ipv4Addr]) -> bool 
     ok
 }
 
-pub(crate) fn hostname() -> Option<String> {
+/// This machine's name: $HOSTNAME, %COMPUTERNAME%, else `hostname`.
+pub fn hostname() -> Option<String> {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| std::env::var("COMPUTERNAME").ok())
@@ -1012,10 +1032,6 @@ pub(crate) fn hostname() -> Option<String> {
                 .map(|s| s.trim().to_owned())
         })
         .filter(|s| !s.is_empty())
-}
-
-pub fn roster_payload(inner: &Arc<NodeInner>) -> Value {
-    roster_payload_for(inner, None)
 }
 
 /// The roster a peer in `mesh` receives: only agents whose repo is
@@ -1398,7 +1414,7 @@ pub async fn run_link(
         if let Some(url) = pick {
             let sessions = mesh.relay_sessions.lock().unwrap();
             if let Some(s) = sessions.get(&url) {
-                start_relay_link(&inner, &mesh.identity.node, &peer, &url, &s.tx, &s.peer_ins);
+                start_relay_link(&inner, &peer, &url, &s.tx, &s.peer_ins);
                 tracing::info!(peer = %peer, relay = %url, "direct link lost; falling back to relay");
             }
         }
@@ -1543,6 +1559,9 @@ async fn link_loop(
                     let _ = inner
                         .store
                         .mark_delivered_by_uuid(uuid, &format!("federated:{peer}"));
+                    // Acked over the link: the mailbox hand-off record is
+                    // done with too (it only grew; the 2026-10 quality pass).
+                    mesh.mailed.lock().unwrap().remove(uuid);
                 }
             }
             // A console's link keepalive (RELAY.md §8): its socket-level
@@ -1939,6 +1958,7 @@ fn exposure_precheck(
                 | "plugins_sync"
                 | "plugins_registry_view"
                 | "plugins_status"
+                | "tls_csr"
                 | "templates"
                 | "template_spawn"
                 | "memory_files"
@@ -2224,6 +2244,18 @@ async fn serve_api_req(
             // A console peer's request, dispatched into this node's own
             // router (RELAY.md §11). Only /api/ paths; the gateway sets the
             // node token, since the link already authenticated the caller.
+            // The router has no per-route capability checks, so this op is
+            // the operator's own console only: a console of this node's
+            // primary mesh (full policy). It was classed a read and served
+            // any peer, so an observe-only mesh's member could POST to any
+            // route (the 2026-10 quality pass).
+            let primary = node.inner.mesh().map(|m| m.mesh_name()).unwrap_or_default();
+            let peer_mesh = node.inner.mesh().and_then(|m| m.mesh_of_peer(peer));
+            if !peer.starts_with("console-") || peer_mesh.as_deref() != Some(primary.as_str()) {
+                return Err(anyhow!(
+                    "forbidden: the http op serves consoles of this node's primary mesh only"
+                ));
+            }
             let gw = inner
                 .http_gateway
                 .get()
@@ -2600,6 +2632,12 @@ async fn serve_api_req(
             .map_err(|e| anyhow!("{e}"))?
         }
         "tls_csr" => {
+            // Nodes of this mesh ask for their leaf; a console never does
+            // (the primary-mesh rule is in exposure_precheck; the 2026-10
+            // quality pass).
+            if peer.starts_with("console-") {
+                return Err(anyhow!("tls_csr is for member nodes"));
+            }
             // A member asks the root holder for a leaf (docs/TLS.md §3): the
             // CSR is signed here, every name checked, the issue recorded.
             let files = node
@@ -2753,10 +2791,12 @@ async fn serve_api_req(
                 .and_then(|r| r.as_str())
                 .ok_or_else(|| anyhow!("missing handle"))?;
             let live: Vec<String> = inner.sessions.lock().unwrap().keys().cloned().collect();
+            let me = node.inner.mesh().map(|m| m.identity.node.clone());
             node.inner.store.rename_handle(
                 &crate::node::normalize_repo(std::path::Path::new(path)),
                 handle,
                 &live,
+                me.as_deref(),
             )?;
             Ok(json!({ "ok": true }))
         }
@@ -2779,6 +2819,9 @@ async fn serve_api_req(
                 .get("session")
                 .and_then(|r| r.as_str())
                 .ok_or_else(|| anyhow!("missing session"))?;
+            if !aspen_core::paths::safe_id(session) {
+                return Err(anyhow!("bad session id"));
+            }
             let harness = body
                 .get("harness")
                 .and_then(|h| h.as_str())
@@ -3290,91 +3333,75 @@ fn spawn_relay_client(inner: Arc<NodeInner>, relay_url: String) {
 /// included). If anything changed, our digest changes and the next roster
 /// lets everyone else pull from us.
 async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
-    let Some(mesh) = inner.mesh() else { return };
-    let Ok(v) = mesh
-        .api_call(
-            peer,
-            "boards",
-            "",
-            json!({}),
-            std::time::Duration::from_secs(20),
-        )
-        .await
-    else {
-        return;
-    };
-    let Ok(boards) = serde_json::from_value::<Vec<crate::store::Board>>(v) else {
-        return;
-    };
-    let mut changed = false;
-    for b in &boards {
-        // Membership changes made on another console reach this node's
-        // agents the same way (boards.rs).
-        if crate::boards::upsert_and_notify(inner, b).unwrap_or(false) {
-            changed = true;
-        }
-    }
-    if changed {
-        tracing::info!(peer, n = boards.len(), "boards synced from peer");
-        broadcast_roster(inner);
-    }
+    // Membership changes made on another console reach this node's agents
+    // the same way (boards.rs).
+    pull_table(
+        inner,
+        peer,
+        "boards",
+        "boards",
+        |b: &crate::store::Board| crate::boards::upsert_and_notify(inner, b).unwrap_or(false),
+    )
+    .await;
 }
 
+/// Pull a peer's templates and merge (newer wins per id).
 async fn sync_templates_from(inner: &Arc<NodeInner>, peer: &str) {
-    let Some(mesh) = inner.mesh() else { return };
-    let Ok(v) = mesh
-        .api_call(
-            peer,
-            "templates",
-            "",
-            json!({}),
-            std::time::Duration::from_secs(20),
-        )
-        .await
-    else {
-        return;
-    };
-    let Ok(rows) = serde_json::from_value::<Vec<crate::store::Template>>(v) else {
-        return;
-    };
-    let mut changed = false;
-    for t in &rows {
-        if inner.store.upsert_template(t).unwrap_or(false) {
-            changed = true;
-        }
-    }
-    if changed {
-        tracing::info!(peer, n = rows.len(), "templates synced from peer");
-        broadcast_roster(inner);
-    }
+    pull_table(
+        inner,
+        peer,
+        "templates",
+        "templates",
+        |t: &crate::store::Template| inner.store.upsert_template(t).unwrap_or(false),
+    )
+    .await;
 }
 
 /// Pull a peer's harness defaults and merge (newer wins per row).
 async fn sync_harness_defaults_from(inner: &Arc<NodeInner>, peer: &str) {
+    pull_table(
+        inner,
+        peer,
+        "harness_defaults",
+        "harness defaults",
+        |d: &crate::store::HarnessDefault| inner.store.upsert_harness_default(d).unwrap_or(false),
+    )
+    .await;
+}
+
+/// Pull one of a peer's mesh-wide tables with `op` and merge it row by
+/// row; if anything changed, our digest did too, so re-broadcast. A failed
+/// pull is logged and one unreadable row is skipped, not the whole table.
+/// (Three copies of this, which dropped every row for one bad one and
+/// failed silently; the 2026-10 quality pass.)
+async fn pull_table<T: serde::de::DeserializeOwned>(
+    inner: &Arc<NodeInner>,
+    peer: &str,
+    op: &str,
+    what: &str,
+    upsert: impl Fn(&T) -> bool,
+) {
     let Some(mesh) = inner.mesh() else { return };
-    let Ok(v) = mesh
-        .api_call(
-            peer,
-            "harness_defaults",
-            "",
-            json!({}),
-            std::time::Duration::from_secs(20),
-        )
+    let v = match mesh
+        .api_call(peer, op, "", json!({}), std::time::Duration::from_secs(20))
         .await
-    else {
-        return;
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(peer, what, error = %e, "mesh table pull failed");
+            return;
+        }
     };
-    let Ok(rows) = serde_json::from_value::<Vec<crate::store::HarnessDefault>>(v) else {
-        return;
-    };
+    let rows = v.as_array().cloned().unwrap_or_default();
     let mut changed = false;
-    for d in &rows {
-        if inner.store.upsert_harness_default(d).unwrap_or(false) {
-            changed = true;
+    for row in &rows {
+        match serde_json::from_value::<T>(row.clone()) {
+            Ok(r) => changed |= upsert(&r),
+            Err(e) => tracing::warn!(peer, what, error = %e, "mesh table row skipped"),
         }
     }
     if changed {
-        tracing::info!(peer, n = rows.len(), "harness defaults synced from peer");
+        tracing::info!(peer, what, n = rows.len(), "synced from peer");
         broadcast_roster(inner);
     }
 }
@@ -3609,7 +3636,7 @@ async fn relay_read_loop(
                         && mesh.relay_link_allowed(&relay_url, &p)
                     {
                         tracing::info!(peer = %p, "present on the relay with no link; starting one");
-                        start_relay_link(&inner, &me, &p, &relay_url, &relay_tx, &peer_ins);
+                        start_relay_link(&inner, &p, &relay_url, &relay_tx, &peer_ins);
                     }
                 }
             }
@@ -3675,7 +3702,7 @@ async fn relay_read_loop(
                         && !mesh.link_up(&p)
                         && mesh.relay_link_allowed(relay_url, &p)
                     {
-                        start_relay_link(inner, me, &p, relay_url, relay_tx, peer_ins);
+                        start_relay_link(inner, &p, relay_url, relay_tx, peer_ins);
                     }
                 }
             }
@@ -3708,7 +3735,7 @@ async fn relay_read_loop(
                         && !mesh.link_up(&node)
                         && mesh.relay_link_allowed(relay_url, &node)
                     {
-                        start_relay_link(inner, me, &node, relay_url, relay_tx, peer_ins);
+                        start_relay_link(inner, &node, relay_url, relay_tx, peer_ins);
                     }
                 } else {
                     // Gone: drop the link riding this relay now, so pending
@@ -3754,7 +3781,7 @@ async fn relay_read_loop(
                             tracing::info!(peer = %from, "peer restarted its relay link; replacing ours");
                             peer_ins.lock().unwrap().remove(&from);
                         }
-                        let tx = start_relay_link(inner, me, &from, relay_url, relay_tx, peer_ins);
+                        let tx = start_relay_link(inner, &from, relay_url, relay_tx, peer_ins);
                         let _ = tx.send(data);
                     }
                     (false, Some(tx)) => {
@@ -3841,6 +3868,12 @@ pub fn mail_pending(inner: &Arc<NodeInner>, recipient: &str, node: &str) {
         return;
     };
     let now = crate::store::now_epoch();
+    // Hand-offs long past any retry are history: a row delivered some other
+    // way never comes back to clear its entry.
+    mesh.mailed
+        .lock()
+        .unwrap()
+        .retain(|_, at| now - *at < MAIL_RETRY_SECS * 10.0);
     for m in &pending {
         {
             let mut mailed = mesh.mailed.lock().unwrap();
@@ -3886,6 +3919,11 @@ fn receive_mail(inner: &Arc<NodeInner>, mesh: &Arc<MeshState>, from: &str, id: &
         }
     };
     match payload.get("t").and_then(|t| t.as_str()).unwrap_or("") {
+        // The same policy as a row over a link: the mailbox was a way
+        // around it (the 2026-10 quality pass).
+        "bus" if !mesh.allows(from, Capability::Control) => {
+            tracing::info!(peer = %from, "bus row from an observe-only peer dropped (mailbox)");
+        }
         "bus" => {
             let uuid = payload.get("uuid").and_then(|u| u.as_str()).unwrap_or("");
             let sender = payload
@@ -3943,7 +3981,6 @@ fn receive_mail(inner: &Arc<NodeInner>, mesh: &Arc<MeshState>, from: &str, id: &
 /// sender registered for the peer.
 fn start_relay_link(
     inner: &Arc<NodeInner>,
-    _me: &str,
     peer: &str,
     relay_url: &str,
     relay_tx: &mpsc::UnboundedSender<String>,
@@ -4038,6 +4075,39 @@ mod capability_tests {
         assert_eq!(op_capability("spawn"), Capability::Spawn);
         assert_eq!(op_capability("adoption"), Capability::Trust);
         assert_eq!(op_capability("something_new"), Capability::Control);
+    }
+
+    #[test]
+    fn a_console_gets_its_meshes_policy_and_a_console_name_grants_nothing() {
+        let root = aspen_wire::identity::MeshRoot::create("home");
+        let mut me = NodeIdentity::create("me");
+        me.install_cert(root.certify(&me.join_request()).unwrap())
+            .unwrap();
+        let cfg = |mesh: &str, policy: Option<&str>| MeshConfig {
+            mesh: mesh.into(),
+            root_public: root.root_public.clone(),
+            peers: vec![],
+            relay: None,
+            relays: vec![],
+            policy: policy.map(str::to_owned),
+            tls_ca: None,
+        };
+        let st = MeshState::new(me, cfg("home", None));
+        st.extra.write().unwrap().push(cfg("work", None));
+        st.link_mesh
+            .lock()
+            .unwrap()
+            .insert("console-phone".into(), "home".into());
+        st.link_mesh
+            .lock()
+            .unwrap()
+            .insert("console-evil".into(), "work".into());
+        // The operator's console in the primary mesh: everything.
+        assert!(st.allows("console-phone", Capability::Spawn));
+        assert!(st.allows("console-phone", Capability::Trust));
+        // A "console-" name in an observe-policy mesh: reads only.
+        assert!(st.allows("console-evil", Capability::Observe));
+        assert!(!st.allows("console-evil", Capability::Control));
     }
 
     #[test]
@@ -4136,8 +4206,12 @@ mod capability_tests {
         assert!(!st.allows("w1", Capability::Control));
         st.extra.write().unwrap()[0].policy = Some("full".into());
         assert!(st.allows("w1", Capability::Spawn));
+        // A console takes its mesh's policy (an unknown one, the primary's,
+        // full here); its name alone grants nothing (2026-10 quality pass).
         assert!(st.allows("console-abc", Capability::Control));
-        assert!(!st.allows("console-abc", Capability::Spawn));
+        st.link_mesh.lock().unwrap().insert("console-w".into(), "work".into());
+        st.extra.write().unwrap()[0].policy = Some("observe".into());
+        assert!(!st.allows("console-w", Capability::Control));
     }
 }
 

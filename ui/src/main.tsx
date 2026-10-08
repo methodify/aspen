@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { Component, StrictMode, useEffect, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 import App from "./App";
@@ -40,14 +40,35 @@ function Root() {
   return <App key={gen} />;
 }
 
+/** Last resort: an error during render shows itself and a way back,
+ *  instead of a blank page (the 2026-10 quality pass). */
+class Boundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
+        <h2 style={{ margin: "0 0 8px" }}>Something went wrong in the console</h2>
+        <pre style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>{String(this.state.error.message || this.state.error)}</pre>
+        <button onClick={() => { window.location.hash = ""; window.location.reload(); }}>reload</button>
+      </div>
+    );
+  }
+}
+
 // Hosted (methodify.github.io/aspen): a static host has no SPA fallback,
 // so routes live in the hash. Served by a node: real paths.
 const Router = __ASPEN_HOSTED__ ? HashRouter : BrowserRouter;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Router>
-      <Root />
-    </Router>
+    <Boundary>
+      <Router>
+        <Root />
+      </Router>
+    </Boundary>
   </StrictMode>,
 );

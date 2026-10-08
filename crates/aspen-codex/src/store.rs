@@ -130,42 +130,6 @@ fn modified_epoch(path: &Path) -> Option<f64> {
         .map(|d| d.as_secs_f64())
 }
 
-fn iso_to_epoch(ts: &str) -> Option<f64> {
-    // 2026-09-07T21:50:34.330Z — no chrono; parse the fixed layout.
-    let b = ts.as_bytes();
-    if b.len() < 19 {
-        return None;
-    }
-    let num = |s: &str| s.parse::<i64>().ok();
-    let y = num(&ts[0..4])?;
-    let mo = num(&ts[5..7])?;
-    let d = num(&ts[8..10])?;
-    let h = num(&ts[11..13])?;
-    let mi = num(&ts[14..16])?;
-    let s = num(&ts[17..19])?;
-    let frac: f64 = if b.len() > 20 && b[19] == b'.' {
-        let end = ts[20..]
-            .find(|c: char| !c.is_ascii_digit())
-            .map(|i| 20 + i)
-            .unwrap_or(ts.len());
-        format!("0.{}", &ts[20..end]).parse().unwrap_or(0.0)
-    } else {
-        0.0
-    };
-    // days from civil (Howard Hinnant)
-    let (y2, m2) = if mo <= 2 {
-        (y - 1, mo + 9)
-    } else {
-        (y, mo - 3)
-    };
-    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
-    let yoe = y2 - era * 400;
-    let doy = (153 * m2 + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days as f64 * 86400.0 + (h * 3600 + mi * 60 + s) as f64 + frac)
-}
-
 /// The rollout store, with a small (path, mtime) → meta cache so repeated
 /// enumeration does not reread every first line.
 #[derive(Default)]
@@ -696,7 +660,7 @@ impl SessionStore for CodexStore {
             .last()
             .and_then(|l| l.get("timestamp"))
             .and_then(|t| t.as_str())
-            .and_then(iso_to_epoch);
+            .and_then(aspen_core::time::parse_iso);
         Some(SessionOrigin {
             forked_from: meta.forked_from.map(|p| (p, None)),
             first_ref,
@@ -796,7 +760,7 @@ mod tests {
 
     #[test]
     fn epoch_parse() {
-        let e = iso_to_epoch("2026-09-07T21:50:34.330Z").unwrap();
+        let e = aspen_core::time::parse_iso("2026-09-07T21:50:34.330Z").unwrap();
         assert!((e - 1788817834.33).abs() < 0.01, "{e}");
     }
 

@@ -15,3 +15,12 @@ pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comm
     }
     cmd
 }
+
+/// Whether an extra environment entry may be set on a harness process: a
+/// plain name (`[A-Za-z0-9_]+`) and a non-empty value, so a console bug can
+/// never blank PATH (reference §2.2). One rule for every adapter.
+pub fn env_entry_ok(name: &str, value: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !value.is_empty()
+}

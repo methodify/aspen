@@ -80,7 +80,10 @@ guard runs before dispatch (`forbidden: Control not granted to mesh
 'work' here (policy observe)`), bus rows from an observe-only peer are
 dropped, and every `spawn`/`trust` op from any peer is recorded on the
 fleet trail as `remote_control {peer, mesh, op, agent}`. A console peer
-(RELAY.md §11) gets observe and control, never spawn or trust.
+(RELAY.md §11) gets what its mesh's policy grants, like any member (a
+`console-` name is not itself a credential). The `http` op, a console's
+passthrough to this node's whole API, serves consoles of the primary mesh
+only; other peers use named ops (v0.49.5).
 
 ## 5. Console
 

@@ -29,13 +29,6 @@ impl Harness {
             _ => None,
         }
     }
-    /// Two-letter glyph for badges.
-    pub fn glyph(&self) -> &'static str {
-        match self {
-            Harness::Claude => "cl",
-            Harness::Codex => "cx",
-        }
-    }
 }
 
 impl std::fmt::Display for Harness {
@@ -76,9 +69,6 @@ impl ToolKind {
     /// Reads and searches: the "silent tier" a read-only policy allows.
     pub fn is_read_only(&self) -> bool {
         matches!(self, ToolKind::FileRead | ToolKind::Search | ToolKind::Web)
-    }
-    pub fn writes_files(&self) -> bool {
-        matches!(self, ToolKind::FileWrite | ToolKind::FileEdit)
     }
 }
 

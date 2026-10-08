@@ -613,28 +613,7 @@ pub fn settle_before(acts: &mut [Activity], process_started: Option<f64>) {
     }
 }
 
-/// ISO-8601 `YYYY-MM-DDTHH:MM:SS(.fff)Z` → epoch seconds (UTC only).
-pub fn parse_iso(s: &str) -> Option<f64> {
-    let s = s.trim_end_matches('Z');
-    let (date, time) = s.split_once('T')?;
-    let mut d = date.split('-');
-    let (y, m, day): (i64, i64, i64) = (
-        d.next()?.parse().ok()?,
-        d.next()?.parse().ok()?,
-        d.next()?.parse().ok()?,
-    );
-    let mut t = time.split(':');
-    let (h, mi): (i64, i64) = (t.next()?.parse().ok()?, t.next()?.parse().ok()?);
-    let sec: f64 = t.next()?.parse().ok()?;
-    // days from civil (Howard Hinnant)
-    let (y2, m2) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
-    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
-    let yoe = y2 - era * 400;
-    let doy = (153 * m2 + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days as f64 * 86400.0 + h as f64 * 3600.0 + mi as f64 * 60.0 + sec)
-}
+pub use aspen_core::time::parse_iso;
 
 /// The session's subagents directory: `<project>/<session>/subagents`.
 pub fn subagents_dir(project_path: &Path, session_id: &str) -> PathBuf {

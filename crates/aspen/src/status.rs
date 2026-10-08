@@ -407,25 +407,28 @@ fn disk_mesh(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// GET a daemon API path. Loopback listeners take no token; non-loopback
-/// ones require the node token from the data dir.
+/// A request to this machine's daemon, with the node token whenever the
+/// data dir has one. The daemon requires it when either listener (plain or
+/// `--tls-listen`) reaches beyond loopback and ignores it otherwise, so
+/// sending it is always right. Deciding from `listen` alone, as six copies
+/// did, missed a TLS listener: the CLI's calls (the update health check
+/// among them) were refused (the 2026-10 quality pass).
+pub(crate) fn with_token(req: ureq::Request, data_dir: &Path) -> ureq::Request {
+    match std::fs::read_to_string(data_dir.join("api-token")) {
+        Ok(t) if !t.trim().is_empty() => req.set("X-Aspen-Token", t.trim()),
+        _ => req,
+    }
+}
+
+/// GET a daemon API path.
 pub(crate) fn query(
     base: &str,
     path: &str,
     data_dir: &Path,
-    listen: &str,
+    _listen: &str,
 ) -> Result<serde_json::Value> {
-    let mut req = ureq::get(&format!("{base}{path}")).timeout(std::time::Duration::from_secs(3));
-    let loopback = listen
-        .parse::<std::net::SocketAddr>()
-        .map(|a| a.ip().is_loopback())
-        .unwrap_or(true);
-    if !loopback {
-        if let Ok(token) = std::fs::read_to_string(data_dir.join("api-token")) {
-            req = req.set("X-Aspen-Token", token.trim());
-        }
-    }
-    Ok(req.call()?.into_json()?)
+    let req = ureq::get(&format!("{base}{path}")).timeout(std::time::Duration::from_secs(3));
+    Ok(with_token(req, data_dir).call()?.into_json()?)
 }
 
 /// None = unknowable on this platform (fall back to the API probe).

@@ -17,6 +17,7 @@
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import { scoped } from "./profiles";
+import { safeDecode } from "./util";
 
 export interface NodeCert {
   mesh: string;
@@ -298,10 +299,15 @@ export class Tunnel {
     } catch {
       return null;
     }
-    if (!f || !f.n || f.i >= f.n) return null;
+    // `n` comes off the wire and sizes an array: bounded like the node's
+    // reassembler (federation.rs), and few frames in assembly at once (the
+    // 2026-10 quality pass).
+    if (!f || !Number.isInteger(f.n) || !Number.isInteger(f.i) || f.i < 0 || f.n < 1 || f.i >= f.n || f.n > 8192 || typeof f.d !== "string") return null;
     const now = Date.now();
     for (const [k, v] of this.frags) if (now - v.at > 120000) this.frags.delete(k);
     let e = this.frags.get(f.id);
+    if (e && e.n !== f.n) return null;
+    if (!e && this.frags.size >= 64) return null;
     if (!e) {
       e = { n: f.n, pieces: new Array<string | null>(f.n).fill(null), at: now };
       this.frags.set(f.id, e);
@@ -350,7 +356,7 @@ export class Tunnel {
   private nodeOfPath(path: string): string {
     const m = /^\/api\/agents\/([^/?]+)/.exec(path);
     if (m) {
-      const name = decodeURIComponent(m[1]);
+      const name = safeDecode(m[1]);
       const parts = name.split("@");
       if (parts.length === 3 && parts[2]) return parts[2];
     }
@@ -732,7 +738,11 @@ export class Tunnel {
             if (node === this.config.node && phase === "hello" && !this.target) this.sendHello();
           } else {
             this.present = this.present.filter((p) => p !== node);
-            if (node === this.config.node && this.state === "up") {
+            // Gone mid-handshake counts too: a link left in "auth" kept its
+            // target, so the next "online" never sent a hello and the
+            // console stayed "linking" (the 2026-10 quality pass).
+            if (node === this.config.node && (phase === "auth" || phase === "up" || this.target)) {
+              window.clearInterval(this.pingTimer);
               this.set("down", `${node} left the relay`);
               this.dropLink();
               phase = "hello";
@@ -792,6 +802,7 @@ export class Tunnel {
               // ping routed to the node — the node closes any link silent
               // for 45s, and only frames that reach it count (an idle tab,
               // a peek reader polling every 60s, would otherwise flap).
+              window.clearInterval(this.pingTimer);
               this.pingTimer = window.setInterval(() => {
                 if (ws.readyState !== WebSocket.OPEN) return;
                 ws.send("ping");
@@ -945,11 +956,21 @@ export class Tunnel {
         h.set("x-aspen-token", d.token);
         if (body !== undefined && !h.has("content-type")) h.set("content-type", "application/json");
         const r = await fetch(`${d.url}${path}`, { method, headers: h, body });
-        const ct = r.headers.get("content-type") ?? undefined;
-        const texty = !ct || ct.startsWith("application/json") || ct.startsWith("text/");
-        if (texty) return { status: r.status, content_type: ct, body: await r.text() };
-        const buf = new Uint8Array(await r.arrayBuffer());
-        return { status: r.status, content_type: ct, body_b64: b64e(buf) };
+        if (r.status === 401) {
+          // The node no longer knows this token (it restarted): drop it,
+          // answer this request over the relay, and let the next probe
+          // mint a fresh one. Before, the dead token was kept and every
+          // direct call failed until it expired, up to a day (the 2026-10
+          // quality pass).
+          d.token = null;
+          this.directDown(node);
+        } else {
+          const ct = r.headers.get("content-type") ?? undefined;
+          const texty = !ct || ct.startsWith("application/json") || ct.startsWith("text/");
+          if (texty) return { status: r.status, content_type: ct, body: await r.text() };
+          const buf = new Uint8Array(await r.arrayBuffer());
+          return { status: r.status, content_type: ct, body_b64: b64e(buf) };
+        }
       } catch {
         // A network failure, not an HTTP status: the path is gone; the
         // relay answers this one and the probe tries again in 30 s.

@@ -1,6 +1,19 @@
-//! The node's localhost API: REST + WS per docs/API.md, plus SPA static
-//! serving. v0 is localhost-only and unauthenticated; the mesh security
-//! model arrives with federation.
+//! The node's API: REST + WS per docs/API.md, plus SPA static serving.
+//!
+//! Who may call it:
+//! - **Loopback only** (the default listen): the local user, no token,
+//!   but a request must name this machine as its Host and come from no
+//!   Origin, this node's own, or a configured console origin (CSRF and
+//!   DNS-rebinding guard).
+//! - **Beyond loopback** (`--listen` or `--tls-listen` on another
+//!   address): the node token on every `/api` call (header, or `token=`).
+//! - **Federation and relay sockets** authenticate by certificate and
+//!   carry sealed frames only; the mesh CA download is public.
+//! - **A console over the mesh** reaches this router through the `http` op
+//!   (gateway-stamped `x-aspen-peer`), allowed for consoles of the primary
+//!   mesh only; a console token minted over its link works the same way
+//!   directly. Every other peer uses named ops, under its mesh's policy
+//!   (MESHES.md §4).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -431,8 +444,13 @@ pub async fn serve(
         headless,
     );
     tracing::info!("aspen node API listening on http://{actual}");
+    // Never the token: this line lands in aspen.log, which /api/logs and
+    // the node_logs op serve (the 2026-10 quality pass). `aspen console`
+    // and `aspen status` print the URL with it.
     match &token {
-        Some(tk) => eprintln!("[aspen] node up: http://{actual}/?token={tk}"),
+        Some(_) => eprintln!(
+            "[aspen] node up: http://{actual} (the console URL with its token: aspen console)"
+        ),
         None => eprintln!("[aspen] node up: http://{actual}"),
     }
     if let Some(port) = https_port {
@@ -1106,7 +1124,13 @@ async fn post_repo_rename(State(s): S, Json(b): Json<RepoRenameBody>) -> impl In
         .keys()
         .cloned()
         .collect();
-    match s.node.inner.store.rename_handle(&path, &b.handle, &live) {
+    let me = s.node.inner.mesh().map(|m| m.identity.node.clone());
+    match s
+        .node
+        .inner
+        .store
+        .rename_handle(&path, &b.handle, &live, me.as_deref())
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
     }
@@ -1320,6 +1344,76 @@ async fn cors_middleware(
     r
 }
 
+/// Why a request to a token-less (loopback) node is refused, if it is:
+/// a Host that is not loopback, or an Origin that is neither the node's
+/// own nor a configured console origin.
+fn loopback_request_refusal(s: &AppState, req: &axum::extract::Request) -> Option<String> {
+    let headers = req.headers();
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !host.is_empty() && !is_loopback_host(host) {
+        return Some(format!(
+            "refused: host {host:?} is not this machine (this node answers on loopback only)"
+        ));
+    }
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())?;
+    // The node's own origin: the console it serves.
+    let own = origin
+        .split_once("://")
+        .map(|(_, rest)| rest.trim_end_matches('/'))
+        .is_some_and(|rest| rest.eq_ignore_ascii_case(host));
+    if own {
+        return None;
+    }
+    let allowed = s
+        .node
+        .inner
+        .data_dir
+        .as_deref()
+        .map(aspen_node::settings::load)
+        .and_then(|st| st.console_origins)
+        .unwrap_or_else(|| aspen_node::settings::DEFAULT_CONSOLE_ORIGINS.to_owned());
+    if allowed
+        .split(',')
+        .map(str::trim)
+        .any(|o| !o.is_empty() && o.eq_ignore_ascii_case(origin))
+    {
+        return None;
+    }
+    Some(format!(
+        "refused: requests from {origin} are not allowed (add it to console_origins to permit it)"
+    ))
+}
+
+/// A Host header naming this machine: localhost, *.localhost, or an IP
+/// literal (v4 or bracketed v6), with or without a port. A DNS name that
+/// happens to resolve to 127.0.0.1 is not one.
+fn is_loopback_host(host: &str) -> bool {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        return rest
+            .split(']')
+            .next()
+            .is_some_and(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok());
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, p)| {
+            if p.chars().all(|c| c.is_ascii_digit()) {
+                h
+            } else {
+                host
+            }
+        })
+    };
+    let name = name.to_ascii_lowercase();
+    name == "localhost" || name.ends_with(".localhost") || name.parse::<std::net::IpAddr>().is_ok()
+}
+
 async fn auth_middleware(
     State(s): S,
     mut req: axum::extract::Request,
@@ -1338,6 +1432,16 @@ async fn auth_middleware(
         req.headers_mut().remove("x-aspen-peer");
     }
     let Some(expected) = &s.token else {
+        // No token: this node listens on loopback only, so the only guard
+        // is that the request really is local and really is ours. A web
+        // page in the operator's browser could otherwise POST here
+        // (shutdown, update, spawn: CSRF), and a domain rebound to
+        // 127.0.0.1 could read everything (DNS rebinding). The CLI and the
+        // gateway send no Origin; the console's own origin and the
+        // configured console origins pass (the 2026-10 quality pass).
+        if let Some(reason) = loopback_request_refusal(&s, &req) {
+            return err(StatusCode::FORBIDDEN, reason).into_response();
+        }
         return next.run(req).await;
     };
     // Federation carries sealed frames and authenticates cryptographically;
@@ -1383,18 +1487,11 @@ async fn auth_middleware(
     }
 }
 
+/// One definition (aspen-node), which also reads %COMPUTERNAME%: this
+/// copy did not, so a Windows node with no $HOSTNAME named itself
+/// differently here (the 2026-10 quality pass).
 fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| {
-            aspen_node::gitstate::quiet_command("hostname")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_owned())
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "node".into())
+    aspen_node::federation::hostname().unwrap_or_else(|| "node".into())
 }
 
 fn err(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
@@ -2672,12 +2769,7 @@ async fn get_plugins_effective(
         .into_response();
     };
     let rules = s.node.inner.store.plugin_rules(false).unwrap_or_default();
-    let node = s
-        .node
-        .inner
-        .mesh()
-        .map(|m| m.identity.node.clone())
-        .unwrap_or_else(|| "local".into());
+    let node = self_node_name(&s);
     let (active, missing) = aspen_node::plugins::resolve(dd, &rules, &node, &row.repo, &row.name);
     let running = s
         .node
@@ -2947,12 +3039,7 @@ async fn get_fleet_activities(State(s): S) -> impl IntoResponse {
 
 /// Replicas held on this node (REPLICATION.md), one per (node, agent).
 async fn get_replicas(State(s): S) -> impl IntoResponse {
-    let me = s
-        .node
-        .inner
-        .mesh()
-        .map(|m| m.identity.node.clone())
-        .unwrap_or_else(|| "local".into());
+    let me = self_node_name(&s);
     let out: Vec<Value> = aspen_node::replicate::list(&s.node.inner)
         .iter()
         .map(|r| aspen_node::replicate::replica_json(r, &me))
@@ -3386,11 +3473,13 @@ async fn get_agent_file(
         .unwrap_or("file")
         .to_owned();
 
-    // Body: whole file, in chunks over the mesh when remote.
-    let body: Vec<u8> = match &remote {
+    // Body: streamed from disk when local; in chunks over the mesh when
+    // remote, growing with what arrives (the peer's stated size used to
+    // size the allocation up front).
+    let body: axum::body::Body = match &remote {
         Some((bare, node)) => {
             let mesh = s.node.inner.mesh().unwrap();
-            let mut out = Vec::with_capacity(size as usize);
+            let mut out = Vec::new();
             let mut offset = 0u64;
             while offset < size {
                 let chunk = match mesh
@@ -3420,30 +3509,47 @@ async fn get_agent_file(
                 offset += bytes.len() as u64;
                 out.extend_from_slice(&bytes);
             }
-            out
+            axum::body::Body::from(out)
         }
         None => {
             let path = match s.node.agent_file(&name, &q.path) {
                 Ok(p) => p,
                 Err(e) => return err(StatusCode::FORBIDDEN, format!("{e:#}")).into_response(),
             };
-            match tokio::fs::read(&path).await {
-                Ok(b) => b,
+            match tokio::fs::File::open(&path).await {
+                Ok(f) => axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(f)),
                 Err(e) => return err(StatusCode::NOT_FOUND, format!("{e}")).into_response(),
             }
         }
     };
+    // A file an agent wrote is not the console: opened as a page (raw ↗),
+    // HTML or SVG ran script at the console's origin and could read the
+    // node token. nosniff always; a sandbox (an opaque origin, no script
+    // reach into ours) for the active document types. Not on PDFs: the
+    // browser's viewer will not render sandboxed (the 2026-10 quality pass).
+    let active = {
+        let m = media.to_ascii_lowercase();
+        m.starts_with("text/html")
+            || m.starts_with("application/xhtml")
+            || m.starts_with("image/svg")
+            || m.starts_with("text/xml")
+            || m.starts_with("application/xml")
+    };
     let mut resp = axum::response::Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, media)
-        .header(header::CACHE_CONTROL, "private, max-age=30");
+        .header(header::CACHE_CONTROL, "private, max-age=30")
+        .header("x-content-type-options", "nosniff");
+    if active {
+        resp = resp.header("content-security-policy", "sandbox");
+    }
     if q.download.as_deref() == Some("1") {
         resp = resp.header(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{}\"", fname.replace('"', "")),
         );
     }
-    resp.body(axum::body::Body::from(body)).unwrap_or_else(|_| {
+    resp.body(body).unwrap_or_else(|_| {
         err(StatusCode::INTERNAL_SERVER_ERROR, "response build failed").into_response()
     })
 }
@@ -4586,7 +4692,7 @@ async fn get_move_preflight(
             if let Some(mesh) = s.node.inner.mesh() {
                 if !mesh.link_up(&node) {
                     let replica = aspen_node::replicate::find(&s.node.inner, &node, &bare)
-                        .map(|r| aspen_node::replicate::replica_json(&r, &s.node_name));
+                        .map(|r| aspen_node::replicate::replica_json(&r, &self_node_name(&s)));
                     return Json(json!({ "source_up": false, "replica": replica, "blockers": if replica.is_some() { Vec::<String>::new() } else { vec![format!("node {node} is unreachable and no replica is held here")] } })).into_response();
                 }
                 match mesh
@@ -6537,5 +6643,32 @@ async fn post_inbox_read(State(s): S) -> impl IntoResponse {
             }
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::is_loopback_host;
+
+    #[test]
+    fn only_this_machine_names_pass() {
+        for ok in [
+            "localhost",
+            "localhost:7421",
+            "aspen.localhost:80",
+            "127.0.0.1:7695",
+            "[::1]:7421",
+            "::1",
+            "10.0.0.5:7420",
+        ] {
+            assert!(is_loopback_host(ok), "{ok}");
+        }
+        for bad in [
+            "evil.example:7421",
+            "rebind.attacker.test",
+            "localhost.evil.com:7421",
+        ] {
+            assert!(!is_loopback_host(bad), "{bad}");
+        }
     }
 }

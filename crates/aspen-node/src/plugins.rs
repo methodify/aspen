@@ -566,6 +566,10 @@ pub fn sync_marketplace(
 ) -> Result<usize> {
     let (dir, sha) = checkout(data_dir, m, this_node)?;
     let manifest = read_manifest(&dir)?;
+    // This sync's per-plugin errors replace the last one's. (Cleared after
+    // the loop, they erased what it had just recorded.)
+    let suffix = format!("@{}", m.name);
+    catalog.errors.retain(|k, _| !k.ends_with(&suffix));
     let mut n = 0usize;
     let mut fresh: Vec<CatalogPlugin> = Vec::new();
     for p in manifest
@@ -639,9 +643,6 @@ pub fn sync_marketplace(
     catalog
         .synced_at
         .insert(m.name.clone(), crate::store::now_epoch());
-    catalog.errors.retain(|k, _| {
-        !k.ends_with(&format!("@{}", m.name)) || catalog.plugins.iter().any(|_| false)
-    });
     Ok(n)
 }
 

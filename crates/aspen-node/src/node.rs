@@ -140,11 +140,38 @@ impl ManagedSession {
     }
 }
 
+/// Releases a name claimed for a spawn, however the spawn ends.
+struct StartingClaim {
+    inner: Arc<NodeInner>,
+    name: String,
+}
+
+impl Drop for StartingClaim {
+    fn drop(&mut self) {
+        self.inner.starting.lock().unwrap().remove(&self.name);
+    }
+}
+
+/// Take a session out of the live map only if it is still this one: a
+/// late exit from a stopped process removed the session that replaced it.
+fn remove_if_same(inner: &NodeInner, sess: &Arc<ManagedSession>) {
+    let mut live = inner.sessions.lock().unwrap();
+    if live
+        .get(&sess.name)
+        .is_some_and(|cur| Arc::ptr_eq(cur, sess))
+    {
+        live.remove(&sess.name);
+    }
+}
+
 pub struct NodeInner {
     pub store: BusStore,
     /// The harnesses this node can run (HARNESSES.md), by name.
     pub adapters: HashMap<Harness, Arc<dyn AgentAdapter>>,
     pub sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
+    /// Names with a spawn in flight (between the "already running?" check
+    /// and the insert, which an adapter start can take seconds to reach).
+    pub starting: Mutex<std::collections::HashSet<String>>,
     pub delivery_tx: mpsc::UnboundedSender<String>,
     /// Present when this node has joined a mesh (identity + cert on disk).
     /// Swappable so a node that started outside any mesh can join one
@@ -272,7 +299,6 @@ impl NodeInner {
             .expect("the claude adapter is always registered")
     }
 
-    /// Which harness an agent (by local key) runs on.
     /// This node's name (the mesh identity, else "this node").
     pub fn node_name(&self) -> String {
         self.mesh()
@@ -280,6 +306,7 @@ impl NodeInner {
             .unwrap_or_else(|| "this node".into())
     }
 
+    /// Which harness an agent (by local key) runs on.
     pub fn harness_of(&self, agent: &str) -> Harness {
         if let Some(s) = self.live(agent) {
             return s.harness;
@@ -1252,15 +1279,6 @@ fn snippet(text: &str, n: usize) -> String {
     }
 }
 
-/// The default handle for a repo: its directory basename. The store
-/// assigns the real handle (suffixed on collision) — see
-/// `BusStore::ensure_handle`; this is only the seed.
-pub fn repo_channel(repo: &Path) -> String {
-    repo.file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "repo".into())
-}
-
 impl Node {
     pub fn open(data_dir: &Path) -> Result<Self> {
         let store = BusStore::open(&data_dir.join("bus.db"))?;
@@ -1356,10 +1374,6 @@ impl Node {
         Ok(summary)
     }
 
-    pub fn with_store(store: BusStore) -> Self {
-        Self::build(store, None, None)
-    }
-
     fn build(
         store: BusStore,
         mesh: Option<Arc<crate::federation::MeshState>>,
@@ -1384,6 +1398,7 @@ impl Node {
             store,
             adapters,
             sessions: Mutex::new(HashMap::new()),
+            starting: Mutex::new(std::collections::HashSet::new()),
             delivery_tx,
             mesh: std::sync::RwLock::new(mesh),
             data_dir,
@@ -1471,6 +1486,15 @@ impl Node {
         if self.inner.live(name).is_some() {
             return Err(anyhow!("an agent named {name} is already running"));
         }
+        // Claim the name for this start: two spawns could both pass the
+        // check above and both start a process (the 2026-10 quality pass).
+        if !self.inner.starting.lock().unwrap().insert(name.to_owned()) {
+            return Err(anyhow!("an agent named {name} is already starting"));
+        }
+        let _claim = StartingClaim {
+            inner: self.inner.clone(),
+            name: name.to_owned(),
+        };
         // Draining for an update: no new work until the node is back.
         if !self.inner.servicing.accepting_spawns() {
             return Err(anyhow!(
@@ -1796,11 +1820,13 @@ impl Node {
                 ..Default::default()
             }),
         });
-        self.inner
-            .sessions
-            .lock()
-            .unwrap()
-            .insert(name.to_owned(), managed.clone());
+        {
+            let mut live = self.inner.sessions.lock().unwrap();
+            if live.contains_key(name) {
+                return Err(anyhow!("an agent named {name} is already running"));
+            }
+            live.insert(name.to_owned(), managed.clone());
+        }
 
         // The pump is the session's lifeline: if it ever panics, say so and
         // take the session out of the live map rather than leave a ghost
@@ -1813,7 +1839,7 @@ impl Node {
                 if let Err(e) = handle.await {
                     if e.is_panic() {
                         tracing::error!(agent = %managed.name, "session pump panicked; marking the session down");
-                        inner.sessions.lock().unwrap().remove(&managed.name);
+                        remove_if_same(&inner, &managed);
                         let _ = inner.store.set_agent_live(&managed.name, false);
                         let _ = inner.store.record_event(
                             &managed.name,
@@ -2781,9 +2807,9 @@ impl Node {
         len: u64,
     ) -> Result<serde_json::Value> {
         let dir = self.bundle_dir(bundle_id)?;
-        if rel.contains("..") {
-            return Err(anyhow!("bad path"));
-        }
+        // Plain relative names only: `..` was refused, but an absolute rel
+        // replaced the bundle dir in the join and read any file.
+        aspen_core::paths::safe_rel(rel).map_err(|e| anyhow!("bad path: {e}"))?;
         let bytes = crate::artifacts::read_chunk(&dir.join(rel), offset, len)?;
         Ok(
             serde_json::json!({ "offset": offset, "len": bytes.len(), "data": aspen_wire::b64::encode(&bytes) }),
@@ -2930,6 +2956,17 @@ impl Node {
                 .cloned()
                 .ok_or_else(|| anyhow!("export returned no manifest"))?,
         )?;
+        // The peer names the staging dir and every path: check them before
+        // joining (a crafted id or rel wrote, and then deleted, outside
+        // staging; the 2026-10 quality pass).
+        if !aspen_core::paths::safe_id(&bundle_id) {
+            return Err(restore(anyhow!("the peer named an unsafe bundle id")).await);
+        }
+        for f in &manifest.files {
+            if let Err(e) = aspen_core::paths::safe_rel(&f.rel) {
+                return Err(restore(anyhow!("the peer's manifest: {e}")).await);
+            }
+        }
         // 2. Fetch every file, chunked, into local staging.
         let data_dir = self
             .inner
@@ -2948,7 +2985,9 @@ impl Node {
             if let Some(parent) = out.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let mut buf: Vec<u8> = Vec::with_capacity(f.size as usize);
+            // Streamed to disk, never more than the size declared (which
+            // used to size an allocation up front: a huge one aborted).
+            let mut file = std::fs::File::create(&out)?;
             let mut offset = 0u64;
             while offset < f.size {
                 let chunk = match mesh
@@ -2973,10 +3012,16 @@ impl Node {
                     break;
                 }
                 offset += bytes.len() as u64;
-                buf.extend_from_slice(&bytes);
+                if offset > f.size {
+                    return Err(restore(anyhow!(
+                        "{} from {from_node} ran past its declared size",
+                        f.rel
+                    ))
+                    .await);
+                }
+                std::io::Write::write_all(&mut file, &bytes)?;
             }
-            total += buf.len() as u64;
-            std::fs::write(&out, &buf)?;
+            total += offset;
         }
         let _ = mesh
             .api_call(
@@ -4120,7 +4165,7 @@ async fn pump(
                 }
             }
             SessionEvent::Exited { code } => {
-                inner.sessions.lock().unwrap().remove(&sess.name);
+                remove_if_same(&inner, &sess);
                 let _ = inner.store.set_agent_exit(&sess.name, *code);
                 let _ = inner.store.record_event(
                     &sess.name,

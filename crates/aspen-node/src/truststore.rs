@@ -69,14 +69,7 @@ fn sha256_hex(der: &[u8]) -> String {
 }
 
 fn pem_of(ca: &TlsCa) -> String {
-    let b = aspen_wire::b64::encode(&ca.der);
-    let mut s = String::from("-----BEGIN CERTIFICATE-----\n");
-    for chunk in b.as_bytes().chunks(64) {
-        s.push_str(std::str::from_utf8(chunk).unwrap_or(""));
-        s.push('\n');
-    }
-    s.push_str("-----END CERTIFICATE-----\n");
-    s
+    crate::tls::der_to_pem(&ca.der)
 }
 
 /// The CA as a file the platform tools can read: `<data_dir>/mesh-ca.crt`
@@ -144,11 +137,7 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn is_wsl() -> bool {
-    std::fs::read_to_string("/proc/version")
-        .map(|v| v.to_ascii_lowercase().contains("microsoft"))
-        .unwrap_or(false)
-}
+use crate::federation::is_wsl;
 
 // ---------------------------------------------------------------- Windows
 

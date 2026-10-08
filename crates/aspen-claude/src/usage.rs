@@ -153,12 +153,21 @@ pub fn compute_files(session_id: &str, main: &Path, subagents: &Path) -> Session
         ..Default::default()
     };
     fold_file(main, &mut su, true);
-    if let Ok(rd) = std::fs::read_dir(subagents) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
-                su.subagents += 1;
-                su.subagent_tokens += fold_file(&p, &mut su, false);
+    // Subagents, and a workflow's agents one level down
+    // (subagents/workflows/wf_<run>/agent-*.jsonl), which were left out of
+    // the session's usage (the 2026-10 quality pass).
+    let mut dirs = vec![subagents.to_path_buf()];
+    if let Ok(rd) = std::fs::read_dir(subagents.join("workflows")) {
+        dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+    }
+    for dir in dirs {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                    su.subagents += 1;
+                    su.subagent_tokens += fold_file(&p, &mut su, false);
+                }
             }
         }
     }
@@ -244,14 +253,22 @@ mod tests {
             r#"{"type":"cost-state","totalCostUSD":1.5,"totalLinesAdded":3,"modelUsage":{"m1":{"costUSD":1.5}}}"#,
         ];
         std::fs::write(&path, lines.join("\n")).unwrap();
+        // A workflow agent, one level down, counts as a subagent too.
+        let wf = subs.join("workflows").join("wf_1");
+        std::fs::create_dir_all(&wf).unwrap();
+        std::fs::write(
+            wf.join("agent-y.jsonl"),
+            r#"{"type":"assistant","message":{"model":"m2","usage":{"input_tokens":1,"output_tokens":2},"content":[]}}"#,
+        )
+        .unwrap();
         let u = compute_files("abc", &path, &subs);
         assert_eq!(u.turns, 1);
-        assert_eq!(u.subagents, 1);
-        assert_eq!(u.subagent_tokens, 12);
-        assert_eq!(u.total.input, 16);
-        assert_eq!(u.total.output, 29);
+        assert_eq!(u.subagents, 2);
+        assert_eq!(u.subagent_tokens, 15);
+        assert_eq!(u.total.input, 17);
+        assert_eq!(u.total.output, 31);
         assert_eq!(u.total.cache_read, 30);
-        assert_eq!(u.total.calls, 3);
+        assert_eq!(u.total.calls, 4);
         assert_eq!(u.cost_usd, Some(1.5));
         assert_eq!(u.models["m1"].cost_usd, Some(1.5));
         assert_eq!(u.lines_added, Some(3));

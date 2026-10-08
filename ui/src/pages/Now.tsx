@@ -50,6 +50,7 @@ import {
 } from "../components";
 import "./command.css";
 import "./now.css";
+import { fmtElapsed } from "./sessionExtras";
 
 const FINISHED_WINDOW_S = 30 * 60;
 const LONG_IDLE_S = 2 * 60 * 60;
@@ -265,7 +266,8 @@ export default function Now() {
   }, [replyTo]);
   const [replyClass, setReplyClass] = useState<Urgency>("normal");
   const [showFolded, setShowFolded] = useState(false);
-  const now = Date.now() / 1000;
+  // The node's clock: busy_since, idle_since and the rest are its times.
+  const now = serverNow();
 
   useHotkeys("now", [
     { key: "n", description: "new session", handler: () => setPanelOpen(true) },
@@ -541,14 +543,6 @@ export default function Now() {
       </div>
     </>
   );
-}
-
-function fmtElapsed(startIso: string | null): string {
-  if (!startIso) return "";
-  const a = Date.parse(startIso);
-  if (!Number.isFinite(a)) return "";
-  const s = Math.max(0, Math.round(serverNow() - a / 1000));
-  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 /** The Activity band: every running item across the estate, grouped by

@@ -27,6 +27,8 @@ whoever messaged you are always allowed.
 
 ## REST
 
+**Who may call (v0.49.5).** A loopback-only node takes no token but refuses a request whose `Host` is not this machine (`localhost`, `*.localhost`, an IP literal) or whose `Origin` is neither its own nor a configured console origin: the CSRF and DNS-rebinding guard. A node listening beyond loopback (`--listen` or `--tls-listen`) requires the node token on every call. Files served from `/api/agents/{name}/file` carry `x-content-type-options: nosniff`, and HTML, SVG and XML a `content-security-policy: sandbox`.
+
 | Method & path | Body | Returns | Notes |
 |---|---|---|---|
 | `GET /api/node` (`node` is the mesh identity when in a mesh, else the hostname; `hostname` is always the OS name — v0.25.1) | — | `{ node, version, sha, built, update_available, update_skipped, withdrawn, service_state, service_detail, started_at }` | identity/health; `sha`/`built` are stamped at compile time. The servicing fields are the badge's summary (`service_state`: ready / draining / updating) |

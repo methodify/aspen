@@ -225,7 +225,7 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
         .to_vec())
 }
 
-fn der_to_pem(der: &[u8]) -> String {
+pub(crate) fn der_to_pem(der: &[u8]) -> String {
     pem_encode("CERTIFICATE", der)
 }
 

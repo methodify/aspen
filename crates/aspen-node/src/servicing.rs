@@ -850,8 +850,6 @@ fn drain_tick(inner: &Arc<NodeInner>) {
     }
 }
 
-/// Spawn `aspen update --restart --unattended` detached, output to
-/// aspen.log, and move to `updating`. The child stops this daemon.
 /// Auto-start as the node sees it (PROPOSALS-2026-09-C.md §3): the marker
 /// `aspen autostart enable` leaves in the data dir, and whether the running
 /// daemon was started by the supervisor (its own daemon.json says so).
@@ -901,79 +899,23 @@ pub fn autostart_json(inner: &Arc<NodeInner>) -> Value {
     })
 }
 
-/// Run this binary's CLI against this node's data dir, detached from the
-/// daemon (a new session, output to aspen.log) — for operations that stop
-/// and start the daemon itself, which cannot run inside it.
-pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> {
-    let s = &inner.servicing;
-    let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {
-        anyhow::bail!("this node does not know its own binary or data dir");
-    };
+/// This binary's CLI against `data_dir`, set up to outlive the daemon: a
+/// new session (process group on Windows, no window), output to
+/// aspen.log. Shared by launch_cli and the updater, which carried two
+/// copies of it (the 2026-10 quality pass).
+fn detached_cli(
+    exe: &std::path::Path,
+    data_dir: &std::path::Path,
+    args: &[&str],
+) -> std::process::Command {
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(data_dir.join("aspen.log"));
-    let mut cmd = std::process::Command::new(&exe); // quiet: CREATE_NO_WINDOW below
+    let mut cmd = std::process::Command::new(exe); // quiet: CREATE_NO_WINDOW below
     cmd.arg("--data-dir")
-        .arg(&data_dir)
+        .arg(data_dir)
         .args(args)
-        .env_remove("ASPEN_DETACHED")
-        .stdin(std::process::Stdio::null());
-    match log {
-        Ok(f) => {
-            if let Ok(e) = f.try_clone() {
-                cmd.stdout(f).stderr(e);
-            }
-        }
-        Err(_) => {
-            cmd.stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
-    }
-    let child = cmd.spawn()?;
-    let _ = inner
-        .store
-        .record_event(NODE_AGENT, "cli_launched", json!({ "args": args }));
-    Ok(child.id())
-}
-
-fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
-    let s = &inner.servicing;
-    let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {
-        let _ = cancel(inner, "system");
-        return;
-    };
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(data_dir.join("aspen.log"));
-    let mut cmd = std::process::Command::new(&exe); // quiet: CREATE_NO_WINDOW below
-    cmd.arg("--data-dir")
-        .arg(&data_dir)
-        .args([
-            "update",
-            "--restart",
-            "--unattended",
-            "--trigger",
-            by,
-            "--version",
-            &format!("v{target}"),
-        ])
         .env_remove("ASPEN_DETACHED")
         .stdin(std::process::Stdio::null());
     match log {
@@ -1003,6 +945,47 @@ fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
         // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
     }
+    cmd
+}
+
+/// Run this binary's CLI against this node's data dir, detached from the
+/// daemon (a new session, output to aspen.log) — for operations that stop
+/// and start the daemon itself, which cannot run inside it.
+pub fn launch_cli(inner: &Arc<NodeInner>, args: &[&str]) -> anyhow::Result<u32> {
+    let s = &inner.servicing;
+    let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {
+        anyhow::bail!("this node does not know its own binary or data dir");
+    };
+    let mut cmd = detached_cli(&exe, &data_dir, args);
+    let child = cmd.spawn()?;
+    let _ = inner
+        .store
+        .record_event(NODE_AGENT, "cli_launched", json!({ "args": args }));
+    Ok(child.id())
+}
+
+/// Spawn `aspen update --restart --unattended` detached, output to
+/// aspen.log, and move to `updating`. The child stops this daemon.
+fn launch_updater(inner: &Arc<NodeInner>, by: &str, target: &str) {
+    let s = &inner.servicing;
+    let (Some(exe), Some(data_dir)) = (s.exe.clone(), inner.data_dir.clone()) else {
+        let _ = cancel(inner, "system");
+        return;
+    };
+    let version = format!("v{target}");
+    let mut cmd = detached_cli(
+        &exe,
+        &data_dir,
+        &[
+            "update",
+            "--restart",
+            "--unattended",
+            "--trigger",
+            by,
+            "--version",
+            &version,
+        ],
+    );
     match cmd.spawn() {
         Ok(child) => {
             *s.updater.lock().unwrap() = Some(child);
@@ -1141,7 +1124,31 @@ pub fn tail_log(data_dir: &Path, lines: usize) -> Vec<String> {
     };
     let all: Vec<&str> = text.lines().collect();
     let start = all.len().saturating_sub(lines);
-    all[start..].iter().map(|s| strip_ansi(s)).collect()
+    all[start..]
+        .iter()
+        .map(|s| redact_tokens(&strip_ansi(s)))
+        .collect()
+}
+
+/// `token=<value>` shown as `token=…`: logs written before v0.49.5
+/// printed the console URL with the node token, and these lines are
+/// served to peers (the 2026-10 quality pass).
+fn redact_tokens(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("token=") {
+        out.push_str(&rest[..i + 6]);
+        let after = &rest[i + 6..];
+        let end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .unwrap_or(after.len());
+        if end > 0 {
+            out.push('…');
+        }
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Logs written before color was turned off for detached daemons carry
@@ -1188,7 +1195,17 @@ pub fn start_rollout(inner: &Arc<NodeInner>, when: &str) -> Result<Rollout> {
     let mut order: Vec<String> = mesh
         .as_ref()
         .map(|m| {
-            let mut v: Vec<String> = m.links.lock().unwrap().keys().cloned().collect();
+            // Nodes only: an attached console is a link too, and the
+            // rollout stalled waiting for it to update (the 2026-10
+            // quality pass).
+            let mut v: Vec<String> = m
+                .links
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| !k.starts_with("console-"))
+                .cloned()
+                .collect();
             v.sort();
             v
         })
@@ -1353,4 +1370,18 @@ async fn run_rollout(
         rollout_update(&inner, |r| r.done.push(node.clone()));
     }
     finish(&inner, false, None);
+}
+
+#[cfg(test)]
+mod redact_tests {
+    #[test]
+    fn tokens_in_log_lines_are_hidden() {
+        assert_eq!(
+            super::redact_tokens(
+                "[aspen] node up: http://0.0.0.0:7420/?token=abcDEF123_x-y and more"
+            ),
+            "[aspen] node up: http://0.0.0.0:7420/?token=… and more"
+        );
+        assert_eq!(super::redact_tokens("no secrets here"), "no secrets here");
+    }
 }

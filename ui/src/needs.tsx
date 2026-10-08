@@ -5,13 +5,11 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  type MemoryConflict, api, type Adoption, type OpenPrompt } from "./api";
+  type MemoryConflict, api, type Adoption, type OpenPrompt, type PermissionAnswer } from "./api";
 import { relTime } from "./components";
 import { useAppData } from "./App";
-import { buildQuestionUpdatedInput, parseQuestions, type QuestionSpec } from "./pages/sessionExtras";
+import { buildQuestionUpdatedInput, hasSuggestions, parseQuestions, summarizeSuggestions, type QuestionSpec } from "./pages/sessionExtras";
 import "./pages/command.css";
-
-/* ── AskUserQuestion input shape (§7.6) ─────────────────────────────── */
 
 /* ── Collapsed key-field summary of a permission's tool input ───────── */
 
@@ -52,14 +50,19 @@ export function NodeChip({ node }: { node: string | null }) {
 
 /* ── Permission gate card ───────────────────────────────────────────── */
 
-export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswered: () => void }) {
+/** A permission prompt (also the session pane's, for one card everywhere):
+ *  `onAnswered` gets the answer that went to the node. */
+export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswered: (a: PermissionAnswer) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [denying, setDenying] = useState(false);
   const [denyMsg, setDenyMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const canAlways = Array.isArray(prompt.suggestions) && prompt.suggestions.length > 0;
+  const canAlways = hasSuggestions(prompt.suggestions);
+  // What "always allow" grants, in words (the pane's card said it; now
+  // this one, the only one, does).
+  const grantScope = canAlways ? (summarizeSuggestions(prompt.suggestions) ?? "the harness's suggested rule") : null;
   const summary = summarizeInput(prompt.input);
   // The harness's own decision set (HARNESSES.md §1); when present it is
   // the buttons, and the chosen id goes back verbatim.
@@ -77,7 +80,7 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
     setErr(null);
     try {
       await api.answerPermission(prompt.agent, prompt.request_id, a);
-      onAnswered();
+      onAnswered(a);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "answer failed");
       setBusy(false);
@@ -179,6 +182,7 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
                   className="btn sm"
                   disabled={busy}
                   onClick={() => answer({ allow: true, updated_permissions: prompt.suggestions })}
+                  title={grantScope ? `always allow: ${grantScope}` : undefined}
                 >
                   always allow
                 </button>
@@ -196,7 +200,7 @@ export function PermCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswere
 
 /* ── Question card (AskUserQuestion) ────────────────────────────────── */
 
-export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswered: () => void }) {
+export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAnswered: (a: PermissionAnswer) => void }) {
   const questions = useMemo(() => parseQuestions(prompt.input) ?? [], [prompt.input]);
   const [picks, setPicks] = useState<Record<string, string[]>>({});
   const [response, setResponse] = useState("");
@@ -226,7 +230,7 @@ export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAns
       : buildQuestionUpdatedInput(prompt.input, questions, questions.map((q) => picks[q.question] ?? []), response);
     try {
       await api.answerPermission(prompt.agent, prompt.request_id, { allow: true, updated_input });
-      onAnswered();
+      onAnswered({ allow: true, updated_input });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "answer failed");
       setBusy(false);
@@ -306,13 +310,6 @@ export function QuestionCard({ prompt, onAnswered }: { prompt: OpenPrompt; onAns
   );
 }
 
-/* ── The page ───────────────────────────────────────────────────────── */
-
-
-/* ── adoption: a session happened to an agent outside Aspen ─────────── */
-
-/** Which identity follows a session that was forked or driven from outside
- *  Aspen. Nothing moves until a human answers; ignore is the default. */
 /** A memory conflict card (MEMORY.md): keep mine drops the incoming copy;
  *  take theirs replaces the file with it. */
 export function MemoryConflictCard({ c, onDone }: { c: MemoryConflict; onDone: () => void }) {
@@ -346,6 +343,10 @@ export function MemoryConflictCard({ c, onDone }: { c: MemoryConflict; onDone: (
   );
 }
 
+/* ── adoption: a session happened to an agent outside Aspen ─────────── */
+
+/** Which identity follows a session that was forked or driven from outside
+ *  Aspen. Nothing moves until a human answers; ignore is the default. */
 export function AdoptionCard({ a, onDone }: { a: Adoption; onDone: () => void }) {
   const nav = useNavigate();
   const [splitName, setSplitName] = useState<string | null>(null);

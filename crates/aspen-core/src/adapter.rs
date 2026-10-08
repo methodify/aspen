@@ -13,9 +13,8 @@ use crate::permission::{PermissionBroker, PermissionPolicy};
 use crate::store::SessionStore;
 use crate::SessionEvent;
 
-/// What a runtime can actually do. Capabilities degrade *honestly*: a
-/// runtime without `interrupt` gets `gating` delivered as `normal` and the
-/// sender is told so at send time. No silent downgrades, ever.
+/// What a runtime can actually do. A missing capability is shown, never
+/// hidden. (Urgency no longer changes delivery timing at all: delivery.rs.)
 pub type AdapterCapabilities = HarnessCapabilities;
 
 /// A tool the node offers every session (the bus tools), served in

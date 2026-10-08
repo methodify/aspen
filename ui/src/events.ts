@@ -1,3 +1,4 @@
+import type { DecisionOption, PromptKind, ToolKind } from "./api";
 // Typed SessionEvent union matching the aspen node WS contract (docs/API.md).
 // Frames are JSON text, tagged by snake_case `kind`.
 
@@ -51,12 +52,20 @@ export interface PermissionAskedEvent {
   tool_name: string;
   input?: unknown;
   suggestions?: unknown;
+  prompt_kind?: PromptKind;
+  tool_kind?: ToolKind;
+  /** The harness's bounded answers (Codex: for this session, always). */
+  decisions?: DecisionOption[];
 }
 
 export interface PermissionSettledEvent {
   kind: "permission_settled";
   request_id: string;
-  /** Not guaranteed by the contract; used when present (and by local optimistic settles). */
+  /** What the node sends (aspen-core `PermissionSettled`). */
+  allowed?: boolean;
+  /** Settled by the node's policy rather than an answer. */
+  by_policy?: boolean;
+  /** Local optimistic settles (this page answered). */
   allow?: boolean;
   behavior?: string;
   raw?: unknown;

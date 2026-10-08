@@ -744,6 +744,24 @@ pub fn import(
     opts: &ImportOpts,
 ) -> Result<ImportReport> {
     let manifest: Manifest = serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)?;
+    // Every rel is joined onto a real directory after its prefix is cut:
+    // the whole and the rest must both be plain relative paths (an
+    // absolute rest replaced the base; the 2026-10 quality pass).
+    for f in &manifest.files {
+        aspen_core::paths::safe_rel(&f.rel).map_err(|e| anyhow!("the bundle's manifest: {e}"))?;
+        for p in [
+            "transcript/",
+            "rollout/",
+            "sidechain/",
+            "memory/",
+            "untracked/",
+        ] {
+            if let Some(rest) = f.rel.strip_prefix(p) {
+                aspen_core::paths::safe_rel(rest)
+                    .map_err(|e| anyhow!("the bundle's manifest: {e}"))?;
+            }
+        }
+    }
     let repo = match &opts.repo {
         Some(r) => PathBuf::from(r),
         None => find_counterpart(store, &manifest.agent).ok_or_else(|| {
@@ -900,17 +918,7 @@ pub fn import(
         .clone()
         .unwrap_or_else(|| manifest.agent.name.clone());
     let bare = name.split('@').next().unwrap_or(&name).to_owned();
-    let handle = store
-        .repos()
-        .unwrap_or_default()
-        .iter()
-        .find(|r| r.path == repo)
-        .map(|r| r.handle.clone())
-        .unwrap_or_else(|| {
-            repo.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
+    let handle = crate::repobundle::target_handle(store, &repo);
     let full = format!("{bare}@{handle}");
     store.register_agent(
         &full,

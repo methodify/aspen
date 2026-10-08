@@ -117,12 +117,7 @@ pub fn spawn(spec: &SpawnSpec) -> Result<ClaudeProcess> {
         .env_remove("ASPEN_DETACHED")
         .kill_on_drop(true);
     for (k, v) in &spec.extra_env {
-        // A UI bug must never be able to blank PATH (reference §2.2): names
-        // are validated, empty values refused.
-        if !k.is_empty()
-            && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !v.is_empty()
-        {
+        if aspen_core::process::env_entry_ok(k, v) {
             cmd.env(k, v);
         }
     }

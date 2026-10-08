@@ -481,14 +481,17 @@ impl ClaudeSession {
         .await
     }
 
-    /// End-of-session ladder (reference §4.3): `end_session` → stdin EOF →
-    /// kill. Transcripts persist in all cases.
+    /// End-of-session ladder: `end_session`, a moment to exit on its own,
+    /// then kill. (Reference §4.3 also has a stdin-EOF step; the writer's
+    /// sender has other holders, so it is not taken here — the doc and log
+    /// claimed it was; the 2026-10 quality pass.) Transcripts persist in
+    /// all cases.
     pub async fn shutdown_ladder(&self) {
         let end = self
             .request(json!({ "subtype": "end_session" }), Duration::from_secs(5))
             .await;
         if end.is_err() {
-            tracing::debug!("end_session unavailable or timed out; closing stdin");
+            tracing::debug!("end_session unavailable or timed out; the kill follows");
         }
         // Give the CLI a moment to drain and exit on its own…
         tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -499,28 +502,7 @@ impl ClaudeSession {
     }
 }
 
-/// The silent tier for Claude tool names: the neutral policy on the tool's
-/// kind, plus Aspen's own bus tools (safe by construction — an agent that
-/// cannot speak is stranded) and questions (allow-with-echo is honest when
-/// nobody can answer).
-pub fn policy_opinion(policy: PermissionPolicy, tool_name: &str, request: &Value) -> Option<bool> {
-    if policy == PermissionPolicy::ReadOnlyAuto && tool_name.starts_with("mcp__aspen__") {
-        return Some(true);
-    }
-    let input = request.get("input").cloned().unwrap_or(Value::Null);
-    let kind = crate::adapter::classify(tool_name, &input);
-    let prompt = if kind == aspen_core::ToolKind::Question {
-        PromptKind::Question
-    } else {
-        PromptKind::Permission
-    };
-    aspen_core::permission::policy_opinion(policy, kind, prompt)
-}
-
-pub use aspen_core::permission::policy_deny_message;
-
-/// Broker that answers purely from policy — the dev/headless default.
-pub use aspen_core::permission::PolicyBroker;
+use aspen_core::permission::PolicyBroker;
 
 #[async_trait]
 impl SessionHandle for ClaudeSession {

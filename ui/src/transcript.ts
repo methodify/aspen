@@ -6,7 +6,7 @@
 // No React, no I/O — every function takes a TranscriptState and returns a
 // new one, so this module is unit-testable in isolation.
 
-import type { HistoryImage, HistoryItem } from "./api";
+import type { DecisionOption, HistoryImage, HistoryItem, PromptKind, ToolKind } from "./api";
 import { transcriptKey } from "./profiles";
 import type {
   SessionEvent,
@@ -91,6 +91,9 @@ export interface UserBubbleItem {
    *  harness consumed this mid-turn without writing a transcript line
    *  ("mid-turn"), or still holds it ("queued"). */
   via?: string | null;
+  /** The node could not reach the session's node and queued this on the
+   *  bus: it delivers when the link returns (not a failure). */
+  busQueued?: boolean;
 }
 
 /** A harness task notification (`<task-notification>…`): a background
@@ -137,6 +140,10 @@ export interface PermissionCardItem {
   settled: boolean;
   /** "allowed" | "denied" | "settled" (source unknown). */
   outcome: string | null;
+  promptKind?: PromptKind;
+  toolKind?: ToolKind;
+  /** The harness's own answers; the card offers these when present. */
+  decisions?: DecisionOption[];
 }
 
 export interface TurnEndItem {
@@ -195,7 +202,7 @@ export function emptyTranscript(): TranscriptState {
  *  skipping any the transcript already holds. */
 export function addOpenPrompts(
   state: TranscriptState,
-  prompts: { request_id: string; tool_name: string; input: unknown; suggestions: unknown }[],
+  prompts: { request_id: string; tool_name: string; input: unknown; suggestions: unknown; prompt_kind?: PromptKind; tool_kind?: ToolKind; decisions?: DecisionOption[] }[],
 ): TranscriptState {
   const have = new Set(
     state.items.filter((it): it is PermissionCardItem => it.kind === "permission").map((it) => it.requestId),
@@ -214,6 +221,9 @@ export function addOpenPrompts(
       suggestions: p.suggestions,
       settled: false,
       outcome: null,
+      promptKind: p.prompt_kind,
+      toolKind: p.tool_kind,
+      decisions: p.decisions,
     });
   }
   return { ...state, items, nextId };
@@ -519,7 +529,7 @@ export function addLocalUserMessage(
 export function markLocalUserMessage(
   state: TranscriptState,
   localKey: string,
-  patch: { uuid?: string; failed?: boolean },
+  patch: { uuid?: string; failed?: boolean; busQueued?: boolean },
 ): TranscriptState {
   const idx = state.items.findIndex((it) => it.kind === "user" && it.localKey === localKey);
   if (idx < 0) return state;
@@ -529,7 +539,8 @@ export function markLocalUserMessage(
     ...bubble,
     uuid: patch.uuid ?? bubble.uuid,
     failed: patch.failed ?? bubble.failed,
-    pending: patch.failed ? false : bubble.pending,
+    busQueued: patch.busQueued ?? bubble.busQueued,
+    pending: patch.failed || patch.busQueued ? false : bubble.pending,
   };
   return { ...state, items };
 }
@@ -715,6 +726,9 @@ function applyPermissionAsked(
     suggestions: ev.suggestions ?? null,
     settled: false,
     outcome: null,
+    promptKind: ev.prompt_kind,
+    toolKind: ev.tool_kind,
+    decisions: ev.decisions,
   };
   return { ...state, items: [...state.items, item], nextId: state.nextId + 1 };
 }
@@ -729,9 +743,14 @@ function applyPermissionSettled(
   if (idx < 0) return state;
   const card = state.items[idx] as PermissionCardItem;
   if (card.settled) return state;
+  // The node says `allowed`; this page's own optimistic settle says
+  // `allow`/`behavior`. Reading only the latter showed every settle from
+  // the wire as a bare "settled" (the 2026-10 quality pass).
+  const allow = ev.allowed ?? ev.allow;
   let outcome = "settled";
-  if (ev.allow === true || ev.behavior === "allow") outcome = "allowed";
-  else if (ev.allow === false || ev.behavior === "deny") outcome = "denied";
+  if (allow === true || ev.behavior === "allow") outcome = "allowed";
+  else if (allow === false || ev.behavior === "deny") outcome = "denied";
+  if (ev.by_policy && outcome !== "settled") outcome += " by policy";
   const items = state.items.slice();
   items[idx] = { ...card, settled: true, outcome };
   return { ...state, items };

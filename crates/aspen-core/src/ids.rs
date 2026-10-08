@@ -27,26 +27,3 @@ impl fmt::Display for SessionId {
         self.0.fmt(f)
     }
 }
-
-/// The short, human-facing name an agent goes by on the bus (`arch`, `impl`).
-/// Distinct from the session id: names are stable across restarts and
-/// resumes; ids are per-runtime-session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AgentName(pub String);
-
-impl fmt::Display for AgentName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "@{}", self.0)
-    }
-}
-
-/// A repo registered with a node — the unit of automatic agent community.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RepoId(pub String);
-
-/// A machine in the mesh.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct NodeId(pub String);

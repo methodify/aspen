@@ -6,24 +6,24 @@
 //! manager, bus, API, UI — speaks only this vocabulary.
 
 pub mod adapter;
-pub mod bus;
 pub mod event;
 pub mod harness;
 pub mod ids;
+pub mod paths;
 pub mod permission;
 pub mod process;
 pub mod store;
+pub mod time;
 
 pub use adapter::{
     AdapterCapabilities, AgentAdapter, SessionHandle, SpawnSpec, ToolDef, ToolProvider, Unsupported,
 };
-pub use bus::{BusMessage, Urgency};
 pub use event::SessionEvent;
 pub use harness::{
     DecisionOption, DecisionScope, Harness, HarnessCapabilities, McpAuth, McpServerState,
     McpStatus, PermissionMode, Posture, PromptKind, RuntimeInfo, ToolKind,
 };
-pub use ids::{AgentName, NodeId, RepoId, SessionId};
+pub use ids::SessionId;
 pub use permission::{
     BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest, PolicyBroker,
 };

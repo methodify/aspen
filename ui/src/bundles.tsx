@@ -17,13 +17,7 @@ import {
 } from "./api";
 import { tunnel } from "./tunnel";
 import { ErrorBar } from "./components";
-
-export function fmtBytes(n: number): string {
-  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(1)} GB`;
-  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
-  if (n >= 1 << 10) return `${Math.round(n / (1 << 10))} KB`;
-  return `${n} B`;
-}
+import { fmtBytes } from "./pages/sessionExtras";
 
 /** Can this console move a file straight to or from the node? Not over the
  *  relay, and not for a peer's node (the file lives there). */

@@ -181,13 +181,6 @@ impl NodeIdentity {
         }
     }
 
-    /// Every cert this identity holds, primary first.
-    pub fn all_certs(&self) -> Vec<NodeCert> {
-        let mut v: Vec<NodeCert> = self.cert.iter().cloned().collect();
-        v.extend(self.certs.iter().cloned());
-        v
-    }
-
     /// The cert for one mesh, if held.
     pub fn cert_for(&self, mesh: &str) -> Option<&NodeCert> {
         if let Some(c) = &self.cert {

@@ -50,12 +50,3 @@ export function usePoll<T>(fetcher: () => Promise<T>, ms: number): Poll<T> {
   return { data, error, refresh };
 }
 
-/** Format an epoch-seconds timestamp as a local HH:MM:SS clock time. */
-export function fmtTime(epochSeconds: number): string {
-  return new Date(epochSeconds * 1000).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}

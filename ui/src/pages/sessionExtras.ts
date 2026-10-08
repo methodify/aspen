@@ -3,7 +3,7 @@
 // autocomplete, model normalization, context-usage summarization, render
 // modes, and status-event notes. No React, no I/O — unit-testable.
 
-import type { RuntimeInfo } from "../api";
+import { serverNow, type RuntimeInfo } from "../api";
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v !== null && typeof v === "object" && !Array.isArray(v)
@@ -324,12 +324,16 @@ export function summarizeContext(payload: unknown): ContextSummary | null {
     num(r["total_tokens"]) ??
     (categories.length > 0 ? catSum : null);
 
+  // Tokens first, when both are known: exact. A stated percentage is
+  // already 0–100 (Claude's /context says 4 for 4%); reading a value of 1
+  // or less as a fraction showed a 1% session as 100% (the 2026-10
+  // quality pass).
   let percent: number | null = null;
   const explicit = num(r["percentage"]) ?? num(r["percent"]) ?? num(r["percentUsed"]);
-  if (explicit !== null) {
-    percent = explicit <= 1 ? explicit * 100 : explicit;
-  } else if (usedTokens !== null && maxTokens !== null && maxTokens > 0) {
+  if (usedTokens !== null && maxTokens !== null && maxTokens > 0) {
     percent = (usedTokens / maxTokens) * 100;
+  } else if (explicit !== null) {
+    percent = explicit;
   }
   if (percent !== null) percent = Math.max(0, Math.min(100, percent));
 
@@ -340,10 +344,31 @@ export function summarizeContext(payload: unknown): ContextSummary | null {
   return { percent, usedTokens, maxTokens, autoCompactThreshold, categories };
 }
 
+// One formatter each (the 2026-10 quality pass: copies had drifted —
+// "44k" on Usage, "44.3k" in a session; "MB" with no GB tier in the viewer).
+
 export function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
   return String(n);
+}
+
+export function fmtBytes(n: number): string {
+  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(1)} GB`;
+  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
+  if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+/** How long from `startIso` to `endIso` (or now, on the node's clock). */
+export function fmtElapsed(startIso: string | null, endIso: string | null = null): string {
+  if (!startIso) return "";
+  const a = Date.parse(startIso);
+  const b = endIso ? Date.parse(endIso) : serverNow() * 1000;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return "";
+  const s = Math.max(0, Math.round((b - a) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 // ---------------------------------------------------------------------------

@@ -2268,6 +2268,24 @@ impl BusStore {
         if n == 0 {
             return Err(anyhow::anyhow!("no agent named @{old} on record"));
         }
+        Self::rewrite_agent_key(&conn, old, &new, self_node, t)?;
+        Ok(new)
+    }
+
+    /// Every row that names an agent by its key, moved from `old` to `new`:
+    /// bookmarks, events, lineage, notices, inputs, replicas, adoptions,
+    /// channel membership, messages, links and board panes. Shared by an
+    /// agent's rename and a repo handle's (which had drifted to agents,
+    /// membership and messages only, stranding the rest; the 2026-10
+    /// quality pass).
+    fn rewrite_agent_key(
+        conn: &Connection,
+        old: &str,
+        new: &str,
+        self_node: Option<&str>,
+        t: f64,
+    ) -> Result<()> {
+        let new_bare = crate::addr::bare(new).to_owned();
         for (table, col) in [
             ("bookmarks", "agent"),
             ("events", "agent"),
@@ -2355,7 +2373,7 @@ impl BusStore {
                     }
                 }
             }
-            walk(&mut v, old, &new, self_node, &mut hit);
+            walk(&mut v, old, new, self_node, &mut hit);
             if hit {
                 conn.execute(
                     "UPDATE boards SET layout=?2, updated_at=?3 WHERE id=?1",
@@ -2363,10 +2381,16 @@ impl BusStore {
                 )?;
             }
         }
-        Ok(new)
+        Ok(())
     }
 
-    pub fn rename_handle(&self, path: &Path, new: &str, live_names: &[String]) -> Result<()> {
+    pub fn rename_handle(
+        &self,
+        path: &Path,
+        new: &str,
+        live_names: &[String],
+        self_node: Option<&str>,
+    ) -> Result<()> {
         let new = new.trim();
         if new.is_empty()
             || !new
@@ -2375,6 +2399,7 @@ impl BusStore {
         {
             anyhow::bail!("handle must be [A-Za-z0-9._-]+");
         }
+        let t = self.hlc_now();
         let conn = self.conn.lock().unwrap();
         let old: String = conn
             .query_row(
@@ -2418,16 +2443,7 @@ impl BusStore {
                 "UPDATE agents SET name=?2, channel=?3 WHERE name=?1",
                 params![name, newname, new],
             )?;
-            conn.execute(
-                "UPDATE channel_members SET member=?2 WHERE member=?1",
-                params![name, newname],
-            )?;
-            for col in ["sender", "recipient"] {
-                conn.execute(
-                    &format!("UPDATE messages SET {col}=?2 WHERE {col}=?1"),
-                    params![name, newname],
-                )?;
-            }
+            Self::rewrite_agent_key(&conn, &name, &newname, self_node, t)?;
         }
         // channel_members may reference the repo channel itself (#old)
         conn.execute(
@@ -2505,15 +2521,6 @@ impl BusStore {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM channels WHERE name=?1", [name])?;
         conn.execute("DELETE FROM channel_members WHERE channel=?1", [name])?;
-        Ok(())
-    }
-
-    pub fn set_channel_topic(&self, name: &str, topic: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE channels SET topic=?2 WHERE name=?1",
-            params![name, topic],
-        )?;
         Ok(())
     }
 
@@ -3038,6 +3045,29 @@ mod tests {
 #[cfg(test)]
 mod plugin_library_tests {
     use super::*;
+
+    #[test]
+    fn renaming_a_repo_handle_moves_everything_its_agents_own() {
+        let s = BusStore::open_in_memory().unwrap();
+        let repo = std::path::Path::new("/w/proj");
+        let h = s.ensure_handle(repo).unwrap();
+        let key = format!("ada@{h}");
+        s.register_agent(
+            &key,
+            repo,
+            &h,
+            "sid-1",
+            None,
+            None,
+            aspen_core::Harness::Claude,
+        )
+        .unwrap();
+        s.add_bookmark(&key, "sid-1", None, Some("mark"), "test")
+            .unwrap();
+        s.rename_handle(repo, "renamed", &[], Some("n1")).unwrap();
+        assert!(s.bookmarks(&key).unwrap().is_empty());
+        assert_eq!(s.bookmarks("ada@renamed").unwrap().len(), 1);
+    }
 
     #[test]
     fn a_library_row_moves_the_registry_digest_and_merges_last_writer_wins() {

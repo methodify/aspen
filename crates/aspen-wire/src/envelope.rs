@@ -89,8 +89,14 @@ impl SealedEnvelope {
             .verify(&signing_bytes(self), &Signature::from_bytes(&sig_bytes))
             .map_err(|_| anyhow!("envelope signature invalid"))?;
         let cipher = shared_cipher(&me.x_secret_key()?, &sender_cert.x_key()?);
+        // from_slice panics on a wrong length; the nonce came off the wire.
+        let nonce: [u8; 24] = self
+            .nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("malformed envelope nonce"))?;
         cipher
-            .decrypt(XNonce::from_slice(&self.nonce), self.ciphertext.as_ref())
+            .decrypt(&XNonce::from(nonce), self.ciphertext.as_ref())
             .map_err(|_| anyhow!("decryption failed (wrong recipient or tampered)"))
             .context("opening envelope")
     }

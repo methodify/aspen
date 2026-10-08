@@ -1,3 +1,4 @@
+import { fmtTokens } from "./sessionExtras";
 // Usage (docs/USAGE.md, PROPOSALS-B §4): what every session consumed and
 // cost, across the estate. Tokens come from each transcript (subagents
 // folded in); money is the harness's own figure — the session total it
@@ -27,12 +28,6 @@ function rangeFrom(r: Range): number {
   return 0;
 }
 
-export function fmtTokens(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
-  return String(n);
-}
 export function fmtUsd(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   return n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;

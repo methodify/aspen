@@ -72,10 +72,7 @@ impl RpcClient {
             .env_remove("ASPEN_DETACHED")
             .kill_on_drop(true);
         for (k, v) in &spec.extra_env {
-            if !k.is_empty()
-                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && !v.is_empty()
-            {
+            if aspen_core::process::env_entry_ok(k, v) {
                 cmd.env(k, v);
             }
         }

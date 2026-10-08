@@ -154,7 +154,10 @@ async fn handle(relay: Relay, mut socket: WebSocket) {
     }
     broadcast_presence(&relay, &node_name, true).await;
     // Mail that waited for this node, oldest first.
-    for item in relay.mailbox.lock().await.drain(&node_name) {
+    // Taken out first: the lock held through every socket send let one
+    // slow node freeze the relay's mail for everyone.
+    let waiting = relay.mailbox.lock().await.drain(&node_name);
+    for item in waiting {
         let frame = serde_json::to_string(&RelayFrame::Mail {
             from: item.from,
             id: item.id,

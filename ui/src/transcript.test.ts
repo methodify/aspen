@@ -198,6 +198,15 @@ describe("permissions", () => {
     expect(card.settled).toBe(true);
     expect(card.outcome).toBe("allowed");
   });
+
+  it("reads the node's own settle fields (allowed, by_policy)", () => {
+    const s = run([
+      { kind: "permission_asked", request_id: "r2", tool_name: "Bash", input: { command: "rm -rf /" } },
+      { kind: "permission_settled", request_id: "r2", allowed: false, by_policy: true },
+    ]);
+    const card = s.items.find((i): i is PermissionCardItem => i.kind === "permission")!;
+    expect(card.outcome).toBe("denied by policy");
+  });
 });
 
 describe("seedFromHistory", () => {

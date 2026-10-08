@@ -3,7 +3,7 @@
 // engraved class badge, the carrier meter, class-coded message rows, and the
 // class selector all speak the same two color systems (priority + presence).
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { serverNow, type Urgency, type TurnState } from "./api";
 
 export type Presence = "busy" | "idle" | "off";
@@ -70,10 +70,6 @@ export function BoardMeter({ bars, label }: { bars: Presence[]; label?: string }
       ))}
     </span>
   );
-}
-
-export function PresenceDot({ presence }: { presence: Presence }) {
-  return <span className={`presence-dot ${presence}`} aria-hidden />;
 }
 
 /** The three-way outbound class selector used by every composer. */
@@ -176,25 +172,43 @@ export function relTime(epochSeconds: number): string {
 }
 
 /** Dark/light theme with an explicit toggle over prefers-color-scheme. */
+// One theme for the whole console: a module-level value every useTheme()
+// shares. Local state per caller let the palette and the More sheet
+// disagree after a toggle in either (the 2026-10 quality pass).
+const themeListeners = new Set<() => void>();
+let themeValue: string = (() => {
+  try {
+    return localStorage.getItem("aspen.theme") || "system";
+  } catch {
+    return "system";
+  }
+})();
+function applyTheme(t: string) {
+  if (typeof document === "undefined") return; // tests, no DOM
+  const root = document.documentElement;
+  if (t === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", t);
+  try {
+    localStorage.setItem("aspen.theme", t);
+  } catch {
+    /* private mode */
+  }
+}
+applyTheme(themeValue);
+function setThemeValue(t: string) {
+  themeValue = t;
+  applyTheme(t);
+  for (const l of themeListeners) l();
+}
+
 export function useTheme(): [string, () => void] {
-  const [theme, setTheme] = useState<string>(() => {
-    try {
-      return localStorage.getItem("aspen.theme") || "system";
-    } catch {
-      return "system";
-    }
-  });
-  useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "system") root.removeAttribute("data-theme");
-    else root.setAttribute("data-theme", theme);
-    try {
-      localStorage.setItem("aspen.theme", theme);
-    } catch {
-      /* private mode */
-    }
-  }, [theme]);
-  const toggle = () =>
-    setTheme((t) => (t === "dark" ? "light" : t === "light" ? "system" : "dark"));
+  const theme = useSyncExternalStore(
+    (cb) => {
+      themeListeners.add(cb);
+      return () => themeListeners.delete(cb);
+    },
+    () => themeValue,
+  );
+  const toggle = () => setThemeValue(theme === "dark" ? "light" : theme === "light" ? "system" : "dark");
   return [theme, toggle];
 }

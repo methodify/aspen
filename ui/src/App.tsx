@@ -1,10 +1,10 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { scoped } from "./profiles";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, type Agent, type Board, type BusMessage, type NodeInfo } from "./api";
+import { api, type Agent, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
 import { BoardMeter, Meter, presenceOf, useTheme } from "./components";
-import { boardStatus, describeStatus } from "./boardStatus";
+import { boardStatus, describeStatus, useBoards } from "./boardStatus";
 import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
@@ -28,6 +28,7 @@ import { activeConnection, connectionSummary, hosted } from "./connections";
 import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, setProfileMesh, switchTo } from "./profiles";
 import { peek } from "./peek";
 import { MenuGroup, MenuRow, SessionMenu } from "./sessionBar";
+import { safeDecode } from "./util";
 
 export interface AppData {
   agents: Agent[];
@@ -150,8 +151,9 @@ function saveWorkingSet(ws: WorkingSet) {
  *  pinned sessions, the last few opened, and the fleet pulse. The whole
  *  roster lives in Now. */
 function MeshColumn() {
-  const [boards, setBoards] = useState<Board[]>([]);
-  const loc = useLocation();
+  // The shared hook (boardStatus.ts): this was a copy of it. Saves and
+  // deletes signal `aspen:boards`, so it follows them at once.
+  const boards = useBoards();
   // The rail collapses to a narrow strip of keys and dots (per browser).
   const [narrow, setNarrowState] = useState<boolean>(() => {
     try {
@@ -180,21 +182,6 @@ function MeshColumn() {
     return () => window.removeEventListener("aspen:rail", onToggle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(() => {
-    let stop = false;
-    const load = () => api.boards().then((b) => !stop && setBoards(b)).catch(() => {});
-    void load();
-    const t = window.setInterval(() => void load(), 15000);
-    const onChange = () => void load();
-    window.addEventListener("aspen:boards", onChange);
-    return () => {
-      stop = true;
-      window.clearInterval(t);
-      window.removeEventListener("aspen:boards", onChange);
-    };
-    // reload when navigating (a board was just created/deleted)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loc.pathname.startsWith("/board")]);
   const { agents, inbox, waiting } = useAppData();
   const location = useLocation();
   const [ws, setWs] = useState<WorkingSet>(loadWorkingSet);
@@ -203,7 +190,7 @@ function MeshColumn() {
   useEffect(() => {
     const m = /^\/session\/(.+)$/.exec(location.pathname);
     if (!m) return;
-    const name = decodeURIComponent(m[1]);
+    const name = safeDecode(m[1]);
     setWs((cur) => {
       const recent = [name, ...cur.recent.filter((n) => n !== name)].slice(0, 8);
       const next = { ...cur, recent };
@@ -643,7 +630,7 @@ function OpenLink() {
       return;
     }
     const [, kind, rest, qs] = m;
-    if (kind === "session" && rest) nav(`/session/${encodeURIComponent(decodeURIComponent(rest))}`, { replace: true });
+    if (kind === "session" && rest) nav(`/session/${encodeURIComponent(safeDecode(rest))}`, { replace: true });
     else if (kind === "connect") nav(`/attach${qs ?? ""}`, { replace: true });
     else nav("/", { replace: true });
   }, [search, nav]);

@@ -20,7 +20,7 @@
   .statusbar::-webkit-scrollbar { display: none; }
   .statusbar .btn, .statusbar .brand { white-space: nowrap; flex: 0 0 auto; }
   .statusbar .brand { letter-spacing: 0.12em; }
-  .statusbar .micro, .statusbar > .mono-meta, .statusbar .presence-strip, .statusbar .sb-utilities .btn:not(.bell), .statusbar .version-pill { display: none; }
+  .statusbar .micro, .statusbar > .mono-meta, .statusbar .presence-strip, .statusbar .sb-utilities .btn:not(.bell) { display: none; }
   .statusbar .sb-utilities { border-left: 0; padding-left: 0; }
 
   /* the rail → a bottom bar */

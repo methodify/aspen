@@ -1549,17 +1549,11 @@ fn hook_relay(data_dir: &std::path::Path) -> Result<()> {
     let Some(listen) = state["listen"].as_str() else {
         return Ok(());
     };
-    let mut req = ureq::post(&format!("http://{}/api/hooks/session", dial_addr(listen)))
-        .timeout(std::time::Duration::from_secs(2));
-    let loopback = listen
-        .parse::<std::net::SocketAddr>()
-        .map(|a| a.ip().is_loopback())
-        .unwrap_or(true);
-    if !loopback {
-        if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
-            req = req.set("X-Aspen-Token", tok.trim());
-        }
-    }
+    let req = crate::status::with_token(
+        ureq::post(&format!("http://{}/api/hooks/session", dial_addr(listen)))
+            .timeout(std::time::Duration::from_secs(2)),
+        data_dir,
+    );
     let _ = req.send_json(body);
     Ok(())
 }
@@ -1577,11 +1571,11 @@ fn local_api_post(
     let listen = state["listen"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("daemon state has no listen address"))?;
-    let mut req = ureq::post(&format!("http://{}{}", dial_addr(listen), path))
-        .timeout(std::time::Duration::from_secs(timeout_secs));
-    if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
-        req = req.set("X-Aspen-Token", tok.trim());
-    }
+    let req = crate::status::with_token(
+        ureq::post(&format!("http://{}{}", dial_addr(listen), path))
+            .timeout(std::time::Duration::from_secs(timeout_secs)),
+        data_dir,
+    );
     match req.send_json(body) {
         Ok(resp) => Ok(resp.into_json::<serde_json::Value>()?),
         Err(ureq::Error::Status(code, resp)) => {
@@ -1849,10 +1843,16 @@ pub(crate) fn dial_addr(listen: &str) -> String {
 /// listener is beyond loopback (the API requires it there; the console
 /// keeps it once opened this way).
 pub(crate) fn console_url(data_dir: &std::path::Path, listen: &str) -> String {
-    let loopback = listen
-        .parse::<std::net::SocketAddr>()
-        .map(|a| a.ip().is_loopback())
-        .unwrap_or(true);
+    let is_lo = |a: &str| {
+        a.parse::<std::net::SocketAddr>()
+            .map(|a| a.ip().is_loopback())
+            .unwrap_or(true)
+    };
+    // The daemon wants the token when either listener reaches out.
+    let tls_out = read_daemon_state(data_dir)
+        .and_then(|st| st["tls_listen"].as_str().map(str::to_owned))
+        .is_some_and(|t| !is_lo(&t));
+    let loopback = is_lo(listen) && !tls_out;
     // 0.0.0.0 isn't an address a browser can open; say localhost for the
     // local user (other machines use this host's name/IP with the token).
     let host = listen
@@ -1955,17 +1955,11 @@ pub(crate) fn stop_detached(data_dir: &std::path::Path) -> Result<()> {
         .and_then(|s| s["listen"].as_str().map(str::to_owned));
     let mut graceful = false;
     if let Some(listen) = &listen {
-        let mut req = ureq::post(&format!("http://{}/api/shutdown", dial_addr(listen)))
-            .timeout(std::time::Duration::from_secs(3));
-        let loopback = listen
-            .parse::<std::net::SocketAddr>()
-            .map(|a| a.ip().is_loopback())
-            .unwrap_or(true);
-        if !loopback {
-            if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
-                req = req.set("X-Aspen-Token", tok.trim());
-            }
-        }
+        let req = crate::status::with_token(
+            ureq::post(&format!("http://{}/api/shutdown", dial_addr(listen)))
+                .timeout(std::time::Duration::from_secs(3)),
+            data_dir,
+        );
         graceful = req.send_json(serde_json::json!({})).is_ok();
     }
 
@@ -2035,17 +2029,11 @@ fn notify_daemon_reload(data_dir: &std::path::Path) -> bool {
     let Some(listen) = state["listen"].as_str() else {
         return false;
     };
-    let mut req = ureq::post(&format!("http://{}/api/mesh/reload", dial_addr(listen)))
-        .timeout(std::time::Duration::from_secs(5));
-    let loopback = listen
-        .parse::<std::net::SocketAddr>()
-        .map(|a| a.ip().is_loopback())
-        .unwrap_or(true);
-    if !loopback {
-        if let Ok(tok) = std::fs::read_to_string(data_dir.join("api-token")) {
-            req = req.set("X-Aspen-Token", tok.trim());
-        }
-    }
+    let req = crate::status::with_token(
+        ureq::post(&format!("http://{}/api/mesh/reload", dial_addr(listen)))
+            .timeout(std::time::Duration::from_secs(5)),
+        data_dir,
+    );
     match req.send_json(serde_json::json!({})) {
         Ok(resp) => {
             let v: serde_json::Value = resp.into_json().unwrap_or_default();

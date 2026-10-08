@@ -12,14 +12,9 @@ import { api, ApiError, type FileStat } from "../api";
 import { ErrorBar, relTime } from "../components";
 import { linkifyPaths } from "../pathLinks";
 import "./view.css";
+import { fmtBytes } from "./sessionExtras";
 
 type Mode = "rendered" | "source";
-
-function fmtSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function kindOf(media: string, name: string): "image" | "markdown" | "pdf" | "json" | "text" | "binary" {
   if (media.startsWith("image/")) return "image";
@@ -50,24 +45,42 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   // and for the images a rendered document refers to.
   const viaTunnel = api.filesViaTunnel();
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // A blob URL carries the console's origin: an HTML or SVG file an agent
+  // wrote, opened from it as a page, would run script here and could read
+  // the node token. "raw ↗" opens those as text instead (the image view
+  // keeps the real type; an <img> runs no script). Direct, the node sends
+  // a sandbox policy for them (the 2026-10 quality pass).
+  const [rawBlobUrl, setRawBlobUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!viaTunnel) return;
-    let url: string | null = null;
+    const urls: string[] = [];
     let cancelled = false;
     api
       .fileBlob(name, path)
       .then((b) => {
         if (cancelled) return;
-        url = URL.createObjectURL(b);
+        const url = URL.createObjectURL(b);
+        urls.push(url);
         setBlobUrl(url);
+        if (/^(text\/html|application\/xhtml|image\/svg|text\/xml|application\/xml)/i.test(b.type)) {
+          const safe = URL.createObjectURL(new Blob([b], { type: "text/plain" }));
+          urls.push(safe);
+          setRawBlobUrl(safe);
+        } else {
+          setRawBlobUrl(url);
+        }
       })
-      .catch(() => setBlobUrl(null));
+      .catch(() => {
+        setBlobUrl(null);
+        setRawBlobUrl(null);
+      });
     return () => {
       cancelled = true;
-      if (url) URL.revokeObjectURL(url);
+      for (const u of urls) URL.revokeObjectURL(u);
     };
   }, [name, path, viaTunnel]);
   const raw = viaTunnel ? (blobUrl ?? "") : api.fileUrl(name, path);
+  const rawLink = viaTunnel ? (rawBlobUrl ?? "") : raw;
   const downloadUrl = viaTunnel ? (blobUrl ?? "") : api.fileUrl(name, path, { download: true });
 
   useEffect(() => {
@@ -185,7 +198,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
         {stat?.exists && (
           <span className="mono-meta">
             {node ? `on ${node} · ` : ""}
-            {stat.media_type} · {fmtSize(stat.size ?? 0)}
+            {stat.media_type} · {fmtBytes(stat.size ?? 0)}
             {stat.mtime ? ` · ${relTime(stat.mtime)} ago` : ""}
           </span>
         )}
@@ -202,7 +215,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
         )}
         {stat?.exists && (
           <>
-            <a className="btn sm" href={raw} target="_blank" rel="noreferrer" title={viaTunnel ? "the bytes came through the relay; this opens a local copy" : undefined}>
+            <a className="btn sm" href={rawLink} target="_blank" rel="noreferrer" title={viaTunnel ? "the bytes came through the relay; this opens a local copy" : undefined}>
               raw ↗
             </a>
             <a className="btn sm" href={downloadUrl} download={viaTunnel ? (stat.name ?? undefined) : undefined}>

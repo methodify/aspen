@@ -13,6 +13,7 @@ import {
 } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { createPortal } from "react-dom";
+import { PermCard, QuestionCard as NeedsQuestionCard } from "../needs";
 import { libraryIndex, PluginFinder, ProvidesChips, providesParts, sumProvides } from "../pluginLib";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -84,10 +85,9 @@ import { ToolBody, resultHint } from "./../toolViews";
 import { linkifyPaths } from "./../pathLinks";
 import "./view.css";
 import {
-  buildQuestionUpdatedInput,
   filterSlashCommands,
+  fmtElapsed,
   fmtTokens,
-  hasSuggestions,
   loadRenderMode,
   normalizeModels,
   runtimeModels,
@@ -98,7 +98,6 @@ import {
   statusNoteOf,
   storeRenderMode,
   summarizeContext,
-  summarizeSuggestions,
   toolUseNameOf,
   type ContextSummary,
   type RenderMode,
@@ -144,6 +143,7 @@ type Action =
   | { type: "local_send"; text: string; localKey: string; images?: HistoryImage[] }
   | { type: "sent"; localKey: string; uuid: string }
   | { type: "send_failed"; localKey: string }
+  | { type: "send_queued"; localKey: string }
   | { type: "settle_tools" }
   | { type: "open_prompts"; prompts: OpenPrompt[] };
 
@@ -161,6 +161,9 @@ function reducer(state: TranscriptState, action: Action): TranscriptState {
       return markLocalUserMessage(state, action.localKey, { uuid: action.uuid });
     case "send_failed":
       return markLocalUserMessage(state, action.localKey, { failed: true });
+    case "send_queued":
+      // Not lost: queued on the bus until the node's link returns.
+      return markLocalUserMessage(state, action.localKey, { busQueued: true });
     case "settle_tools":
       return settleTools(state);
     case "open_prompts":
@@ -287,6 +290,7 @@ const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) 
       )}
       {item.pending && !item.failed && <div className="bubble-note dim">sending…</div>}
       {item.failed && <div className="bubble-note error-text">send failed — not delivered</div>}
+      {item.busQueued && <div className="bubble-note dim" title="this node could not reach the session's node; the bus delivers it when the link returns">queued — delivers when the node's link returns</div>}
       {!item.pending && item.via === "mid-turn" && <div className="bubble-note dim" title="the harness took this while a turn was running, between two of its own steps; it kept no transcript line, so this comes from the node's record">delivered mid-turn</div>}
       {!item.pending && item.via === "queued" && <div className="bubble-note dim" title="written while a turn was running; the harness had not taken it when the transcript was read">queued in the harness</div>}
     </div>
@@ -535,231 +539,6 @@ const ToolCard = memo(function ToolCard({
     </details>
   );
 });
-
-/**
- * AskUserQuestion rendered as a question card (§7.6): options as buttons,
- * multiSelect toggles, an optional free-text note, and an explicit skip.
- * A question is a conversation, not an alarm — amber, not the gate red.
- */
-function QuestionCard({
-  item,
-  onAnswer,
-}: {
-  item: PermissionCardItem;
-  onAnswer: (answer: PermissionAnswer) => Promise<boolean>;
-}) {
-  const questions = useMemo(() => parseQuestions(item.input) ?? [], [item.input]);
-  const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
-  const [note, setNote] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  if (item.settled) {
-    return (
-      <div className="perm-settled mono">
-        <span className={item.outcome === "denied" ? "perm-denied" : "perm-allowed"}>
-          {item.outcome === "allowed" ? "answered" : (item.outcome ?? "settled")}
-        </span>{" "}
-        question
-      </div>
-    );
-  }
-
-  function toggle(qi: number, label: string, multi: boolean) {
-    setPicks((prev) => {
-      const next = prev.slice();
-      const cur = next[qi] ?? [];
-      next[qi] = multi
-        ? cur.includes(label)
-          ? cur.filter((l) => l !== label)
-          : [...cur, label]
-        : cur.length === 1 && cur[0] === label
-          ? []
-          : [label];
-      return next;
-    });
-  }
-
-  const hasAny = picks.some((p) => p.length > 0) || note.trim() !== "";
-
-  async function submit() {
-    setSubmitting(true);
-    const updated_input = buildQuestionUpdatedInput(item.input, questions, picks, note);
-    const ok = await onAnswer({ allow: true, updated_input });
-    if (!ok) setSubmitting(false);
-  }
-
-  async function skip() {
-    // Explicit skip: a bare allow sends no answers (§7.6).
-    setSubmitting(true);
-    const ok = await onAnswer({ allow: true });
-    if (!ok) setSubmitting(false);
-  }
-
-  return (
-    <div className="q-card">
-      <div className="q-head">
-        <span className="chip chip-question">question</span>
-        <span className="mono dim">@agent asks</span>
-      </div>
-      {questions.map((q, qi) => (
-        <div className="q-block" key={qi}>
-          {q.header && <div className="q-header-label">{q.header}</div>}
-          <div className="q-question">{q.question}</div>
-          {q.kind === "choice" ? (
-            <div className="q-opts" role="group" aria-label={q.question}>
-              {q.options.map((o) => (
-                <button
-                  key={o.label}
-                  type="button"
-                  className="q-opt"
-                  aria-pressed={(picks[qi] ?? []).includes(o.label)}
-                  title={o.description ?? undefined}
-                  disabled={submitting}
-                  onClick={() => toggle(qi, o.label, q.multiSelect)}
-                >
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="q-free">
-              <input
-                type={q.kind === "number" ? "number" : "text"}
-                min={q.min}
-                max={q.max}
-                value={picks[qi]?.[0] ?? ""}
-                placeholder={q.kind === "number" ? "a number" : "your answer"}
-                disabled={submitting}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setPicks((prev) => {
-                    const next = prev.slice();
-                    next[qi] = v ? [v] : [];
-                    return next;
-                  });
-                }}
-              />
-            </div>
-          )}
-          {q.multiSelect && <div className="q-multi-hint">select all that apply</div>}
-        </div>
-      ))}
-      <div className="q-free">
-        <input
-          value={note}
-          placeholder="optional note to the agent"
-          disabled={submitting}
-          onChange={(e) => setNote(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && hasAny) void submit();
-          }}
-        />
-      </div>
-      <div className="q-actions">
-        <button className="btn-answer" disabled={submitting || !hasAny} onClick={() => void submit()}>
-          answer
-        </button>
-        <button className="btn-skip" disabled={submitting} onClick={() => void skip()}>
-          skip (no answer)
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PermissionCard({
-  item,
-  onAnswer,
-  onAlways,
-}: {
-  item: PermissionCardItem;
-  onAnswer: (allow: boolean, message?: string) => Promise<boolean>;
-  onAlways: (() => Promise<boolean>) | null;
-}) {
-  const [denyOpen, setDenyOpen] = useState(false);
-  const [denyMsg, setDenyMsg] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  if (item.settled) {
-    return (
-      <div className="perm-settled mono">
-        <span className={item.outcome === "denied" ? "perm-denied" : "perm-allowed"}>
-          {item.outcome ?? "settled"}
-        </span>{" "}
-        {item.toolName}
-      </div>
-    );
-  }
-
-  async function answer(allow: boolean) {
-    setSubmitting(true);
-    const ok = await onAnswer(allow, allow ? undefined : denyMsg.trim() || undefined);
-    if (!ok) setSubmitting(false);
-  }
-
-  async function always() {
-    if (!onAlways) return;
-    setSubmitting(true);
-    const ok = await onAlways();
-    if (!ok) setSubmitting(false);
-  }
-
-  const grantScope = onAlways
-    ? (summarizeSuggestions(item.suggestions) ?? "applies the CLI's suggested rule")
-    : null;
-
-  return (
-    <div className="perm-card">
-      <div className="perm-head">
-        <span className="chip chip-perm">permission</span>
-        <span className="mono perm-tool">{item.toolName}</span>
-      </div>
-      <pre className="perm-input">{JSON.stringify(item.input, null, 2)}</pre>
-      <div className="perm-actions">
-        <button className="btn-allow" disabled={submitting} onClick={() => void answer(true)}>
-          Allow
-        </button>
-        {onAlways && (
-          <button
-            className="btn-always"
-            disabled={submitting}
-            title="allow now and apply the CLI's suggested rule for next time"
-            onClick={() => void always()}
-          >
-            Always allow
-          </button>
-        )}
-        {!denyOpen ? (
-          <button className="btn-deny" disabled={submitting} onClick={() => setDenyOpen(true)}>
-            Deny…
-          </button>
-        ) : (
-          <>
-            <input
-              autoFocus
-              className="deny-msg"
-              placeholder="shown to the model"
-              value={denyMsg}
-              onChange={(e) => setDenyMsg(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void answer(false);
-                if (e.key === "Escape") setDenyOpen(false);
-              }}
-            />
-            <button className="btn-deny" disabled={submitting} onClick={() => void answer(false)}>
-              Deny
-            </button>
-            <button className="btn-quiet" onClick={() => setDenyOpen(false)}>
-              cancel
-            </button>
-          </>
-        )}
-        {grantScope && <div className="perm-grant-scope">always allow: {grantScope}</div>}
-      </div>
-    </div>
-  );
-}
-
 const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem }) {
   return (
     <div className="turn-end mono">
@@ -772,15 +551,6 @@ const TurnEndMarker = memo(function TurnEndMarker({ item }: { item: TurnEndItem 
 
 // ---------------------------------------------------------------------------
 // The page
-
-function fmtElapsed(startIso: string | null, endIso: string | null): string {
-  if (!startIso) return "";
-  const a = Date.parse(startIso);
-  const b = endIso ? Date.parse(endIso) : serverNow() * 1000;
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return "";
-  const s = Math.max(0, Math.round((b - a) / 1000));
-  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-}
 
 /** "activity ▾": the session's ledger (PROPOSALS §8) — background tasks,
  *  subagents, workflows, monitors — running first; agents open their own
@@ -2069,6 +1839,13 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           if (disposed) return;
           attempt = 0;
           setWsState("open");
+          // Whatever happened while the socket was down never streamed
+          // here: on a reconnect, fetch what follows the newest user line
+          // this page has and merge it, so the transcript has no gap until
+          // a reload (the 2026-10 quality pass). This page's own unsent
+          // bubbles are kept. (The first open follows the history read.)
+          if (openedOnce) void catchUp();
+          openedOnce = true;
         },
         onMessage: (data) => {
           if (disposed) return;
@@ -2083,6 +1860,28 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           timer = window.setTimeout(connect, delay);
         },
       });
+    }
+
+    let openedOnce = false;
+    async function catchUp() {
+      const cur = transcriptRef.current;
+      const head = transcriptHead(cur);
+      if (!head) return;
+      try {
+        const delta = await api.transcriptPage(name, { after: head });
+        if (disposed || !delta.after_found || delta.items.length === 0) return;
+        const now = transcriptRef.current;
+        if (transcriptHead(now) !== head) return; // moved on meanwhile
+        const merged = mergeAfter(now, head, delta.items);
+        const unsent = now.items.filter((it) => it.kind === "user" && it.localKey && !it.uuid);
+        const known = new Set(merged.items.map((it) => it.id));
+        dispatch({
+          type: "seed",
+          state: { ...merged, items: [...merged.items, ...unsent.filter((it) => !known.has(it.id))] },
+        });
+      } catch {
+        // the live stream carries on; a reload fetches the rest
+      }
     }
 
     async function start() {
@@ -2331,8 +2130,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     try {
       const res = await api.sendMessage(name, text, outgoing);
       if (res.queued) {
-        // Not lost: it rides the bus until the node's link returns.
-        dispatch({ type: "send_failed", localKey });
+        // Not lost: it rides the bus until the node's link returns. (It
+        // showed as "send failed — not delivered"; the 2026-10 quality pass.)
+        dispatch({ type: "send_queued", localKey });
         setBusy(false);
         busyLocalStartRef.current = null;
         setCtlNote(res.note ?? "queued — delivers when the node's link returns");
@@ -2524,36 +2324,6 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
 
-  async function answerPermissionWith(
-    requestId: string,
-    answer: PermissionAnswer,
-  ): Promise<boolean> {
-    setActionError(null);
-    try {
-      await api.answerPermission(name, requestId, answer);
-      // Optimistic settle; the WS permission_settled is idempotent on top.
-      dispatch({
-        type: "event",
-        ev: { kind: "permission_settled", request_id: requestId, allow: answer.allow },
-      });
-      return true;
-    } catch (e) {
-      setActionError(`permission: ${errText(e)}`);
-      return false;
-    }
-  }
-
-  function answerPermission(
-    requestId: string,
-    allow: boolean,
-    message?: string,
-  ): Promise<boolean> {
-    return answerPermissionWith(
-      requestId,
-      allow ? { allow: true } : { allow: false, ...(message ? { message } : {}) },
-    );
-  }
-
   // --- header control actions ---
 
   async function changeModel(v: string) {
@@ -2735,6 +2505,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         const notes = [
           item.pending && !item.failed ? "sending…" : "",
           item.failed ? "send failed — not delivered" : "",
+          item.busQueued ? "queued — delivers when the node's link returns" : "",
           !item.pending && item.via === "mid-turn" ? "delivered mid-turn" : "",
           !item.pending && item.via === "queued" ? "queued in the harness" : "",
           item.images && item.images.length ? `[${item.images.length} image${item.images.length === 1 ? "" : "s"}]` : "",
@@ -2775,33 +2546,42 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     }
   }
 
+  // The same cards as Now's "needs you" (needs.tsx): one implementation,
+  // so the pane offers the harness's own decisions (Codex's "for this
+  // session") and skips the deny reason Codex cannot carry. The pane had
+  // its own copies that had drifted (the 2026-10 quality pass).
   function renderPermissionItem(item: PermissionCardItem) {
     const isQuestion =
-      item.toolName === "AskUserQuestion" || parseQuestions(item.input) !== null;
-    if (isQuestion) {
+      item.promptKind === "question" || item.toolName === "AskUserQuestion" || parseQuestions(item.input) !== null;
+    if (item.settled) {
+      const outcome = isQuestion && item.outcome === "allowed" ? "answered" : (item.outcome ?? "settled");
       return (
-        <QuestionCard
-          key={item.id}
-          item={item}
-          onAnswer={(answer) => answerPermissionWith(item.requestId, answer)}
-        />
+        <div key={item.id} className="perm-settled mono">
+          <span className={item.outcome?.startsWith("denied") ? "perm-denied" : "perm-allowed"}>{outcome}</span>{" "}
+          {item.toolName}
+        </div>
       );
     }
-    return (
-      <PermissionCard
-        key={item.id}
-        item={item}
-        onAnswer={(allow, message) => answerPermission(item.requestId, allow, message)}
-        onAlways={
-          hasSuggestions(item.suggestions)
-            ? () =>
-                answerPermissionWith(item.requestId, {
-                  allow: true,
-                  updated_permissions: item.suggestions,
-                })
-            : null
-        }
-      />
+    const prompt: OpenPrompt = {
+      agent: name,
+      node: null,
+      request_id: item.requestId,
+      tool_name: item.toolName,
+      input: item.input,
+      suggestions: item.suggestions,
+      asked_at: 0,
+      is_question: isQuestion,
+      prompt_kind: item.promptKind,
+      tool_kind: item.toolKind,
+      decisions: item.decisions,
+    };
+    // Settled here at once; the socket's permission_settled lands on top.
+    const settle = (a: PermissionAnswer) =>
+      dispatch({ type: "event", ev: { kind: "permission_settled", request_id: item.requestId, allow: a.allow } });
+    return isQuestion ? (
+      <NeedsQuestionCard key={item.id} prompt={prompt} onAnswered={settle} />
+    ) : (
+      <PermCard key={item.id} prompt={prompt} onAnswered={settle} />
     );
   }
 
@@ -2973,7 +2753,10 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   if (busy) {
     const since = agent?.busy_since;
     if (typeof since === "number" && since > 0) {
-      workSecs = Math.max(0, Math.floor(nowTick / 1000 - since));
+      // The node's clock, not this device's (a skewed phone counted from
+      // the wrong zero); nowTick only drives the re-render.
+      void nowTick;
+      workSecs = Math.max(0, Math.floor(serverNow() - since));
     } else if (busyLocalStartRef.current !== null) {
       workSecs = Math.max(0, Math.floor((nowTick - busyLocalStartRef.current) / 1000));
     }

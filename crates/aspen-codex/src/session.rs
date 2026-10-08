@@ -14,9 +14,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use aspen_core::permission::{
-    BrokerDecision, DecidedBy, PermissionBroker, PermissionPolicy, PermissionRequest,
-};
+use aspen_core::permission::{BrokerDecision, DecidedBy, PermissionBroker, PermissionRequest};
 use aspen_core::{
     AdapterCapabilities, DecisionOption, DecisionScope, Harness, PromptKind, RuntimeInfo,
     SessionEvent, SessionHandle, SessionId, ToolKind,
@@ -33,9 +31,6 @@ pub struct Bridge {
     pub node_api: String,
     pub token: Option<String>,
     pub aspen_bin: String,
-    /// The provider itself, for the tool list the bridge advertises
-    /// (the node serves the calls; the bridge lists what it forwards).
-    pub tools: Option<Arc<dyn aspen_core::ToolProvider>>,
 }
 
 #[derive(Clone)]
@@ -47,7 +42,6 @@ pub struct CodexConfig {
     pub model: Option<String>,
     /// A mode id from `adapter::MODES`.
     pub mode: String,
-    pub policy: PermissionPolicy,
     pub charter: Option<String>,
     pub extra_args: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -113,17 +107,29 @@ impl CodexSession {
         if let Some(b) = &cfg.bridge {
             overrides.push(("mcp_servers.aspen.command".into(), toml_str(&b.aspen_bin)));
             overrides.push(("mcp_servers.aspen.args".into(), "[\"mcp\"]".into()));
-            let mut kv = vec![
+            let kv = [
                 format!("ASPEN_NODE_API = {}", toml_str(&b.node_api)),
                 format!("ASPEN_AGENT = {}", toml_str(&cfg.agent)),
             ];
-            if let Some(t) = &b.token {
-                kv.push(format!("ASPEN_NODE_TOKEN = {}", toml_str(t)));
-            }
             overrides.push((
                 "mcp_servers.aspen.env".into(),
                 format!("{{ {} }}", kv.join(", ")),
             ));
+            // The token rides the app-server's environment and is
+            // forwarded by name: as an inline `-c` value it was on the
+            // command line, readable by any local user (the 2026-10
+            // quality pass).
+            if b.token.is_some() {
+                env.retain(|(k, _)| k != "ASPEN_NODE_TOKEN");
+                env.push((
+                    "ASPEN_NODE_TOKEN".to_owned(),
+                    b.token.clone().unwrap_or_default(),
+                ));
+                overrides.push((
+                    "mcp_servers.aspen.env_vars".into(),
+                    "[\"ASPEN_NODE_TOKEN\"]".into(),
+                ));
+            }
             // The bridge is a tiny process; do not wait long on it.
             overrides.push(("mcp_servers.aspen.startup_timeout_sec".into(), "20".into()));
         }
@@ -354,12 +360,6 @@ impl CodexSession {
             "item/started" => {
                 let item = params.get("item").cloned().unwrap_or(Value::Null);
                 let ty = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                    self.items
-                        .lock()
-                        .unwrap()
-                        .insert(id.to_owned(), item.clone());
-                }
                 match ty {
                     "agentMessage" | "reasoning" | "userMessage" | "plan" | "hookPrompt"
                     | "contextCompaction" => {}
@@ -369,6 +369,16 @@ impl CodexSession {
                         send(SessionEvent::Status { raw: json!({ "type": "extension", "kind": item.get("kind"), "duration_ms": item.get("durationMs") }) }).await;
                     }
                     _ => {
+                        // Only tool items: an approval names one by id, and
+                        // item/completed removes it. Every item kept here
+                        // grew the map for the session's life (the 2026-10
+                        // quality pass).
+                        if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                            self.items
+                                .lock()
+                                .unwrap()
+                                .insert(id.to_owned(), item.clone());
+                        }
                         if let Some(ev) = normalize::tool_use_of(&item) {
                             send(ev).await;
                         }
@@ -1262,9 +1272,17 @@ impl SessionHandle for CodexSession {
             .filter(|m| !m.is_empty() && *m != "default")
             .map(str::to_owned);
         *self.model.lock().unwrap() = m.clone();
-        if let Some(m) = m {
-            self.runtime.lock().unwrap().model = Some(m);
-        }
+        let mut rt = self.runtime.lock().unwrap();
+        rt.model = match m {
+            Some(m) => Some(m),
+            // Back to default: what Codex chose with none asked for, when
+            // known (it kept naming the old pick; the 2026-10 quality pass).
+            None => rt
+                .raw
+                .get("default_model")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+        };
         Ok(())
     }
 

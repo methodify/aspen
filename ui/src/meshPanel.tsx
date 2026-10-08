@@ -22,6 +22,7 @@ import { api, attachedIsLocal, downloadText, type AutostartInfo, type BlobInfo, 
 import { usePoll } from "./hooks";
 import { useAppData } from "./App";
 import { ErrorBar, relTime } from "./components";
+import { safeDecode } from "./util";
 
 type Stage = "solo" | "enrolled" | "root" | "member";
 
@@ -590,7 +591,7 @@ export function MeshPanel() {
   useEffect(() => {
     const m = /^#(enroll|join|cert)=(.+)$/.exec(location.hash);
     if (!m) return;
-    setBlob(decodeURIComponent(m[2]));
+    setBlob(safeDecode(m[2]));
     setOpen(true);
     nav({ pathname: location.pathname, search: location.search, hash: "" }, { replace: true });
   }, [location.hash, location.pathname, location.search, nav]);

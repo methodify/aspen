@@ -316,7 +316,6 @@ impl AgentAdapter for CodexAdapter {
             fork: spec.fork,
             model: spec.model.clone(),
             mode: mode_id,
-            policy: spec.policy,
             charter: spec.charter.clone(),
             extra_args: spec.extra_args.clone(),
             env: {
@@ -333,7 +332,6 @@ impl AgentAdapter for CodexAdapter {
                     .ok()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "aspen".into()),
-                tools: spec.tools.clone(),
             }),
         };
         let broker: Arc<dyn aspen_core::PermissionBroker> = match spec.broker.clone() {
