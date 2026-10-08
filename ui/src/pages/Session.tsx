@@ -1946,6 +1946,31 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const ctxSeededRef = useRef(false);
   const agentRef = useRef(agent);
   agentRef.current = agent;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  /** When the socket last carried this session's own activity. */
+  const lastActivityRef = useRef(0);
+  // The node's turn state, all along (not only at load): busy there is busy
+  // here, however the turn began; idle there clears a busy that the socket
+  // never ended (a turn_ended lost to a reconnect), once nothing has
+  // streamed for a while, so a send from this page is never undercut by a
+  // roster a poll behind.
+  const turnState = agent?.live ? agent.turn_state : null;
+  useEffect(() => {
+    if (!ctxSeededRef.current) return;
+    if (turnState === "busy" && !busyRef.current) {
+      setBusy(true);
+      if (busyLocalStartRef.current === null) busyLocalStartRef.current = Date.now();
+      setNowTick(Date.now());
+    } else if (turnState === "idle" && busyRef.current) {
+      const quiet = Date.now() - Math.max(lastActivityRef.current, busyLocalStartRef.current ?? 0);
+      if (quiet > 10000) {
+        setBusy(false);
+        busyLocalStartRef.current = null;
+        dispatch({ type: "settle_tools" });
+      }
+    }
+  }, [turnState]);
   useEffect(() => {
     if (ctxSeededRef.current || !agent) return;
     ctxSeededRef.current = true;
@@ -1966,6 +1991,22 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   useEffect(() => {
     handleEventRef.current = (ev: SessionEvent) => {
       dispatch({ type: "event", ev });
+      // A turn this page did not start (a bus message from another agent,
+      // another console, a queued delivery) still streams here: the first
+      // sign of it marks the page busy. Before, only a send from this page
+      // did, and the status line read "last turn: success" while the
+      // transcript filled with a running turn (2026-10-07).
+      if (
+        (ev.kind === "text_delta" || ev.kind === "assistant_message" || ev.kind === "tool_use" || ev.kind === "permission_asked") &&
+        !("parent_tool_use_id" in ev && ev.parent_tool_use_id)
+      ) {
+        lastActivityRef.current = Date.now();
+        if (!busyRef.current) {
+          setBusy(true);
+          if (busyLocalStartRef.current === null) busyLocalStartRef.current = Date.now();
+          setNowTick(Date.now());
+        }
+      }
       switch (ev.kind) {
         case "turn_ended":
           // §5.3: `turn_ended` is the single unlock signal for the composer.

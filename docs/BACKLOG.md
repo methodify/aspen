@@ -38,6 +38,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Queued for the next release
+
+- **A pane shows "working" for a turn it did not start** (2026-10-07). On a board, an agent woken by another agent's bus message streamed its turn into the pane (text, running tool cards) while the status line read "last turn: success". The rail was right; it reads the node's `turn_state`. The pane's busy flag was set only by a send from that page, or once at load. Now the first event of the session's own turn (text, message, tool call or permission prompt; not a subagent's) marks it busy, and the node's `turn_state` is followed all along. Busy there is busy here. Idle there clears a busy that never got its `turn_ended` (a reconnect gap), after 10 s with no events, so it cannot undercut a send from the page. Verified on the rig: a turn started through the API, not the page, read idle → working → "last turn: success".
+
 ## Shipped — 2026-10-04: history that scales — compactions, pages that follow them, reading from the end (v0.49.2)
 
 PROPOSALS-2026-10-Q.md Q-1..Q-3; API.md transcript.
