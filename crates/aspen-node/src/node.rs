@@ -1191,6 +1191,12 @@ fn after_slice(
     }
 }
 
+/// The tokens one request sent the model: its input, cached or not.
+fn request_context_tokens(u: &serde_json::Value) -> u64 {
+    let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens")
+}
+
 fn iso_of(epoch: f64) -> String {
     let secs = epoch.floor() as i64;
     let days = secs.div_euclid(86400);
@@ -3789,14 +3795,18 @@ async fn pump(
                     if let Some(txt) = result_text.as_deref().filter(|x| !x.trim().is_empty()) {
                         s.last_reply = Some(snippet(txt, 200));
                     }
-                    // Context estimate: tokens in the last request.
-                    if let Some(u) = raw.get("usage") {
-                        let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-                        let total = n("input_tokens")
-                            + n("cache_read_input_tokens")
-                            + n("cache_creation_input_tokens");
-                        if total > 0 {
-                            s.context_tokens = Some(total);
+                    // Context: the turn result's usage is summed over every
+                    // request in the turn (a turn of 40 tool calls counts the
+                    // context 40 times), so it read 100% on any busy turn
+                    // (2026-10-08). The reading comes from each request's own
+                    // usage (the assistant messages, Codex's token_usage); the
+                    // sum is only a fallback for a session with none yet.
+                    if s.context_tokens.is_none() {
+                        if let Some(u) = raw.get("usage") {
+                            let total = request_context_tokens(u);
+                            if total > 0 {
+                                s.context_tokens = Some(total);
+                            }
                         }
                     }
                     if let Some(mu) = raw.get("modelUsage").and_then(|m| m.as_object()) {
@@ -3890,6 +3900,33 @@ async fn pump(
                     .filter(|m| !m.is_empty())
                 {
                     sess.summary.lock().unwrap().model = Some(m.to_owned());
+                }
+                // Each message carries its request's usage: what the model
+                // was sent is how full the context is now.
+                if let Some(u) = raw.pointer("/message/usage") {
+                    let total = request_context_tokens(u);
+                    if total > 0 {
+                        sess.summary.lock().unwrap().context_tokens = Some(total);
+                    }
+                }
+            }
+            SessionEvent::Status { raw }
+                if raw.get("type").and_then(|t| t.as_str()) == Some("token_usage") =>
+            {
+                // Codex: the last request's tokens and the model's window.
+                let tu = raw.get("tokenUsage");
+                let last = tu.and_then(|t| t.get("last"));
+                let n = |k: &str| last.and_then(|l| l.get(k)).and_then(|v| v.as_u64());
+                let used = n("totalTokens").or_else(|| n("inputTokens"));
+                let mut s = sess.summary.lock().unwrap();
+                if let Some(t) = used.filter(|t| *t > 0) {
+                    s.context_tokens = Some(t);
+                }
+                if let Some(w) = tu
+                    .and_then(|t| t.get("modelContextWindow"))
+                    .and_then(|w| w.as_u64())
+                {
+                    s.context_window = Some(w);
                 }
             }
             SessionEvent::ToolUse {

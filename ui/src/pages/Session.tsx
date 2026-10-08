@@ -2981,6 +2981,25 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const lastTool = localLastTool ?? agent?.last_tool ?? null;
 
   const ctxPct = ctx?.percent !== null && ctx?.percent !== undefined ? Math.round(ctx.percent) : null;
+  // The menu's context reading, always present (2026-10-08): the harness's
+  // own account when the page has it (the bar's meter), else the node's
+  // reading of the last request, else why there is none.
+  const menuCtx = (() => {
+    if (ctxPct !== null) {
+      return { pct: ctxPct, used: ctx?.usedTokens ?? null, max: ctx?.maxTokens ?? null, source: "the harness's account" };
+    }
+    const sm = agent?.summary;
+    if (sm?.context_tokens) {
+      const max = sm.context_window ?? (sm.context_tokens > 200000 ? 1000000 : 200000);
+      return {
+        pct: Math.min(100, Math.round((sm.context_tokens / max) * 100)),
+        used: sm.context_tokens,
+        max,
+        source: sm.context_window ? "the last request the node saw" : "the last request the node saw; window assumed",
+      };
+    }
+    return null;
+  })();
 
   // What the folded menu would otherwise hide: badges on its button.
   const menuBadges: { key: string; text: string; title: string; live?: boolean; warn?: boolean }[] = [];
@@ -3225,6 +3244,25 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         <div className="menu-head">
           <span className="mono">@{name}</span>
           <span className="mono-meta">{[agent?.harness, modelInUse].filter(Boolean).join(" · ")}</span>
+          <span className="menu-ctx" title={menuCtx ? `context: ${menuCtx.source}` : undefined}>
+            <span className="label">context</span>
+            {menuCtx ? (
+              <>
+                <span className="menu-ctx-bar" aria-hidden>
+                  <span style={{ width: `${Math.min(100, menuCtx.pct)}%` }} className={menuCtx.pct >= 85 ? "hot" : ""} />
+                </span>
+                <span className="mono">{menuCtx.pct}%</span>
+                {menuCtx.used !== null && menuCtx.max !== null && (
+                  <span className="mono-meta">{fmtTokens(menuCtx.used)} of {fmtTokens(menuCtx.max)}</span>
+                )}
+              </>
+            ) : (
+              <span className="mono-meta">{exited !== null ? "not running" : "not known until a turn has run"}</span>
+            )}
+            {!busy && exited === null && (
+              <button className="btn ghost sm" onClick={() => void fetchContext()} title="ask the harness for its context account now">refresh</button>
+            )}
+          </span>
         </div>
         <div className="menu-phone-only">
           <MenuGroup label="session">

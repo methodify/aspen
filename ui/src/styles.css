@@ -950,3 +950,11 @@ button.link:hover { text-decoration-style: solid; }
 .compaction-summary[open] > summary { margin-bottom: 6px; }
 .compaction-summary .md { padding: 8px 12px; border: 1px solid var(--line); background: var(--bg-well); font-size: 12.5px; max-height: 50vh; overflow: auto; }
 .compaction.tui .compaction-label { font-family: var(--font-mono); text-transform: none; letter-spacing: 0; }
+
+/* the session menu's context reading (always present) */
+.menu-ctx { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.menu-ctx .label { margin: 0; }
+.menu-ctx-bar { display: inline-block; width: 72px; height: 6px; background: var(--bg-well); border: 1px solid var(--line); position: relative; overflow: hidden; }
+.menu-ctx-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--sig-info, var(--accent)); }
+.menu-ctx-bar > span.hot { background: var(--sig-notice); }
+.menu-ctx .btn { margin-left: auto; }

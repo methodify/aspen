@@ -64,7 +64,9 @@ function fmtDur(s: number): string {
 function ctxPct(a: Agent): number | null {
   const s = a.summary;
   if (!s?.context_tokens) return null;
-  const win = s.context_window ?? 200000;
+  // The node reports the window once a turn has ended; before that, a
+  // session past 200k tokens is on a 1M-context model, not "100%".
+  const win = s.context_window ?? (s.context_tokens > 200000 ? 1000000 : 200000);
   return Math.min(100, Math.round((s.context_tokens / win) * 100));
 }
 
