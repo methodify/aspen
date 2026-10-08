@@ -38,7 +38,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Queued for the next release — 2026-10-08 code quality pass
+## Shipped — 2026-10-08: code quality pass (v0.49.5)
 
 A review of the whole codebase (six areas, every finding checked by a second reviewer: 71 confirmed of 72). Fixed:
 - **Security (high).** The `http` mesh op (a console's passthrough to the whole API) was classed a read and served any peer, so an observe-only mesh's member could POST anything; it now serves consoles of the primary mesh only, and a console takes its mesh's policy (a `console-` name granted Control on its own). A token-less loopback node accepted cross-site requests and any Host (CSRF, DNS rebinding); it now refuses a foreign Host or Origin. Repo-bundle import, session moves (`pull_session`), `bundle_read` and Claude session ids joined peer- or file-supplied paths unchecked (absolute paths and `..` reached anywhere): one shared check (`aspen_core::paths`) now gates them, at bundle staging and at each join. An agent-written HTML/SVG file opened from "raw ↗" ran at the console's origin; files now carry nosniff and a sandbox policy, and over the relay open as text.
