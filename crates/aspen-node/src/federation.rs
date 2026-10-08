@@ -4209,7 +4209,10 @@ mod capability_tests {
         // A console takes its mesh's policy (an unknown one, the primary's,
         // full here); its name alone grants nothing (2026-10 quality pass).
         assert!(st.allows("console-abc", Capability::Control));
-        st.link_mesh.lock().unwrap().insert("console-w".into(), "work".into());
+        st.link_mesh
+            .lock()
+            .unwrap()
+            .insert("console-w".into(), "work".into());
         st.extra.write().unwrap()[0].policy = Some("observe".into());
         assert!(!st.allows("console-w", Capability::Control));
     }
