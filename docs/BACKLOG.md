@@ -38,7 +38,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Queued for the next release
+## Shipped — 2026-10-08: a relay hiccup no longer costs a minute (v0.49.4)
 
 - **A relay hiccup no longer costs a minute** (2026-10-08). The work mesh's root node logged relay links that outlived their transport. After the relay dropped its connection ("Connection reset without closing handshake"), dev009's link stayed up until "link silent for 45s" and came back on the next presence check, about 66 s for a reconnect that took seconds. "peer left the relay; link closed" was followed 37 s later by the real close, and a relay link superseded by a direct one lingered 43 s. One cause: `start_relay_link` kept a strong copy of the link's inbound sender for the link's whole life (only to compare entries afterwards), so removing the entry (session ended, peer left, direct superseded) never closed the channel; only the silence check did. It now keeps a weak reference. Verified on the rig: a relay link superseded by a direct one closed at once, with no "link silent" 45 s later (before: one per node, 40 s on).
 - Not ours to fix: the relay connection itself is reset every ~25 min by something below the worker (Cloudflare restarting the object or edge, or the network path). The node redials in 5–10 s; links now follow at once.
