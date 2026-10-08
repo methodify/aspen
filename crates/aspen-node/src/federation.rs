@@ -3978,7 +3978,13 @@ fn start_relay_link(
     let inner2 = inner.clone();
     let peer3 = peer.to_owned();
     let peer_ins2 = peer_ins.clone();
-    let mine = in_tx.clone();
+    // Weak: a strong copy held here kept the channel open for the link's
+    // whole life, so removing its entry (the relay session ended, the peer
+    // left the relay, a direct link superseded it) never closed it; the
+    // link lingered until the 45 s silence check, and a peer stayed
+    // unreachable for a minute after a relay hiccup that took seconds to
+    // heal (seen on the work mesh, 2026-10-08).
+    let mine = in_tx.downgrade();
     let kind = format!("relay:{relay_url}");
     let key = MeshState::relay_link_key(relay_url, peer);
     tracing::info!(peer = %peer, relay = %relay_url, "relay link starting");
@@ -4009,7 +4015,11 @@ fn start_relay_link(
         // the entry now, and removing it would close that link before its
         // hello — the "closed before peer hello" every 30 s seen live.
         let mut ins = peer_ins2.lock().unwrap();
-        if ins.get(&peer3).is_some_and(|tx| tx.same_channel(&mine)) {
+        let ours = mine.upgrade();
+        if ins
+            .get(&peer3)
+            .is_some_and(|tx| ours.as_ref().is_some_and(|o| tx.same_channel(o)))
+        {
             ins.remove(&peer3);
         }
     });
