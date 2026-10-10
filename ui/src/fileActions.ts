@@ -13,6 +13,20 @@ export interface AspenFileRef {
   path: string;
   name: string;
   media: string;
+  /** The file's bytes (base64), when copy could carry them: a paste then
+   *  needs no fetch, so it works in a console attached to another mesh,
+   *  another profile, another browser (v0.50.1). */
+  data?: string;
+}
+
+/** Files up to the composer's attachment limit travel inside a copy. */
+const EMBED_MAX = 8 * 1024 * 1024;
+
+async function blobToBase64(b: Blob): Promise<string> {
+  const bytes = new Uint8Array(await b.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
 
 /** `bare@repo` plus the node, when the name has none yet. */
@@ -51,6 +65,12 @@ export function parseRef(html: string | null | undefined): AspenFileRef | null {
  *  relay or direct, as for the viewer). A name qualified with this very
  *  node is also tried without it. */
 export async function refToFile(ref: AspenFileRef, selfNode?: string | null): Promise<File> {
+  if (ref.data) {
+    const bin = atob(ref.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], ref.name, { type: ref.media || "application/octet-stream" });
+  }
   let blob: Blob;
   try {
     blob = await api.fileBlob(ref.agent, ref.path);
@@ -59,7 +79,17 @@ export async function refToFile(ref: AspenFileRef, selfNode?: string | null): Pr
     if (parts.length === 3 && selfNode && parts[2] === selfNode) {
       blob = await api.fileBlob(`${parts[0]}@${parts[1]}`, ref.path);
     } else {
-      throw e;
+      // Most often: the file is on a node this console's mesh cannot
+      // reach (another mesh). A copy carries files up to 8 MB itself.
+      const raw = e instanceof Error ? e.message : String(e);
+      let why = raw;
+      try {
+        const v = JSON.parse(raw) as { error?: unknown };
+        if (typeof v.error === "string") why = v.error;
+      } catch {
+        // already plain text
+      }
+      throw new Error(`${why} — this console cannot reach the file's node (another mesh?). Copy it from its Files page or viewer instead of dragging; a copy carries files up to 8 MB.`);
     }
   }
   return new File([blob], ref.name, { type: ref.media || blob.type });
@@ -80,7 +110,12 @@ async function toPng(blob: Blob): Promise<Blob> {
  *  the clipboard item is built from promises that resolve afterwards. */
 export async function copyFile(ref: AspenFileRef, size: number | null): Promise<string> {
   const blobP = api.fileBlob(ref.agent, ref.path);
-  const html = new Blob([refHtml(ref)], { type: "text/html" });
+  // The reference carries the bytes when they fit, so the paste works in
+  // any console, whatever mesh it is attached to.
+  const html: Promise<Blob> = blobP.then(async (b) => {
+    const r = b.size <= EMBED_MAX ? { ...ref, data: await blobToBase64(b) } : ref;
+    return new Blob([refHtml(r)], { type: "text/html" });
+  });
   const textLike = isTextLike(ref.media) && (size ?? 0) <= TEXT_COPY_MAX;
   const plain: Promise<Blob> = textLike
     ? blobP.then(async (b) => new Blob([await b.text()], { type: "text/plain" }))

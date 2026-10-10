@@ -38,6 +38,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-09: a copied file pastes across meshes (v0.50.1)
+
+- The first real use of Files failed: a file copied in the work mesh's console, pasted into a session in the personal mesh's console, answered "via node 'lt-bryon-wsl': no cert on file". The reference only named the file, and the pasting console fetched it through its own node, which cannot reach another mesh (by design). A copy now carries the file's bytes in the reference (up to the composer's 8 MB attachment limit), so a paste needs no fetch and works in any console, mesh, profile or browser. A reference without bytes (a drag, a larger file) still fetches, and when it cannot, says why and to copy instead. Verified in the browser: a reference naming an unreachable work-mesh agent attached from its bytes; one without bytes gave the explanation.
+
 ## Shipped — 2026-10-09: Files, browse what an agent can see and take it anywhere (v0.50.0)
 
 PROPOSALS-2026-10-R.md. Agents write most files with shell commands, which Artifacts (built from write tool calls) never saw, so the operator went to the machine for them.
