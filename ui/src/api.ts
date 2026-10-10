@@ -825,6 +825,36 @@ export interface GitState {
   checked_at: number;
 }
 
+/** One directory of an agent's file space, or (no `dir`) its roots. */
+export interface FileEntry {
+  name: string;
+  kind: "file" | "dir" | "link";
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+  /** False for a link whose target leaves the file space: not openable. */
+  served: boolean;
+  /** Dotfile or gitignored. */
+  hidden: boolean;
+}
+export interface FileListing {
+  dir?: string;
+  root?: string;
+  root_label?: string;
+  parent?: string | null;
+  entries?: FileEntry[];
+  truncated?: boolean;
+  roots?: { label: string; path: string; exists: boolean }[];
+  named?: { path: string; stat: { size?: number; mtime?: number; name?: string } }[];
+  since?: number | null;
+}
+export interface RecentFile {
+  path: string;
+  name: string | null;
+  size: number;
+  mtime: number;
+}
+
 /** One entry in the fleet event log (GET /api/history). */
 export interface FleetEvent {
   id: number;
@@ -1743,6 +1773,12 @@ export const api = {
   },
   /** True when file URLs cannot be linked directly (attached through a relay). */
   filesViaTunnel: (): boolean => tunnel.enabled,
+  /** The agent's file space (PROPOSALS-2026-10-R.md): one directory, or
+   *  with no `dir` the roots and the files named outside them. */
+  files: (name: string, dir?: string) =>
+    request<FileListing>(`/api/agents/${enc(name)}/files${dir ? `?dir=${enc(dir)}` : ""}`),
+  filesRecent: (name: string, limit = 50) =>
+    request<{ repo: string; files: RecentFile[] }>(`/api/agents/${enc(name)}/files/recent?limit=${limit}`),
   reloadAgent: (name: string) =>
     post<Record<string, unknown>>(`/api/agents/${enc(name)}/reload`),
   sessions: (repo: string, node?: string) =>

@@ -82,7 +82,8 @@ import { clearSessionCommands, setSessionCommands, type SessionCommand } from ".
 import { useHotkeys } from "./../hotkeys";
 import { useLiveGate } from "./../trust";
 import { ToolBody, resultHint } from "./../toolViews";
-import { linkifyPaths } from "./../pathLinks";
+import { codePathTarget, linkifyPaths, viewHref } from "./../pathLinks";
+import { parseRef, refToFile, type AspenFileRef } from "../fileActions";
 import "./view.css";
 import {
   filterSlashCommands,
@@ -210,11 +211,27 @@ function MdLink({ href, children }: { href?: string; children?: React.ReactNode 
   );
 }
 
+/** Inline code that names a file (`docs/report.md`) links to the viewer,
+ *  like a path in prose; block code and other spans render as code. */
+function pathCode(agent?: string) {
+  return function PathCode({ className, children }: { className?: string; children?: React.ReactNode }) {
+    const text = typeof children === "string" ? children : Array.isArray(children) && children.every((c) => typeof c === "string") ? children.join("") : null;
+    const target = agent && !className && text && !text.includes("\n") ? codePathTarget(text) : null;
+    if (!target || !agent) return <code className={className}>{children}</code>;
+    return (
+      <Link to={viewHref(agent, target)} className="path-link" title="open in the viewer">
+        <code>{children}</code>
+      </Link>
+    );
+  };
+}
+
 const Md = memo(function Md({ text, agent }: { text: string; agent?: string }) {
   const src = agent ? linkifyPaths(text, agent) : text;
+  const code = useMemo(() => pathCode(agent), [agent]);
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MdLink }}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MdLink, code }}>
         {src}
       </ReactMarkdown>
     </div>
@@ -228,12 +245,14 @@ const Md = memo(function Md({ text, agent }: { text: string; agent?: string }) {
  */
 const TuiMd = memo(function TuiMd({ text, agent }: { text: string; agent?: string }) {
   const src = agent ? linkifyPaths(text, agent) : text;
+  const code = useMemo(() => pathCode(agent), [agent]);
   return (
     <div className="tui-md">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           a: MdLink,
+          code,
           h1: ({ children }) => <div className="tui-h tui-h1">{children}</div>,
           h2: ({ children }) => <div className="tui-h tui-h2">{children}</div>,
           h3: ({ children }) => <div className="tui-h">{children}</div>,
@@ -1373,6 +1392,15 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     setAttachments((cur) => cur.filter((a) => a.n !== n));
     setDraft((d) => d.replace(new RegExp(`\\s?\\[attachment ${n}: [^\\]]*\\]`), ""));
   }
+  // A file copied or dragged from Files (any Aspen console) arrives as a
+  // reference: fetch it and attach it like a dropped file
+  // (PROPOSALS-2026-10-R.md R-3).
+  function attachRef(ref: AspenFileRef) {
+    setActionError(null);
+    void refToFile(ref, nodeInfo?.node)
+      .then((f) => addFiles([f]))
+      .catch((err) => setActionError(`attach ${ref.name}: ${errText(err)}`));
+  }
   function onComposerPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const files: File[] = [];
     for (const it of Array.from(e.clipboardData.items)) {
@@ -1384,6 +1412,12 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     if (files.length) {
       e.preventDefault();
       void addFiles(files);
+      return;
+    }
+    const ref = parseRef(e.clipboardData.getData("text/html"));
+    if (ref) {
+      e.preventDefault();
+      attachRef(ref);
     }
   }
   function onComposerDrop(e: React.DragEvent<HTMLElement>) {
@@ -1391,6 +1425,12 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     if (files.length) {
       e.preventDefault();
       void addFiles(files);
+      return;
+    }
+    const ref = parseRef(e.dataTransfer.getData("text/html"));
+    if (ref) {
+      e.preventDefault();
+      attachRef(ref);
     }
   }
   const [reloading, setReloading] = useState(false);
@@ -2813,6 +2853,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       { id: "plugins", group: "setup", label: "plugins", hint: "this session's plugins: on/off, versions, updates", run: () => setPluginsSignal((n) => n + 1) },
       { id: "mcp", group: "setup", label: "mcp servers", hint: "status, tools, reconnect, authenticate", run: () => setMcpSignal((n) => n + 1) },
       { id: "artifacts", group: "inspect", label: "artifacts", hint: "files this session wrote, edited or read", run: () => setArtifactsSignal((n) => n + 1) },
+      { id: "files", group: "inspect", label: "files", hint: "browse the agent's repo and folders; newest files first under recent", run: () => nav(`/session/${encodeURIComponent(name)}/files`) },
       { id: "activity", group: "inspect", label: "activity", hint: "background tasks, subagents, workflows, monitors", run: () => setActivitySignal((n) => n + 1) },
       ...(pane ? [] : [{ id: "board", group: "move" as const, label: "add to a board", run: () => setBoardSignal((n) => n + 1) }]),
       ...(["chat", "console", "source"] as const).map((m) => ({ id: `render:${m}`, group: "setup" as const, label: `render as ${m}`, run: () => changeRenderMode(m) })),
@@ -3118,6 +3159,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           <McpMenu agent={name} summary={agent?.mcp ?? null} openSignal={mcpSignal} />
         </MenuGroup>
         <MenuGroup label="inspect">
+          {!subagent && (
+            <MenuRow label="files" hint="browse the agent's repo and folders; the newest files, however they were written" onClick={() => { closeMenu(); nav(`/session/${encodeURIComponent(name)}/files`); }} />
+          )}
           <MenuRow label={`charter${charterOpen ? " ▴" : ""}`} hint="the session's charter, below the bar" onClick={() => { closeMenu(); setCharterOpen((o) => !o); }} />
           {canRecap && (
             <MenuRow label="recap now" hint="open the since-you-last-looked bar and ask the harness for a one-line recap of the whole session (nothing enters the conversation)" onClick={() => { closeMenu(); recapNow(); }} disabled={agent?.turn_state === "busy"} />
@@ -3142,6 +3186,13 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           </button>
           {artifactsOpen && (
             <PanelFrame at={artifactsAt} width={640} title="artifacts" onClose={() => setArtifactsOpen(false)}>
+              <div className="row">
+                <span className="mono-meta">files its tool calls named</span>
+                <span style={{ flex: 1 }} />
+                <Link className="mono-meta" to={`/session/${encodeURIComponent(name)}/files`} onClick={() => setArtifactsOpen(false)} title="everything in the agent's repo and its other folders, however it was written">
+                  browse all files…
+                </Link>
+              </div>
               {artifacts === null ? (
                 <div className="row dim">loading…</div>
               ) : artifacts.length === 0 ? (

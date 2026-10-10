@@ -38,6 +38,15 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-09: Files, browse what an agent can see and take it anywhere (v0.50.0)
+
+PROPOSALS-2026-10-R.md. Agents write most files with shell commands, which Artifacts (built from write tool calls) never saw, so the operator went to the machine for them.
+- **Files** (`/session/{name}/files`; the ⋯ menu, the palette, "browse all files…" in Artifacts, "folder" in the viewer): the agent's file space, one directory at a time, under the same rule as reading a file (repo, session data, plans, temp since the session started, attachments; links out are listed but not served). Root chips, breadcrumbs, filter, sort, hidden (dotfiles, gitignored) on request; **Recent** lists the newest files in the repo, however they were written; **named elsewhere** lists files tool calls named outside the roots. `GET …/files`, `GET …/files/recent`, mesh ops `file_list` and `file_recent`.
+- **Getting a file out** (`fileActions.ts`): **copy** puts on the clipboard what each kind allows (a PNG for images, the text for text files, the path otherwise) plus an Aspen file reference; pasting or dropping that into any Aspen composer attaches the actual file (the composer's own paste/drop path). **Share** sends the file through the system share sheet where the browser supports it (phones). Rows drag into a composer, and in Chrome onto the desktop. Copy and share are in the viewer too.
+- **Paths in backticks link**, as paths in prose already did: an agent's `` `docs/report.md` `` opens in the viewer.
+- Built on what was there: `artifacts::resolve`'s roots (now one shared list), `stat`, the file routes' local-or-proxy path, the viewer, `api.fileBlob`, the composer's `addFiles`, `linkifyPaths`.
+- Verified on the rig: a file written by bash appeared in the listing and topped Recent; temp filtered to the session's span; `/etc` refused; a remote agent listed through the mesh; in the browser the page rendered and a pasted reference attached the real file; phone width in both themes.
+
 ## Shipped — 2026-10-08: code quality pass (v0.49.5)
 
 A review of the whole codebase (six areas, every finding checked by a second reviewer: 71 confirmed of 72). Fixed:

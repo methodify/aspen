@@ -156,6 +156,8 @@ pub async fn serve(
         .route("/agents/{name}/export", post(post_export))
         .route("/sessions/import", post(post_import))
         .route("/agents/{name}/file", get(get_agent_file))
+        .route("/agents/{name}/files", get(get_agent_files))
+        .route("/agents/{name}/files/recent", get(get_agent_files_recent))
         .route("/agents/{name}/branch", post(post_branch))
         .route("/agents/{name}/branch/undo", post(post_branch_undo))
         .route("/agents/{name}/move-to", post(post_move_to))
@@ -3401,6 +3403,49 @@ struct FileQuery {
 /// A file the agent pointed at, served from its home node (PROPOSALS §3):
 /// locally straight from disk; for a remote agent assembled from
 /// `file_read` chunks over the mesh, sealed end to end, direct or relayed.
+#[derive(Deserialize, Default)]
+struct FilesQuery {
+    dir: Option<String>,
+    limit: Option<usize>,
+}
+
+/// The agent's file space, one directory at a time (PROPOSALS-2026-10-R.md
+/// R-1); no `dir`: the roots. Gated like reading files; remote agents via
+/// the `file_list` op.
+async fn get_agent_files(
+    State(s): S,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<FilesQuery>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "file_list", &bare, json!({ "dir": q.dir })).await;
+    }
+    let node = s.node.clone();
+    match tokio::task::spawn_blocking(move || node.file_list(&name, q.dir.as_deref())).await {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => err(StatusCode::FORBIDDEN, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// The newest files in the agent's repo (R-1 "recent").
+async fn get_agent_files_recent(
+    State(s): S,
+    Path(name): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<FilesQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(50);
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy(&s, &node, "file_recent", &bare, json!({ "limit": limit })).await;
+    }
+    let node = s.node.clone();
+    match tokio::task::spawn_blocking(move || node.file_recent(&name, limit)).await {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => err(StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 async fn get_agent_file(
     State(s): S,
     Path(name): Path<String>,

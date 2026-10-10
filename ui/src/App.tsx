@@ -13,6 +13,7 @@ import Workflow from "./pages/Workflow";
 import BoardPage, { BoardsPage } from "./pages/Board";
 import Plugins from "./pages/Plugins";
 import Usage from "./pages/Usage";
+import Files from "./pages/Files";
 import Attach from "./pages/Attach";
 import { tunnel } from "./tunnel";
 import Mesh from "./pages/Mesh";
@@ -686,6 +687,7 @@ export default function App() {
               <Route path="/session/:name/agent/:agentId" element={<Session />} />
               <Route path="/session/:name/workflow/:run" element={<Workflow />} />
               <Route path="/view/:name" element={<View />} />
+              <Route path="/session/:name/files" element={<Files />} />
               <Route path="/boards" element={<BoardsPage />} />
               <Route path="/plugins" element={<Plugins />} />
               <Route path="/usage" element={<Usage />} />

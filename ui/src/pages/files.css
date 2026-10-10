@@ -1,0 +1,34 @@
+/* Files (PROPOSALS-2026-10-R.md R-2) */
+.files-page { display: flex; flex-direction: column; gap: 8px; }
+.fl-note { padding: 2px 0; }
+.fl-roots { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.fl-root { cursor: pointer; }
+.fl-root.on { color: var(--text-hi); border-color: var(--accent); background: var(--accent-dim); }
+.fl-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fl-crumbs { min-width: 0; overflow-wrap: anywhere; }
+.fl-filter { font: inherit; padding: 4px 8px; border: 1px solid var(--line-hi); background: var(--surface-input); color: var(--text-hi); border-radius: 0; width: 180px; }
+.fl-check { display: inline-flex; gap: 4px; align-items: center; }
+.fl-list { display: flex; flex-direction: column; border: 1px solid var(--line); background: var(--bg-panel); }
+.fl-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px 90px auto; gap: 10px; align-items: center; padding: 5px 10px; min-width: 0; }
+.fl-row + .fl-row { border-top: 1px solid var(--line); }
+.fl-row:hover { background: var(--bg-strip); }
+.fl-row.hidden .fl-name { opacity: 0.6; }
+.fl-row.unserved .fl-name { opacity: 0.5; }
+.fl-headrow { background: var(--bg-strip); }
+.fl-headrow:hover { background: var(--bg-strip); }
+.fl-sort { background: none; border: none; padding: 0; text-align: left; font: 600 0.7rem/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-mid); cursor: pointer; }
+.fl-sort.on { color: var(--text-hi); }
+.fl-name { font-family: var(--font-mono); font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: left; color: var(--text-hi); }
+button.fl-name { background: none; border: none; padding: 0; cursor: pointer; }
+.fl-size, .fl-time { white-space: nowrap; text-align: right; }
+.fl-actions { display: inline-flex; gap: 4px; justify-content: flex-end; }
+.fl-empty { padding: 10px; }
+
+@media (max-width: 720px) {
+  .fl-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
+  .fl-headrow { display: none; }
+  .fl-size { display: none; }
+  .fl-time { text-align: right; }
+  .fl-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
+  .fl-filter { width: 100%; }
+}

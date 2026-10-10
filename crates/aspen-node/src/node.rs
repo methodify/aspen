@@ -2467,6 +2467,65 @@ impl Node {
         Ok(crate::artifacts::stat(&p))
     }
 
+    /// The agent's file space for the Files page (PROPOSALS-2026-10-R.md):
+    /// with `dir`, that directory (gated like reading); without, the roots
+    /// and the files its tool calls named outside them.
+    pub fn file_list(&self, name: &str, dir: Option<&str>) -> Result<serde_json::Value> {
+        let row = self.agent_row(name)?;
+        let dd = self.inner.data_dir.as_deref();
+        // Temp is shared by everything on the machine: show what this
+        // session made, since it started (its transcript's creation, else
+        // the current process's start).
+        let since = row
+            .session_id
+            .as_deref()
+            .and_then(|sid| {
+                let main = self.inner.store_for(row.harness).main_path(&row.repo, sid);
+                std::fs::metadata(main).ok()?.created().ok()
+            })
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64())
+            .or(row.last_spawned_at);
+        if let Some(d) = dir.filter(|d| !d.trim().is_empty()) {
+            return crate::artifacts::list_dir(dd, &row.repo, row.session_id.as_deref(), d, since);
+        }
+        let roots = crate::artifacts::roots(dd, &row.repo, row.session_id.as_deref());
+        let named: Vec<serde_json::Value> = match row.session_id.as_deref() {
+            Some(sid) => {
+                let st = self.inner.store_for(row.harness);
+                let main = st.main_path(&row.repo, sid);
+                crate::artifacts::touched_paths_for(row.harness, &main)
+                    .into_iter()
+                    .filter_map(|a| {
+                        let p = std::path::PathBuf::from(&a.path);
+                        let c = std::fs::canonicalize(&p).unwrap_or(p);
+                        (!roots.iter().any(|(_, r)| c.starts_with(r)) && c.is_file()).then(|| {
+                            serde_json::json!({ "path": c.to_string_lossy(), "stat": crate::artifacts::stat(&c) })
+                        })
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        Ok(serde_json::json!({
+            "roots": roots
+                .iter()
+                .map(|(l, p)| serde_json::json!({ "label": l, "path": p.to_string_lossy(), "exists": p.is_dir() }))
+                .collect::<Vec<_>>(),
+            "named": named,
+            "since": since,
+        }))
+    }
+
+    /// The newest files in the agent's repo (R-1 "recent").
+    pub fn file_recent(&self, name: &str, limit: usize) -> Result<serde_json::Value> {
+        let row = self.agent_row(name)?;
+        Ok(serde_json::json!({
+            "repo": row.repo.to_string_lossy(),
+            "files": crate::artifacts::recent_files(&row.repo, limit.clamp(1, 500)),
+        }))
+    }
+
     /// One chunk of a served file, base64 on the wire.
     pub fn file_read(
         &self,

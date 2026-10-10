@@ -52,7 +52,19 @@ export function linkifyPaths(text: string, agent: string): string {
     .join("");
 }
 
-/** Does this string look like a path we would link? (for tool cards) */
-export function looksLikePath(s: string): boolean {
-  return /^(?:~\/|\/|[A-Za-z]:[\\/])\S+$/.test(s.trim());
+/** The path an inline code span names, when the whole span is one: an
+ *  absolute, home-relative or drive path, or a repo-relative file with a
+ *  known extension (`docs/report.md`, `notes.md`). Agents put paths in
+ *  backticks far more often than in prose, and those were never linked
+ *  (PROPOSALS-2026-10-R.md R-4). */
+export function codePathTarget(code: string): string | null {
+  const s = code.trim();
+  if (!s || /\s/.test(s) || s.length > 400) return null;
+  if (/^(?:file:\/\/)?(?:~\/|\/|[A-Za-z]:[\\/])[^"'`<>()[\]]+$/.test(s) && /[./]/.test(s.slice(1))) {
+    return s.replace(/^file:\/\//, "");
+  }
+  if (/^(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:md|txt|rs|ts|tsx|js|jsx|py|json|jsonl|toml|yml|yaml|css|html|png|jpg|jpeg|gif|webp|svg|pdf|csv|log|sh|sql|xml|docx|xlsx|pptx|zip)$/.test(s)) {
+    return s;
+  }
+  return null;
 }

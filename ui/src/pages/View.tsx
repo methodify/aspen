@@ -11,6 +11,8 @@ import remarkGfm from "remark-gfm";
 import { api, ApiError, type FileStat } from "../api";
 import { ErrorBar, relTime } from "../components";
 import { linkifyPaths } from "../pathLinks";
+import { useAppData } from "../App";
+import { canShareFiles, copyFile, qualifiedAgent, shareFile, type AspenFileRef } from "../fileActions";
 import "./view.css";
 import { fmtBytes } from "./sessionExtras";
 
@@ -32,6 +34,30 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   const name = props.agent ?? routeName;
   const path = props.path ?? params.get("path") ?? "";
   const embedded = !!props.embedded;
+  const { agents } = useAppData();
+  const shareable = useMemo(canShareFiles, []);
+  const [copied, setCopied] = useState<string | null>(null);
+  const fileRef = (): AspenFileRef => ({
+    agent: qualifiedAgent(name, agents.find((a) => a.name === name)?.node),
+    path: stat?.path ?? path,
+    name: stat?.name ?? path.split(/[\\/]/).pop() ?? path,
+    media: stat?.media_type ?? "application/octet-stream",
+  });
+  async function copyThis() {
+    try {
+      const what = await copyFile(fileRef(), stat?.size ?? null);
+      setCopied(`copied ${what}; paste into an Aspen composer to attach the file`);
+    } catch (e) {
+      setErr(`copy: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  async function shareThis() {
+    try {
+      await shareFile(fileRef());
+    } catch (e) {
+      if (!(e instanceof Error && e.name === "AbortError")) setErr(`share: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   const [stat, setStat] = useState<FileStat | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -221,9 +247,23 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
             <a className="btn sm" href={downloadUrl} download={viaTunnel ? (stat.name ?? undefined) : undefined}>
               download
             </a>
+            <button className="btn sm" onClick={() => void copyThis()} title="copy: the image, or the text, or the path; and the file itself for an Aspen composer">
+              copy
+            </button>
+            {shareable && (
+              <button className="btn sm" onClick={() => void shareThis()} title="send the file to another app">
+                share
+              </button>
+            )}
+            {!embedded && (
+              <Link className="btn ghost sm" to={`/session/${encodeURIComponent(name)}/files${/[\\/]/.test(path) ? `?dir=${encodeURIComponent(path.replace(/[\\/][^\\/]*$/, ""))}` : ""}`} title="this file's folder in Files">
+                folder
+              </Link>
+            )}
           </>
         )}
       </div>
+      {copied && <div className="mono-meta" style={{ padding: "2px 0" }}>{copied}</div>}
       <ErrorBar error={err} />
       <div className="view-body">{body}</div>
     </div>

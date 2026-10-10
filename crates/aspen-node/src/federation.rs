@@ -133,6 +133,8 @@ pub fn op_capability(op: &str) -> Capability {
         | "artifacts"
         | "file_stat"
         | "file_read"
+        | "file_list"
+        | "file_recent"
         | "runtime"
         | "context"
         | "bookmarks"
@@ -2462,6 +2464,11 @@ async fn serve_api_req(
         "file_stat" => node.file_stat(
             agent,
             body.get("path").and_then(|p| p.as_str()).unwrap_or(""),
+        ),
+        "file_list" => node.file_list(agent, body.get("dir").and_then(|p| p.as_str())),
+        "file_recent" => node.file_recent(
+            agent,
+            body.get("limit").and_then(|l| l.as_u64()).unwrap_or(50) as usize,
         ),
         "file_read" => node.file_read(
             agent,

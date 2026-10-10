@@ -261,6 +261,238 @@ fn canon(p: &Path) -> PathBuf {
 /// Resolve `path` for `agent` under the serving rule. `Ok(path)` is a
 /// canonical path the caller may stat and read (it may not exist);
 /// `Err` names the rule that would have admitted it.
+/// The directories an agent's files may come from, labelled: the repo, the
+/// session's own data, plans, temp and its attachments. One list for
+/// reading (`resolve`) and listing (`list_dir`), so they cannot disagree.
+pub fn roots(
+    data_dir: Option<&Path>,
+    repo: &Path,
+    session_id: Option<&str>,
+) -> Vec<(&'static str, PathBuf)> {
+    let claude = aspen_claude::transcript::claude_home();
+    let mut v = vec![
+        ("repo", canon(repo)),
+        (
+            "session data",
+            canon(
+                &claude
+                    .join("projects")
+                    .join(aspen_claude::transcript::project_slug(repo)),
+            ),
+        ),
+        ("image cache", canon(&claude.join("image-cache"))),
+        ("plans", canon(&claude.join("plans"))),
+        (
+            "codex sessions",
+            canon(&aspen_codex::codex_home().join("sessions")),
+        ),
+        ("temp", canon(&std::env::temp_dir())),
+    ];
+    if let (Some(dd), Some(sid)) = (data_dir, session_id) {
+        v.push(("attachments", canon(&attachments_dir(dd, sid))));
+    }
+    v
+}
+
+/// At most this many entries in one listing.
+pub const LIST_MAX: usize = 2000;
+
+/// One directory of the agent's file space (PROPOSALS-2026-10-R.md R-1):
+/// gated like reading (the directory must lie in a root); an entry whose
+/// resolved target leaves the roots (a symlink out) is listed but not
+/// served. `.git` is left out; dotfiles and gitignored names are marked
+/// `hidden`. In temp, only entries changed since `since` (temp is shared
+/// by everything on the machine).
+pub fn list_dir(
+    data_dir: Option<&Path>,
+    repo: &Path,
+    session_id: Option<&str>,
+    dir: &str,
+    since: Option<f64>,
+) -> Result<Value> {
+    let raw = expand_home(dir.trim());
+    let target = canon(&if raw.is_absolute() {
+        raw
+    } else {
+        repo.join(raw)
+    });
+    let roots = roots(data_dir, repo, session_id);
+    let Some((label, root)) = roots
+        .iter()
+        .filter(|(_, r)| target.starts_with(r))
+        .max_by_key(|(_, r)| r.as_os_str().len())
+        .cloned()
+    else {
+        return Err(anyhow!(
+            "not served: {} is outside the agent's repo, the session's own data, temp and its attachments",
+            target.display()
+        ));
+    };
+    let in_temp = label == "temp";
+    let rd = std::fs::read_dir(&target).map_err(|e| anyhow!("{}: {e}", target.display()))?;
+    let mut entries: Vec<Value> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut truncated = false;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name == ".git" {
+            continue;
+        }
+        let Ok(lm) = std::fs::symlink_metadata(e.path()) else {
+            continue;
+        };
+        let meta = std::fs::metadata(e.path()).ok();
+        let mtime = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64());
+        if in_temp && since.is_some_and(|s| mtime.unwrap_or(0.0) < s) {
+            continue;
+        }
+        if entries.len() >= LIST_MAX {
+            truncated = true;
+            break;
+        }
+        let resolved = canon(&e.path());
+        let served = roots.iter().any(|(_, r)| resolved.starts_with(r));
+        let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+        entries.push(serde_json::json!({
+            "name": name,
+            "kind": if lm.file_type().is_symlink() { "link" } else if is_dir { "dir" } else { "file" },
+            "is_dir": is_dir,
+            "size": meta.as_ref().map(|m| m.len()),
+            "mtime": mtime,
+            "served": served,
+            "hidden": name.starts_with('.'),
+        }));
+        names.push(name);
+    }
+    // Gitignored names, in one `git check-ignore` for the whole listing.
+    if label == "repo" && !names.is_empty() {
+        let ignored = git_ignored(&target, &names);
+        for e in entries.iter_mut() {
+            if e["name"].as_str().is_some_and(|n| ignored.contains(n)) {
+                e["hidden"] = Value::Bool(true);
+            }
+        }
+    }
+    entries.sort_by(|a, b| {
+        let (ad, bd) = (
+            a["is_dir"].as_bool().unwrap_or(false),
+            b["is_dir"].as_bool().unwrap_or(false),
+        );
+        bd.cmp(&ad).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
+        })
+    });
+    let parent = (target != root)
+        .then(|| target.parent().map(|p| p.to_string_lossy().into_owned()))
+        .flatten();
+    Ok(serde_json::json!({
+        "dir": target.to_string_lossy(),
+        "root": root.to_string_lossy(),
+        "root_label": label,
+        "parent": parent,
+        "entries": entries,
+        "truncated": truncated,
+    }))
+}
+
+/// Which of `names` (in `dir`) git ignores; empty when not a git tree.
+fn git_ignored(dir: &Path, names: &[String]) -> std::collections::HashSet<String> {
+    use std::io::Write;
+    let mut cmd = crate::gitstate::quiet_command("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(["check-ignore", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return Default::default();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(names.join("\n").as_bytes());
+    }
+    child
+        .wait_with_output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The newest-modified files in the repo (R-1 "recent"): what an agent made
+/// however it wrote it. Skips `.git`, dependency and build trees; walks at
+/// most 50,000 entries.
+pub fn recent_files(repo: &Path, limit: usize) -> Vec<Value> {
+    const SKIP: [&str; 6] = [
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        ".venv",
+        "__pycache__",
+    ];
+    let mut found: Vec<(f64, PathBuf, u64)> = Vec::new();
+    let mut stack = vec![canon(repo)];
+    let mut seen = 0usize;
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 50_000 {
+                stack.clear();
+                break;
+            }
+            let name = e.file_name();
+            let n = name.to_string_lossy();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                if !SKIP.contains(&n.as_ref()) {
+                    stack.push(e.path());
+                }
+                continue;
+            }
+            if let Ok(m) = e.metadata() {
+                let t = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                found.push((t, e.path(), m.len()));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    found
+        .into_iter()
+        .take(limit)
+        .map(|(t, p, size)| {
+            serde_json::json!({
+                "path": p.to_string_lossy(),
+                "name": p.file_name().map(|n| n.to_string_lossy().into_owned()),
+                "size": size,
+                "mtime": t,
+            })
+        })
+        .collect()
+}
+
 pub fn resolve(
     data_dir: Option<&Path>,
     repo: &Path,
@@ -277,20 +509,10 @@ pub fn resolve(
     };
     let target = canon(&target);
 
-    let mut roots: Vec<PathBuf> = vec![canon(repo)];
-    let claude = aspen_claude::transcript::claude_home();
-    roots.push(canon(
-        &claude
-            .join("projects")
-            .join(aspen_claude::transcript::project_slug(repo)),
-    ));
-    roots.push(canon(&claude.join("image-cache")));
-    roots.push(canon(&claude.join("plans")));
-    roots.push(canon(&aspen_codex::codex_home().join("sessions")));
-    roots.push(canon(&std::env::temp_dir()));
-    if let (Some(dd), Some(sid)) = (data_dir, session_id) {
-        roots.push(canon(&attachments_dir(dd, sid)));
-    }
+    let roots: Vec<PathBuf> = roots(data_dir, repo, session_id)
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
     if roots.iter().any(|r| target.starts_with(r)) {
         return Ok(target);
     }
@@ -531,4 +753,71 @@ pub fn compose_with_attachments(
         blocks.push(serde_json::json!({ "type": "text", "text": buf }));
     }
     Ok((Value::Array(blocks), plain))
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    #[test]
+    fn a_directory_lists_inside_its_root_and_nothing_escapes() {
+        // Not under the system temp dir: that is a root itself.
+        let t = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("docs/report.md"), "x").unwrap();
+        std::fs::write(repo.join(".env"), "SECRET=1").unwrap();
+        let outside = t.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, repo.join("escape")).unwrap();
+
+        let v = list_dir(None, &repo, None, ".", None).unwrap();
+        let names: Vec<&str> = v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"docs"));
+        assert!(!names.contains(&".git"), "{names:?}");
+        let env = v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == ".env")
+            .unwrap();
+        assert_eq!(env["hidden"], true);
+        #[cfg(unix)]
+        {
+            let esc = v["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["name"] == "escape")
+                .unwrap();
+            assert_eq!(esc["served"], false);
+            // Listing through the link is refused: it resolves outside.
+            assert!(list_dir(None, &repo, None, "escape", None).is_err());
+        }
+        assert!(list_dir(None, &repo, None, &outside.to_string_lossy(), None).is_err());
+        let sub = list_dir(None, &repo, None, "docs", None).unwrap();
+        assert_eq!(sub["entries"][0]["name"], "report.md");
+        assert!(sub["parent"].as_str().unwrap().ends_with("repo"));
+    }
+
+    #[test]
+    fn recent_lists_newest_files_first_and_skips_build_trees() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path();
+        std::fs::create_dir_all(repo.join("node_modules/x")).unwrap();
+        std::fs::write(repo.join("node_modules/x/big.js"), "x").unwrap();
+        std::fs::write(repo.join("old.md"), "x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(repo.join("new.md"), "x").unwrap();
+        let r = recent_files(repo, 10);
+        let names: Vec<&str> = r.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["new.md", "old.md"]);
+    }
 }
