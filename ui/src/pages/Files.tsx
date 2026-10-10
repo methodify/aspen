@@ -9,7 +9,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type FileEntry, type FileListing, type RecentFile } from "../api";
 import { useAppData } from "../App";
 import { ErrorBar, relTime } from "../components";
-import { canShareFiles, copyFile, onFileDragStart, qualifiedAgent, shareFile, type AspenFileRef } from "../fileActions";
+import { canShareFiles, copyFile, onFileDragStart, qualifiedAgent, shareFile, TapAgain, type AspenFileRef } from "../fileActions";
 import { viewHref } from "../pathLinks";
 import { fmtBytes } from "./sessionExtras";
 import "./files.css";
@@ -88,15 +88,18 @@ export default function Files() {
       const what = await copyFile(r, size);
       setNote(`copied ${r.name} (${what}; paste into an Aspen composer to attach the file)`);
     } catch (e) {
-      setErr(`copy: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof TapAgain) setNote(`${r.name}: ${e.message}`);
+      else setErr(`copy: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   async function doShare(r: AspenFileRef) {
+    setNote(null);
     try {
       await shareFile(r);
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
-      setErr(`share: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof TapAgain) setNote(`${r.name}: ${e.message}`);
+      else setErr(`share: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   async function doCopyPath(p: string) {

@@ -105,13 +105,76 @@ async function toPng(blob: Blob): Promise<Blob> {
   return await new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("png encode failed"))), "image/png"));
 }
 
-/** Copy: what the clipboard can carry for this kind of file. Returns what
- *  was copied, for the caller's note. Must run inside the click (Safari):
- *  the clipboard item is built from promises that resolve afterwards. */
+// Safari (iOS and macOS) lets a clipboard write or a share happen only
+// within the tap that asked for it: a fetch over the relay first lets the
+// tap "expire", and it refuses ("not allowed by the user agent or the
+// platform"). So the file is fetched ahead where possible (the viewer
+// prepares as it opens), and otherwise a refused first tap prepares it
+// and asks for a second, which then writes at once (v0.50.2).
+
+interface Prepared {
+  at: number;
+  items: Record<string, Blob>;
+  file: File;
+  what: string;
+}
+const prepared = new Map<string, Prepared>();
+const keyOf = (r: AspenFileRef) => `${r.agent}\n${r.path}`;
+const FRESH_MS = 5 * 60_000;
+
+/** Thrown when the browser refused and the file is now in hand: tap again. */
+export class TapAgain extends Error {
+  constructor(what: string) {
+    super(`ready — tap ${what} again (this browser needs the file in hand first)`);
+    this.name = "TapAgain";
+  }
+}
+
+function freshPrepared(ref: AspenFileRef): Prepared | null {
+  const p = prepared.get(keyOf(ref));
+  return p && Date.now() - p.at < FRESH_MS ? p : null;
+}
+
+const refused = (e: unknown) => e instanceof Error && (e.name === "NotAllowedError" || /not allowed/i.test(e.message));
+
+/** Fetch the file and build everything copy and share need, ahead of the
+ *  tap. Cheap to call again: a fresh one is reused. */
+export async function prepareFile(ref: AspenFileRef, size: number | null): Promise<void> {
+  if (freshPrepared(ref)) return;
+  const blob = await api.fileBlob(ref.agent, ref.path);
+  const media = ref.media || blob.type || "application/octet-stream";
+  const textLike = isTextLike(media) && (size ?? blob.size) <= TEXT_COPY_MAX;
+  const withData = blob.size <= EMBED_MAX ? { ...ref, data: await blobToBase64(blob) } : ref;
+  const items: Record<string, Blob> = {
+    "text/html": new Blob([refHtml(withData)], { type: "text/html" }),
+    "text/plain": new Blob([textLike ? await blob.text() : ref.path], { type: "text/plain" }),
+  };
+  if (isRaster(media)) items["image/png"] = await toPng(blob);
+  prepared.set(keyOf(ref), {
+    at: Date.now(),
+    items,
+    file: new File([blob], ref.name, { type: media }),
+    what: isRaster(media) ? "the image" : textLike ? "its text" : "its path",
+  });
+}
+
+/** Copy: what the clipboard can carry for this kind of file (a PNG for an
+ *  image, the text for a text file, else the path) plus an Aspen reference
+ *  carrying the bytes. Returns what was copied, for the caller's note. */
 export async function copyFile(ref: AspenFileRef, size: number | null): Promise<string> {
+  const ready = freshPrepared(ref);
+  if (ready) {
+    // Everything in hand: the write starts inside the tap.
+    await navigator.clipboard.write([new ClipboardItem(ready.items)]);
+    return ready.what;
+  }
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    await navigator.clipboard.writeText(ref.path);
+    return "its path";
+  }
+  // Not in hand: promised items (fine in Chrome); a browser that refuses
+  // gets the file prepared and a second tap.
   const blobP = api.fileBlob(ref.agent, ref.path);
-  // The reference carries the bytes when they fit, so the paste works in
-  // any console, whatever mesh it is attached to.
   const html: Promise<Blob> = blobP.then(async (b) => {
     const r = b.size <= EMBED_MAX ? { ...ref, data: await blobToBase64(b) } : ref;
     return new Blob([refHtml(r)], { type: "text/html" });
@@ -122,12 +185,14 @@ export async function copyFile(ref: AspenFileRef, size: number | null): Promise<
     : Promise.resolve(new Blob([ref.path], { type: "text/plain" }));
   const items: Record<string, Promise<Blob> | Blob> = { "text/html": html, "text/plain": plain };
   if (isRaster(ref.media)) items["image/png"] = blobP.then(toPng);
-  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+  try {
     await navigator.clipboard.write([new ClipboardItem(items)]);
-    return isRaster(ref.media) ? "the image" : textLike ? "its text" : "its path";
+  } catch (e) {
+    if (!refused(e)) throw e;
+    await prepareFile(ref, size);
+    throw new TapAgain("copy");
   }
-  await navigator.clipboard.writeText(ref.path);
-  return "its path";
+  return isRaster(ref.media) ? "the image" : textLike ? "its text" : "its path";
 }
 
 /** Can this browser hand files to the system share sheet? */
@@ -139,11 +204,24 @@ export function canShareFiles(): boolean {
   }
 }
 
-/** Share: the file itself, to any app (the Claude app, Mail, AirDrop…). */
+/** Share: the file itself, to any app (the Claude app, Mail, AirDrop…).
+ *  With the file in hand, the sheet opens inside the tap; otherwise it is
+ *  fetched, and a browser that then refuses asks for a second tap. */
 export async function shareFile(ref: AspenFileRef): Promise<void> {
+  const ready = freshPrepared(ref);
+  if (ready) {
+    await navigator.share({ files: [ready.file], title: ref.name });
+    return;
+  }
   const blob = await api.fileBlob(ref.agent, ref.path);
   const file = new File([blob], ref.name, { type: ref.media || blob.type });
-  await navigator.share({ files: [file], title: ref.name });
+  try {
+    await navigator.share({ files: [file], title: ref.name });
+  } catch (e) {
+    if (!refused(e)) throw e;
+    await prepareFile(ref, blob.size);
+    throw new TapAgain("share");
+  }
 }
 
 /** Drag: the reference for an Aspen composer, the path as text, and (in

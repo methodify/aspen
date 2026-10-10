@@ -12,7 +12,7 @@ import { api, ApiError, type FileStat } from "../api";
 import { ErrorBar, relTime } from "../components";
 import { linkifyPaths } from "../pathLinks";
 import { useAppData } from "../App";
-import { canShareFiles, copyFile, qualifiedAgent, shareFile, type AspenFileRef } from "../fileActions";
+import { canShareFiles, copyFile, prepareFile, qualifiedAgent, shareFile, TapAgain, type AspenFileRef } from "../fileActions";
 import "./view.css";
 import { fmtBytes } from "./sessionExtras";
 
@@ -48,17 +48,29 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
       const what = await copyFile(fileRef(), stat?.size ?? null);
       setCopied(`copied ${what}; paste into an Aspen composer to attach the file`);
     } catch (e) {
-      setErr(`copy: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof TapAgain) setCopied(e.message);
+      else setErr(`copy: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   async function shareThis() {
+    setCopied(null);
     try {
       await shareFile(fileRef());
     } catch (e) {
-      if (!(e instanceof Error && e.name === "AbortError")) setErr(`share: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof Error && e.name === "AbortError") return;
+      if (e instanceof TapAgain) setCopied(e.message);
+      else setErr(`share: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   const [stat, setStat] = useState<FileStat | null>(null);
+  // The file in hand before any tap, so copy and share run inside it (a
+  // browser like Safari refuses them after a fetch); up to the size a
+  // copy carries.
+  useEffect(() => {
+    if (!stat?.exists || (stat.size ?? 0) > 8 * 1024 * 1024) return;
+    void prepareFile(fileRef(), stat.size ?? null).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stat?.path, stat?.mtime]);
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("rendered");

@@ -38,6 +38,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-09: copy and share work in Safari (v0.50.2)
+
+- On the iPhone, copy in the viewer failed: "The request is not allowed by the user agent or the platform in the current context". Safari allows a clipboard write (and a share) only within the tap that asked for it; copy fetched the file over the relay first, so the tap had expired. Now the file is in hand before the tap: the viewer prepares it as it opens (files up to 8 MB), so one tap copies or shares; elsewhere (Files rows), a refused first tap fetches it and says "ready — tap copy again", and the second tap writes at once. Chrome is unchanged. Verified in Chrome with a real click through the prepared path; Safari itself is the operator's to confirm.
+
 ## Shipped — 2026-10-09: a copied file pastes across meshes (v0.50.1)
 
 - The first real use of Files failed: a file copied in the work mesh's console, pasted into a session in the personal mesh's console, answered "via node 'lt-bryon-wsl': no cert on file". The reference only named the file, and the pasting console fetched it through its own node, which cannot reach another mesh (by design). A copy now carries the file's bytes in the reference (up to the composer's 8 MB attachment limit), so a paste needs no fetch and works in any console, mesh, profile or browser. A reference without bytes (a drag, a larger file) still fetches, and when it cannot, says why and to copy instead. Verified in the browser: a reference naming an unreachable work-mesh agent attached from its bytes; one without bytes gave the explanation.
