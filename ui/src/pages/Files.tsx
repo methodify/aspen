@@ -85,7 +85,7 @@ export default function Files() {
   async function doCopy(r: AspenFileRef, size: number | null) {
     setNote(null);
     try {
-      const what = await copyFile(r, size);
+      const what = await copyFile(r, size, name);
       setNote(`copied ${r.name} (${what}; paste into an Aspen composer to attach the file)`);
     } catch (e) {
       if (e instanceof TapAgain) setNote(`${r.name}: ${e.message}`);
@@ -95,7 +95,7 @@ export default function Files() {
   async function doShare(r: AspenFileRef) {
     setNote(null);
     try {
-      await shareFile(r);
+      await shareFile(r, name);
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       if (e instanceof TapAgain) setNote(`${r.name}: ${e.message}`);

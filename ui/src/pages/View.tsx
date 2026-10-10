@@ -45,7 +45,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   });
   async function copyThis() {
     try {
-      const what = await copyFile(fileRef(), stat?.size ?? null);
+      const what = await copyFile(fileRef(), stat?.size ?? null, name);
       setCopied(`copied ${what}; paste into an Aspen composer to attach the file`);
     } catch (e) {
       if (e instanceof TapAgain) setCopied(e.message);
@@ -55,7 +55,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   async function shareThis() {
     setCopied(null);
     try {
-      await shareFile(fileRef());
+      await shareFile(fileRef(), name);
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       if (e instanceof TapAgain) setCopied(e.message);
@@ -68,7 +68,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   // copy carries.
   useEffect(() => {
     if (!stat?.exists || (stat.size ?? 0) > 8 * 1024 * 1024) return;
-    void prepareFile(fileRef(), stat.size ?? null).catch(() => {});
+    void prepareFile(fileRef(), stat.size ?? null, name).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stat?.path, stat?.mtime]);
   const [text, setText] = useState<string | null>(null);
@@ -76,7 +76,9 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   const [mode, setMode] = useState<Mode>("rendered");
   const [loading, setLoading] = useState(true);
 
-  const node = name.includes("@") ? name.split("@").pop() : null;
+  // `bare@repo@node` names a node; a local `bare@repo` does not (its last
+  // part is the repo: the header said "on sqlworks").
+  const node = name.split("@").length === 3 ? name.split("@")[2] : null;
   const kind = stat && stat.exists ? kindOf(stat.media_type ?? "", stat.name ?? "") : null;
   // Through a relay there is no URL a browser can open for the file: the
   // bytes come over the tunnel and a blob URL stands in for raw/download

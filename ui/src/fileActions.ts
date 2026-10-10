@@ -139,9 +139,12 @@ const refused = (e: unknown) => e instanceof Error && (e.name === "NotAllowedErr
 
 /** Fetch the file and build everything copy and share need, ahead of the
  *  tap. Cheap to call again: a fresh one is reused. */
-export async function prepareFile(ref: AspenFileRef, size: number | null): Promise<void> {
+/** `fetchAs`: the agent's name as this console knows it (the reference
+ *  carries the node-qualified name for other consoles; the attached node
+ *  knows its own agents by the local one). */
+export async function prepareFile(ref: AspenFileRef, size: number | null, fetchAs: string): Promise<void> {
   if (freshPrepared(ref)) return;
-  const blob = await api.fileBlob(ref.agent, ref.path);
+  const blob = await api.fileBlob(fetchAs, ref.path);
   const media = ref.media || blob.type || "application/octet-stream";
   const textLike = isTextLike(media) && (size ?? blob.size) <= TEXT_COPY_MAX;
   const withData = blob.size <= EMBED_MAX ? { ...ref, data: await blobToBase64(blob) } : ref;
@@ -161,7 +164,7 @@ export async function prepareFile(ref: AspenFileRef, size: number | null): Promi
 /** Copy: what the clipboard can carry for this kind of file (a PNG for an
  *  image, the text for a text file, else the path) plus an Aspen reference
  *  carrying the bytes. Returns what was copied, for the caller's note. */
-export async function copyFile(ref: AspenFileRef, size: number | null): Promise<string> {
+export async function copyFile(ref: AspenFileRef, size: number | null, fetchAs: string): Promise<string> {
   const ready = freshPrepared(ref);
   if (ready) {
     // Everything in hand: the write starts inside the tap.
@@ -174,7 +177,7 @@ export async function copyFile(ref: AspenFileRef, size: number | null): Promise<
   }
   // Not in hand: promised items (fine in Chrome); a browser that refuses
   // gets the file prepared and a second tap.
-  const blobP = api.fileBlob(ref.agent, ref.path);
+  const blobP = api.fileBlob(fetchAs, ref.path);
   const html: Promise<Blob> = blobP.then(async (b) => {
     const r = b.size <= EMBED_MAX ? { ...ref, data: await blobToBase64(b) } : ref;
     return new Blob([refHtml(r)], { type: "text/html" });
@@ -189,7 +192,7 @@ export async function copyFile(ref: AspenFileRef, size: number | null): Promise<
     await navigator.clipboard.write([new ClipboardItem(items)]);
   } catch (e) {
     if (!refused(e)) throw e;
-    await prepareFile(ref, size);
+    await prepareFile(ref, size, fetchAs);
     throw new TapAgain("copy");
   }
   return isRaster(ref.media) ? "the image" : textLike ? "its text" : "its path";
@@ -207,19 +210,19 @@ export function canShareFiles(): boolean {
 /** Share: the file itself, to any app (the Claude app, Mail, AirDrop…).
  *  With the file in hand, the sheet opens inside the tap; otherwise it is
  *  fetched, and a browser that then refuses asks for a second tap. */
-export async function shareFile(ref: AspenFileRef): Promise<void> {
+export async function shareFile(ref: AspenFileRef, fetchAs: string): Promise<void> {
   const ready = freshPrepared(ref);
   if (ready) {
     await navigator.share({ files: [ready.file], title: ref.name });
     return;
   }
-  const blob = await api.fileBlob(ref.agent, ref.path);
+  const blob = await api.fileBlob(fetchAs, ref.path);
   const file = new File([blob], ref.name, { type: ref.media || blob.type });
   try {
     await navigator.share({ files: [file], title: ref.name });
   } catch (e) {
     if (!refused(e)) throw e;
-    await prepareFile(ref, blob.size);
+    await prepareFile(ref, blob.size, fetchAs);
     throw new TapAgain("share");
   }
 }

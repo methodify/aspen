@@ -38,6 +38,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-10: copy fetches by the name the console knows (v0.50.3)
+
+- Copy on the phone answered "no agent named @main@sqlworks@anindor on record": the file was fetched with the node-qualified name meant only for the clipboard reference (for other consoles), and the attached node knew its own agent by the local one. Copy, share and prepare now fetch with the name the page uses; the reference keeps the qualified name. Also: the viewer's header said "on sqlworks" for a local agent (it took the repo for the node); it names a node only for a `bare@repo@node` address.
+
 ## Shipped — 2026-10-09: copy and share work in Safari (v0.50.2)
 
 - On the iPhone, copy in the viewer failed: "The request is not allowed by the user agent or the platform in the current context". Safari allows a clipboard write (and a share) only within the tap that asked for it; copy fetched the file over the relay first, so the tap had expired. Now the file is in hand before the tap: the viewer prepares it as it opens (files up to 8 MB), so one tap copies or shares; elsewhere (Files rows), a refused first tap fetches it and says "ready — tap copy again", and the second tap writes at once. Chrome is unchanged. Verified in Chrome with a real click through the prepared path; Safari itself is the operator's to confirm.
