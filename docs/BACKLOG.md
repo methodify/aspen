@@ -39,7 +39,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Shipped — 2026-10-16: a repo bundle carries text that is not UTF-8, and imports despite a file its export skipped (v0.50.5, queued)
+## Shipped — 2026-10-16: a repo bundle carries text that is not UTF-8, and imports despite a file its export skipped (v0.50.5)
 
 - Exporting ~/src/pick-when skipped a tool result as "unreadable" every time, and the import then refused the whole bundle ("the bundle's manifest names a file it does not hold"). The file was readable: Claude had cut it inside a character (a lone 0xE2), and the export read text with `read_to_string`. Text is now read and rewritten as bytes (`rewrite_text_bytes`, `rewrite_jsonl_bytes` in migrate.rs: UTF-8 runs canonicalized, other bytes kept), on export and on import, where a non-UTF-8 sidecar, rollout or memory file used to be written back empty and a transcript skipped.
 - The import no longer stakes the bundle on every file the manifest lists: one listed but neither held nor in `sums.json` is dropped from the plan with a warning shown before confirming (the staged manifest is rewritten, so preflight and install agree); one `sums.json` vouches for but the bundle lacks is still refused as damage. The operator's v0.50.3 bundle imported in full this way (7820 repo files, 4 sessions, memory, names, one warning); a fresh export carried the cut file, and it came back byte-identical after import (isolated HOME, temp node).
