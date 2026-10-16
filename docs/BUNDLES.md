@@ -32,6 +32,18 @@ A gzip'd tar:
 | `aspen/agents.json` | the repo's names on the chosen transcripts (not pending forks — one name per transcript): charter, title, harness, extra args, bookmarks; lineage between chosen sessions |
 | `sums.json` (last) | size + sha256 of every file; the import verifies them all |
 
+Text is rewritten as bytes: where a file is not UTF-8 throughout (Claude
+cuts long tool output at a byte limit, sometimes inside a character), the
+UTF-8 runs are canonicalized and the other bytes travel as they are, both
+ways. Before v0.50.5 such a file was skipped as unreadable.
+
+The manifest is written before any file is read, so it can list a file
+the export then could not read (its notes say which). The import drops
+such a file from the plan and says so as a warning before you confirm;
+`sums.json` is the authority: a file it vouches for that the bundle lacks
+is damage, and refused. A bundle made by v0.50.4 or earlier that lists a
+skipped file imports this way too.
+
 Canonicalized text entries carry the source file's modification time, so
 an imported transcript keeps its age (the Mesh list sorts by it, and the
 one-writer gate reads a just-written transcript as live elsewhere).

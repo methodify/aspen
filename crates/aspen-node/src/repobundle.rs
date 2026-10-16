@@ -31,7 +31,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest as _;
 
-use crate::migrate::{canonicalize_str, git_origin, localize_str, rewrite_jsonl, PathCtx};
+use crate::migrate::{
+    canonicalize_str, git_origin, localize_str, rewrite_jsonl, rewrite_jsonl_bytes,
+    rewrite_text_bytes, PathCtx,
+};
 
 pub const EXT: &str = "aspen-repo";
 
@@ -858,33 +861,38 @@ pub fn export(
                     .with_context(|| format!("adding link {rel}"))?;
             }
             "jsonl" | "text" => {
-                let text = match std::fs::read_to_string(src) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        notes.push(format!("skipped unreadable {}", src.display()));
+                // Bytes, not a String: text that is not UTF-8 throughout (a
+                // tool result cut mid-character) still travels.
+                let raw = match std::fs::read(src) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        notes.push(format!("skipped unreadable {}: {e}", src.display()));
                         continue;
                     }
                 };
                 let c = if kind == "jsonl" {
-                    rewrite_jsonl(&text, &canon)
+                    rewrite_jsonl_bytes(&raw, &canon)
                 } else {
-                    canon(&text)
+                    rewrite_text_bytes(&raw, &canon)
                 };
                 sums.insert(
                     rel.clone(),
-                    json!({ "size": c.len(), "sha256": hex(&sha2::Sha256::digest(c.as_bytes())) }),
+                    json!({ "size": c.len(), "sha256": hex(&sha2::Sha256::digest(&c)) }),
                 );
                 let mt = std::fs::metadata(src)
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs());
-                add_bytes_at(&mut tar, rel, c.as_bytes(), 0o644, mt)?;
+                add_bytes_at(&mut tar, rel, &c, 0o644, mt)?;
             }
             _ => {
-                let Ok(mut f) = std::fs::File::open(src) else {
-                    notes.push(format!("skipped unreadable {}", src.display()));
-                    continue;
+                let mut f = match std::fs::File::open(src) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        notes.push(format!("skipped unreadable {}: {e}", src.display()));
+                        continue;
+                    }
                 };
                 let meta = f.metadata()?;
                 let mut h = tar::Header::new_gnu();
@@ -955,6 +963,17 @@ impl<R: Read> Read for HashingReader<'_, R> {
     }
 }
 
+/// A transcript as text: the session logic (relate, fork points) compares
+/// strings. A byte that is not UTF-8 becomes U+FFFD rather than the whole
+/// session reading as absent.
+fn read_text_lossy(p: &Path) -> std::io::Result<String> {
+    let b = std::fs::read(p)?;
+    Ok(match String::from_utf8(b) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    })
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -988,15 +1007,49 @@ pub fn staging_dir(data_dir: &Path, id: &str) -> PathBuf {
 /// onto a destination directory.
 const REL_PREFIXES: [&str; 3] = ["context/claude/memory/", "context/codex/", "repo/"];
 
+/// The manifest is written before the files are read, so it can list one
+/// the export then could not read (that export's notes say so). Such a
+/// file is absent from the sums too: drop it from the plan, with a note,
+/// and import the rest. A file the sums vouch for but the bundle lacks is
+/// damage, and refused. Before this (v0.50.5), one unreadable file made
+/// the whole bundle unimportable.
+fn reconcile_files(
+    files: &mut Vec<Planned>,
+    notes: &mut Vec<String>,
+    sums: &Value,
+    dir: &Path,
+) -> Result<()> {
+    let summed = sums.get("files").and_then(|f| f.as_object());
+    let mut dropped = Vec::new();
+    for f in files.iter() {
+        if std::fs::symlink_metadata(dir.join(&f.rel)).is_ok() {
+            continue;
+        }
+        if summed.is_some_and(|s| s.contains_key(&f.rel)) {
+            bail!("missing from the bundle: {} (the bundle is damaged)", f.rel);
+        }
+        dropped.push(f.rel.clone());
+    }
+    if !dropped.is_empty() {
+        files.retain(|f| !dropped.contains(&f.rel));
+        for rel in dropped {
+            notes.push(format!(
+                "not in the bundle (the export could not read it): {rel}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a manifest that names anything but plain relative paths and
-/// plain ids, or a file the bundle does not hold. install() joins these
+/// plain ids (`reconcile_files` deals with files it lists but does not
+/// hold). install() joins these
 /// onto real directories: a `rel` of `context/claude/memory//home/u/x`
 /// trimmed to `/home/u/x` replaced the base and wrote anywhere (the
 /// 2026-10 quality pass).
 fn check_manifest_paths<'a>(
     rels: impl Iterator<Item = &'a str>,
     session_ids: impl Iterator<Item = &'a str>,
-    dir: &Path,
 ) -> Result<()> {
     for rel in rels {
         aspen_core::paths::safe_rel(rel).map_err(|e| anyhow!("the bundle's manifest: {e}"))?;
@@ -1005,9 +1058,6 @@ fn check_manifest_paths<'a>(
                 aspen_core::paths::safe_rel(rest)
                     .map_err(|e| anyhow!("the bundle's manifest: {e}"))?;
             }
-        }
-        if std::fs::symlink_metadata(dir.join(rel)).is_err() {
-            bail!("the bundle's manifest names a file it does not hold: {rel}");
         }
     }
     for id in session_ids {
@@ -1036,15 +1086,21 @@ pub fn stage(data_dir: &Path, file: &Path, pass: Option<&str>) -> Result<(String
                 );
             }
         }
-        let m: Manifest = serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)?;
+        let mut m: Manifest = serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)?;
         check_manifest_paths(
             m.files.iter().map(|f| f.rel.as_str()),
             m.sessions.iter().map(|s| s.id.as_str()),
-            &dir,
         )?;
         let sums: Value = serde_json::from_slice(
             &std::fs::read(dir.join("sums.json")).context("the bundle has no sums (truncated?)")?,
         )?;
+        let planned = m.files.len();
+        reconcile_files(&mut m.files, &mut m.notes, &sums, &dir)?;
+        if m.files.len() != planned {
+            // Preflight and install read the staged manifest: they see
+            // the plan as the bundle can honour it.
+            std::fs::write(dir.join("manifest.json"), serde_json::to_vec_pretty(&m)?)?;
+        }
         // Verify: the context and names (the repo tree is checked too).
         if let Some(files) = sums.get("files").and_then(|f| f.as_object()) {
             for (rel, want) in files {
@@ -1175,7 +1231,14 @@ pub fn plan(
     )?;
     let target = PathBuf::from(&opts.target);
     let mut blockers: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    // Files the export could not read (`reconcile_files`): said before the
+    // operator confirms, not only in the report after.
+    let mut warnings: Vec<String> = m
+        .notes
+        .iter()
+        .filter(|n| n.starts_with("not in the bundle"))
+        .cloned()
+        .collect();
     let exists = target.exists();
     let empty = exists
         && std::fs::read_dir(&target)
@@ -1225,10 +1288,7 @@ pub fn plan(
             aspen_core::Harness::Claude => {
                 let here = project_dir.join(format!("{}.jsonl", s.id));
                 let incoming = dir.join(format!("context/claude/{}.jsonl", s.id));
-                match (
-                    std::fs::read_to_string(&here),
-                    std::fs::read_to_string(&incoming),
-                ) {
+                match (read_text_lossy(&here), read_text_lossy(&incoming)) {
                     // The same conversation is a name's in another repo on
                     // this node (a copy of a repo here): a new id, so the
                     // two never share one (the one-writer rule).
@@ -1273,9 +1333,9 @@ pub fn plan(
         if !here.exists() {
             memory_new += 1;
         } else {
-            let incoming = std::fs::read_to_string(dir.join(&f.rel)).unwrap_or_default();
-            let local = std::fs::read_to_string(&here).unwrap_or_default();
-            if localize_str(&incoming, &ctx) != local {
+            let incoming = std::fs::read(dir.join(&f.rel)).unwrap_or_default();
+            let local = std::fs::read(&here).unwrap_or_default();
+            if rewrite_text_bytes(&incoming, &|s: &str| localize_str(s, &ctx)) != local {
                 memory_conflicts += 1;
             }
         }
@@ -1533,7 +1593,7 @@ pub fn install(
         .filter(|s| s.harness == aspen_core::Harness::Claude)
     {
         let incoming = dir.join(format!("context/claude/{}.jsonl", s.id));
-        let Ok(text) = std::fs::read_to_string(&incoming) else {
+        let Ok(text) = read_text_lossy(&incoming) else {
             continue;
         };
         let out = rewrite_jsonl(&text, &local);
@@ -1559,11 +1619,9 @@ pub fn install(
                         std::fs::create_dir_all(pp)?;
                     }
                     if r.ends_with(".jsonl") {
-                        let t = std::fs::read_to_string(&s2).unwrap_or_default();
-                        std::fs::write(&d, rewrite_jsonl(&t, &local))?;
+                        std::fs::write(&d, rewrite_jsonl_bytes(&std::fs::read(&s2)?, &local))?;
                     } else if texty(&r) {
-                        let t = std::fs::read_to_string(&s2).unwrap_or_default();
-                        std::fs::write(&d, local(&t))?;
+                        std::fs::write(&d, rewrite_text_bytes(&std::fs::read(&s2)?, &local))?;
                     } else {
                         std::fs::copy(&s2, &d)?;
                     }
@@ -1612,7 +1670,7 @@ pub fn install(
             }
             "diverged" => {
                 let new_id = uuid::Uuid::new_v4().to_string();
-                let local_text = std::fs::read_to_string(&here).unwrap_or_default();
+                let local_text = read_text_lossy(&here).unwrap_or_default();
                 let at = last_common(&local_text, &out);
                 let forked = project_dir.join(format!("{new_id}.jsonl"));
                 std::fs::write(&forked, refork(&out, &s.id, &new_id))?;
@@ -1643,8 +1701,10 @@ pub fn install(
         if let Some(pp) = d.parent() {
             std::fs::create_dir_all(pp)?;
         }
-        let t = std::fs::read_to_string(dir.join(&f.rel)).unwrap_or_default();
-        std::fs::write(&d, rewrite_jsonl(&t, &local))?;
+        std::fs::write(
+            &d,
+            rewrite_jsonl_bytes(&std::fs::read(dir.join(&f.rel))?, &local),
+        )?;
         keep_mtime(&dir.join(&f.rel), &d);
     }
     for s in m
@@ -1668,7 +1728,7 @@ pub fn install(
         }
         let src = dir.join(&f.rel);
         let bytes = if f.kind == "text" {
-            local(&std::fs::read_to_string(&src).unwrap_or_default()).into_bytes()
+            rewrite_text_bytes(&std::fs::read(&src).unwrap_or_default(), &local)
         } else {
             std::fs::read(&src).unwrap_or_default()
         };
@@ -1949,33 +2009,67 @@ mod tests {
 
     #[test]
     fn a_manifest_path_that_escapes_is_refused() {
-        let t = tempfile::tempdir().unwrap();
-        let d = t.path();
-        std::fs::create_dir_all(d.join("context/claude/memory/home/u")).unwrap();
-        std::fs::write(d.join("context/claude/memory/home/u/x"), "evil").unwrap();
-        std::fs::create_dir_all(d.join("context/claude/memory")).unwrap();
-        std::fs::write(d.join("context/claude/memory/notes.md"), "ok").unwrap();
         let ok = check_manifest_paths(
             ["context/claude/memory/notes.md"].into_iter(),
             ["0a1b-2c"].into_iter(),
-            d,
         );
         assert!(ok.is_ok());
         // The prefix-trim trick: whole path looks relative, the rest is absolute.
         let evil = check_manifest_paths(
             ["context/claude/memory//home/u/x"].into_iter(),
             std::iter::empty(),
-            d,
         );
         assert!(evil.is_err());
-        assert!(check_manifest_paths(["../outside"].into_iter(), std::iter::empty(), d).is_err());
-        assert!(check_manifest_paths(
-            ["context/claude/memory/missing.md"].into_iter(),
-            std::iter::empty(),
-            d
-        )
-        .is_err());
-        assert!(check_manifest_paths(std::iter::empty(), ["../x"].into_iter(), d).is_err());
+        assert!(check_manifest_paths(["../outside"].into_iter(), std::iter::empty()).is_err());
+        assert!(check_manifest_paths(std::iter::empty(), ["../x"].into_iter()).is_err());
+    }
+
+    #[test]
+    fn a_file_the_export_skipped_is_dropped_and_noted() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        std::fs::create_dir_all(d.join("context/claude")).unwrap();
+        std::fs::write(d.join("context/claude/kept.txt"), "x").unwrap();
+        let plan = |rels: &[&str]| -> Vec<Planned> {
+            rels.iter()
+                .map(|r| Planned {
+                    rel: (*r).into(),
+                    part: "session".into(),
+                    kind: "text".into(),
+                })
+                .collect()
+        };
+        // Skipped at export: listed, not held, not summed.
+        let mut files = plan(&["context/claude/kept.txt", "context/claude/cut.txt"]);
+        let mut notes = Vec::new();
+        let sums = json!({ "files": { "context/claude/kept.txt": {} } });
+        reconcile_files(&mut files, &mut notes, &sums, d).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(notes[0].contains("context/claude/cut.txt"), "{notes:?}");
+        // Summed but absent: damage, refused.
+        let mut files = plan(&["context/claude/gone.txt"]);
+        let sums = json!({ "files": { "context/claude/gone.txt": {} } });
+        assert!(reconcile_files(&mut files, &mut Vec::new(), &sums, d).is_err());
+    }
+
+    #[test]
+    fn text_that_is_not_utf8_throughout_travels_byte_for_byte() {
+        use crate::migrate::{rewrite_jsonl_bytes, rewrite_text_bytes};
+        let up = |s: &str| s.replace("/home/a", "~");
+        // A tool result cut inside a character (a lone 0xE2), as Claude does.
+        let cut = b"see /home/a/x \xe2\n/home/a/y\n";
+        assert_eq!(rewrite_text_bytes(cut, &up), b"see ~/x \xe2\n~/y\n");
+        // JSONL: good lines rewritten as JSON, the bad one as text, blank kept.
+        let lines = b"{\"p\":\"/home/a/1\"}\n\n/home/a/2 \xe2\n";
+        assert_eq!(
+            rewrite_jsonl_bytes(lines, &up),
+            b"{\"p\":\"~/1\"}\n\n~/2 \xe2\n"
+        );
+        // Valid UTF-8 takes the usual path.
+        assert_eq!(
+            rewrite_text_bytes("/home/a/é".as_bytes(), &up),
+            "~/é".as_bytes()
+        );
     }
 
     #[test]

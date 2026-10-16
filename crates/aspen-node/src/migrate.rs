@@ -252,6 +252,43 @@ pub fn rewrite_jsonl(text: &str, f: &dyn Fn(&str) -> String) -> String {
     out
 }
 
+/// Text as bytes, rewritten where it is UTF-8 and kept byte for byte where
+/// it is not. A harness cuts long tool output at a byte limit, sometimes
+/// inside a character; such a file is text everywhere but at the cut, and
+/// refusing it lost it from every bundle.
+pub fn rewrite_text_bytes(b: &[u8], f: &dyn Fn(&str) -> String) -> Vec<u8> {
+    if let Ok(s) = std::str::from_utf8(b) {
+        return f(s).into_bytes();
+    }
+    let mut out = Vec::with_capacity(b.len());
+    for chunk in b.utf8_chunks() {
+        out.extend_from_slice(f(chunk.valid()).as_bytes());
+        out.extend_from_slice(chunk.invalid());
+    }
+    out
+}
+
+/// `rewrite_jsonl` over bytes: a line that is not UTF-8 is rewritten like
+/// text (`rewrite_text_bytes`) instead of being lost.
+pub fn rewrite_jsonl_bytes(b: &[u8], f: &dyn Fn(&str) -> String) -> Vec<u8> {
+    if let Ok(s) = std::str::from_utf8(b) {
+        return rewrite_jsonl(s, f).into_bytes();
+    }
+    let mut out = Vec::with_capacity(b.len());
+    for line in b.split_inclusive(|&c| c == b'\n') {
+        let body = line.strip_suffix(b"\n").unwrap_or(line);
+        match std::str::from_utf8(body) {
+            Ok("") => out.push(b'\n'),
+            Ok(s) => out.extend_from_slice(rewrite_jsonl(s, f).as_bytes()),
+            Err(_) => {
+                out.extend_from_slice(&rewrite_text_bytes(body, f));
+                out.push(b'\n');
+            }
+        }
+    }
+    out
+}
+
 /// Does canonical → local → canonical come back unchanged? The guard
 /// convergence taught: publish nothing that does not survive the trip.
 pub fn round_trip_stable(canon: &str, ctx: &PathCtx) -> bool {
