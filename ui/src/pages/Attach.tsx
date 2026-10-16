@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Tunnel, consoleNodeName, createIdentity, enrollBlob, installBlob, loadConfig, loadIdentity, saveConfig, tunnel, type ConsoleIdentity } from "../tunnel";
 import { activate, activeConnection, addConnection, connectionSummary, directUrlProblem, hosted, listConnections, markActive, probeMesh, removeConnection, type Connection } from "../connections";
-import { activeProfile, addProfile, listProfiles, onProfilesChange, profileName, readFrom, removeProfile, setProfileLabel, setProfileMesh, switchTo, type Profile } from "../profiles";
+import { activeProfile, addProfile, listProfiles, onProfilesChange, orphanIdentities, profileName, readFrom, removeProfile, restoreProfile, setProfileLabel, setProfileMesh, switchTo, type Profile } from "../profiles";
 import { ErrorBar } from "../components";
 
 export default function Attach() {
@@ -397,7 +397,11 @@ function MeshCards() {
             )}
             {confirm === p.id ? (
               <>
-                <span className="mono-meta">forget this mesh and everything remembered about it here?</span>
+                <span className="mono-meta">
+                  {ident?.mesh
+                    ? `forget this mesh, and ${ident.node}, this browser's identity in it? Reaching it by relay again needs a new identity, certified by the mesh root.`
+                    : "forget this mesh and everything remembered about it here?"}
+                </span>
                 <button className="btn sm" style={{ color: "var(--sig-gate)" }} onClick={() => removeProfile(p.id)}>
                   forget
                 </button>
@@ -413,6 +417,20 @@ function MeshCards() {
           </div>
         );
       })}
+      {orphanIdentities().map((o) => (
+        <div className="attach-row" key={o.id} style={{ alignItems: "baseline" }}>
+          <span className="chip mono">not listed</span>
+          <span className="mono">{o.mesh ?? "new mesh"}</span>
+          <span className="mono-meta">
+            {o.node}
+            {o.mesh ? " · certified" : " · not certified"} · an identity still in this browser that no mesh here shows
+          </span>
+          <span style={{ flex: 1 }} />
+          <button className="btn sm" onClick={() => restoreProfile(o)} title="show this mesh again, with its identity and everything remembered about it">
+            restore
+          </button>
+        </div>
+      ))}
       <div className="attach-row">
         <button className="btn sm" onClick={() => addProfile()} title="a new identity, certified by that mesh's root, or a node on this machine that is in it">
           connect to another mesh

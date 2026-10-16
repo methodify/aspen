@@ -1039,6 +1039,59 @@ pub fn hostname() -> Option<String> {
 /// The roster a peer in `mesh` receives: only agents whose repo is
 /// exposed to that mesh (MESHES.md §exposure); mesh-wide digests only for
 /// the primary mesh, so boards, plugins and templates never cross meshes.
+/// What a peer's roster teaches about relays, into `disc` (url → the peer
+/// it came from):
+/// - the relay it hosts (`hosted`: one relay under several names): the
+///   first name we do not host ourselves, unless we already dial the peer
+///   by a configured URL (its relay is at the same place);
+/// - the relays it is configured on (`joined`): each one we are not
+///   configured on, so members with no path to each other still meet
+///   somewhere. A loopback URL names the peer's own machine and is skipped.
+///
+/// What the peer no longer advertises is dropped first.
+fn merge_peer_relays(
+    disc: &mut HashMap<String, String>,
+    peer: &str,
+    hosted: &[String],
+    joined: &[String],
+    dialed: bool,
+    my_hosted: &[String],
+    my_configured: &[String],
+) {
+    disc.retain(|u, from| from != peer || hosted.contains(u) || joined.contains(u));
+    if !dialed
+        && !disc
+            .iter()
+            .any(|(u, from)| from == peer && hosted.contains(u))
+    {
+        if let Some(u) = hosted.iter().find(|u| !my_hosted.contains(u)) {
+            disc.entry(u.clone()).or_insert_with(|| peer.to_owned());
+        }
+    }
+    for u in joined {
+        if relay_url_joinable(u) && !my_configured.contains(u) && !my_hosted.contains(u) {
+            disc.entry(u.clone()).or_insert_with(|| peer.to_owned());
+        }
+    }
+}
+
+/// A relay URL another machine may usefully dial: ws(s), not loopback.
+fn relay_url_joinable(u: &str) -> bool {
+    let Some(rest) = u.strip_prefix("wss://").or_else(|| u.strip_prefix("ws://")) else {
+        return false;
+    };
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    !(host.is_empty()
+        || host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()))
+}
+
 pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
     let agents = inner.store.agents().unwrap_or_default();
     let primary = inner.mesh().map(|m| m.mesh_name());
@@ -1091,6 +1144,14 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
         "servicing": inner.servicing.roster_json(mode),
         "has_root": has_root,
         "advertised": advertised(inner),
+        // The relays this node is configured on for this mesh (a hosted
+        // CF relay, another node's): a peer with no path to some member
+        // joins them too, since a relay is a meeting place, not a router
+        // (B-wsl on B-win's relay never met dev009 on the CF one).
+        "joined_relays": inner.mesh().map(|st| {
+            let want = mesh.map(str::to_owned).unwrap_or_else(|| st.mesh_name());
+            st.configs().into_iter().find(|c| c.mesh == want).map(|c| c.relay_urls()).unwrap_or_default()
+        }).unwrap_or_default(),
         // The mesh's TLS CA (docs/TLS.md), so members and consoles learn it
         // with no root contact; verified against the root on receipt.
         "tls_ca": mesh.and_then(|m| inner.mesh().and_then(|st| st.tls_ca_of(m)))
@@ -1614,31 +1675,23 @@ async fn link_loop(
                         .get("advertised")
                         .and_then(|a| serde_json::from_value(a.clone()).ok());
                     if let Some(a) = &adv {
-                        // A peer's advertised relays are one relay under
-                        // several names. Take the first only, and none at
-                        // all when we already reach that peer by a
-                        // configured URL (its relay is at the same place —
-                        // set it with `aspen mesh relay` if wanted).
                         let dialed = mesh
                             .peers()
                             .iter()
                             .any(|p| p.cert.node == peer && p.url.is_some());
-                        let mine = advertised(inner);
-                        // What the peer no longer advertises is stale.
-                        mesh.discovered_relays
-                            .lock()
-                            .unwrap()
-                            .retain(|u, from| from != peer || a.relay_urls.contains(u));
-                        if !dialed {
-                            let mut disc = mesh.discovered_relays.lock().unwrap();
-                            if !disc.values().any(|from| from == peer) {
-                                if let Some(u) =
-                                    a.relay_urls.iter().find(|u| !mine.relay_urls.contains(u))
-                                {
-                                    disc.insert(u.clone(), peer.to_owned());
-                                }
-                            }
-                        }
+                        let joined: Vec<String> = payload
+                            .get("joined_relays")
+                            .and_then(|j| serde_json::from_value(j.clone()).ok())
+                            .unwrap_or_default();
+                        merge_peer_relays(
+                            &mut mesh.discovered_relays.lock().unwrap(),
+                            peer,
+                            &a.relay_urls,
+                            &joined,
+                            dialed,
+                            &advertised(inner).relay_urls,
+                            &mesh.relay_urls(),
+                        );
                     }
                     // Boards ride the mesh: a peer whose digest differs
                     // from ours is pulled (last writer wins per board).
@@ -4234,5 +4287,66 @@ mod hello_tests {
         })
         .to_string();
         assert!(serde_json::from_str::<super::Hello>(&env).is_err());
+    }
+
+    #[test]
+    fn a_peers_joined_relays_are_adopted() {
+        use std::collections::HashMap;
+        let cf = "wss://r.example.workers.dev/relay?mesh=m".to_string();
+        let hosted = vec![
+            "ws://b-win:7420/api/federation/relay".to_string(),
+            "ws://10.0.0.2:7420/api/federation/relay".to_string(),
+        ];
+        let mut disc = HashMap::new();
+        // B-wsl hears B-win: its hosted relay (first name) and the CF one.
+        super::merge_peer_relays(
+            &mut disc,
+            "b-win",
+            &hosted,
+            &[cf.clone(), "ws://127.0.0.1:7420/relay".into()],
+            false,
+            &[],
+            &[],
+        );
+        assert_eq!(disc.get(&cf).map(String::as_str), Some("b-win"));
+        assert_eq!(disc.get(&hosted[0]).map(String::as_str), Some("b-win"));
+        assert_eq!(
+            disc.len(),
+            2,
+            "loopback skipped, one hosted name only: {disc:?}"
+        );
+        // Already configured here: not discovered again.
+        let mut mine = HashMap::new();
+        super::merge_peer_relays(
+            &mut mine,
+            "b-win",
+            &hosted,
+            std::slice::from_ref(&cf),
+            true,
+            &[],
+            std::slice::from_ref(&cf),
+        );
+        assert!(mine.is_empty(), "{mine:?}");
+        // The peer leaves the CF relay: dropped.
+        super::merge_peer_relays(&mut disc, "b-win", &hosted, &[], false, &[], &[]);
+        assert!(!disc.contains_key(&cf));
+        assert!(disc.contains_key(&hosted[0]));
+    }
+
+    #[test]
+    fn joinable_relay_urls() {
+        assert!(super::relay_url_joinable(
+            "wss://x.workers.dev/relay?mesh=a"
+        ));
+        assert!(super::relay_url_joinable(
+            "ws://BRYON-MINI:7420/api/federation/relay"
+        ));
+        assert!(!super::relay_url_joinable(
+            "ws://127.0.0.1:7420/api/federation/relay"
+        ));
+        assert!(!super::relay_url_joinable("ws://localhost/relay"));
+        assert!(!super::relay_url_joinable("ws://[::1]:7420/relay"));
+        assert!(super::relay_url_joinable("ws://[fd7a::1]:7420/relay"));
+        assert!(!super::relay_url_joinable("http://x/relay"));
     }
 }

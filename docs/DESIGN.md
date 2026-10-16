@@ -722,7 +722,9 @@ cleaner lane for roster updates than user-message headers.
   advertised ones; a direct link supersedes a relay link; a lost direct
   link falls back to any relay where the peer is present; peer-hosted
   relays are discovered and joined as fallback paths (only from undialed
-  peers, one per peer, pruned when no longer advertised). The embedded
+  peers, one per peer, pruned when no longer advertised), and so are the
+  relays a peer is configured on (`joined_relays` in its roster), since a
+  relay does not route between relays. The embedded
   relay names its host in `Welcome` so the same relay under two addresses
   keeps one session. Loopback-only nodes advertise nothing: spokes by
   choice, shown as such. [`RELAY.md`](RELAY.md) §7.

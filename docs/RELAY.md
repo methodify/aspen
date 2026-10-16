@@ -174,6 +174,17 @@ have no configured dial URL to (a dialed peer's relay is at the same
 address; set it with `aspen mesh relay` if wanted), one per peer, and
 pruned when the peer stops advertising it.
 
+**Relays a peer is configured on travel too.** A relay is a meeting
+place, not a router: no node forwards between the relays it sits on. So
+a roster also carries `joined_relays`, the relays the sender is configured
+on for that mesh, and a peer joins each one it is not configured on
+itself (discovered, never persisted, pruned when no longer listed). Before
+this (v0.50.4), a WSL node configured only on its Windows host's relay
+never met a cloud node that sat only on the Cloudflare relay, though the
+Windows host was on both. Loopback URLs are not passed on (they name the
+sender's own machine); a URL that does not work from here is backed off
+like any other.
+
 **One relay, many names.** The root advertises its relay as
 `ws://anindor:7693/…` and `ws://172.28.…:7693/…`; a client that already
 sits on `ws://127.0.0.1:7693/…` must not open a second session to the same

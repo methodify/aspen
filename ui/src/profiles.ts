@@ -282,6 +282,51 @@ export function removeProfile(id: string) {
   for (const l of listeners) l();
 }
 
+/** An identity whose profile the list no longer names: its keys are still
+ *  in storage under `aspen.p.<id>.`, but no mesh card shows them (a list
+ *  rewritten from a stale copy, say, by another tab). `restoreProfile`
+ *  brings it back as it was. */
+export interface OrphanIdentity {
+  id: string;
+  node: string;
+  mesh: string | null;
+}
+
+export function orphanIdentities(): OrphanIdentity[] {
+  if (!hosted) return [];
+  ensure();
+  const known = new Set(readList().map((p) => p.id));
+  const out: OrphanIdentity[] = [];
+  const suffix = ".console.identity";
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(PREFIX) || !k.endsWith(suffix)) continue;
+      const id = k.slice(PREFIX.length, -suffix.length);
+      if (!id || id.includes(".") || known.has(id)) continue;
+      try {
+        const v = JSON.parse(localStorage.getItem(k) ?? "null") as { node?: unknown; cert?: { mesh?: unknown } | null } | null;
+        if (v && typeof v.node === "string") out.push({ id, node: v.node, mesh: typeof v.cert?.mesh === "string" ? v.cert.mesh : null });
+      } catch {
+        /* not an identity */
+      }
+    }
+  } catch {
+    /* storage unavailable */
+  }
+  return out;
+}
+
+/** Put an orphaned profile back in the list (its keys never moved). */
+export function restoreProfile(o: OrphanIdentity): void {
+  ensure();
+  const list = readList();
+  if (list.some((p) => p.id === o.id)) return;
+  list.push({ id: o.id, mesh: o.mesh, created: Date.now() });
+  writeList(list);
+  for (const l of listeners) l();
+}
+
 /** The transcript cache (transcript.ts) keys rows by session name; a
  *  profile prefix keeps two meshes' same-named sessions apart. */
 export function transcriptKey(name: string): string {

@@ -39,6 +39,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-16: relays a peer is on travel in its roster; a lost console identity can be restored (v0.50.4, queued)
+
+- On the operator's work mesh, a WSL node configured only on its Windows host's relay never met a cloud node that sat only on the Cloudflare relay, though the Windows host was on both: a relay is a meeting place, not a router, and a roster advertised only the relay a node hosts. Rosters now carry `joined_relays` (the relays the sender is configured on for that mesh); a peer joins each one it is not on (discovered, never persisted, pruned when no longer listed; loopback URLs skipped). Rig: root on loopback hosting a relay and configured on a standalone `aspen-relay`, a member only on the root's relay, a third only on the standalone one. v0.50.3 never linked the two members; this build linked them within seconds.
+- The work console's bryon-work card read "no relay identity" and showed the setup steps instead of the relay controls: the browser's identity for that mesh (`console-saueioje`) was no longer under the profile. Only forgetting the mesh removes it; a profile dropped from the list (keys still stored) left it invisible. The Meshes page now lists such identities as "not listed" with **restore**, and the forget prompt names the identity it will remove and says getting relay access back needs a new certification from the root. Verified in the hosted bundle.
+
 ## Shipped — 2026-10-10: copy fetches by the name the console knows (v0.50.3)
 
 - Copy on the phone answered "no agent named @main@sqlworks@anindor on record": the file was fetched with the node-qualified name meant only for the clipboard reference (for other consoles), and the attached node knew its own agent by the local one. Copy, share and prepare now fetch with the name the page uses; the reference keeps the qualified name. Also: the viewer's header said "on sqlworks" for a local agent (it took the repo for the node); it names a node only for a `bare@repo@node` address.
