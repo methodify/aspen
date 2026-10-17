@@ -1418,6 +1418,18 @@ fn name_for(
 ) -> (String, &'static str) {
     let bare = name.split('@').next().unwrap_or(name);
     let want = format!("{bare}@{handle}");
+    // The transcript already carries a name here (the repo started on this
+    // node, say): one transcript, one name, so that name stays and the
+    // bundle's is not registered. Registering it put two names on one
+    // transcript, and neither would revive.
+    if let Some(r) = rows.iter().find(|r| {
+        r.name != want
+            && !r.fork_pending
+            && r.moved_to.is_none()
+            && r.session_id.as_deref() == Some(sid)
+    }) {
+        return (r.name.clone(), "already here under this name");
+    }
     match rows.iter().find(|r| r.name == want) {
         None => (want, "register"),
         Some(r) if r.session_id.as_deref() == Some(sid) => (want, "already here"),
@@ -1773,7 +1785,7 @@ pub fn install(
                     .unwrap_or_else(|| sid0.to_owned());
                 let rows = store.agents().unwrap_or_default();
                 let (full, action) = name_for(&rows, name, &handle, &sid);
-                if action == "already here" {
+                if action.starts_with("already here") {
                     continue;
                 }
                 let harness: aspen_core::Harness = r
@@ -2070,6 +2082,37 @@ mod tests {
             rewrite_text_bytes("/home/a/é".as_bytes(), &up),
             "~/é".as_bytes()
         );
+    }
+
+    #[test]
+    fn an_incoming_name_meets_the_name_already_on_its_transcript() {
+        let store = crate::store::BusStore::open_in_memory().unwrap();
+        let repo = Path::new("/r/pick-when");
+        let h = aspen_core::Harness::Claude;
+        store
+            .register_agent("main@pick-when", repo, "pick-when", "s1", None, None, h)
+            .unwrap();
+        store
+            .register_agent("build@pick-when", repo, "pick-when", "s2", None, None, h)
+            .unwrap();
+        let rows = store.agents().unwrap();
+        // @product's transcript is @main's here: @main stays, nothing new.
+        let (n, a) = name_for(&rows, "product@pick-when", "pick-when", "s1");
+        assert_eq!(
+            (n.as_str(), a),
+            ("main@pick-when", "already here under this name")
+        );
+        // The same name on the same transcript.
+        assert_eq!(
+            name_for(&rows, "build@x", "pick-when", "s2").1,
+            "already here"
+        );
+        // The name is taken by another transcript: a numbered one.
+        assert_eq!(
+            name_for(&rows, "main@x", "pick-when", "s3").0,
+            "main-2@pick-when"
+        );
+        assert_eq!(name_for(&rows, "new@x", "pick-when", "s4").1, "register");
     }
 
     #[test]

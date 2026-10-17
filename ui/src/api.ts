@@ -1566,6 +1566,9 @@ function post<T>(path: string, body?: unknown): Promise<T> {
 
 const enc = encodeURIComponent;
 
+/** What the other names on a transcript get when one keeps it. */
+export type OthersGet = "copy" | "fresh" | "merge";
+
 export const api = {
   node: () => request<NodeInfo>("/api/node"),
 
@@ -1589,6 +1592,11 @@ export const api = {
    *  transcript it was on is kept as an earlier point. */
   moveTo: (name: string, session: string, at?: string) =>
     post<Agent>(`/api/agents/${enc(name)}/move-to`, { session, ...(at ? { at } : {}) }),
+  /** Two names on one transcript: `name` keeps it; each other name gets
+   *  its own copy (a branch, started and waiting), a fresh start, or is
+   *  folded into it (everything that named it names `name`). */
+  keepTranscript: (name: string, othersGet: OthersGet) =>
+    post<{ others: string[] }>(`/api/agents/${enc(name)}/keep-transcript`, { others_get: othersGet }),
   /** Rename a stopped name; answers the new key. */
   rename: (name: string, to: string) => post<{ name: string; bare: string }>(`/api/agents/${enc(name)}/rename`, { to }),
   /** Undo a branch before its first turn: the name goes back in place. */

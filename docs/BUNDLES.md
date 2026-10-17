@@ -29,7 +29,7 @@ A gzip'd tar:
 | `context/claude/<id>/…` | its sidecar folder: tool results, subagent and workflow transcripts (jsonl canonical, text canonical, binary as is) |
 | `context/claude/memory/…` | project memory, canonical |
 | `context/codex/…` | Codex rollouts whose cwd is the repo, under their date paths, canonical |
-| `aspen/agents.json` | the repo's names on the chosen transcripts (not pending forks — one name per transcript): charter, title, harness, extra args, bookmarks; lineage between chosen sessions |
+| `aspen/agents.json` | the repo's names on the chosen transcripts (not pending forks — one name per transcript): charter, title, harness, extra args, bookmarks; lineage between chosen sessions. On import, a transcript that already carries a name here keeps that name, and the bundle's is not registered (the preview says `already here under this name`) |
 | `sums.json` (last) | size + sha256 of every file; the import verifies them all |
 
 Text is rewritten as bytes: where a file is not UTF-8 throughout (Claude

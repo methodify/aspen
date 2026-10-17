@@ -2122,6 +2122,72 @@ impl Node {
         Ok(sess)
     }
 
+    /// Two (or more) names on one transcript — an import that met the
+    /// name this node already had on it, or anything else — and every
+    /// revive refuses ("that is @x's current transcript"). `name` keeps the
+    /// transcript; each other name on it gets its own copy (a branch, as
+    /// `move` gives: history kept, a new id, the process started and
+    /// waiting), a fresh start (the name stays, on no transcript), or is
+    /// folded into `name` (`BusStore::merge_agent`: what named it names
+    /// `name`, and it goes). Returns the others.
+    pub async fn keep_transcript(&self, name: &str, others_get: &str) -> Result<Vec<String>> {
+        if !matches!(others_get, "copy" | "fresh" | "merge") {
+            return Err(anyhow!("others_get is copy, fresh or merge"));
+        }
+        let rows = self.inner.store.agents()?;
+        let row = rows
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("no agent named {name} on record"))?;
+        let sid = row
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("@{name} has no transcript"))?;
+        let others: Vec<String> = rows
+            .iter()
+            .filter(|a| {
+                a.name != name
+                    && !a.fork_pending
+                    && a.moved_to.is_none()
+                    && a.session_id.as_deref() == Some(sid.as_str())
+            })
+            .map(|a| a.name.clone())
+            .collect();
+        if others.is_empty() {
+            return Err(anyhow!("no other name is on @{name}'s transcript"));
+        }
+        if let Some(live) = others.iter().find(|o| self.inner.live(o).is_some()) {
+            return Err(anyhow!("@{live} is running — stop it first"));
+        }
+        for o in &others {
+            match others_get {
+                "copy" => {
+                    self.fork_to(o, &sid, None).await?;
+                }
+                "fresh" => self.inner.store.clear_agent_session(o)?,
+                _ => {
+                    let self_node = self.inner.mesh().map(|m| m.identity.node.clone());
+                    self.inner
+                        .store
+                        .merge_agent(o, name, self_node.as_deref())?;
+                    let _ = self.inner.store.record_event(
+                        name,
+                        "untangle",
+                        serde_json::json!({ "session": sid, "merged": o }),
+                    );
+                    continue;
+                }
+            }
+            let _ = self.inner.store.record_event(
+                o,
+                "untangle",
+                serde_json::json!({ "session": sid, "kept_by": name, "got": others_get }),
+            );
+        }
+        crate::federation::broadcast_roster(&self.inner);
+        Ok(others)
+    }
+
     /// Rename a name (PROPOSALS-2026-09-J §4.7): the bus address, rail
     /// entry, board slots and history follow; the process is untouched
     /// because it is stopped first — a running session is keyed by name

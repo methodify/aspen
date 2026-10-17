@@ -39,6 +39,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-16: two names on one transcript — the import stops making them, and the Mesh list settles them (v0.50.6, queued)
+
+- Importing pick-when onto the node where the repo began registered the bundle's @product on the transcript this node already knew as @main: two names on one transcript, and every revive refused ("that is @x's current transcript"), with no way out in the console. The import now keeps the name already on a transcript and does not register the bundle's (`name_for`: "already here under this name", shown in the preview).
+- For a double name from any cause, the row's primary verb becomes **which name keeps it…**: pick the name that keeps the transcript, and the other gets its own copy (a branch, as move gives), a fresh start, or is folded into the kept one (everything that named it — earlier points, lineage, events, links, channel seats, board panes, bus history — names the kept one, and its row goes). `POST /api/agents/{name}/keep-transcript`, op `keep_transcript`; the merge shares rename's rewrite (`rewrite_agent_key`, now `UPDATE OR IGNORE` + leftovers deleted, so a seat the kept name already has stays once). Verified on a temp node with the operator's exact refusal: fresh, copy and fold each cleared it; the chooser checked in both themes and at phone width.
+
 ## Shipped — 2026-10-16: a repo bundle carries text that is not UTF-8, and imports despite a file its export skipped (v0.50.5)
 
 - Exporting ~/src/pick-when skipped a tool result as "unreadable" every time, and the import then refused the whole bundle ("the bundle's manifest names a file it does not hold"). The file was readable: Claude had cut it inside a character (a lone 0xE2), and the export read text with `read_to_string`. Text is now read and rewritten as bytes (`rewrite_text_bytes`, `rewrite_jsonl_bytes` in migrate.rs: UTF-8 runs canonicalized, other bytes kept), on export and on import, where a non-UTF-8 sidecar, rollout or memory file used to be written back empty and a transcript skipped.

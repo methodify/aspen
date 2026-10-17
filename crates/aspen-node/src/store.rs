@@ -872,6 +872,41 @@ impl BusStore {
         Ok(())
     }
 
+    /// Fold one name into another: everything that names `old` (earlier
+    /// points, events, lineage, notices, inputs, replicas, adoptions,
+    /// channel seats, messages, links, board panes) names `into`, and the
+    /// `old` row goes. What `into` already has (a seat in the same
+    /// channel) is kept once.
+    pub fn merge_agent(&self, old: &str, into: &str, self_node: Option<&str>) -> Result<()> {
+        let t = self.hlc_now();
+        let conn = self.conn.lock().unwrap();
+        let exists: Option<String> = conn
+            .query_row(
+                "SELECT name FROM agents WHERE name=?1",
+                params![into],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(anyhow::anyhow!("no agent named @{into} on record"));
+        }
+        let n = conn.execute("DELETE FROM agents WHERE name=?1", params![old])?;
+        if n == 0 {
+            return Err(anyhow::anyhow!("no agent named @{old} on record"));
+        }
+        Self::rewrite_agent_key(&conn, old, into, self_node, t)
+    }
+
+    /// The name keeps nothing: its next start is a fresh session.
+    pub fn clear_agent_session(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET session_id=NULL, fork_pending=0 WHERE name=?1",
+            params![name],
+        )?;
+        Ok(())
+    }
+
     pub fn set_fork_pending(&self, name: &str, pending: bool) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -2275,7 +2310,7 @@ impl BusStore {
     /// Every row that names an agent by its key, moved from `old` to `new`:
     /// bookmarks, events, lineage, notices, inputs, replicas, adoptions,
     /// channel membership, messages, links and board panes. Shared by an
-    /// agent's rename and a repo handle's (which had drifted to agents,
+    /// agent's rename, a merge (`merge_agent`) and a repo handle's (which had drifted to agents,
     /// membership and messages only, stranding the rest; the 2026-10
     /// quality pass).
     fn rewrite_agent_key(
@@ -2299,10 +2334,13 @@ impl BusStore {
             ("messages", "sender"),
             ("messages", "recipient"),
         ] {
+            // OR IGNORE + the delete: a key `new` already holds (a merge)
+            // stays once; a rename meets none.
             conn.execute(
-                &format!("UPDATE {table} SET {col}=?2 WHERE {col}=?1"),
+                &format!("UPDATE OR IGNORE {table} SET {col}=?2 WHERE {col}=?1"),
                 params![old, new],
             )?;
+            conn.execute(&format!("DELETE FROM {table} WHERE {col}=?1"), params![old])?;
         }
         conn.execute(
             "UPDATE messages SET to_display=?2 WHERE to_display=?1",
@@ -3090,5 +3128,30 @@ mod plugin_library_tests {
         assert!(s.upsert_library_entry(&l).unwrap());
         assert!(s.plugin_library(false).unwrap().is_empty());
         assert_eq!(s.plugin_library(true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merging_a_name_moves_what_named_it() {
+        let s = BusStore::open_in_memory().unwrap();
+        let repo = std::path::Path::new("/r/pw");
+        let h = aspen_core::Harness::Claude;
+        s.register_agent("main@pw", repo, "pw", "s1", None, None, h)
+            .unwrap();
+        s.register_agent("product@pw", repo, "pw", "s1", None, None, h)
+            .unwrap();
+        s.add_channel_member("pw", "main@pw").unwrap();
+        s.add_channel_member("pw", "product@pw").unwrap();
+        s.add_bookmark("product@pw", "s0", None, None, "move")
+            .unwrap();
+        s.merge_agent("product@pw", "main@pw", None).unwrap();
+        let names: Vec<String> = s.agents().unwrap().into_iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["main@pw".to_string()]);
+        // One seat, not two (the key main already held).
+        assert_eq!(
+            s.channel_members("pw").unwrap(),
+            vec!["main@pw".to_string()]
+        );
+        assert_eq!(s.bookmarks("main@pw").unwrap().len(), 1);
+        assert!(s.merge_agent("gone@pw", "main@pw", None).is_err());
     }
 }

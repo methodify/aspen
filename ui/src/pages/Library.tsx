@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { scoped } from "../profiles";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError, type MeshRepoNode, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
+import { api, ApiError, type MeshRepoNode, type OthersGet, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
 import { useTrustedStart } from "../trust";
@@ -845,6 +845,16 @@ function RepositoriesSection({
     }
   }
 
+  async function keepTranscript(addr: string, othersGet: OthersGet) {
+    setActionError(null);
+    try {
+      await api.keepTranscript(addr, othersGet);
+      reloadSessions();
+    } catch (e) {
+      setActionError(errText(e));
+    }
+  }
+
   async function ignoreBranch(node: string, s: SessionInfo) {
     if (!s.adoption_id) return;
     setActionError(null);
@@ -992,6 +1002,7 @@ function RepositoriesSection({
                               onPreview: (sess) => navigate(`/preview?repo=${encodeURIComponent(r.path)}&session=${encodeURIComponent(sess.session_id)}${sess.harness ? `&harness=${encodeURIComponent(sess.harness)}` : ""}${isSelf(n.node) ? "" : `&node=${encodeURIComponent(n.node)}`}`),
                               onRevive: (addr) => void reviveAgent(addr),
                               onMove: (agentKey, sess) => void moveNameHere(n.node, agentKey, sess),
+                              onKeep: (addr, g) => void keepTranscript(addr, g),
                               onIgnore: (sess) => void ignoreBranch(n.node, sess),
                               onForget: (sess) => void forgetEarlier(n.node, sess),
                             }}

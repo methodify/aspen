@@ -3,7 +3,7 @@
 // led by the name on it and its state, one primary verb, the rest in ⋯.
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type SessionInfo } from "./api";
+import { api, type OthersGet, type SessionInfo } from "./api";
 import { relTime } from "./components";
 import { suggestBranchName } from "./branchCard";
 import { useTrustedStart } from "./trust";
@@ -34,7 +34,7 @@ export function sessionLead(s: SessionInfo): ReactNode {
       <>
         <span className="mono sess-name">@{bare(s.agent)}{more.map((m) => `, @${bare(m)}`).join("")}</span>
         <span className="sess-state">current{s.agent_live ? " · running" : ""}{s.branch_of && bare(s.branch_of) !== bare(s.agent) ? <> · branched from <span className="mono">@{bare(s.branch_of)}</span></> : null}</span>
-        {more.length > 0 && <span className="chip mono" title="more than one name points at this transcript; pick one to keep and move the others" style={{ color: "var(--sig-gate)" }}>two names</span>}
+        {more.length > 0 && <span className="chip mono" title="more than one name is on this transcript, so neither can be revived; use “which name keeps it…” to settle it" style={{ color: "var(--sig-gate)" }}>{more.length === 1 ? "two names" : `${more.length + 1} names`}</span>}
       </>
     );
   }
@@ -67,6 +67,9 @@ export type SessionVerbs = {
   onOpen: (addr: string) => void;
   onRevive: (addr: string) => void;
   onMove: (agentKey: string, s: SessionInfo) => void;
+  /** Two names on one transcript: `addr` keeps it, the others get a copy
+   *  or a fresh start. */
+  onKeep?: (addr: string, othersGet: OthersGet) => void;
   onIgnore: (s: SessionInfo) => void;
   onForget: (s: SessionInfo) => void;
 };
@@ -78,9 +81,15 @@ export function SessionRow({ session: s, v, indent }: { session: SessionInfo; v:
   const [more, setMore] = useState(false);
   const [newName, setNewName] = useState("");
   const [moveName, setMoveName] = useState("");
+  const [keeping, setKeeping] = useState(false);
+  const [keeper, setKeeper] = useState("");
+  const [othersGet, setOthersGet] = useState<OthersGet>("copy");
   const bare = (k: string) => k.split("@")[0];
   const addr = s.agent ? agentAddr(s.agent, v.node, v.isSelf) : null;
   const isCurrent = !!s.agent && s.state === "current";
+  // More than one name on this transcript: every revive refuses until one
+  // keeps it (an import that met this node's own name for it, say).
+  const tangled = isCurrent && (s.agents?.length ?? 0) > 1 && !!v.onKeep;
   // Who can be moved here: every name in the repo; an earlier row's own
   // name first (moving it back), a branch's parent name first.
   const own = s.state === "earlier" && s.agent ? bare(s.agent) : s.branch_of ? bare(s.branch_of) : null;
@@ -109,7 +118,10 @@ export function SessionRow({ session: s, v, indent }: { session: SessionInfo; v:
         {!chooser && v.onPreview && (
           <button type="button" className="btn ghost sm" onClick={() => v.onPreview!(s)} title="read the transcript without starting anything">preview</button>
         )}
-        {!chooser && isCurrent && addr && (s.agent_live ? (
+        {!chooser && !keeping && tangled && (
+          <button type="button" className="btn sm" onClick={() => { setKeeper(s.agents![0]); setOthersGet("copy"); setKeeping(true); }} title="settle which name stays on this transcript">which name keeps it…</button>
+        )}
+        {!chooser && !tangled && isCurrent && addr && (s.agent_live ? (
           <button type="button" className="btn sm" onClick={() => v.onOpen(addr)}>open</button>
         ) : (
           <button type="button" className="btn sm" onClick={() => v.onRevive(addr)} title="start the name again on this transcript">revive</button>
@@ -134,6 +146,36 @@ export function SessionRow({ session: s, v, indent }: { session: SessionInfo; v:
           {s.adoption_id && <button type="button" className="btn ghost sm" onClick={() => { setMore(false); v.onIgnore(s); }} title="stop asking about this branch; it stays listed as no name">ignore this branch</button>}
           {s.state === "earlier" && s.bookmark_id && <button type="button" className="btn ghost sm" onClick={() => { setMore(false); v.onForget(s); }} title="drop the earlier point; the transcript stays on disk as no name">forget this earlier point</button>}
         </div>
+      )}
+      {keeping && tangled && (
+        <form className="sess-chooser" onSubmit={(e) => e.preventDefault()}>
+          <span className="sess-choice-head">one transcript, one name: which name keeps this one?</span>
+          <span className="sess-choice-field" role="radiogroup" aria-label="which name keeps the transcript">
+            {s.agents!.map((k) => (
+              <label key={k} className="mono">
+                <input type="radio" name={`keep-${s.session_id}`} checked={keeper === k} onChange={() => setKeeper(k)} /> @{bare(k)}
+              </label>
+            ))}
+          </span>
+          <span className="sess-choice-head">and {s.agents!.length > 2 ? "the others get" : `@${bare(s.agents!.find((k) => k !== keeper) ?? "")} gets`}</span>
+          <span className="sess-choice-field" role="radiogroup" aria-label="what the other names get" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+            <label>
+              <input type="radio" name={`get-${s.session_id}`} checked={othersGet === "copy"} onChange={() => setOthersGet("copy")} /> its own copy <span className="dim">(a branch of this history; it starts and waits for a first turn)</span>
+            </label>
+            <label>
+              <input type="radio" name={`get-${s.session_id}`} checked={othersGet === "fresh"} onChange={() => setOthersGet("fresh")} /> a fresh start <span className="dim">(its next start is a new session; this history stays with @{bare(keeper)})</span>
+            </label>
+            <label>
+              <input type="radio" name={`get-${s.session_id}`} checked={othersGet === "merge"} onChange={() => setOthersGet("merge")} /> folded into @{bare(keeper)} <span className="dim">({s.agents!.length > 2 ? "they go" : "it goes"} away; {s.agents!.length > 2 ? "their" : "its"} earlier points, links, channel seats, board panes and bus history become @{bare(keeper)}'s)</span>
+            </label>
+          </span>
+          <span className="sess-choice-field">
+            <button type="button" className="btn primary sm" disabled={!keeper} onClick={() => { setKeeping(false); v.onKeep!(agentAddr(keeper, v.node, v.isSelf), othersGet); }}>
+              keep @{bare(keeper)} here
+            </button>
+            <button type="button" className="btn ghost sm" onClick={() => setKeeping(false)}>cancel</button>
+          </span>
+        </form>
       )}
       {chooser && (
         <form
@@ -273,6 +315,9 @@ export function TranscriptsPanel({ name, repo, node, selfNode, onError }: { name
         onPreview: (s) => nav(`/preview?repo=${encodeURIComponent(repo!)}&session=${encodeURIComponent(s.session_id)}${s.harness ? `&harness=${encodeURIComponent(s.harness)}` : ""}${isSelf(node) ? "" : `&node=${encodeURIComponent(node)}`}`),
         onRevive: (addr) => {
           void api.revive(addr).then(() => reload()).catch(fail);
+        },
+        onKeep: (addr, g) => {
+          void api.keepTranscript(addr, g).then(() => reload()).catch(fail);
         },
         onMove: (agentKey, s) => {
           const full = rows.find((x) => x.agent && x.agent.split("@")[0] === agentKey)?.agent ?? `${agentKey}@${key.split("@")[1] ?? ""}`;

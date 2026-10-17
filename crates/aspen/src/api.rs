@@ -162,6 +162,7 @@ pub async fn serve(
         .route("/agents/{name}/branch/undo", post(post_branch_undo))
         .route("/agents/{name}/move-to", post(post_move_to))
         .route("/agents/{name}/rename", post(post_rename))
+        .route("/agents/{name}/keep-transcript", post(post_keep_transcript))
         .route("/agents/{name}/bookmarks", get(get_bookmarks))
         .route(
             "/agents/{name}/bookmarks/{id}/resume",
@@ -3719,6 +3720,36 @@ async fn post_move_to(
     }
     match s.node.move_to(&name, &b.session, b.at.as_deref()).await {
         Ok(sess) => agent_response(&s, &sess.name),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct KeepTranscriptBody {
+    /// "copy" (each other name gets a branch of it) | "fresh" | "merge".
+    others_get: Option<String>,
+}
+
+/// Two names on one transcript: `name` keeps it, the others get a copy or
+/// a fresh start. Answers `{ others }`.
+async fn post_keep_transcript(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<KeepTranscriptBody>,
+) -> impl IntoResponse {
+    let others_get = b.others_get.unwrap_or_else(|| "copy".into());
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy_agent(
+            &s,
+            &node,
+            "keep_transcript",
+            &bare,
+            json!({ "others_get": others_get }),
+        )
+        .await;
+    }
+    match s.node.keep_transcript(&name, &others_get).await {
+        Ok(others) => Json(json!({ "others": others })).into_response(),
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
 }

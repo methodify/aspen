@@ -2181,6 +2181,14 @@ async fn serve_api_req(
                 .await?;
             Ok(json!({ "name": sess.name }))
         }
+        "keep_transcript" => {
+            let others_get = body
+                .get("others_get")
+                .and_then(|x| x.as_str())
+                .unwrap_or("copy");
+            let others = node.keep_transcript(agent, others_get).await?;
+            Ok(json!({ "others": others }))
+        }
         "rename" => {
             let to = body
                 .get("to")
