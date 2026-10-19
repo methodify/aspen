@@ -39,7 +39,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Shipped — 2026-10-18: a pasted screenshot sends (v0.50.7, queued)
+## Shipped — 2026-10-18: a pasted screenshot sends (v0.50.7)
 
 - Sending a message with a pasted screenshot often failed: "Failed to buffer the request body: length limit exceeded". The composer allows 8 MB an attachment and 24 MB a message, but the node took axum's default 2 MB body, and attachments travel base64'd, so any screenshot over ~1.5 MB was refused. The message route now takes up to 34 MB (24 MB as base64, plus the text); beyond that is still refused. Checked on a temp node: a 5 MB body passes the limit, a 40 MB one is 413.
 - Over a relay the same message would have hit the relay's 1 MiB per WebSocket message next: the console sent every request whole. It now sends a frame over 192 KiB in `{"frag":…}` pieces, as the node does (`fragmentFrame`, tunnel.ts); the node's link reassembles them.
