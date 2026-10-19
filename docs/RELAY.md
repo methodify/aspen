@@ -494,3 +494,9 @@ A console built before v0.27.3 attached to a newer node sees a fragment
 as a bad frame and goes down until it reloads; the "new console —
 reload" prompt is the fix, and at the default size only a transcript or
 a very large answer ever fragments.
+
+The console sends in pieces too (v0.50.7, `fragmentFrame` in tunnel.ts):
+a message carrying a pasted screenshot is a request over 1 MiB, and it
+was sent whole. The node's link has reassembled pieces from any peer
+since v0.27.3, consoles included, so a newer console works with an
+older node.

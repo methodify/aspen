@@ -86,6 +86,22 @@ function cat(...parts: Uint8Array[]): Uint8Array {
 }
 const Z = new Uint8Array([0]);
 
+/** Largest frame sent whole (the node's `frag_bytes`): pieces stay well
+ *  under a relay's 1 MiB per message once wrapped in `route`. */
+export const FRAG_BYTES = 192 * 1024;
+
+/** A frame over `max` as `{"frag":{id,i,n,d}}` pieces, the shape the
+ *  node's `Reassembler` takes (federation.rs). Sealed frames are ASCII
+ *  (JSON around base64), so slicing by length splits no character. */
+export function fragmentFrame(frame: string, max = FRAG_BYTES): string[] {
+  if (frame.length <= max) return [frame];
+  const id = crypto.randomUUID();
+  const n = Math.ceil(frame.length / max);
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) out.push(JSON.stringify({ frag: { id, i, n, d: frame.slice(i * max, (i + 1) * max) } }));
+  return out;
+}
+
 // ── identity ────────────────────────────────────────────────────────────
 
 export function loadIdentity(): ConsoleIdentity | null {
@@ -925,7 +941,12 @@ export class Tunnel {
 
   private sendSealed(payload: unknown) {
     if (!this.ws || !this.id || !this.target || this.state !== "up") throw new Error("tunnel is not up");
-    this.ws.send(JSON.stringify({ t: "route", to: this.target.node, data: seal(this.id, this.target, JSON.stringify(payload)) }));
+    // A big request (a pasted screenshot) goes in pieces, as the node
+    // sends big answers: a relay caps one WebSocket message (Cloudflare:
+    // 1 MiB), and the node's link reassembles (RELAY.md §12).
+    for (const piece of fragmentFrame(seal(this.id, this.target, JSON.stringify(payload)))) {
+      this.ws.send(JSON.stringify({ t: "route", to: this.target.node, data: piece }));
+    }
   }
 
   private async waitUp(): Promise<void> {

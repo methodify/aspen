@@ -89,7 +89,13 @@ pub async fn serve(
         // Touches nothing: tells "workers pinned" from "acceptor dead".
         .route("/ping", get(|| async { "pong" }))
         .route("/agents", get(get_agents).post(post_agent))
-        .route("/agents/{name}/message", post(post_message))
+        // Attachments ride in the body, base64'd: the composer allows 8 MB
+        // each and 24 MB a message, so axum's 2 MB default refused most
+        // pasted screenshots ("length limit exceeded").
+        .route(
+            "/agents/{name}/message",
+            post(post_message).layer(axum::extract::DefaultBodyLimit::max(MESSAGE_BODY_MAX)),
+        )
         .route("/agents/{name}/interrupt", post(post_interrupt))
         .route(
             "/agents/{name}/permission/{request_id}",
@@ -2196,6 +2202,10 @@ struct MessageBody {
     #[serde(default)]
     attachments: Vec<aspen_node::artifacts::Attachment>,
 }
+
+/// The message body cap: the composer's 24 MB of attachments as base64
+/// (4/3), plus the text and JSON around it.
+const MESSAGE_BODY_MAX: usize = 34 * 1024 * 1024;
 
 async fn post_message(
     State(s): S,
