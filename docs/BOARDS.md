@@ -191,3 +191,47 @@ background work.
 - **A board's header**: the meter and the counts, and **start the stopped
   (n)** on a laid-out board — revives every member that is down; a member
   the one-writer gate holds back is named, to open and decide.
+
+## 11. The bench and tabs (v0.51, PROPOSALS-2026-10-T)
+
+A board is a project's roster. Members sit on the **stage** (the panes)
+or the **bench** (`Board.bench: [{agent, at, slot?}]`, synced with the
+board); both are the team. `topology::board_panes` reads the bench beside
+the layout, so benching or bringing back changes no one's board-mates and
+sends no notice.
+
+- **Bench a pane** with ⤓ on its bar. **×** on a session pane asks:
+  *bench @x* or *remove from team* (the old close, which tells the
+  board-mates). Empty and viewer panes close at once.
+- **The bench strip** runs along the bottom: the member's meter, its
+  name, how long since it last worked (`Agent.last_active`), a red pip
+  when it waits on the operator, a green one for background work, and an
+  accent dot when it wrote since the operator last had it in view. Waiting
+  members sort first, then the most recent. It folds (`bench (n) ▸`),
+  remembered per board on this console.
+- **Peek**: click a chip and the member opens in a side sheet over the
+  board, with its full view (transcript, composer, permission cards). The
+  layout does not move. `esc` closes it; ⤒ brings it back onto the board.
+- **Bring back** (⤒ on a chip or in the sheet): to the slot it left if
+  that split still exists, else into the first empty pane, else beside
+  the pane with the most room. **Drag** a chip onto a pane to swap them.
+  An empty pane offers the bench's members. Adding a benched member to the
+  board from a session's *board ▾* brings it back the same way.
+- *Start the stopped* starts stage members only. The header counts the
+  whole team and adds `· n benched`.
+- **Tabs** (`layout | tabs` in the header): one member at full size, a
+  strip to switch: stage members in layout order, then the bench, dimmer
+  and dashed. Each tab has its number (`alt+1…9`), meter, waiting pip and
+  unread dot; `alt+[` and `alt+]` step. The last three tabs stay mounted,
+  so switching is instant. The choice is remembered per board on this
+  console, the last choice the default for a board never set. Below
+  900px a board is always tabs: one strip on every screen.
+- A rename or a fold of names (`keep-transcript`, `merge`) rewrites bench
+  entries like panes. An older node drops `bench` from boards it rewrites,
+  and a board saved without the field keeps the stored bench, so a stale
+  console cannot wipe it.
+
+Code: `ui/src/boardOps.ts` (`benchPane`, `unbench`, `benchSwap`,
+`stageBench`, with tests), `ui/src/pages/Board.tsx` (strip, sheet, tabs),
+`crates/aspen-node/src/topology.rs` (`bench_agents`).
+

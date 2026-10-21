@@ -310,6 +310,8 @@ export interface Agent {
   busy_since?: number | null;
   /** The most recent tool this turn. */
   last_tool?: string | null;
+  /** When it last worked: its transcript's modification time (epoch s). */
+  last_active?: number | null;
 }
 
 export type Urgency = "gating" | "normal" | "notice";
@@ -640,12 +642,21 @@ export interface BoardSplit {
   children: BoardNode[];
 }
 export type BoardNode = BoardSplit | BoardPane;
+export interface BenchEntry {
+  agent: string;
+  /** Epoch seconds it was benched. */
+  at: number;
+  slot?: { parent: string; index: number; size: number } | null;
+}
 export interface Board {
   id: string;
   name: string;
   layout: BoardNode;
   /** Pair mode (BOARDS.md §pairs): pane-id pairs joined on a bus thread. */
   pairs?: [string, string][] | null;
+  /** The bench (PROPOSALS-2026-10-T §3): members not shown right now —
+   *  still the team. `slot` is where the pane sat, to go back to. */
+  bench?: BenchEntry[] | null;
   /** A dynamic board: panes are whatever matches. */
   query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;

@@ -39,6 +39,15 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-20: the repo at hand, the bench, and boards as tabs (v0.51.0, queued)
+
+Proposal T (PROPOSALS-2026-10-T.md), the operator's calls in its §7.
+- **T-1 The repo menu.** The session bar's repo segment opens the repo's agents (state, waiting pip, title, last worked; open or revive), the same handle on other nodes, *new agent here*, and links to Mesh (now `/mesh?node=&repo=`) and Files. In a board pane (⋯ → *agents in this repo*): *show here* and *add to board*. `alt+r` on a session page.
+- **T-2 The bench.** `Board.bench` (node column, synced with the board, counted as the team by `topology::board_panes`, so no notices). ⤓ benches a pane; × asks bench or remove from team; the strip along the bottom (meter, last worked, waiting/background pips, unread dot; folds); peek in a side sheet; bring back to the old slot, an empty pane, or beside the roomiest pane; drag a chip onto a pane to swap. Rename and the name fold reach the bench; a board saved without the field keeps the stored bench.
+- **T-3 Tabs.** `layout | tabs` per board on this console (the last choice the default); stage then bench tabs with meters, waiting pips and unread dots; `alt+1…9`, `alt+[`/`]`; the last three tabs stay mounted. The phone strip is the same component.
+- `Agent.last_active`: a transcript's modification time, local and over the roster.
+- Verified on a temp node (four agents, a three-pane board, one benched): peek, bring back (slot and fallback), bench with slot, the close choice, tabs with a bench tab and the choice surviving a reload, the repo menu on a page and in a pane (*show here* swapped and benched), the Mesh link opening the repo; both themes and phone width.
+
 ## Shipped — 2026-10-18: a pasted screenshot sends (v0.50.7)
 
 - Sending a message with a pasted screenshot often failed: "Failed to buffer the request body: length limit exceeded". The composer allows 8 MB an attachment and 24 MB a message, but the node took axum's default 2 MB body, and attachments travel base64'd, so any screenshot over ~1.5 MB was refused. The message route now takes up to 34 MB (24 MB as base64, plus the text); beyond that is still refused. Checked on a temp node: a 5 MB body passes the limit, a 40 MB one is 413.

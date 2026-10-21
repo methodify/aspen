@@ -84,3 +84,34 @@
 .pair-compose input { flex: 1; }
 
 .board-card-head { display: flex; align-items: center; gap: 8px; }
+
+/* The bench (PROPOSALS-2026-10-T §3): members not shown right now. */
+.board-page { position: relative; }
+.bench-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 8px; border-top: 1px solid var(--line); background: var(--bg-strip); }
+.bench-label { font: 600 0.72rem/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); background: none; border: none; padding: 4px 2px; cursor: pointer; }
+.bench-chip { display: inline-flex; align-items: center; border: 1px solid var(--line); background: var(--surface-1); }
+.bench-chip.on { border-color: var(--accent); }
+.bench-chip[draggable="true"] { cursor: grab; }
+.bench-chip-main { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 4px 6px 4px 8px; color: var(--text-mid); font: 500 0.78rem/1 var(--font-body); cursor: pointer; }
+.bench-chip-main:hover { color: var(--text-hi); }
+.bench-chip .rail-wait-pip, .bench-chip .rail-activity-pip, .board-tabs .rail-activity-pip { width: 7px; height: 7px; }
+.bench-hint { margin-left: auto; }
+.unread-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.pane-empty { flex-wrap: wrap; }
+.pane-empty-bench { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; flex-basis: 100%; justify-content: center; }
+
+/* Peek: a benched member in a side sheet; the layout stays put. */
+.bench-peek { position: absolute; top: 44px; right: 6px; bottom: 6px; width: min(46%, 720px); min-width: 360px; z-index: 30; display: flex; background: var(--surface-0); border: 1px solid var(--line-hi); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35); animation: panel-in var(--dur-normal) var(--ease-seat); }
+.bench-peek > .pane { flex: 1; min-width: 0; }
+
+/* Tabs (§4): the same strip on a phone and, by choice, on a desk. */
+.board-tab-slot { display: inline-flex; align-items: center; gap: 4px; }
+.board-tabs-sep { padding: 0 4px 0 8px; text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.66rem; }
+.board-tabs button.benched { opacity: 0.72; border-style: dashed; }
+.board-tabs button.benched.on { opacity: 1; }
+.board-tab-body { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.board-tab-body > * { flex: 1; min-width: 0; min-height: 0; }
+.view-toggle button { padding: 3px 9px; }
+@media (max-width: 900px) {
+  .bench-peek { left: 6px; width: auto; min-width: 0; }
+}

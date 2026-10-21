@@ -80,7 +80,8 @@ export function boardStatus(b: Board, agents: Agent[], waiting: Set<string>): Bo
   } else {
     const seen = new Set<string>();
     members = [];
-    for (const n of paneAgents(b.layout)) {
+    // The bench is the team too (PROPOSALS-2026-10-T §3).
+    for (const n of [...paneAgents(b.layout), ...(b.bench ?? []).map((e) => e.agent)]) {
       const a = lookup(byName, n);
       if (!a) {
         unknown++;

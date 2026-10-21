@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { scoped } from "../profiles";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, type MeshRepoNode, type OthersGet, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
@@ -716,6 +716,17 @@ function RepositoriesSection({
 
   const key = (node: string, path: string) => `${node}\u0000${path}`;
   const selected = selKey ? { node: selKey.split("\u0000")[0], path: selKey.split("\u0000")[1] } : null;
+  // A link into one repo (`?node=&repo=`, from a session's repo menu):
+  // its node opens and the repo is selected, once.
+  const [params] = useSearchParams();
+  useEffect(() => {
+    const n = params.get("node");
+    const r = params.get("repo");
+    if (!n || !r) return;
+    setOpenNodes((o) => ({ ...o, [n]: true }));
+    setSelKey(key(n, r));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load the selected repo's sessions (from its owning node) on change,
   // and again after a row verb changed what the node knows about them.

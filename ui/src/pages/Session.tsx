@@ -105,6 +105,7 @@ import {
   type SlashCommand,
 } from "./sessionExtras";
 import "./session.css";
+import { RepoMenu, type TeamVerbs } from "../repoMenu";
 import { AWAY_SECS, CatchUpBar, computeCatchUp, markerOf, readMarker, writeMarker, type SeenMarker } from "./catchUp";
 
 // ---------------------------------------------------------------------------
@@ -1229,6 +1230,9 @@ export interface PaneMode {
   menu?: ReactNode;
   /** Drag-to-swap and the like: spread onto the bar element. */
   barProps?: React.HTMLAttributes<HTMLDivElement>;
+  /** The board's verbs for the repo menu: a sibling in this pane, or
+   *  beside it (PROPOSALS-2026-10-T §2). */
+  team?: TeamVerbs;
 }
 
 export function SessionView({ name, pane, subagent }: { name: string; pane?: PaneMode; subagent?: string }) {
@@ -1519,6 +1523,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [localLastTool, setLocalLastTool] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [titleEditing, setTitleEditing] = useState(false);
+  const [repoMenu, setRepoMenu] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [titleOverride, setTitleOverride] = useState<string | null | undefined>(undefined);
   const [charterOpen, setCharterOpen] = useState(false);
@@ -2257,6 +2262,12 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
 
   useHotkeys("session", [
     {
+      key: "alt+r",
+      description: "the agents in this repo",
+      when: () => !!agent,
+      handler: () => setRepoMenu((x) => !x),
+    },
+    {
       key: "i",
       description: "interrupt the running turn",
       when: () => busy && !interrupting,
@@ -2916,13 +2927,26 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           </span>
         )}
             {agent && (
-              <span className="dim mono session-repo">
-                {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
+              <span className="session-repo-wrap">
+                <button
+                  type="button"
+                  className="dim mono session-repo"
+                  aria-expanded={repoMenu}
+                  title={`the agents in #${agent.channel} (alt+r)`}
+                  onClick={() => setRepoMenu((x) => !x)}
+                >
+                  {agent.repo ?? `node ${agent.node}`} · #{agent.channel}
+                </button>
               </span>
             )}
           </>
         )}
         {pane?.chips}
+        {repoMenu && agent && (
+          <span className="session-repo-wrap repo-menu-anchor">
+            <RepoMenu agent={agent} team={pane?.team} onClose={() => setRepoMenu(false)} />
+          </span>
+        )}
         <span className="spacer" />
         {reloadNote && <span className="ok-inline mono reload-note">{reloadNote}</span>}
         {ctlNote && <span className="ctl-note">{ctlNote}</span>}
@@ -3162,6 +3186,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           {!subagent && (
             <MenuRow label="files" hint="browse the agent's repo and folders; the newest files, however they were written" onClick={() => { closeMenu(); nav(`/session/${encodeURIComponent(name)}/files`); }} />
           )}
+          {!subagent && agent && <MenuRow label="agents in this repo" hint={`#${agent.channel}: open, revive, or start one (alt+r)`} onClick={() => { closeMenu(); setRepoMenu(true); }} />}
           <MenuRow label={`charter${charterOpen ? " ▴" : ""}`} hint="the session's charter, below the bar" onClick={() => { closeMenu(); setCharterOpen((o) => !o); }} />
           {canRecap && (
             <MenuRow label="recap now" hint="open the since-you-last-looked bar and ask the harness for a one-line recap of the whole session (nothing enters the conversation)" onClick={() => { closeMenu(); recapNow(); }} disabled={agent?.turn_state === "busy"} />

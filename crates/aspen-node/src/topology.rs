@@ -201,6 +201,17 @@ pub struct Neighborhood {
 }
 
 /// The session addresses in a board layout (session and viewer panes).
+/// The agents on a board's bench (`[{agent, …}]`), in order.
+pub fn bench_agents(b: &crate::store::Board) -> Vec<String> {
+    b.bench
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.get("agent").and_then(|a| a.as_str()).map(str::to_owned))
+        .collect()
+}
+
 pub fn layout_agents(node: &serde_json::Value, out: &mut Vec<String>) {
     match node.get("kind").and_then(|k| k.as_str()) {
         Some("split") => {
@@ -265,6 +276,13 @@ pub fn board_panes(inner: &Arc<NodeInner>, b: &crate::store::Board) -> Vec<Strin
     };
     let mut panes = Vec::new();
     layout_agents(&b.layout, &mut panes);
+    // The bench is the team too (PROPOSALS-2026-10-T §3.1): benching a
+    // member changes no one's board-mates and sends no notice.
+    for a in bench_agents(b) {
+        if !panes.contains(&a) {
+            panes.push(a);
+        }
+    }
     panes.iter().map(|p| bus_form(p)).collect()
 }
 

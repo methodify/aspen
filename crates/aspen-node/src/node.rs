@@ -291,6 +291,14 @@ impl NodeInner {
 
     /// The session store for a harness; claude's when the harness is
     /// unknown here (rows from before v0.20, a harness not built in).
+    /// When an agent last worked: its transcript's modification time (a
+    /// stat; the Codex store caches its rollout lookup). The bench and the
+    /// tabs' unread mark read it (PROPOSALS-2026-10-T).
+    pub fn last_active(&self, a: &crate::store::AgentRow) -> Option<f64> {
+        let sid = a.session_id.as_deref()?;
+        self.store_for(a.harness).modified(&a.repo, sid)
+    }
+
     pub fn store_for(&self, harness: Harness) -> Arc<dyn SessionStore> {
         self.adapters
             .get(&harness)

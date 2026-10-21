@@ -647,3 +647,28 @@
 .branch-problem { font: 400 0.7rem/1 var(--font-mono); color: var(--sig-gate); flex-basis: 100%; }
 .branch-card-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .session-bar .ctl-undo { margin-left: 6px; }
+
+/* The repo menu (PROPOSALS-2026-10-T §2). */
+.session-bar button.session-repo { font: inherit; background: none; border: none; padding: 0; cursor: pointer; color: var(--text-dim); }
+.session-bar button.session-repo:hover { color: var(--text-hi); text-decoration: underline dotted; }
+.repo-menu-anchor { width: 0; overflow: visible; }
+.session-menu.repo-menu { width: 640px; padding: 0; }
+.repo-menu-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px 6px; border-bottom: 1px solid var(--line); }
+.repo-menu-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 40ch; direction: rtl; text-align: left; }
+.repo-menu-rows { display: flex; flex-direction: column; padding: 4px 0; }
+.repo-menu-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; min-height: 32px; }
+.repo-menu-row:hover { background: var(--bg-strip); }
+.repo-menu-row.self .repo-menu-name { color: var(--text-hi); font-weight: 600; }
+.repo-menu-name { white-space: nowrap; }
+.repo-menu-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; }
+.repo-menu-when { min-width: 7ch; text-align: right; }
+.repo-menu-verbs { display: inline-flex; gap: 4px; min-width: 64px; justify-content: flex-end; }
+.repo-menu-row .rail-wait-pip { width: 7px; height: 7px; }
+.repo-menu-fold { margin: 2px 12px 4px; align-self: flex-start; }
+.repo-menu-new { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.repo-menu-new input { width: 160px; }
+.repo-menu-foot { display: flex; gap: 16px; padding: 6px 12px 8px; border-top: 1px solid var(--line); }
+@media (max-width: 700px) {
+  .repo-menu-title, .repo-menu-when { display: none; }
+  .repo-menu-row { flex-wrap: wrap; }
+}

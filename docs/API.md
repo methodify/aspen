@@ -32,7 +32,7 @@ whoever messaged you are always allowed.
 | Method & path | Body | Returns | Notes |
 |---|---|---|---|
 | `GET /api/node` (`node` is the mesh identity when in a mesh, else the hostname; `hostname` is always the OS name — v0.25.1) | — | `{ node, version, sha, built, update_available, update_skipped, withdrawn, service_state, service_detail, started_at }` | identity/health; `sha`/`built` are stamped at compile time. The servicing fields are the badge's summary (`service_state`: ready / draining / updating) |
-| `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state |
+| `GET /api/agents` | — | `Agent[]` | full roster: registered agents + live state. `last_active` (epoch s) is when each last worked: its transcript's modification time, for remote agents from the peer's roster |
 | `POST /api/agents` | `{ name, repo, charter?, model?, allow_all?, resume?, skip_permissions?, acknowledge_trust?, title?, extra_args?, node? }` | `Agent` (+ `spawn_note`) | start a session + join bus. 409 if name is live. `resume` = a session id from `/api/sessions` to continue an existing one; 409 when that transcript is already another name's current one ("open it, or branch it" — one transcript, one name). `skip_permissions` (bool) runs it in bypassPermissions; omit to use the repo's stored default. With `node`, the session spawns on that peer over the mesh (returns `name@node`). An untrusted repo that would auto-run hooks/MCP returns 428 + `{autorun}` until retried with `acknowledge_trust: true` (the trust gate). Resuming a session whose transcript was written in the last 2 minutes by a process this node doesn't manage (a terminal, another node) is **refused with 409** + `{ live_elsewhere: { session, written_ago_secs } }` until retried with `resume_choice: "fork"` (same history, new id, lineage recorded) or `"in_place"` (same id, two writers — the operator's call); the console asks. The choice is echoed in `spawn_note` |
 | `POST /api/repos` takes `node` (v0.25.2): register a path that lives on that peer, which canonicalizes and adds it |
 | `GET /api/repos` | — | `Repo[]` | remembered repos (path, skip default, session/live counts) |
@@ -252,8 +252,11 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 ## Boards (v0.12) — BOARDS.md
 
 - `GET /api/boards` — this node's boards (tombstones excluded), newest first.
-- `PUT /api/boards/{id}` body `Board {id, name, layout, query?, updated_at}` — write if newer than what
+- `PUT /api/boards/{id}` body `Board {id, name, layout, query?, pairs?, bench?, updated_at}` — write if newer than what
   the node holds (last writer wins); broadcasts the roster so peers pull. Response `{ok, changed}`.
+  `bench` is `[{agent, at, slot?: {parent, index, size}}]`, members not shown right now but still the
+  team (PROPOSALS-2026-10-T). A board with no `bench` field (an older console or node) keeps the
+  stored bench; `[]` clears it.
 - `DELETE /api/boards/{id}` — tombstone (propagates across the mesh).
 - Roster field `boards_digest`; mesh op `boards` returns every row including tombstones.
 - Agents carry `fork_pending` internally (not in the API): a forking spawn sets it, the runtime's

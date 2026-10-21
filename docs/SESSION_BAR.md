@@ -146,3 +146,21 @@ square, strong line, one theme-specific shadow, a short enter).
 - **rename this name…** in the setup group (disabled while running): an
   inline field on the bar; the address, rail entry, boards and history
   follow, and the view opens the new name.
+
+## 8. The repo menu (v0.51, PROPOSALS-2026-10-T §2)
+
+The repo segment of the bar (`path · #handle`) is a button. It opens the
+repo: its agents on this node (busy, then idle, then stopped, the most
+recent first), each with its meter, waiting pip, title, state and when it
+last worked, and *open* (live) or *revive* (stopped). Agents of the same
+handle on other nodes sit under a folded group. *New agent here* starts
+one through the trust gate. The footer links to the repo's transcripts in
+Mesh (`/mesh?node=&repo=` opens that repo) and to Files.
+
+In a board pane the bar hides the segment; ⋯ → *agents in this repo* opens
+the same menu (also `alt+r` on a session page), with two more verbs:
+*show here* (the agent takes this pane, the one here goes to the bench)
+and *add to board* (split this pane). One already on the board is focused
+instead. A new agent started from a pane's menu opens in that pane.
+Code: `ui/src/repoMenu.tsx`.
+

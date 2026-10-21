@@ -9,11 +9,13 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type Agent, type Board, type BoardNode, type BoardPane, type BusMessage, type OpenPrompt } from "../api";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
-import { BoardMeter, ErrorBar, relTime } from "../components";
+import { BoardMeter, ErrorBar, Meter, presenceOf, relTime } from "../components";
+import { scoped } from "../profiles";
 import { boardStatus, describeStatus, matchQuery, type DynamicQuery } from "../boardStatus";
 import { MenuGroup, MenuRow } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
+import { benchPane, benchSwap, mapTree, panesOf, removePane, stageBench, unbench } from "../boardOps";
 import "./board.css";
 
 // ------------------------------------------------------------ layout ops
@@ -71,37 +73,11 @@ export const PRESETS: { key: string; label: string; make: () => BoardNode }[] = 
   },
 ];
 
-function panesOf(n: BoardNode): BoardPane[] {
-  return n.kind === "split" ? n.children.flatMap(panesOf) : [n];
-}
-
-function mapTree(n: BoardNode, f: (p: BoardPane) => BoardNode): BoardNode {
-  return n.kind === "split" ? { ...n, children: n.children.map((c) => mapTree(c, f)) } : f(n);
-}
-
 /** Replace a pane by id with a split of it and a new empty pane. */
 function splitPane(root: BoardNode, id: string, dir: "row" | "col"): BoardNode {
   return mapTree(root, (p) =>
     p.id === id ? { kind: "split", id: newId(), dir, sizes: [50, 50], children: [p, emptyPane()] } : p,
   );
-}
-
-/** Remove a pane; a split left with one child collapses to it. */
-function removePane(root: BoardNode, id: string): BoardNode | null {
-  if (root.kind !== "split") return root.id === id ? null : root;
-  const kept: BoardNode[] = [];
-  const sizes: number[] = [];
-  root.children.forEach((c, i) => {
-    const r = removePane(c, id);
-    if (r) {
-      kept.push(r);
-      sizes.push(root.sizes[i] ?? 50);
-    }
-  });
-  if (kept.length === 0) return null;
-  if (kept.length === 1) return kept[0]!;
-  const total = sizes.reduce((a, b) => a + b, 0) || 1;
-  return { ...root, children: kept, sizes: sizes.map((s) => (s / total) * 100) };
 }
 
 function swapPanes(root: BoardNode, a: string, b: string): BoardNode {
@@ -172,7 +148,42 @@ export default function BoardPage() {
   const [picker, setPicker] = useState<string | null>(null); // pane id being filled
   const [attention, setAttention] = useState<Set<string>>(new Set());
   const [narrow, setNarrow] = useState(() => window.innerWidth < 900);
-  const [tab, setTab] = useState(0);
+  // Tabs or layout (PROPOSALS-2026-10-T §4): per board on this console,
+  // the last choice the default for a board never set. Below 900px a
+  // board is always tabs.
+  const [viewPref, setViewPref] = useState<"layout" | "tabs">("layout");
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(scoped(`aspen.board.view.${id}`)) ?? localStorage.getItem(scoped("aspen.board.view"));
+      setViewPref(v === "tabs" ? "tabs" : "layout");
+    } catch {
+      setViewPref("layout");
+    }
+  }, [id]);
+  const chooseView = (v: "layout" | "tabs") => {
+    setViewPref(v);
+    try {
+      localStorage.setItem(scoped(`aspen.board.view.${id}`), v);
+      localStorage.setItem(scoped("aspen.board.view"), v);
+    } catch {
+      // storage unavailable: this visit only
+    }
+  };
+  const tabsMode = narrow || viewPref === "tabs";
+  const [activeTab, setActiveTab] = useState<string | null>(null);
+  const [mounted, setMounted] = useState<string[]>([]);
+  // The bench (§3): the pane whose × asked, the member peeked at, and
+  // whether the strip is folded (per board, this console).
+  const [closeAsk, setCloseAsk] = useState<string | null>(null);
+  const [peek, setPeek] = useState<string | null>(null);
+  const [benchFolded, setBenchFolded] = useState(false);
+  useEffect(() => {
+    try {
+      setBenchFolded(localStorage.getItem(scoped(`aspen.board.benchFolded.${id}`)) === "1");
+    } catch {
+      setBenchFolded(false);
+    }
+  }, [id]);
   const [renaming, setRenaming] = useState(false);
   const [bcastAsk, setBcastAsk] = useState(false);
   const [bcastArmed, setBcastArmed] = useState(false);
@@ -258,6 +269,74 @@ export default function BoardPage() {
 
   const panes = useMemo(() => (tree ? panesOf(tree) : []), [tree]);
   const sessionPanes = panes.filter((p) => p.kind === "session" && p.agent);
+  const bench = useMemo(() => (board && !board.query ? stageBench(board) : []), [board]);
+  const byName = useMemo(() => new Map(agents.map((a) => [a.name, a] as const)), [agents]);
+  const agentOf = (n: string): Agent | undefined => {
+    const hit = byName.get(n);
+    if (hit) return hit;
+    const parts = n.split("@");
+    return parts.length === 3 ? byName.get(`${parts[0]}@${parts[1]}`) : undefined;
+  };
+  // Unread (§4.1): the member wrote since the operator last had it in view.
+  const seenKey = (n: string) => scoped(`aspen.seen.${n}`);
+  const seenAt = (n: string): number => {
+    try {
+      return Number(localStorage.getItem(seenKey(n)) ?? 0);
+    } catch {
+      return 0;
+    }
+  };
+  const markSeen = (n: string) => {
+    try {
+      localStorage.setItem(seenKey(n), String(Date.now() / 1000));
+    } catch {
+      // storage unavailable
+    }
+  };
+  const unread = (n: string): boolean => {
+    const la = agentOf(n)?.last_active;
+    return !!la && la > seenAt(n) + 1;
+  };
+  type Tab = { key: string; pane?: BoardPane; agent?: string; benched: boolean };
+  const tabs: Tab[] = [
+    ...panes.map((p) => ({ key: p.id, pane: p, agent: p.kind === "session" ? p.agent : undefined, benched: false })),
+    ...bench.map((e) => ({ key: `bench:${e.agent}`, agent: e.agent, benched: true })),
+  ];
+  const active = tabs.find((t) => t.key === activeTab) ?? tabs[0];
+  const selectTab = (key: string) => {
+    setActiveTab(key);
+    const t = tabs.find((x) => x.key === key);
+    if (t?.pane) setFocus(t.pane.id);
+    else setFocus(key);
+    if (t?.agent) markSeen(t.agent);
+  };
+  // The last three tabs stay mounted (hidden), so switching is instant.
+  useEffect(() => {
+    if (active) setMounted((m) => [active.key, ...m.filter((k) => k !== active.key)].slice(0, 3));
+  }, [active?.key]);
+  // What is in view counts as seen while the window has focus.
+  useEffect(() => {
+    const visible = (): string[] => {
+      if (tabsMode) return active?.agent ? [active.agent] : [];
+      return [...sessionPanes.map((p) => p.agent!), ...(peek ? [peek] : [])];
+    };
+    const tick = () => {
+      if (document.hasFocus()) for (const n of visible()) markSeen(n);
+    };
+    tick();
+    const t = window.setInterval(tick, 5000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabsMode, active?.key, peek, sessionPanes.map((p) => p.agent).join(",")]);
+  // Peek closes on Escape.
+  useEffect(() => {
+    if (!peek) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPeek(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [peek]);
 
   // Focus follows the first pane until the operator chooses.
   useEffect(() => {
@@ -305,13 +384,26 @@ export default function BoardPage() {
     { key: "alt+z", description: "zoom the focused pane / back", handler: () => setZoom((z) => (z ? null : focus)) },
     ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
       key: `alt+${n}`,
-      description: `focus pane ${n}`,
+      description: `focus pane ${n} (tab ${n} in tabs view)`,
       handler: () => {
+        if (tabsMode) {
+          const t = tabs[n - 1];
+          if (t) selectTab(t.key);
+          return;
+        }
         const p = panes[n - 1];
         if (p) setFocus(p.id);
       },
     })),
+    { key: "alt+[", description: "previous tab (tabs view)", handler: () => stepTab(-1) },
+    { key: "alt+]", description: "next tab (tabs view)", handler: () => stepTab(1) },
   ]);
+
+  function stepTab(d: number) {
+    if (!tabsMode || tabs.length === 0) return;
+    const i = Math.max(0, tabs.findIndex((t) => t.key === active?.key));
+    selectTab(tabs[(i + d + tabs.length) % tabs.length]!.key);
+  }
 
   // Broadcast: after the focused pane sends, the same text goes to every
   // other session pane.
@@ -447,13 +539,30 @@ export default function BoardPage() {
           <>
             <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "row") }))} title="split right">⫿</button>
             <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "col") }))} title="split down">⫽</button>
-            <button
-              className="pane-btn"
-              onClick={() => update((b) => ({ ...b, layout: removePane(b.layout, p.id) ?? emptyPane() }))}
-              title="close pane"
-            >
-              ×
-            </button>
+            {p.kind === "session" && p.agent && (
+              <button className="pane-btn" onClick={() => update((b) => benchPane(b, p.id))} title="bench: off the board for now, still on the team (bring it back from the bench below)">
+                ⤓
+              </button>
+            )}
+            {closeAsk === p.id ? (
+              <span className="inline-confirm">
+                <button className="btn primary sm" onClick={() => { setCloseAsk(null); update((b) => benchPane(b, p.id)); }} title="off the board for now, still on the team">
+                  bench @{p.agent?.split("@")[0]}
+                </button>
+                <button className="btn sm" onClick={() => { setCloseAsk(null); update((b) => ({ ...b, layout: removePane(b.layout, p.id) ?? emptyPane() })); }} title="no longer on this board's team (its board-mates are told)">
+                  remove from team
+                </button>
+                <button className="btn ghost sm" onClick={() => setCloseAsk(null)}>keep</button>
+              </span>
+            ) : (
+              <button
+                className="pane-btn"
+                onClick={() => (p.kind === "session" && p.agent ? setCloseAsk(p.id) : update((b) => ({ ...b, layout: removePane(b.layout, p.id) ?? emptyPane() })))}
+                title={p.kind === "session" ? "close: bench it, or remove it from the team" : "close pane"}
+              >
+                ×
+              </button>
+            )}
           </>
         )}
       </>
@@ -465,7 +574,7 @@ export default function BoardPage() {
             <SessionView
               key={p.agent}
               name={p.agent}
-              pane={{ id: `${board.id}:${p.id}`, focused, compact: zoom !== p.id, onFocus: () => setFocus(p.id), onSent: (t) => onSent(p.id, t), leading, chips, trailing, menu, barProps }}
+              pane={{ id: `${board.id}:${p.id}`, focused, compact: zoom !== p.id, onFocus: () => setFocus(p.id), onSent: (t) => onSent(p.id, t), leading, chips, trailing, menu, barProps, team: dynamic ? undefined : teamVerbs(p.id) }}
             />
           ) : null;
         case "view":
@@ -475,6 +584,14 @@ export default function BoardPage() {
             <div className="pane-empty">
               <button className="btn primary sm" onClick={() => setPicker(p.id)}>choose a session…</button>
               <span className="mono-meta">or drop one here</span>
+              {bench.length > 0 && (
+                <span className="pane-empty-bench">
+                  <span className="mono-meta">or bring back:</span>
+                  {bench.map((e) => (
+                    <button key={e.agent} className="btn ghost sm mono" onClick={() => update((b) => benchSwap(b, p.id, e.agent))}>@{e.agent.split("@")[0]}</button>
+                  ))}
+                </span>
+              )}
             </div>
           );
       }
@@ -486,17 +603,22 @@ export default function BoardPage() {
         className={`pane${focused ? " focused" : ""}${needs ? " attention" : ""}${p.kind === "empty" ? " empty" : ""}`}
         onMouseDownCapture={() => setFocus(p.id)}
         onDragOver={(e) => {
-          if (e.dataTransfer.types.includes("text/aspen-agent") || e.dataTransfer.types.includes("text/aspen-pane")) e.preventDefault();
+          const t = e.dataTransfer.types;
+          if (t.includes("text/aspen-agent") || t.includes("text/aspen-pane") || t.includes("text/aspen-bench")) e.preventDefault();
         }}
         onDrop={(e) => {
           const other = e.dataTransfer.getData("text/aspen-pane");
           const ag = e.dataTransfer.getData("text/aspen-agent");
-          if (other && other !== p.id && !dynamic) {
+          const benched = e.dataTransfer.getData("text/aspen-bench");
+          if (benched && !dynamic) {
+            e.preventDefault();
+            update((b) => benchSwap(b, p.id, benched));
+          } else if (other && other !== p.id && !dynamic) {
             e.preventDefault();
             update((b) => ({ ...b, layout: swapPanes(b.layout, other, p.id) }));
           } else if (ag && !dynamic) {
             e.preventDefault();
-            update((b) => ({ ...b, layout: setPane(b.layout, p.id, { kind: "session", id: p.id, agent: ag }) }));
+            update((b) => ({ ...b, layout: setPane(b.layout, p.id, { kind: "session", id: p.id, agent: ag }), bench: (b.bench ?? []).filter((x) => x.agent !== ag) }));
           }
         }}
       >
@@ -513,6 +635,128 @@ export default function BoardPage() {
       </section>
     );
   };
+
+  // The repo menu's board verbs for a pane (§2): a sibling in this pane
+  // (whoever was here goes to the bench), or beside it. One already on
+  // the board is focused instead.
+  const teamVerbs = (paneId: string) => {
+    const onStage = (ag: string) => panes.find((x) => x.kind === "session" && x.agent === ag);
+    const focusOn = (pid: string) => (tabsMode ? selectTab(pid) : setFocus(pid));
+    return {
+      showHere: (ag: string) => {
+        const there = onStage(ag);
+        if (there) focusOn(there.id);
+        else update((b) => benchSwap(b, paneId, ag));
+      },
+      addBeside: (ag: string) => {
+        const there = onStage(ag);
+        if (there) {
+          focusOn(there.id);
+          return;
+        }
+        update((b) => ({
+          ...b,
+          bench: (b.bench ?? []).filter((e) => e.agent !== ag),
+          layout: mapTree(b.layout, (q) => (q.id === paneId ? { kind: "split", id: newId(), dir: "row", sizes: [50, 50], children: [q, { kind: "session", id: newId(), agent: ag }] } : q)),
+        }));
+      },
+    };
+  };
+
+  // A benched member at full size: a bench tab, or the peek sheet (§3.2).
+  const renderBenched = (agent: string, key: string) => {
+    const focused = focus === key;
+    const needs = attention.has(agent);
+    const trailing = (
+      <>
+        <button className="pane-btn" onClick={() => { setPeek(null); update((b) => unbench(b, agent)); }} title="bring back onto the board">⤒</button>
+        {!tabsMode && <button className="pane-btn" onClick={() => setPeek(null)} title="close (esc)">×</button>}
+      </>
+    );
+    return (
+      <section key={key} className={`pane${focused ? " focused" : ""}${needs ? " attention" : ""}`} onMouseDownCapture={() => setFocus(key)}>
+        <div className="pane-body">
+          <SessionView
+            key={agent}
+            name={agent}
+            pane={{
+              id: `${board.id}:${key}`,
+              focused,
+              compact: false,
+              onFocus: () => setFocus(key),
+              onSent: () => {},
+              leading: <span className="mono-meta pane-index">bench</span>,
+              chips: needs ? <span className="chip chip-error">needs you</span> : null,
+              trailing,
+              menu: (
+                <MenuGroup label="bench">
+                  <MenuRow label="bring back onto the board" hint="its old place, if it is still there" onClick={() => { setPeek(null); update((b) => unbench(b, agent)); }} />
+                  <MenuRow label="open as a page" hint="this session on its own, outside the board" onClick={() => nav(`/session/${encodeURIComponent(agent)}`)} />
+                </MenuGroup>
+              ),
+              barProps: {},
+            }}
+          />
+        </div>
+      </section>
+    );
+  };
+
+  // The bench strip (§3.2): who waits on the operator first, then the
+  // most recently active.
+  const benchSorted = [...bench].sort((x, y) => {
+    const w = (attention.has(y.agent) ? 1 : 0) - (attention.has(x.agent) ? 1 : 0);
+    return w || (agentOf(y.agent)?.last_active ?? 0) - (agentOf(x.agent)?.last_active ?? 0);
+  });
+  const benchStrip = bench.length > 0 && !tabsMode && (
+    <div className={`bench-strip${benchFolded ? " folded" : ""}`}>
+      <button
+        type="button"
+        className="bench-label"
+        aria-expanded={!benchFolded}
+        title={benchFolded ? "show the bench" : "fold the bench"}
+        onClick={() => {
+          const v = !benchFolded;
+          setBenchFolded(v);
+          try {
+            localStorage.setItem(scoped(`aspen.board.benchFolded.${id}`), v ? "1" : "0");
+          } catch {
+            // storage unavailable
+          }
+        }}
+      >
+        bench ({bench.length}) {benchFolded ? "▸" : "▾"}
+      </button>
+      {!benchFolded &&
+        benchSorted.map((e) => {
+          const a = agentOf(e.agent);
+          return (
+            <span
+              key={e.agent}
+              className={`bench-chip${peek === e.agent ? " on" : ""}`}
+              draggable
+              onDragStart={(ev) => {
+                ev.dataTransfer.setData("text/aspen-bench", e.agent);
+                ev.dataTransfer.effectAllowed = "move";
+              }}
+            >
+              <button type="button" className="bench-chip-main" onClick={() => setPeek((x) => (x === e.agent ? null : e.agent))} title="peek: answer it or glance at it; the board stays as it is">
+                <Meter presence={presenceOf(a?.live ?? false, a?.turn_state ?? null)} />
+                <span className="mono">@{e.agent.split("@")[0]}</span>
+                {a?.last_active ? <span className="mono-meta">{relTime(a.last_active)}</span> : null}
+                {attention.has(e.agent) && <span className="rail-wait-pip" aria-label="waiting on you" />}
+                {(a?.activities?.running ?? 0) > 0 && <span className="rail-activity-pip" aria-label="background work" />}
+                {unread(e.agent) && <span className="unread-dot" aria-label="new since you looked" />}
+              </button>
+              <button type="button" className="pane-btn" onClick={() => update((b) => unbench(b, e.agent))} title="bring back onto the board">⤒</button>
+            </span>
+          );
+        })}
+      {!benchFolded && <span className="mono-meta bench-hint">click to peek · drag onto a pane to swap</span>}
+    </div>
+  );
+
+  const tabLabel = (t: Tab) => (t.agent ? `@${t.agent.split("@")[0]}` : t.pane?.kind === "view" ? "view" : "empty");
 
   let paneIndex = 0;
   const renderNode = (n: BoardNode): React.ReactNode => {
@@ -557,7 +801,9 @@ export default function BoardPage() {
           // The board's members at a glance (BOARDS.md §10), and the one
           // verb a stopped team wants: start the stopped ones.
           const st = boardStatus(board, agents, waiting);
-          const down = st.members.filter((a) => !a.live && !a.moved_to);
+          // The stage only: benched members are dormant by choice (T §3.2).
+          const benched = new Set(bench.map((e) => agentOf(e.agent)?.name ?? e.agent));
+          const down = st.members.filter((a) => !a.live && !a.moved_to && !benched.has(a.name));
           return (
             <>
               <BoardMeter bars={st.bars} label={describeStatus(st)} />
@@ -591,10 +837,17 @@ export default function BoardPage() {
                 </button>
               )}
               {reviveNote && <span className="mono-meta">{reviveNote}</span>}
+              {bench.length > 0 && <span className="mono-meta">· {bench.length} benched</span>}
             </>
           );
         })()}
         <span style={{ flex: 1 }} />
+        {!narrow && (
+          <span className="seg view-toggle" role="group" aria-label="board view">
+            <button type="button" className={viewPref === "layout" ? "on" : ""} aria-pressed={viewPref === "layout"} onClick={() => chooseView("layout")} title="the board's panes side by side">layout</button>
+            <button type="button" className={viewPref === "tabs" ? "on" : ""} aria-pressed={viewPref === "tabs"} onClick={() => chooseView("tabs")} title="one member at full size, tabs to switch (alt+1…9, alt+[ ])">tabs</button>
+          </span>
+        )}
         <label className={`bcast-toggle${broadcast ? " on" : ""}`} title="send the focused pane's messages to every session pane on this board">
           <input
             type="checkbox"
@@ -647,23 +900,45 @@ export default function BoardPage() {
         )}
       </div>
       <ErrorBar error={err} />
-      {narrow ? (
+      {tabsMode ? (
         <div className="board-tabs-wrap">
-          <div className="board-tabs">
-            {panes.map((p, i) => (
-              <button key={p.id} className={i === tab ? "on" : ""} onClick={() => { setTab(i); setFocus(p.id); }}>
-                <span className="mono">{i + 1}</span>
-                {p.kind === "session" && p.agent ? `@${p.agent.split("@")[0]}` : p.kind === "view" ? "view" : "empty"}
-                {p.kind === "session" && p.agent && attention.has(p.agent) ? <i className="rail-wait-pip" aria-label="waiting on you" /> : null}
-              </button>
-            ))}
+          <div className="board-tabs" role="tablist">
+            {tabs.map((t, i) => {
+              const a = t.agent ? agentOf(t.agent) : undefined;
+              return (
+                <span key={t.key} className="board-tab-slot">
+                  {t.benched && !tabs[i - 1]?.benched && <span className="board-tabs-sep mono-meta">bench</span>}
+                  <button role="tab" aria-selected={t.key === active?.key} className={`${t.key === active?.key ? "on" : ""}${t.benched ? " benched" : ""}`} onClick={() => selectTab(t.key)}>
+                    {i < 9 && <span className="mono">{i + 1}</span>}
+                    {t.agent && <Meter presence={presenceOf(a?.live ?? false, a?.turn_state ?? null)} />}
+                    {tabLabel(t)}
+                    {t.agent && attention.has(t.agent) ? <i className="rail-wait-pip" aria-label="waiting on you" /> : null}
+                    {t.agent && t.key !== active?.key && unread(t.agent) ? <i className="unread-dot" aria-label="new since you looked" /> : null}
+                  </button>
+                </span>
+              );
+            })}
           </div>
-          <div className="board-body">{panes[tab] ? renderPane(panes[tab]!, tab) : null}</div>
+          <div className="board-body">
+            {tabs
+              .filter((t) => t.key === active?.key || mounted.includes(t.key))
+              .map((t) => (
+                <div key={t.key} className="board-tab-body" style={t.key === active?.key ? undefined : { display: "none" }}>
+                  {t.pane ? renderPane(t.pane, panes.indexOf(t.pane)) : renderBenched(t.agent!, t.key)}
+                </div>
+              ))}
+          </div>
         </div>
       ) : zoomed ? (
         <div className="board-body">{renderPane(zoomed, panes.indexOf(zoomed))}</div>
       ) : (
         <div className="board-body">{renderNode(tree)}</div>
+      )}
+      {benchStrip}
+      {peek && !tabsMode && bench.some((e) => e.agent === peek) && (
+        <div className="bench-peek panel-in" role="dialog" aria-label={`peek at @${peek.split("@")[0]}`}>
+          {renderBenched(peek, `peek:${peek}`)}
+        </div>
       )}
       {pairs.length > 0 && (
         <div className="pair-strips">
@@ -691,7 +966,7 @@ export default function BoardPage() {
           agents={agents}
           attention={attention}
           onPick={(pane) => {
-            update((b) => ({ ...b, layout: setPane(b.layout, picker, pane) }));
+            update((b) => ({ ...b, layout: setPane(b.layout, picker, pane), bench: (b.bench ?? []).filter((x) => x.agent !== pane.agent) }));
             setPicker(null);
           }}
           onClose={() => setPicker(null)}

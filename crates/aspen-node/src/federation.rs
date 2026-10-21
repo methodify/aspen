@@ -54,6 +54,9 @@ pub struct RemoteAgent {
     pub plugins: Option<Value>,
     #[serde(default)]
     pub plugin_updates: Option<Value>,
+    /// When it last worked (its transcript's mtime), epoch seconds.
+    #[serde(default)]
+    pub last_active: Option<f64>,
 }
 
 pub struct MeshState {
@@ -1116,6 +1119,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                 "summary": live.as_ref().map(|s| crate::node::summary_json(s)),
                 "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
                 "harness": a.harness,
+                "last_active": inner.last_active(a),
                 "mcp": live.as_ref().map(|m| crate::node::mcp_summary(m)),
                 "plugins": live.as_ref().map(|m| json!(m.plugins)),
                 "plugin_updates": match (live.as_ref(), inner.data_dir.as_deref()) {

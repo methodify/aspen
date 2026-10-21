@@ -305,6 +305,11 @@ pub struct Board {
     /// sessions joined on a bus thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairs: Option<serde_json::Value>,
+    /// The bench (PROPOSALS-2026-10-T §3): members not shown right now,
+    /// `[{agent, at, slot?}, …]`. Still the team: board-mates read it
+    /// beside the layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bench: Option<serde_json::Value>,
     pub updated_at: f64,
     #[serde(default)]
     pub deleted: bool,
@@ -509,6 +514,7 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE repos ADD COLUMN default_harness TEXT",
         "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
         "ALTER TABLE push_subs ADD COLUMN vapid TEXT",
+        "ALTER TABLE boards ADD COLUMN bench TEXT",
     ] {
         if let Err(e) = conn.execute(stmt, []) {
             if !e.to_string().contains("duplicate column") {
@@ -1769,7 +1775,7 @@ impl BusStore {
     pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, layout, updated_at, deleted, query, pairs FROM boards ORDER BY updated_at DESC",
+            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench FROM boards ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1786,6 +1792,9 @@ impl BusStore {
                     pairs: r
                         .get::<_, Option<String>>(6)?
                         .and_then(|q| serde_json::from_str(&q).ok()),
+                    bench: r
+                        .get::<_, Option<String>>(7)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1796,7 +1805,9 @@ impl BusStore {
     }
 
     /// Write a board if it is newer than what we hold (last writer wins
-    /// by `updated_at`); returns whether anything changed.
+    /// by `updated_at`); returns whether anything changed. A board with no
+    /// `bench` at all comes from a console or node older than the bench
+    /// (PROPOSALS-2026-10-T): the stored bench stays. An empty one clears it.
     pub fn upsert_board(&self, b: &Board) -> Result<bool> {
         self.hlc_observe(b.updated_at);
         let conn = self.conn.lock().unwrap();
@@ -1811,8 +1822,8 @@ impl BusStore {
             return Ok(false);
         }
         conn.execute(
-            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7",
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7, bench=COALESCE(?8, bench)",
             params![
                 b.id,
                 b.name,
@@ -1820,7 +1831,8 @@ impl BusStore {
                 b.updated_at,
                 b.deleted as i64,
                 b.query.as_ref().map(|q| q.to_string()),
-                b.pairs.as_ref().map(|q| q.to_string())
+                b.pairs.as_ref().map(|q| q.to_string()),
+                b.bench.as_ref().map(|q| q.to_string())
             ],
         )?;
         Ok(true)
@@ -2363,14 +2375,21 @@ impl BusStore {
             }
         }
         // Board panes: `key@node` (and the bare key on a node with no mesh).
-        let mut boards: Vec<(String, String)> = Vec::new();
+        // The bench (`[{agent, …}]`) is walked as a split's children.
+        let mut boards: Vec<(String, String, Option<String>)> = Vec::new();
         {
-            let mut stmt = conn.prepare("SELECT id, layout FROM boards WHERE deleted=0")?;
-            for r in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let mut stmt = conn.prepare("SELECT id, layout, bench FROM boards WHERE deleted=0")?;
+            for r in stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })? {
                 boards.push(r?);
             }
         }
-        for (id, layout) in boards {
+        for (id, layout, bench) in boards {
             let mut v: serde_json::Value = match serde_json::from_str(&layout) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -2412,10 +2431,21 @@ impl BusStore {
                 }
             }
             walk(&mut v, old, new, self_node, &mut hit);
+            let mut bench: Option<serde_json::Value> = bench
+                .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+                .map(|b| serde_json::json!({ "children": b }));
+            if let Some(b) = bench.as_mut() {
+                walk(b, old, new, self_node, &mut hit);
+            }
             if hit {
                 conn.execute(
-                    "UPDATE boards SET layout=?2, updated_at=?3 WHERE id=?1",
-                    params![id, v.to_string(), t],
+                    "UPDATE boards SET layout=?2, bench=COALESCE(?4, bench), updated_at=?3 WHERE id=?1",
+                    params![
+                        id,
+                        v.to_string(),
+                        t,
+                        bench.map(|b| b["children"].to_string())
+                    ],
                 )?;
             }
         }
@@ -3153,5 +3183,38 @@ mod plugin_library_tests {
         );
         assert_eq!(s.bookmarks("main@pw").unwrap().len(), 1);
         assert!(s.merge_agent("gone@pw", "main@pw", None).is_err());
+    }
+
+    #[test]
+    fn a_rename_and_a_merge_reach_the_bench() {
+        let s = BusStore::open_in_memory().unwrap();
+        let repo = std::path::Path::new("/r/pw");
+        let h = aspen_core::Harness::Claude;
+        s.register_agent("a@pw", repo, "pw", "s1", None, None, h)
+            .unwrap();
+        s.register_agent("keep@pw", repo, "pw", "s2", None, None, h)
+            .unwrap();
+        s.upsert_board(&Board {
+            id: "b1".into(),
+            name: "team".into(),
+            layout: serde_json::json!({ "kind": "session", "id": "p1", "agent": "keep@pw" }),
+            query: None,
+            pairs: None,
+            bench: Some(serde_json::json!([{ "agent": "a@pw", "at": 1.0 }])),
+            updated_at: 1.0,
+            deleted: false,
+        })
+        .unwrap();
+        let bench = |s: &BusStore| s.boards(false).unwrap()[0].bench.clone().unwrap();
+        // A writer that knows nothing of the bench keeps it; `[]` clears it.
+        let mut old = s.boards(false).unwrap()[0].clone();
+        old.bench = None;
+        old.updated_at = 2.0;
+        s.upsert_board(&old).unwrap();
+        assert_eq!(bench(&s)[0]["agent"], "a@pw");
+        s.rename_agent("a@pw", "b", None).unwrap();
+        assert_eq!(bench(&s)[0]["agent"], "b@pw");
+        s.merge_agent("b@pw", "keep@pw", None).unwrap();
+        assert_eq!(bench(&s)[0]["agent"], "keep@pw");
     }
 }
