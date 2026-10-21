@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Board, BoardNode } from "./api";
-import { benchPane, benchSwap, panesOf, stageBench, unbench } from "./boardOps";
+import { addMember, benchPane, benchSwap, panesOf, stageBench, unbench } from "./boardOps";
 
 const s = (id: string, agent: string): BoardNode => ({ kind: "session", id, agent });
 const board = (layout: BoardNode, bench: Board["bench"] = []): Board => ({ id: "b", name: "t", layout, bench, updated_at: 0 });
@@ -43,5 +43,16 @@ describe("the bench", () => {
 
   it("shows no one on the bench who is also on the stage", () => {
     expect(stageBench(board(three, [{ agent: "a", at: 0 }, { agent: "z", at: 0 }, { agent: "z", at: 1 }])).map((e) => e.agent)).toEqual(["z"]);
+  });
+
+  it("adds a member without asking where: an empty pane first, else beside the roomiest", () => {
+    const withEmpty = board({ kind: "split", id: "r", dir: "row", sizes: [50, 50], children: [s("p1", "a"), { kind: "empty", id: "e1" }] });
+    expect(agentsOf(addMember(withEmpty, { kind: "session", id: "", agent: "n" }))).toEqual(["a", "n"]);
+    const full = board({ kind: "split", id: "r", dir: "row", sizes: [70, 30], children: [s("p1", "a"), s("p2", "b")] });
+    expect(agentsOf(addMember(full, { kind: "session", id: "", agent: "n" }))).toEqual(["a", "n", "b"]);
+    // Already on the stage: nothing changes. On the bench: it comes back.
+    expect(addMember(full, { kind: "session", id: "", agent: "a" })).toBe(full);
+    const benched = benchPane(full, "p2");
+    expect(agentsOf(addMember(benched, { kind: "session", id: "", agent: "b" }))).toContain("b");
   });
 });

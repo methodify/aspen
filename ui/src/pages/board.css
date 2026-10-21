@@ -115,3 +115,5 @@
 @media (max-width: 900px) {
   .bench-peek { left: 6px; width: auto; min-width: 0; }
 }
+.board-tabs .board-tab-add { font: 600 0.9rem/1 var(--font-body); padding: 4px 10px; color: var(--text-dim); border-style: dashed; }
+.board-tabs .board-tab-add:hover { color: var(--text-hi); border-color: var(--accent); }

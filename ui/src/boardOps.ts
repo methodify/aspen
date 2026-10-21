@@ -158,14 +158,34 @@ export function unbench(b: Board, agent: string): Board {
   if (entry?.slot && findSplit(b.layout, entry.slot.parent)) {
     return { ...b, bench, layout: insertAt(b.layout, entry.slot.parent, entry.slot.index, entry.slot.size, pane) };
   }
-  if (panesOf(b.layout).some((p) => p.kind === "empty")) return { ...b, bench, layout: placeInLayout(b.layout, agent, "fill") };
-  const big = largestPane(b.layout);
-  if (!big) return { ...b, bench, layout: pane };
-  return {
-    ...b,
-    bench,
-    layout: mapTree(b.layout, (p) => (p.id === big.id ? { kind: "split", id: newPaneId(), dir: "row", sizes: [50, 50], children: [p, pane] } : p)),
-  };
+  return { ...b, bench, layout: placePane(b.layout, pane) };
+}
+
+/** Put a pane on the stage without asking where: into the first empty
+ *  pane, else beside the pane with the most room. Adding from the tabs
+ *  view (T §4) and bringing back with no slot both use it. */
+export function placePane(layout: BoardNode, pane: BoardPane): BoardNode {
+  if (layout.kind === "empty") return { ...pane, id: layout.id };
+  let filled = false;
+  const fillFirst = mapTree(layout, (p) => {
+    if (filled || p.kind !== "empty") return p;
+    filled = true;
+    return { ...pane, id: p.id };
+  });
+  if (filled) return fillFirst;
+  const big = largestPane(layout);
+  if (!big) return pane;
+  return mapTree(layout, (p) => (p.id === big.id ? { kind: "split", id: newPaneId(), dir: "row", sizes: [50, 50], children: [p, pane] } : p));
+}
+
+/** Add a member (or a viewer) to a board: onto the stage by `placePane`;
+ *  one already on the stage stays put, one on the bench comes back. */
+export function addMember(b: Board, pane: BoardPane): Board {
+  if (pane.kind === "session" && pane.agent) {
+    if (panesOf(b.layout).some((p) => p.kind === "session" && p.agent === pane.agent)) return b;
+    if ((b.bench ?? []).some((e) => e.agent === pane.agent)) return unbench(b, pane.agent);
+  }
+  return { ...b, layout: placePane(b.layout, { ...pane, id: newPaneId() }) };
 }
 
 /** Put a benched member in a pane; whoever was there takes its place on

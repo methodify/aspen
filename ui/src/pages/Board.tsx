@@ -15,7 +15,8 @@ import { boardStatus, describeStatus, matchQuery, type DynamicQuery } from "../b
 import { MenuGroup, MenuRow } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
-import { benchPane, benchSwap, mapTree, panesOf, removePane, stageBench, unbench } from "../boardOps";
+import { addMember, benchPane, benchSwap, mapTree, panesOf, removePane, stageBench, unbench } from "../boardOps";
+import { useTrustedStart } from "../trust";
 import "./board.css";
 
 // ------------------------------------------------------------ layout ops
@@ -129,6 +130,9 @@ function autoLayout(panes: BoardPane[], style: "grid" | "main"): BoardNode {
 export type { DynamicQuery } from "../boardStatus";
 
 // ------------------------------------------------------------ the page
+
+/** The picker's "add a member" mode (the + tab), as opposed to a pane id. */
+const ADD = "\u0000add";
 
 export default function BoardPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -310,6 +314,17 @@ export default function BoardPage() {
     else setFocus(key);
     if (t?.agent) markSeen(t.agent);
   };
+  // A member just added from the + tab: select its tab once it exists.
+  const [selectAgent, setSelectAgent] = useState<string | null>(null);
+  useEffect(() => {
+    if (!selectAgent) return;
+    const t = tabs.find((x) => x.agent === selectAgent);
+    if (t) {
+      selectTab(t.key);
+      setSelectAgent(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectAgent, tabs.map((t) => t.key).join(",")]);
   // The last three tabs stay mounted (hidden), so switching is instant.
   useEffect(() => {
     if (active) setMounted((m) => [active.key, ...m.filter((k) => k !== active.key)].slice(0, 3));
@@ -905,6 +920,7 @@ export default function BoardPage() {
           <div className="board-tabs" role="tablist">
             {tabs.map((t, i) => {
               const a = t.agent ? agentOf(t.agent) : undefined;
+              // (the + after the last tab adds a member: below)
               return (
                 <span key={t.key} className="board-tab-slot">
                   {t.benched && !tabs[i - 1]?.benched && <span className="board-tabs-sep mono-meta">bench</span>}
@@ -918,6 +934,11 @@ export default function BoardPage() {
                 </span>
               );
             })}
+            {!dynamic && (
+              <button type="button" className="board-tab-add" onClick={() => setPicker(ADD)} title="add a member — an agent, or a new one; it joins the layout beside the roomiest pane" aria-label="add a member">
+                +
+              </button>
+            )}
           </div>
           <div className="board-body">
             {tabs
@@ -965,8 +986,15 @@ export default function BoardPage() {
         <Picker
           agents={agents}
           attention={attention}
+          title={picker === ADD ? "Add to the board" : undefined}
+          members={new Set([...sessionPanes.map((p) => p.agent!), ...bench.map((e) => e.agent)])}
           onPick={(pane) => {
-            update((b) => ({ ...b, layout: setPane(b.layout, picker, pane), bench: (b.bench ?? []).filter((x) => x.agent !== pane.agent) }));
+            if (picker === ADD) {
+              update((b) => addMember(b, pane));
+              if (pane.agent) setSelectAgent(pane.agent);
+            } else {
+              update((b) => ({ ...b, layout: setPane(b.layout, picker, pane), bench: (b.bench ?? []).filter((x) => x.agent !== pane.agent) }));
+            }
             setPicker(null);
           }}
           onClose={() => setPicker(null)}
@@ -1045,15 +1073,53 @@ function Picker({
   attention,
   onPick,
   onClose,
+  title = "What goes in this pane?",
+  members,
 }: {
   agents: Agent[];
   attention: Set<string>;
   onPick: (p: BoardPane) => void;
   onClose: () => void;
+  title?: string;
+  /** Who is on the board already (stage or bench): marked in the list. */
+  members?: Set<string>;
 }) {
   const [q, setQ] = useState("");
   const [viewPath, setViewPath] = useState("");
   const [viewAgent, setViewAgent] = useState("");
+  // A new agent, started into the board (T §4): a repo on any node, a name.
+  const trust = useTrustedStart();
+  const [repos, setRepos] = useState<{ key: string; node: string; self: boolean; path: string; handle: string }[]>([]);
+  const [newRepo, setNewRepo] = useState("");
+  const [newName, setNewName] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [newErr, setNewErr] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .meshRepos()
+      .then((r) => {
+        const list = r.nodes
+          .filter((n) => n.self || n.reachable)
+          .flatMap((n) => n.repos.map((x) => ({ key: `${n.node}\u0000${x.path}`, node: n.node, self: n.self, path: x.path, handle: x.handle ?? x.path.split(/[\\/]/).pop() ?? x.path })));
+        setRepos(list);
+      })
+      .catch(() => {});
+  }, []);
+  async function startNew() {
+    const r = repos.find((x) => x.key === newRepo);
+    const n = newName.trim();
+    if (!r || !n) return;
+    setStarting(true);
+    setNewErr(null);
+    try {
+      const a = await trust.start({ name: n, repo: r.path, node: r.self ? undefined : r.node });
+      if (a) onPick({ kind: "session", id: "", agent: a.name });
+    } catch (e) {
+      setNewErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
   const list = agents
     .filter((a) => !a.moved_to && (!q || a.name.toLowerCase().includes(q.toLowerCase()) || (a.title ?? "").toLowerCase().includes(q.toLowerCase())))
     .sort((x, y) => Number(y.live) - Number(x.live) || x.name.localeCompare(y.name));
@@ -1061,7 +1127,7 @@ function Picker({
     <div className="trust-backdrop" onClick={onClose} role="presentation">
       <div className="trust-panel picker" role="dialog" aria-label="choose a session" onClick={(e) => e.stopPropagation()}>
         <div className="trust-head">
-          <span className="label">What goes in this pane?</span>
+          <span className="label">{title}</span>
           <span style={{ flex: 1 }} />
           <button className="btn ghost sm" onClick={onClose}>esc</button>
         </div>
@@ -1075,10 +1141,31 @@ function Picker({
               <span style={{ flex: 1 }} />
               <span className="mono-meta">{a.node}</span>
               {attention.has(a.name) && <span className="chip chip-error">needs you</span>}
+              {members?.has(a.name) && <span className="chip mono" title="already on this board; picking it shows it">on the board</span>}
             </button>
           ))}
           {list.length === 0 && <div className="dim" style={{ padding: 8 }}>no sessions match</div>}
         </div>
+        <form
+          className="picker-view"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void startNew();
+          }}
+        >
+          <span className="mono-meta">or a new agent:</span>
+          <select value={newRepo} onChange={(e) => setNewRepo(e.target.value)} aria-label="repo for the new agent">
+            <option value="">repo…</option>
+            {repos.map((r) => (
+              <option key={r.key} value={r.key}>#{r.handle}{r.self ? "" : ` · ${r.node}`}</option>
+            ))}
+          </select>
+          <span className="mono-meta">@</span>
+          <input className="mono" placeholder="name" value={newName} onChange={(e) => setNewName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""))} aria-label="new agent name" />
+          <button type="submit" className="btn sm primary" disabled={!newRepo || !newName.trim() || starting}>{starting ? "starting…" : "start"}</button>
+          {newErr && <span className="error-text mono-meta">{newErr}</span>}
+        </form>
+        {trust.dialog}
         <div className="picker-view">
           <span className="mono-meta">or an artifact viewer:</span>
           <select value={viewAgent} onChange={(e) => setViewAgent(e.target.value)}>

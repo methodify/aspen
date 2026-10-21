@@ -226,6 +226,14 @@ sends no notice.
   so switching is instant. The choice is remembered per board on this
   console, the last choice the default for a board never set. Below
   900px a board is always tabs: one strip on every screen.
+- **+ at the end of the strip** adds a member without leaving tabs
+  (v0.51.1): the board's picker ("Add to the board") lists the fleet,
+  marks who is on the board already, and starts a **new agent** in any
+  repo on the mesh (name, then start, through the trust gate). The member
+  joins the layout without asking where (`placePane`: the first empty
+  pane, else beside the pane with the most room), so layout view stays
+  usable, and its tab opens. Picking a benched member brings it back; one
+  already on the stage just shows.
 - A rename or a fold of names (`keep-transcript`, `merge`) rewrites bench
   entries like panes. An older node drops `bench` from boards it rewrites,
   and a board saved without the field keeps the stored bench, so a stale
