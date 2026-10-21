@@ -39,7 +39,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Shipped — 2026-10-20: the repo at hand, the bench, and boards as tabs (v0.51.0, queued)
+## Shipped — 2026-10-20: the repo at hand, the bench, and boards as tabs (v0.51.0)
 
 Proposal T (PROPOSALS-2026-10-T.md), the operator's calls in its §7.
 - **T-1 The repo menu.** The session bar's repo segment opens the repo's agents (state, waiting pip, title, last worked; open or revive), the same handle on other nodes, *new agent here*, and links to Mesh (now `/mesh?node=&repo=`) and Files. In a board pane (⋯ → *agents in this repo*): *show here* and *add to board*. `alt+r` on a session page.
