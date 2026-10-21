@@ -39,7 +39,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Shipped — 2026-10-21: add a member from the tabs view (v0.51.1, queued)
+## Shipped — 2026-10-21: add a member from the tabs view (v0.51.1)
 
 - In tabs view there was no way to add someone without switching to layout and making room. A **+** after the last tab opens the board's picker as "Add to the board": the fleet with *on the board* marks, and a **new agent** row (a repo on any reachable node, a name, start, through the trust gate). The member goes onto the stage without asking where (`placePane` in boardOps.ts, shared with bring-back: the first empty pane, else beside the pane with the most room) and its tab opens; a benched one comes back, one on stage just shows. Verified on a temp node: an existing agent added beside the roomiest pane with its tab selected, the marks, and a new agent started into its own tab.
 
