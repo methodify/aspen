@@ -919,13 +919,30 @@ export function transcriptHead(state: TranscriptState): string | null {
 
 /** Keep everything up to and including the anchor user line; replace what
  *  followed with the freshly fetched items. */
+/** An item's transcript uuid, for the kinds that carry one. */
+export function uuidOf(it: TranscriptItem): string | null {
+  return "uuid" in it && typeof it.uuid === "string" ? it.uuid : null;
+}
+
 export function mergeAfter(state: TranscriptState, head: string, history: HistoryItem[]): TranscriptState {
   const idx = state.items.findIndex((it) => it.kind === "user" && it.uuid === head);
   if (idx < 0) return seedFromHistory(history);
   const kept = state.items.slice(0, idx + 1);
+  const tail = state.items.slice(idx + 1);
   const fresh = seedFromHistory(history);
   let nextId = state.nextId;
-  const renumbered = fresh.items.map((it) => ({ ...it, id: nextId++ }));
+  // An item already shown keeps its id (the same place after the head,
+  // the same kind, the same uuid when both have one): views keyed by id —
+  // an expanded tool card, an open bus row — stay as the operator left
+  // them. Renumbering every merge closed them each time a stopped
+  // agent's page reconnected (v0.51.2).
+  const renumbered = fresh.items.map((it, i) => {
+    const old = tail[i];
+    const a = old ? uuidOf(old) : null;
+    const b = uuidOf(it);
+    const same = !!old && old.kind === it.kind && (!a || !b || a === b);
+    return { ...it, id: same ? old.id : nextId++ };
+  });
   return { items: [...kept, ...renumbered], nextId, openBubbleId: null, earlier: state.earlier ?? null };
 }
 

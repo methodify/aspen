@@ -71,6 +71,7 @@ import {
   persistTranscript,
   transcriptHead,
   mergeAfter,
+  uuidOf,
   prependHistory,
 } from "./../transcript";
 import { useAppData } from "./../App";
@@ -106,6 +107,14 @@ import {
 } from "./sessionExtras";
 import "./session.css";
 import { RepoMenu, type TeamVerbs } from "../repoMenu";
+import { loadDraftAttachments, saveDraftAttachments, stillMarked } from "../draftAttachments";
+
+function base64Blob(data: string, type: string): Blob {
+  const bin = atob(data);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
 import { AWAY_SECS, CatchUpBar, computeCatchUp, markerOf, readMarker, writeMarker, type SeenMarker } from "./catchUp";
 
 // ---------------------------------------------------------------------------
@@ -1349,6 +1358,44 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   // text at the caret; the node places the content where the marker is.
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const attachSeq = useRef(0);
+  // Kept with the draft (draftAttachments.ts, v0.51.2): coming back to the
+  // session finds the files whose markers the draft still holds. Nothing
+  // is saved until the stored ones are read, so an empty start cannot
+  // overwrite them.
+  const draftNow = useRef(draft);
+  draftNow.current = draft;
+  const attachLoaded = useRef(false);
+  useEffect(() => {
+    attachLoaded.current = false;
+    setAttachments([]);
+    let live = true;
+    void loadDraftAttachments(draftKey).then((items) => {
+      if (!live) return;
+      const keep = stillMarked(items, draftNow.current);
+      if (keep.length) {
+        const restored: PendingAttachment[] = keep.map((k) => ({
+          ...k,
+          preview: k.media_type.startsWith("image/") ? URL.createObjectURL(base64Blob(k.data, k.media_type)) : null,
+        }));
+        setAttachments((cur) => [...restored.filter((r) => !cur.some((c) => c.n === r.n)), ...cur]);
+        attachSeq.current = Math.max(attachSeq.current, ...keep.map((k) => k.n));
+      }
+      attachLoaded.current = true;
+    });
+    return () => {
+      live = false;
+    };
+  }, [draftKey]);
+  useEffect(() => {
+    if (!attachLoaded.current) return;
+    const t = window.setTimeout(() => {
+      void saveDraftAttachments(
+        draftKey,
+        attachments.map(({ n, name: an, media_type, data, size }) => ({ n, name: an, media_type, data, size })),
+      );
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [attachments, draftKey]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const ATTACH_MAX = 8 * 1024 * 1024;
   const ATTACH_TOTAL = 24 * 1024 * 1024;
@@ -1876,13 +1923,17 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     let closeEvents: (() => void) | null = null;
     let timer: number | undefined;
     let attempt = 0;
+    let openedAt = 0;
 
     function connect() {
       if (disposed) return;
       closeEvents = openSessionEvents(name, {
         onOpen: () => {
           if (disposed) return;
-          attempt = 0;
+          // The backoff resets only once a socket has held (onClose): a
+          // stopped agent on a peer accepts the socket and drops it at once,
+          // and resetting here reconnected — and refetched — every second.
+          openedAt = Date.now();
           setWsState("open");
           // Whatever happened while the socket was down never streamed
           // here: on a reconnect, fetch what follows the newest user line
@@ -1900,6 +1951,8 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         onClose: () => {
           if (disposed) return;
           setWsState("reconnecting");
+          if (openedAt && Date.now() - openedAt > 10000) attempt = 0;
+          openedAt = 0;
           attempt += 1;
           const delay = Math.min(15000, 1000 * 2 ** Math.min(attempt - 1, 4));
           timer = window.setTimeout(connect, delay);
@@ -1917,6 +1970,9 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         if (disposed || !delta.after_found || delta.items.length === 0) return;
         const now = transcriptRef.current;
         if (transcriptHead(now) !== head) return; // moved on meanwhile
+        // Nothing new since the head: leave the page as it is.
+        const shown = new Set(now.items.map(uuidOf).filter(Boolean));
+        if (delta.items.every((x) => typeof x.uuid === "string" && shown.has(x.uuid))) return;
         const merged = mergeAfter(now, head, delta.items);
         const unsent = now.items.filter((it) => it.kind === "user" && it.localKey && !it.uuid);
         const known = new Set(merged.items.map((it) => it.id));

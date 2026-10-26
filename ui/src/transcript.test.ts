@@ -5,6 +5,7 @@ import {
   applyEvent,
   emptyTranscript,
   markLocalUserMessage,
+  mergeAfter,
   reconcileSnapshot,
   seedFromHistory,
   type AssistantBubbleItem,
@@ -312,3 +313,22 @@ describe("splitSegments (PROPOSALS-2026-09-H.md §5)", () => {
     expect(splitSegments("just me")).toEqual([{ bus: false, text: "just me" }]);
   });
 });
+
+describe("mergeAfter", () => {
+  const history = [
+    { role: "user" as const, text: "hello", uuid: "u-1" },
+    { role: "assistant" as const, text: "Checking.", tools: [{ id: "t1", name: "Read" }] },
+    { role: "user" as const, text: "[aspen bus] from @arch · #proj\nping", bus: true },
+  ];
+  it("keeps the ids of items already shown, so expanded cards stay open", () => {
+    const s = seedFromHistory(history);
+    const again = mergeAfter(s, "u-1", history.slice(1));
+    expect(again.items.map((i) => i.id)).toEqual(s.items.map((i) => i.id));
+    // Something new after them takes a new id; the rest keep theirs.
+    const more = mergeAfter(s, "u-1", [...history.slice(1), { role: "assistant" as const, text: "Done." }]);
+    expect(more.items.slice(0, s.items.length).map((i) => i.id)).toEqual(s.items.map((i) => i.id));
+    expect(more.items.length).toBe(s.items.length + 1);
+    expect(new Set(more.items.map((i) => i.id)).size).toBe(more.items.length);
+  });
+});
+
