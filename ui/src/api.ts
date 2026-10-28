@@ -453,6 +453,90 @@ export async function bundleUpload(file: File, onProgress?: (sent: number) => vo
   });
 }
 
+// ---------------------------------------------- moving repos (Proposal U)
+
+/** One directory on a node (`GET /api/fs/list`): names only, never contents. */
+export interface FsEntry {
+  name: string;
+  kind: "dir" | "file" | "link";
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+  hidden: boolean;
+}
+export interface FsList {
+  dir: string | null;
+  parent: string | null;
+  entries: FsEntry[];
+  starts: { label: string; path: string }[];
+  truncated: boolean;
+  sep?: string;
+}
+
+/** A transfer job on its target node (U-3). */
+export interface TransferJob {
+  id: string;
+  from: string;
+  repo: string;
+  step: "exporting" | "pulling" | "planning" | "ready" | "installing" | "done" | "failed";
+  bytes: number;
+  total: number;
+  plan: BundleImportPlan | null;
+  report: BundleImportReport | null;
+  error: string | null;
+}
+
+const PIECE = 1024 * 1024;
+
+function b64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** Upload a bundle to a node's imports folder in pieces (U-2): works over
+ *  the relay and for a peer's node; resumes from what the node already
+ *  has under this id. Answers the bare name the import preflight takes. */
+export async function uploadBundleInPieces(file: File, node: string | undefined, onProgress?: (sent: number) => void): Promise<{ file: string; bytes: number }> {
+  const id = [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const q = node ? `?node=${encodeURIComponent(node)}` : "";
+  let offset = (await request<{ size: number }>(`/api/repos/import/upload/${id}${q}`)).size ?? 0;
+  while (offset < file.size) {
+    const piece = new Uint8Array(await file.slice(offset, offset + PIECE).arrayBuffer());
+    const r = await post<{ size: number }>(`/api/repos/import/upload/${id}`, { offset, data: b64(piece), node });
+    offset = r.size;
+    onProgress?.(offset);
+  }
+  return await post<{ file: string; bytes: number }>(`/api/repos/import/upload/${id}/done`, { node });
+}
+
+/** Fetch an exported bundle in pieces (U-2) and hand it to the browser as
+ *  a download: works over the relay and from a peer's node. */
+export async function downloadBundleInPieces(file: string, node: string | undefined, onProgress?: (got: number, size: number) => void): Promise<void> {
+  const parts: BlobPart[] = [];
+  let offset = 0;
+  for (;;) {
+    const q = new URLSearchParams({ file, offset: String(offset), len: String(PIECE) });
+    if (node) q.set("node", node);
+    const r = await request<{ data: string; size: number; eof: boolean }>(`/api/repos/export/read?${q}`);
+    const bin = atob(r.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    parts.push(bytes);
+    offset += bytes.length;
+    onProgress?.(offset, r.size);
+    if (r.eof || bytes.length === 0) break;
+  }
+  const url = URL.createObjectURL(new Blob(parts, { type: "application/octet-stream" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 /** A workflow run as `GET /api/agents/{name}/workflows/{run}` answers. */
 export interface WorkflowAgent {
   agent_id: string;
@@ -657,6 +741,9 @@ export interface Board {
   /** The bench (PROPOSALS-2026-10-T §3): members not shown right now —
    *  still the team. `slot` is where the pane sat, to go back to. */
   bench?: BenchEntry[] | null;
+  /** The tabs' order (PROPOSALS-2026-10-U §U-4): agent addresses (or
+   *  `pane:<id>` for a viewer or empty pane); the rest in layout order. */
+  tab_order?: string[] | null;
   /** A dynamic board: panes are whatever matches. */
   query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;
@@ -1918,6 +2005,15 @@ export const api = {
   mesh: () => request<MeshInfo>("/api/mesh"),
   tls: () => request<TlsStatus>("/api/tls"),
   // Repo bundles (docs/BUNDLES.md). `node` targets a peer's repo.
+  fsList: (node?: string | null, dir?: string | null) => {
+    const q = new URLSearchParams();
+    if (node) q.set("node", node);
+    if (dir) q.set("dir", dir);
+    return request<FsList>(`/api/fs/list?${q}`);
+  },
+  transferStart: (body: Record<string, unknown>) => post<{ id: string }>("/api/repos/transfers", body),
+  transferGet: (id: string, node?: string | null) => request<TransferJob>(`/api/repos/transfers/${enc(id)}${node ? `?node=${enc(node)}` : ""}`),
+  transferInstall: (id: string, node?: string | null) => post<BundleImportReport>(`/api/repos/transfers/${enc(id)}/install`, { node: node ?? undefined }),
   bundleExportPreflight: (path: string, node?: string | null) => post<BundleExportPreflight>("/api/repos/export/preflight", { path, node: node ?? undefined }),
   bundleExport: (req: BundleExportRequest) => post<BundleExportResult>("/api/repos/export", req),
   bundleImportPreflight: (req: BundleImportRequest) => post<BundleImportPlan>("/api/repos/import/preflight", req),

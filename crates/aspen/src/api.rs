@@ -269,6 +269,17 @@ pub async fn serve(
             post(post_bundle_export_preflight),
         )
         .route("/repos/export", post(post_bundle_export))
+        // Moving repos around the mesh (PROPOSALS-2026-10-U).
+        .route("/fs/list", get(get_fs_list))
+        .route(
+            "/repos/import/upload/{id}",
+            post(post_upload_chunk).get(get_upload_size),
+        )
+        .route("/repos/import/upload/{id}/done", post(post_upload_done))
+        .route("/repos/export/read", get(get_export_read))
+        .route("/repos/transfers", post(post_transfer))
+        .route("/repos/transfers/{id}", get(get_transfer))
+        .route("/repos/transfers/{id}/install", post(post_transfer_install))
         .route("/repos/export/download", get(get_bundle_download))
         .route(
             "/repos/import/upload",
@@ -585,6 +596,114 @@ async fn bundle_verb(s: &AppState, op: &'static str, body: Value) -> axum::respo
         Ok(Err(e)) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
     }
+}
+
+/// A `transfer.rs` op here, or on `node` over the mesh.
+async fn transfer_verb(
+    s: &AppState,
+    node: Option<&str>,
+    op: &'static str,
+    body: Value,
+) -> axum::response::Response {
+    if let Some(node) = node.filter(|n| !n.is_empty() && !is_self_node(s, n)) {
+        let Some(mesh) = s.node.inner.mesh() else {
+            return err(StatusCode::NOT_FOUND, "this node is not in a mesh").into_response();
+        };
+        return match mesh
+            .api_call(node, op, "", body, std::time::Duration::from_secs(3600))
+            .await
+        {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+        };
+    }
+    match aspen_node::transfer::dispatch(&s.node.inner, op, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NodeDirQuery {
+    node: Option<String>,
+    dir: Option<String>,
+}
+
+/// GET /api/fs/list?node=&dir= — a node's directory, names only (U-1).
+async fn get_fs_list(State(s): S, Query(q): Query<NodeDirQuery>) -> impl IntoResponse {
+    transfer_verb(&s, q.node.as_deref(), "fs_list", json!({ "dir": q.dir })).await
+}
+
+#[derive(Deserialize)]
+struct NodeOnly {
+    node: Option<String>,
+}
+
+/// POST /api/repos/import/upload/{id} `{offset, data, node?}` — one piece.
+async fn post_upload_chunk(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(mut b): Json<Value>,
+) -> impl IntoResponse {
+    let node = b.get("node").and_then(|n| n.as_str()).map(str::to_owned);
+    b["id"] = json!(id);
+    transfer_verb(&s, node.as_deref(), "upload_chunk", b).await
+}
+async fn get_upload_size(
+    State(s): S,
+    Path(id): Path<String>,
+    Query(q): Query<NodeOnly>,
+) -> impl IntoResponse {
+    transfer_verb(&s, q.node.as_deref(), "upload_size", json!({ "id": id })).await
+}
+async fn post_upload_done(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<Value>,
+) -> impl IntoResponse {
+    let node = b.get("node").and_then(|n| n.as_str()).map(str::to_owned);
+    transfer_verb(&s, node.as_deref(), "upload_done", json!({ "id": id })).await
+}
+
+#[derive(Deserialize)]
+struct ExportReadQuery {
+    node: Option<String>,
+    file: String,
+    offset: Option<u64>,
+    len: Option<u64>,
+}
+/// GET /api/repos/export/read?file=&offset=&len=&node= — a piece of an
+/// exported bundle, for a download over the relay (U-2).
+async fn get_export_read(State(s): S, Query(q): Query<ExportReadQuery>) -> impl IntoResponse {
+    transfer_verb(
+        &s,
+        q.node.as_deref(),
+        "export_read",
+        json!({ "file": q.file, "offset": q.offset.unwrap_or(0), "len": q.len.unwrap_or(aspen_node::transfer::PIECE) }),
+    )
+    .await
+}
+
+/// POST /api/repos/transfers `{to, from, path, …}` — start a transfer on
+/// the target node `to` (U-3).
+async fn post_transfer(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {
+    let to = b.get("to").and_then(|n| n.as_str()).map(str::to_owned);
+    transfer_verb(&s, to.as_deref(), "transfer_start", b).await
+}
+async fn get_transfer(
+    State(s): S,
+    Path(id): Path<String>,
+    Query(q): Query<NodeOnly>,
+) -> impl IntoResponse {
+    transfer_verb(&s, q.node.as_deref(), "transfer_get", json!({ "id": id })).await
+}
+async fn post_transfer_install(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<Value>,
+) -> impl IntoResponse {
+    let node = b.get("node").and_then(|n| n.as_str()).map(str::to_owned);
+    transfer_verb(&s, node.as_deref(), "transfer_install", json!({ "id": id })).await
 }
 
 async fn post_bundle_export_preflight(State(s): S, Json(b): Json<Value>) -> impl IntoResponse {

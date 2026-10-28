@@ -176,7 +176,9 @@ pub fn op_capability(op: &str) -> Capability {
         | "node_repo_skip"
         | "node_repo_add"
         | "repo_import_preflight"
-        | "repo_import" => Capability::Trust,
+        | "repo_import"
+        | "transfer_start"
+        | "transfer_install" => Capability::Trust,
         _ => Capability::Control,
     }
 }
@@ -2691,6 +2693,13 @@ async fn serve_api_req(
             Ok(json!({ "token": token, "expires": expires, "node": node.inner.node_name() }))
         }
         // Repo bundles (docs/BUNDLES.md): the verbs run on the repo's node.
+        // Moving repos around the mesh (transfer.rs, PROPOSALS-2026-10-U):
+        // a listing, pieces in and out, the transfer job. Control by
+        // default (a full-policy peer only); starting and installing a
+        // transfer are trust, as import is.
+        op if crate::transfer::OPS.contains(&op) => {
+            crate::transfer::dispatch(&node.inner, op, &body).await
+        }
         "repo_export_preflight" | "repo_export" | "repo_import_preflight" | "repo_import" => {
             let inner2 = node.inner.clone();
             let op2 = op.to_owned();

@@ -36,6 +36,7 @@ pub mod store;
 pub mod tls;
 pub mod tools;
 pub mod topology;
+pub mod transfer;
 pub mod trust;
 pub mod truststore;
 pub mod winfw;

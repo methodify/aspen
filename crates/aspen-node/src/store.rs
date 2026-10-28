@@ -310,6 +310,10 @@ pub struct Board {
     /// beside the layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bench: Option<serde_json::Value>,
+    /// The tabs' order (PROPOSALS-2026-10-U §U-4): agent addresses; members
+    /// it does not name follow in layout order. The layout does not move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_order: Option<serde_json::Value>,
     pub updated_at: f64,
     #[serde(default)]
     pub deleted: bool,
@@ -515,6 +519,7 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE agents ADD COLUMN last_exit_at REAL",
         "ALTER TABLE push_subs ADD COLUMN vapid TEXT",
         "ALTER TABLE boards ADD COLUMN bench TEXT",
+        "ALTER TABLE boards ADD COLUMN tab_order TEXT",
     ] {
         if let Err(e) = conn.execute(stmt, []) {
             if !e.to_string().contains("duplicate column") {
@@ -1775,7 +1780,7 @@ impl BusStore {
     pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench FROM boards ORDER BY updated_at DESC",
+            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order FROM boards ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1794,6 +1799,9 @@ impl BusStore {
                         .and_then(|q| serde_json::from_str(&q).ok()),
                     bench: r
                         .get::<_, Option<String>>(7)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    tab_order: r
+                        .get::<_, Option<String>>(8)?
                         .and_then(|q| serde_json::from_str(&q).ok()),
                 })
             })?
@@ -1822,8 +1830,8 @@ impl BusStore {
             return Ok(false);
         }
         conn.execute(
-            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7, bench=COALESCE(?8, bench)",
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7, bench=COALESCE(?8, bench), tab_order=COALESCE(?9, tab_order)",
             params![
                 b.id,
                 b.name,
@@ -1832,7 +1840,8 @@ impl BusStore {
                 b.deleted as i64,
                 b.query.as_ref().map(|q| q.to_string()),
                 b.pairs.as_ref().map(|q| q.to_string()),
-                b.bench.as_ref().map(|q| q.to_string())
+                b.bench.as_ref().map(|q| q.to_string()),
+                b.tab_order.as_ref().map(|q| q.to_string())
             ],
         )?;
         Ok(true)
@@ -2376,20 +2385,23 @@ impl BusStore {
         }
         // Board panes: `key@node` (and the bare key on a node with no mesh).
         // The bench (`[{agent, …}]`) is walked as a split's children.
-        let mut boards: Vec<(String, String, Option<String>)> = Vec::new();
+        type Row = (String, String, Option<String>, Option<String>);
+        let mut boards: Vec<Row> = Vec::new();
         {
-            let mut stmt = conn.prepare("SELECT id, layout, bench FROM boards WHERE deleted=0")?;
+            let mut stmt =
+                conn.prepare("SELECT id, layout, bench, tab_order FROM boards WHERE deleted=0")?;
             for r in stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             })? {
                 boards.push(r?);
             }
         }
-        for (id, layout, bench) in boards {
+        for (id, layout, bench, tab_order) in boards {
             let mut v: serde_json::Value = match serde_json::from_str(&layout) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -2437,14 +2449,37 @@ impl BusStore {
             if let Some(b) = bench.as_mut() {
                 walk(b, old, new, self_node, &mut hit);
             }
+            // The tab order is a list of addresses: renamed in place, and
+            // after a merge a name the list already holds stays once.
+            let tab_order: Option<Vec<String>> = tab_order
+                .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+                .map(|list| {
+                    let mut out: Vec<String> = Vec::new();
+                    for a in list {
+                        let r = if a == old {
+                            hit = true;
+                            new.to_owned()
+                        } else if let Some(nd) = self_node.filter(|nd| a == format!("{old}@{nd}")) {
+                            hit = true;
+                            format!("{new}@{nd}")
+                        } else {
+                            a
+                        };
+                        if !out.contains(&r) {
+                            out.push(r);
+                        }
+                    }
+                    out
+                });
             if hit {
                 conn.execute(
-                    "UPDATE boards SET layout=?2, bench=COALESCE(?4, bench), updated_at=?3 WHERE id=?1",
+                    "UPDATE boards SET layout=?2, bench=COALESCE(?4, bench), tab_order=COALESCE(?5, tab_order), updated_at=?3 WHERE id=?1",
                     params![
                         id,
                         v.to_string(),
                         t,
-                        bench.map(|b| b["children"].to_string())
+                        bench.map(|b| b["children"].to_string()),
+                        tab_order.map(|o| serde_json::json!(o).to_string())
                     ],
                 )?;
             }
@@ -3201,6 +3236,7 @@ mod plugin_library_tests {
             query: None,
             pairs: None,
             bench: Some(serde_json::json!([{ "agent": "a@pw", "at": 1.0 }])),
+            tab_order: Some(serde_json::json!(["keep@pw", "a@pw"])),
             updated_at: 1.0,
             deleted: false,
         })
@@ -3214,7 +3250,15 @@ mod plugin_library_tests {
         assert_eq!(bench(&s)[0]["agent"], "a@pw");
         s.rename_agent("a@pw", "b", None).unwrap();
         assert_eq!(bench(&s)[0]["agent"], "b@pw");
+        assert_eq!(
+            s.boards(false).unwrap()[0].tab_order.clone().unwrap(),
+            serde_json::json!(["keep@pw", "b@pw"])
+        );
         s.merge_agent("b@pw", "keep@pw", None).unwrap();
         assert_eq!(bench(&s)[0]["agent"], "keep@pw");
+        assert_eq!(
+            s.boards(false).unwrap()[0].tab_order.clone().unwrap(),
+            serde_json::json!(["keep@pw"])
+        );
     }
 }

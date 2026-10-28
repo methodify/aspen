@@ -47,6 +47,10 @@ whoever messaged you are always allowed.
 | `POST /api/repos/export` | `{ path, node?, repo_mode, sessions?, sidecars, memory, names, passphrase?, out? }` | `{ out, bytes, files, sessions, sealed, notes, file? }` | writes a repo bundle on the repo's node |
 | `GET /api/repos/export/download` | `?file=` | the bundle | streams a file from the node's exports dir (direct connections) |
 | `POST /api/repos/import/upload` | raw body | `{ file, path, bytes }` | a bundle into the node's imports dir (direct connections; no body limit) |
+| `POST /api/repos/import/upload/{id}` | `{ offset, data (base64, ≤1 MB), node? }` | `{ size }` | one piece of an upload, any node, over the relay too; a wrong offset is refused with the size so far. `GET` the same path (`?node=`) answers `{ size }`; `POST …/{id}/done` `{ node? }` answers `{ file, path, bytes }` |
+| `GET /api/repos/export/read` | `?file=&offset=&len=&node=` | `{ data, size, eof }` | a piece (≤1 MB) of an exported bundle, by bare name in the exports folder |
+| `GET /api/fs/list` | `?node=&dir=` | `{ dir, parent, entries[{name, kind, is_dir, size, mtime, hidden}], starts[{label, path}], truncated, sep }` | a node's directory, names only (no `dir`: the starting points). Control: a full-policy peer or the node's own console |
+| `POST /api/repos/transfers` | `{ to, from, path, …export choices, import: {target, mode, repo_files, names} }` | `{ id }` | start a transfer job on node `to`: export on `from`, pull here, plan. `GET …/{id}?node=` answers the job (`step`: exporting · pulling · planning · ready · installing · done · failed, `bytes`, `total`, `plan`, `report`, `error`); `POST …/{id}/install` `{ node? }` installs a ready plan and deletes the source's copy |
 | `POST /api/repos/import/preflight` | `{ file, node?, passphrase?, target, mode: new\|top_up, repo_files: none\|missing, names }` | the plan, with `staging_id` | BUNDLES.md §4 |
 | `POST /api/repos/import` | the same + `staging_id` | the report | installs a staged bundle |
 | `GET /api/agents/{name}/workflows/{run}` | — | `WorkflowRun` | one workflow run: phases, agents, results, logs (ACTIVITY.md §Workflows); a peer's via the `workflow` op |

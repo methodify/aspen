@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { scoped } from "../profiles";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { PathPicker } from "../pathPicker";
 import { api, ApiError, type MeshRepoNode, type OthersGet, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
@@ -126,6 +127,7 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
   const [path, setPath] = useState("");
   const [skip, setSkip] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(e: FormEvent) {
@@ -172,6 +174,7 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
           className="mono"
           style={{ flex: 1, minWidth: 240 }}
         />
+        <button type="button" className="btn ghost sm" onClick={() => setBrowsing(true)}>browse…</button>
         <label
           className="micro"
           style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }}
@@ -189,6 +192,19 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
         </button>
       </div>
       <ErrorBar error={error} />
+      {browsing && (
+        <PathPicker
+          node={onNode && onNode !== nodes.find((n) => n.me)?.node ? onNode : undefined}
+          mode="dir"
+          start={path}
+          title="The repository's folder"
+          onPick={(p) => {
+            setPath(p);
+            setBrowsing(false);
+          }}
+          onClose={() => setBrowsing(false)}
+        />
+      )}
     </form>
   );
 }

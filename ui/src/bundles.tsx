@@ -1,20 +1,24 @@
 /* Repo bundles (docs/BUNDLES.md; PROPOSALS-2026-09-O §1): export a repo
  * with its context to one file, import one as a new repo or on top of an
- * existing one. The file is built on (and read from) the repo's node; a
- * console with a direct connection can download and upload it, one on the
- * relay works with paths on the node (the relay cannot carry a file this
- * size — chunked transfer is on the backlog). */
-import { useEffect, useMemo, useState } from "react";
+ * existing one. The file is built on (and read from) the repo's node. It
+ * travels in pieces (PROPOSALS-2026-10-U): uploaded from the browser to
+ * any node, downloaded from any node, over the relay too; paths on a node
+ * are picked by browsing it; and a repo can go straight from one node to
+ * another (transfer: export there, pull here, plan, confirm). */
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   bundleDownloadUrl,
-  bundleUpload,
+  downloadBundleInPieces,
+  uploadBundleInPieces,
   type BundleExportPreflight,
   type BundleExportResult,
   type BundleImportPlan,
   type BundleImportReport,
   type BundleRepoMode,
+  type TransferJob,
 } from "./api";
+import { PathPicker } from "./pathPicker";
 import { tunnel } from "./tunnel";
 import { ErrorBar } from "./components";
 import { fmtBytes } from "./pages/sessionExtras";
@@ -46,6 +50,40 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
   const [out, setOut] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<BundleExportResult | null>(null);
+  const [browse, setBrowse] = useState<null | "out" | "into">(null);
+  const [got, setGot] = useState<string | null>(null);
+  // Transfer (U-3): to another node of this mesh, imported there.
+  const [dest, setDest] = useState<"file" | "transfer">("file");
+  const [meshNodes, setMeshNodes] = useState<{ node: string; self: boolean; reachable: boolean }[]>([]);
+  const [tNode, setTNode] = useState("");
+  const [tTarget, setTTarget] = useState("");
+  const [tMode, setTMode] = useState<"new" | "top_up">("new");
+  const [tNames, setTNames] = useState(true);
+  const [job, setJob] = useState<TransferJob | null>(null);
+  const [jobNode, setJobNode] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .meshRepos()
+      .then((r) => setMeshNodes(r.nodes.map((n) => ({ node: n.node, self: n.self, reachable: n.self || n.reachable }))))
+      .catch(() => {});
+  }, []);
+  const source = node ?? meshNodes.find((n) => n.self)?.node ?? "";
+  const targets = meshNodes.filter((n) => n.node !== source);
+  const inMesh = meshNodes.length > 1;
+  // A running transfer is polled until it settles.
+  const pollRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!job || !jobNode || ["ready", "done", "failed"].includes(job.step)) return;
+    pollRef.current = window.setTimeout(() => {
+      api
+        .transferGet(job.id, jobNode)
+        .then(setJob)
+        .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    }, 1000);
+    return () => {
+      if (pollRef.current) window.clearTimeout(pollRef.current);
+    };
+  }, [job, jobNode]);
   useEffect(() => {
     api
       .bundleExportPreflight(path, node)
@@ -68,17 +106,26 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
     setErr(null);
     try {
       const all = picked?.size === pf.sessions.length;
-      const r = await api.bundleExport({
+      const choices = {
         path,
-        node,
-        out: out.trim() || undefined,
         repo_mode: mode,
         sessions: all ? null : [...(picked ?? [])],
         sidecars,
         memory,
         names,
         passphrase: seal ? pass : undefined,
-      });
+      };
+      if (dest === "transfer") {
+        if (!tNode) throw new Error("choose the node to transfer to");
+        if (!tTarget.trim()) throw new Error(`say where the repo goes on ${tNode}`);
+        const target = meshNodes.find((n) => n.node === tNode);
+        const to = target?.self ? undefined : tNode;
+        const { id } = await api.transferStart({ ...choices, to, from: source, import: { target: tTarget.trim(), mode: tMode, repo_files: "none", names: tNames } });
+        setJobNode(to ?? null);
+        setJob({ id, from: source, repo: path, step: "exporting", bytes: 0, total: 0, plan: null, report: null, error: null });
+        return;
+      }
+      const r = await api.bundleExport({ ...choices, node, out: out.trim() || undefined });
       setDone(r);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -164,18 +211,75 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
               </>
             )}
           </div>
-          <div className="bundle-row">
-            <span className="bundle-k">write to</span>
-            <input className="mono" value={out} onChange={(e) => setOut(e.target.value)} placeholder={`${node ? `${node}: ` : ""}the node's exports folder (or a path / folder on the node)`} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
-          </div>
+          {inMesh && !job && (
+            <div className="bundle-row">
+              <span className="bundle-k">to</span>
+              <label className={`bundle-choice${dest === "file" ? " on" : ""}`}><input type="radio" checked={dest === "file"} onChange={() => setDest("file")} /> a file on {source || "this node"}</label>
+              <label className={`bundle-choice${dest === "transfer" ? " on" : ""}`} title="export here, pull it there, show the import plan, install on your confirm"><input type="radio" checked={dest === "transfer"} onChange={() => setDest("transfer")} /> another node (transfer)</label>
+            </div>
+          )}
+          {dest === "file" && (
+            <div className="bundle-row">
+              <span className="bundle-k">write to</span>
+              <input className="mono" value={out} onChange={(e) => setOut(e.target.value)} placeholder={`${node ? `${node}: ` : ""}the node's exports folder (or a path / folder on the node)`} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
+              <button type="button" className="btn ghost sm" onClick={() => setBrowse("out")}>browse…</button>
+            </div>
+          )}
+          {dest === "transfer" && !job && (
+            <>
+              <div className="bundle-row">
+                <span className="bundle-k">node</span>
+                <select value={tNode} onChange={(e) => setTNode(e.target.value)} style={{ width: "auto" }}>
+                  <option value="">choose…</option>
+                  {targets.map((n) => (
+                    <option key={n.node} value={n.node} disabled={!n.reachable}>{n.node}{n.self ? " · this node" : ""}{n.reachable ? "" : " · not reachable now"}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="bundle-row">
+                <span className="bundle-k">into</span>
+                <label className={`bundle-choice${tMode === "new" ? " on" : ""}`}><input type="radio" checked={tMode === "new"} onChange={() => setTMode("new")} /> a new repo</label>
+                <label className={`bundle-choice${tMode === "top_up" ? " on" : ""}`}><input type="radio" checked={tMode === "top_up"} onChange={() => setTMode("top_up")} /> top up a repo there</label>
+                <input className="mono" value={tTarget} onChange={(e) => setTTarget(e.target.value)} placeholder={tMode === "new" ? "~/src/project (absent or empty)" : "~/src/project"} style={{ flex: 1, minWidth: 200 }} spellCheck={false} />
+                <button type="button" className="btn ghost sm" disabled={!tNode} onClick={() => setBrowse("into")}>browse…</button>
+              </div>
+              <div className="bundle-row">
+                <span className="bundle-k">there</span>
+                <label className="bundle-flag"><input type="checkbox" checked={tNames} onChange={(e) => setTNames(e.target.checked)} /> register the names (not started)</label>
+              </div>
+            </>
+          )}
           <div className="bundle-row">
             <span className="mono-meta">about {fmtBytes(size)} before compression</span>
             <span style={{ flex: 1 }} />
-            <button type="button" className="btn primary sm" disabled={busy || !passOk || (mode === "none" && (picked?.size ?? 0) === 0)} onClick={() => void go()}>
-              {busy ? "writing…" : "export"}
-            </button>
+            {!job && (
+              <button type="button" className="btn primary sm" disabled={busy || !passOk || (mode === "none" && (picked?.size ?? 0) === 0)} onClick={() => void go()}>
+                {busy ? (dest === "transfer" ? "starting…" : "writing…") : dest === "transfer" ? "transfer" : "export"}
+              </button>
+            )}
           </div>
+          {job && (
+            <TransferView
+              job={job}
+              node={jobNode}
+              onInstalled={(r) => setJob({ ...job, step: "done", report: r })}
+              onError={(e) => setErr(e)}
+            />
+          )}
         </>
+      )}
+      {browse === "out" && (
+        <PathPicker node={node} mode="dir" start={out} title="Write the bundle into…" onPick={(p) => { setOut(p); setBrowse(null); }} onClose={() => setBrowse(null)} />
+      )}
+      {browse === "into" && tNode && (
+        <PathPicker
+          node={meshNodes.find((n) => n.node === tNode)?.self ? undefined : tNode}
+          mode="dir"
+          start={tTarget}
+          title={tMode === "new" ? `A folder on ${tNode} (the new repo goes in a new, empty one)` : `The repo on ${tNode} to top up`}
+          onPick={(p) => { setTTarget(p); setBrowse(null); }}
+          onClose={() => setBrowse(null)}
+        />
       )}
       {done && (
         <div className="bundle-done">
@@ -189,11 +293,26 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
           <div className="bundle-row">
             {done.file && directTo(node) ? (
               <a className="btn primary sm" href={bundleDownloadUrl(done.file)} download={done.file}>download</a>
+            ) : done.file ? (
+              <button
+                type="button"
+                className="btn primary sm"
+                disabled={got !== null}
+                onClick={() => {
+                  setGot("0");
+                  void downloadBundleInPieces(done.file!, node, (n, size) => setGot(`${fmtBytes(n)} of ${fmtBytes(size)}`))
+                    .then(() => setGot(null))
+                    .catch((e) => {
+                      setGot(null);
+                      setErr(e instanceof Error ? e.message : String(e));
+                    });
+                }}
+                title={node ? `from ${node}, in pieces` : "in pieces, over the relay"}
+              >
+                {got !== null ? `downloading ${got}…` : "download"}
+              </button>
             ) : (
-              <span className="micro dim">
-                {tunnel.enabled ? "this console is on the relay, which cannot carry a file this size: " : node ? `the file is on ${node}: ` : ""}
-                take it from that path on the node (scp, a sync folder, a drive), or <code>aspen repos import &lt;file&gt; --to &lt;path&gt;</code> where it lands.
-              </span>
+              <span className="micro dim">written outside the node's exports folder: take it from that path on the node, or import it there with the path.</span>
             )}
           </div>
         </div>
@@ -205,7 +324,6 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
 export function ImportPanel({ nodes, onDone, onClose }: { nodes: { node: string; me: boolean }[]; onDone: () => void; onClose: () => void }) {
   const [onNode, setOnNode] = useState(nodes.find((n) => n.me)?.node ?? "");
   const me = nodes.find((n) => n.node === onNode)?.me ?? true;
-  const direct = directTo(me ? undefined : onNode);
   const [file, setFile] = useState("");
   const [upload, setUpload] = useState<File | null>(null);
   const [sent, setSent] = useState<number | null>(null);
@@ -218,6 +336,7 @@ export function ImportPanel({ nodes, onDone, onClose }: { nodes: { node: string;
   const [err, setErr] = useState<string | null>(null);
   const [plan, setPlan] = useState<BundleImportPlan | null>(null);
   const [report, setReport] = useState<BundleImportReport | null>(null);
+  const [browse, setBrowse] = useState<null | "file" | "into">(null);
   const req = (f: string) => ({
     file: f,
     node: me ? undefined : onNode,
@@ -232,10 +351,10 @@ export function ImportPanel({ nodes, onDone, onClose }: { nodes: { node: string;
     setPlan(null);
     try {
       let f = file.trim();
-      if (upload && direct) {
+      if (upload) {
         setBusy("uploading…");
         setSent(0);
-        f = (await bundleUpload(upload, (n) => setSent(n))).file;
+        f = (await uploadBundleInPieces(upload, me ? undefined : onNode, (n) => setSent(n))).file;
         setFile(f);
         setUpload(null);
       }
@@ -284,10 +403,9 @@ export function ImportPanel({ nodes, onDone, onClose }: { nodes: { node: string;
           </div>
           <div className="bundle-row">
             <span className="bundle-k">bundle</span>
-            {direct && (
-              <input type="file" accept=".aspen-repo" onChange={(e) => { setUpload(e.target.files?.[0] ?? null); setPlan(null); }} />
-            )}
-            <input className="mono" value={file} onChange={(e) => { setFile(e.target.value); setUpload(null); setPlan(null); }} placeholder={direct ? "…or a path on the node" : "a path on the node (the relay cannot carry the file)"} style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
+            <input type="file" accept=".aspen-repo" title="from this computer: sent to the node in pieces (over the relay too)" onChange={(e) => { setUpload(e.target.files?.[0] ?? null); setPlan(null); }} />
+            <input className="mono" value={file} onChange={(e) => { setFile(e.target.value); setUpload(null); setPlan(null); }} placeholder="…or a path on the node" style={{ flex: 1, minWidth: 220 }} spellCheck={false} />
+            <button type="button" className="btn ghost sm" onClick={() => setBrowse("file")}>browse…</button>
           </div>
           <div className="bundle-row">
             <span className="bundle-k">passphrase</span>
@@ -298,6 +416,7 @@ export function ImportPanel({ nodes, onDone, onClose }: { nodes: { node: string;
             <label className={`bundle-choice${mode === "new" ? " on" : ""}`}><input type="radio" checked={mode === "new"} onChange={() => { setMode("new"); setPlan(null); }} /> a new repo</label>
             <label className={`bundle-choice${mode === "top_up" ? " on" : ""}`} title="merge into a repo that is here: new sessions installed, longer copies replace shorter ones, diverged ones land as forks"><input type="radio" checked={mode === "top_up"} onChange={() => { setMode("top_up"); setPlan(null); }} /> top up a repo that is here</label>
             <input className="mono" value={target} onChange={(e) => { setTarget(e.target.value); setPlan(null); }} placeholder={mode === "new" ? "~/src/project (absent or empty)" : "~/src/project"} style={{ flex: 1, minWidth: 200 }} spellCheck={false} />
+            <button type="button" className="btn ghost sm" onClick={() => setBrowse("into")}>browse…</button>
           </div>
           <div className="bundle-row">
             <span className="bundle-k">with</span>
@@ -321,18 +440,82 @@ export function ImportPanel({ nodes, onDone, onClose }: { nodes: { node: string;
           )}
         </>
       )}
-      {report && (
-        <div className="bundle-done">
-          <div className="mono">{report.repo} · #{report.handle}</div>
-          <div className="mono-meta">
-            repo files {report.repo_files_written} · sessions installed {report.sessions_installed.length} · replaced {report.sessions_replaced.length} · forked {report.sessions_forked.length} · kept {report.sessions_kept.length} · memory {report.memory_written} · names {report.names.length}
-          </div>
-          {report.names.length > 0 && <div className="micro">names registered, not started: {report.names.map((n) => `@${n.split("@")[0]}`).join(", ")} — resume them from the repo's row.</div>}
-          {report.memory_conflicts.map((c) => <div key={c} className="micro dim">memory kept beside: {c}</div>)}
-          {report.residue > 0 && <div className="micro dim">{report.residue} path(s) from the source machine could not be rewritten (advisory)</div>}
-          {report.notes.map((n, i) => <div key={i} className="micro dim">{n}</div>)}
-        </div>
+      {report && <ReportView report={report} />}
+      {browse === "file" && (
+        <PathPicker node={me ? undefined : onNode} mode="file" ext=".aspen-repo" start={file.includes("/") || file.includes("\\") ? file.replace(/[\\/][^\\/]*$/, "") : ""} title="The bundle on the node" onPick={(p) => { setFile(p); setUpload(null); setPlan(null); setBrowse(null); }} onClose={() => setBrowse(null)} />
       )}
+      {browse === "into" && (
+        <PathPicker node={me ? undefined : onNode} mode="dir" start={target} title={mode === "new" ? "A folder for the new repo (absent or empty)" : "The repo to top up"} onPick={(p) => { setTarget(p); setPlan(null); setBrowse(null); }} onClose={() => setBrowse(null)} />
+      )}
+    </div>
+  );
+}
+
+function ReportView({ report }: { report: BundleImportReport }) {
+  return (
+    <div className="bundle-done">
+      <div className="mono">{report.repo} · #{report.handle}</div>
+      <div className="mono-meta">
+        repo files {report.repo_files_written} · sessions installed {report.sessions_installed.length} · replaced {report.sessions_replaced.length} · forked {report.sessions_forked.length} · kept {report.sessions_kept.length} · memory {report.memory_written} · names {report.names.length}
+      </div>
+      {report.names.length > 0 && <div className="micro">names registered, not started: {report.names.map((n) => `@${n.split("@")[0]}`).join(", ")} — resume them from the repo's row.</div>}
+      {report.memory_conflicts.map((c) => <div key={c} className="micro dim">memory kept beside: {c}</div>)}
+      {report.residue > 0 && <div className="micro dim">{report.residue} path(s) from the source machine could not be rewritten (advisory)</div>}
+      {report.notes.map((n, i) => <div key={i} className="micro dim">{n}</div>)}
+    </div>
+  );
+}
+
+const STEPS: Record<TransferJob["step"], string> = {
+  exporting: "exporting on the source",
+  pulling: "pulling the bundle across",
+  planning: "reading the bundle there",
+  ready: "ready: the plan is below",
+  installing: "installing",
+  done: "done",
+  failed: "failed",
+};
+
+/** A transfer in flight (U-3): its step and bytes, then the plan and the
+ *  confirm, then the report. Nothing is installed without the confirm. */
+function TransferView({ job, node, onInstalled, onError }: { job: TransferJob; node: string | null; onInstalled: (r: BundleImportReport) => void; onError: (e: string) => void }) {
+  const [installing, setInstalling] = useState(false);
+  return (
+    <div className="bundle-plan transfer-view">
+      <div className="bundle-row">
+        <span className="bundle-k">transfer</span>
+        <span className="mono">{job.from} → {node ?? "this node"}</span>
+        <span className={`mono-meta${job.step === "failed" ? " error-text" : ""}`}>
+          {STEPS[job.step]}
+          {job.step === "pulling" && job.total > 0 ? ` · ${fmtBytes(job.bytes)} of ${fmtBytes(job.total)}` : ""}
+        </span>
+      </div>
+      {job.error && <div className="micro error-text">{job.error}</div>}
+      {job.step === "ready" && job.plan && (
+        <>
+          <PlanView plan={job.plan} />
+          <div className="bundle-row">
+            <span className="mono-meta">nothing is installed until you confirm; the source's bundle is deleted after</span>
+            <span style={{ flex: 1 }} />
+            <button
+              type="button"
+              className="btn primary sm"
+              disabled={installing || job.plan.blockers.length > 0}
+              onClick={() => {
+                setInstalling(true);
+                api
+                  .transferInstall(job.id, node)
+                  .then(onInstalled)
+                  .catch((e) => onError(e instanceof Error ? e.message : String(e)))
+                  .finally(() => setInstalling(false));
+              }}
+            >
+              {installing ? "installing…" : "install"}
+            </button>
+          </div>
+        </>
+      )}
+      {job.step === "done" && job.report && <ReportView report={job.report} />}
     </div>
   );
 }

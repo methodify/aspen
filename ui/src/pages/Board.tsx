@@ -302,10 +302,35 @@ export default function BoardPage() {
     return !!la && la > seenAt(n) + 1;
   };
   type Tab = { key: string; pane?: BoardPane; agent?: string; benched: boolean };
-  const tabs: Tab[] = [
-    ...panes.map((p) => ({ key: p.id, pane: p, agent: p.kind === "session" ? p.agent : undefined, benched: false })),
-    ...bench.map((e) => ({ key: `bench:${e.agent}`, agent: e.agent, benched: true })),
-  ];
+  // The tabs' own order (U-4): `tab_order` first, then the rest in layout
+  // order; the stage and the bench each keep their section.
+  const orderKey = (t: Tab) => t.agent ?? `pane:${t.pane?.id ?? ""}`;
+  const ordered = (list: Tab[]): Tab[] => {
+    const order = board?.tab_order ?? [];
+    const rank = (t: Tab) => {
+      const i = order.indexOf(orderKey(t));
+      return i < 0 ? order.length : i;
+    };
+    return list.map((t, i) => ({ t, i })).sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i).map((x) => x.t);
+  };
+  const stageTabs = ordered(panes.map((p) => ({ key: p.id, pane: p, agent: p.kind === "session" ? p.agent : undefined, benched: false })));
+  const benchTabs = ordered(bench.map((e) => ({ key: `bench:${e.agent}`, agent: e.agent, benched: true })));
+  const tabs: Tab[] = [...stageTabs, ...benchTabs];
+  /** Move tab `key` to just before (or after) tab `at`, within its section. */
+  const moveTab = (key: string, at: string, after: boolean) => {
+    const from = tabs.find((t) => t.key === key);
+    const to = tabs.find((t) => t.key === at);
+    if (!from || !to || from === to || from.benched !== to.benched) return;
+    const section = (from.benched ? benchTabs : stageTabs).filter((t) => t.key !== key);
+    const i = section.findIndex((t) => t.key === at) + (after ? 1 : 0);
+    section.splice(i, 0, from);
+    const other = from.benched ? stageTabs : benchTabs;
+    const all = from.benched ? [...other, ...section] : [...section, ...other];
+    update((b) => ({ ...b, tab_order: all.map(orderKey) }));
+  };
+  const dynamic0 = !!board?.query;
+  const [dragTab, setDragTab] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ key: string; after: boolean } | null>(null);
   const active = tabs.find((t) => t.key === activeTab) ?? tabs[0];
   const selectTab = (key: string) => {
     setActiveTab(key);
@@ -412,7 +437,18 @@ export default function BoardPage() {
     })),
     { key: "alt+[", description: "previous tab (tabs view)", handler: () => stepTab(-1) },
     { key: "alt+]", description: "next tab (tabs view)", handler: () => stepTab(1) },
+    { key: "alt+shift+[", description: "move this tab left (tabs view)", handler: () => shiftTab(-1) },
+    { key: "alt+shift+]", description: "move this tab right (tabs view)", handler: () => shiftTab(1) },
   ]);
+
+  function shiftTab(d: number) {
+    if (!tabsMode || !active || dynamic0) return;
+    const section = active.benched ? benchTabs : stageTabs;
+    const i = section.findIndex((t) => t.key === active.key);
+    const j = i + d;
+    if (i < 0 || j < 0 || j >= section.length) return;
+    moveTab(active.key, section[j]!.key, d > 0);
+  }
 
   function stepTab(d: number) {
     if (!tabsMode || tabs.length === 0) return;
@@ -924,7 +960,39 @@ export default function BoardPage() {
               return (
                 <span key={t.key} className="board-tab-slot">
                   {t.benched && !tabs[i - 1]?.benched && <span className="board-tabs-sep mono-meta">bench</span>}
-                  <button role="tab" aria-selected={t.key === active?.key} className={`${t.key === active?.key ? "on" : ""}${t.benched ? " benched" : ""}`} onClick={() => selectTab(t.key)}>
+                  <button
+                    role="tab"
+                    aria-selected={t.key === active?.key}
+                    className={`${t.key === active?.key ? "on" : ""}${t.benched ? " benched" : ""}${dragTab === t.key ? " dragging" : ""}${dropAt?.key === t.key ? (dropAt.after ? " drop-after" : " drop-before") : ""}`}
+                    onClick={() => selectTab(t.key)}
+                    draggable={!dynamic}
+                    title={dynamic ? undefined : "drag to reorder (alt+shift+[ / ])"}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/aspen-tab", t.key);
+                      e.dataTransfer.effectAllowed = "move";
+                      setDragTab(t.key);
+                    }}
+                    onDragEnd={() => {
+                      setDragTab(null);
+                      setDropAt(null);
+                    }}
+                    onDragOver={(e) => {
+                      const from = tabs.find((x) => x.key === dragTab);
+                      if (!from || from.key === t.key || from.benched !== t.benched) return;
+                      e.preventDefault();
+                      const r = e.currentTarget.getBoundingClientRect();
+                      const after = e.clientX > r.left + r.width / 2;
+                      if (dropAt?.key !== t.key || dropAt.after !== after) setDropAt({ key: t.key, after });
+                    }}
+                    onDragLeave={() => setDropAt((d) => (d?.key === t.key ? null : d))}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const key = e.dataTransfer.getData("text/aspen-tab");
+                      if (key && dropAt) moveTab(key, t.key, dropAt.after);
+                      setDragTab(null);
+                      setDropAt(null);
+                    }}
+                  >
                     {i < 9 && <span className="mono">{i + 1}</span>}
                     {t.agent && <Meter presence={presenceOf(a?.live ?? false, a?.turn_state ?? null)} />}
                     {tabLabel(t)}

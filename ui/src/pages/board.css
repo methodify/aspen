@@ -117,3 +117,17 @@
 }
 .board-tabs .board-tab-add { font: 600 0.9rem/1 var(--font-body); padding: 4px 10px; color: var(--text-dim); border-style: dashed; }
 .board-tabs .board-tab-add:hover { color: var(--text-hi); border-color: var(--accent); }
+
+/* The path picker (PROPOSALS-2026-10-U §U-1). */
+.path-picker { width: 720px; }
+.path-starts { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.path-here { display: flex; align-items: center; gap: 8px; padding: 6px 12px; }
+.path-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.path-tools { display: flex; align-items: center; gap: 10px; padding: 0 12px 6px; }
+.path-tools .picker-search { flex: 1; margin: 0; }
+.picker-row.dim { opacity: 0.55; }
+.picker-row:disabled { cursor: default; }
+/* Reordering tabs (U-4): an insertion bar where the tab will land. */
+.board-tabs button.dragging { opacity: 0.4; }
+.board-tabs button.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.board-tabs button.drop-after { box-shadow: inset -3px 0 0 var(--accent); }

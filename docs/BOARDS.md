@@ -243,3 +243,17 @@ Code: `ui/src/boardOps.ts` (`benchPane`, `unbench`, `benchSwap`,
 `stageBench`, with tests), `ui/src/pages/Board.tsx` (strip, sheet, tabs),
 `crates/aspen-node/src/topology.rs` (`bench_agents`).
 
+**Tab order** (v0.52, PROPOSALS-2026-10-U §U-4). `Board.tab_order` (agent
+addresses, or `pane:<id>` for a viewer or empty pane) orders the tabs;
+members it does not name follow in layout order, and the stage and the
+bench keep their sections. Drag a tab along the strip (an accent bar
+shows where it lands) or press `alt+shift+[` / `]` to move the active
+one. The layout does not move. Synced with the board; a board saved
+without the field keeps the stored order; rename and the name fold
+rewrite it.
+
+**Board keys work** (v0.52). The hotkey matcher refused every `alt`
+chord, so `alt+1…9`, `alt+arrows`, `alt+z`, `alt+.` and `alt+[ ]` never
+fired. Chords now compare the physical key (`e.code`): a Mac types `¡`
+for `alt+1`, and shift turns `[` into `{`.
+

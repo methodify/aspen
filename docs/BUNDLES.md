@@ -140,16 +140,38 @@ CLI: `aspen repos import <file> --to <path> [--top-up] [--missing-files]
 [--no-names] [--dry-run] [-y] [--passphrase-env VAR]` (asks for the
 passphrase when the file is sealed).
 
-## 5. Over the relay, and a peer's repo
+## 5. Over the relay, a peer's repo, and from node to node (v0.52)
 
-The relay carries each request as one sealed message and the node caps a
-response at 64 MB, so a console attached through the relay does not
-download or upload bundles: it writes and reads them **at a path on the
-node**, and the operator moves the file by other means. A peer's repo
-(the Mesh list's rows for another node) works the same way: every verb
-runs on the repo's node (`repo_export_preflight` observe, `repo_export`
-control, `repo_import_preflight` / `repo_import` trust), with a 30-minute
-wait. Chunked transfer through the relay is on the backlog.
+Every verb runs on the repo's node (`repo_export_preflight` observe,
+`repo_export` control, `repo_import_preflight` / `repo_import` trust),
+with a 30-minute wait. Since v0.52 (PROPOSALS-2026-10-U) the file itself
+moves too, in 1 MB pieces, so none of it depends on a direct connection:
+
+- **Choose a file** in import uploads from the browser to any node, over
+  the relay too (`POST /api/repos/import/upload/{id}` `{offset, data,
+  node?}`; `GET` answers the size so far, so an upload resumes; `…/done`
+  makes it `upload-<id>.aspen-repo` in imports). A piece at the wrong
+  offset is refused with where the upload stands.
+- **Download** after an export fetches the bundle in pieces
+  (`GET /api/repos/export/read?file=&offset=&len=&node=`, the exports
+  folder by bare name only) and hands it to the browser. A direct
+  connection to the console's own node keeps the one-request link.
+- **browse…** next to every path on a node (the bundle, *into*, *write
+  to*, and *add repository* on Mesh) opens the path picker: the node's
+  folders, names only, never a file's contents (`GET /api/fs/list?node=
+  &dir=`, op `fs_list`, classed control so only a full-policy peer or the
+  node's own console may list). It starts from home, the node's exports
+  and imports, its repos and the filesystem roots (each drive on Windows).
+- **Transfer** (the export panel's *to: another node*) runs on the target
+  node as a job (`POST /api/repos/transfers` `{to, from, path, …export
+  choices, import: {target, mode, repo_files, names}}`, then
+  `GET /api/repos/transfers/{id}?node=`): the source exports into its
+  exports folder, the target pulls it in pieces (op `export_read`),
+  stages it and makes the plan. The console shows the plan; **install**
+  (`POST …/{id}/install`) runs the import, then the source's copy is
+  deleted. Nothing is installed without that confirm; a failed step
+  leaves the source untouched. `transfer_start` and `transfer_install`
+  are trust, like import.
 
 ## 6. Verified (rig, 2026-09-28)
 

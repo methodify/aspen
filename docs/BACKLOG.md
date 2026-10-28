@@ -39,6 +39,16 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-27: repos move around the mesh; tabs reorder (v0.52.0, queued)
+
+Proposal U (PROPOSALS-2026-10-U.md), the operator's calls in its §5.
+- **U-1 Path picker.** `browse…` beside every path on a node (import's bundle and *into*, export's *write to*, *add repository*): the node's folders, names only (`fs_list`, control: a full-policy peer or the node's own console), starting from home, exports, imports, repos and the filesystem roots.
+- **U-2 Pieces.** *Choose a file* uploads to any node over the relay (1 MB pieces, resumable, a wrong offset refused); *download* after an export fetches in pieces from any node.
+- **U-3 Transfer.** The export panel's *to: another node*: a job on the target (export on the source, pull in pieces via `export_read`, stage, plan), the plan shown in the console, **install** on the operator's confirm, the source's copy then deleted. The plan's name check treats a session installed as a copy as a new transcript (it said *already here* for a second copy on one node, though install registered the name).
+- **U-4 Tab order.** `Board.tab_order`, synced; drag with an insertion bar, `alt+shift+[ / ]`; the layout does not move.
+- **Board keys fixed.** The hotkey matcher refused every alt chord, so the board's `alt+1…9`, arrows, `z`, `.` and `[ ]` (and v0.51's `alt+r`) never fired; chords now match the physical key.
+- Verified on a two-node rig (a mesh over loopback, isolated homes): b's folders listed through a; a 2.5 MB upload to b in pieces came out identical; a transfer of a repo from a to b (via the API, then the export panel: progress, plan, install) installed the repo files, the session and the name on b and deleted a's copy; a 6 MB bundle read back in pieces identical; tabs reordered by drag (insertion bar) and by keys, saved as `tab_order` with the layout untouched.
+
 ## Shipped — 2026-10-26: cards stay open on a stopped agent's page; a draft keeps its attachments (v0.51.2)
 
 - On the page of an agent with no process (seen on a peer's agent), an expanded tool card or bus row snapped shut within a second. The event socket to a stopped agent on a peer opens and is dropped at once; the open reset the backoff, so the page reconnected every second, and each reconnect's catch-up (the 2026-10 quality pass) refetched the tail and reseeded it, and `mergeAfter` gave every item after the last user line a new id, remounting the cards closed. Now `mergeAfter` keeps the ids of items already shown (same place, kind and uuid), a catch-up that brings nothing new leaves the page alone, and the backoff resets only once a socket has held 10 s (so a stopped peer agent is retried at 1, 2, 4 … 15 s, not every second, which also stops a transcript fetch per second per open page).

@@ -1355,7 +1355,14 @@ pub fn plan(
             {
                 let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let sid = r.get("session_id").and_then(|n| n.as_str()).unwrap_or("");
-                let (final_name, action) = name_for(&rows, name, &handle, sid);
+                // A session installed as a copy takes a new id, so its name
+                // is checked as a new transcript's (install does the same).
+                let copied = sessions.iter().any(|x| {
+                    x.get("id").and_then(|i| i.as_str()) == Some(sid)
+                        && x.get("status").and_then(|st| st.as_str()) == Some("copy")
+                });
+                let (final_name, action) =
+                    name_for(&rows, name, &handle, if copied { "" } else { sid });
                 names.push(json!({ "name": name, "as": final_name, "action": action }));
             }
         }

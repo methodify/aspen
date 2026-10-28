@@ -135,12 +135,7 @@ export function HotkeysProvider({ children }: { children: ReactNode }) {
         for (const d of defs) {
           if (!d.handler) continue;
           if (editable && !d.inInputs) continue;
-          const hit = d.match
-            ? d.match(e)
-            : e.key.toLowerCase() === d.key.toLowerCase() &&
-              !e.ctrlKey &&
-              !e.metaKey &&
-              !e.altKey;
+          const hit = d.match ? d.match(e) : chordMatches(d.key, e);
           if (!hit) continue;
           if (d.when && !d.when()) continue;
           e.preventDefault();
@@ -244,3 +239,22 @@ export function GlobalHotkeys() {
   ]);
   return null;
 }
+
+const CODES: Record<string, string> = { "[": "BracketLeft", "]": "BracketRight", ".": "Period", ",": "Comma", "/": "Slash", ";": "Semicolon", "-": "Minus", "=": "Equal" };
+
+/** Does a key event match `key` — a plain key ("i") or a chord
+ *  ("alt+1", "alt+shift+[", "alt+ArrowLeft")? A chord compares the
+ *  physical key (`e.code`): with alt held a Mac types "¡" for 1, and with
+ *  shift "[" arrives as "{". Before this, chords never matched (the
+ *  matcher refused any alt), so the board's alt keys did nothing. */
+export function chordMatches(key: string, e: Pick<KeyboardEvent, "key" | "code" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">): boolean {
+  const parts = key.length > 1 && key.includes("+") ? key.split("+") : [key];
+  const k = parts[parts.length - 1]!;
+  const mods = new Set(parts.slice(0, -1).map((m) => m.toLowerCase()));
+  if (mods.size === 0) return e.key.toLowerCase() === k.toLowerCase() && !e.ctrlKey && !e.metaKey && !e.altKey;
+  if (e.altKey !== mods.has("alt") || e.ctrlKey !== mods.has("ctrl") || e.metaKey !== mods.has("meta") || e.shiftKey !== mods.has("shift")) return false;
+  if (e.key.toLowerCase() === k.toLowerCase()) return true;
+  const code = /^[0-9]$/.test(k) ? `Digit${k}` : /^[a-z]$/i.test(k) ? `Key${k.toUpperCase()}` : CODES[k] ?? k;
+  return e.code === code;
+}
+
