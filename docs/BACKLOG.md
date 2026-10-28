@@ -39,7 +39,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
-## Shipped — 2026-10-27: repos move around the mesh; tabs reorder (v0.52.0, queued)
+## Shipped — 2026-10-27: repos move around the mesh; tabs reorder (v0.52.0)
 
 Proposal U (PROPOSALS-2026-10-U.md), the operator's calls in its §5.
 - **U-1 Path picker.** `browse…` beside every path on a node (import's bundle and *into*, export's *write to*, *add repository*): the node's folders, names only (`fs_list`, control: a full-policy peer or the node's own console), starting from home, exports, imports, repos and the filesystem roots.
