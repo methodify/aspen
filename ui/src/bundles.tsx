@@ -64,12 +64,15 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
   useEffect(() => {
     api
       .meshRepos()
-      .then((r) => setMeshNodes(r.nodes.map((n) => ({ node: n.node, self: n.self, reachable: n.self || n.reachable }))))
+      // A console's identity is a peer, not a node: nothing goes there.
+      .then((r) => setMeshNodes(r.nodes.filter((n) => !n.node.startsWith("console-")).map((n) => ({ node: n.node, self: n.self, reachable: n.self || n.reachable }))))
       .catch(() => {});
   }, []);
   const source = node ?? meshNodes.find((n) => n.self)?.node ?? "";
-  const targets = meshNodes.filter((n) => n.node !== source);
-  const inMesh = meshNodes.length > 1;
+  // The source itself is a target too: a session into another repo on the
+  // same node (v0.52.1), exported and imported there without a pull.
+  const targets = [...meshNodes.filter((n) => n.node === source), ...meshNodes.filter((n) => n.node !== source)];
+  const inMesh = meshNodes.length > 0;
   // A running transfer is polled until it settles.
   const pollRef = useRef<number | null>(null);
   useEffect(() => {
@@ -120,7 +123,8 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
         if (!tTarget.trim()) throw new Error(`say where the repo goes on ${tNode}`);
         const target = meshNodes.find((n) => n.node === tNode);
         const to = target?.self ? undefined : tNode;
-        const { id } = await api.transferStart({ ...choices, to, from: source, import: { target: tTarget.trim(), mode: tMode, repo_files: "none", names: tNames } });
+        const same = tNode === source;
+        const { id } = await api.transferStart({ ...choices, to, from: same ? "" : source, import: { target: tTarget.trim(), mode: tMode, repo_files: "none", names: tNames } });
         setJobNode(to ?? null);
         setJob({ id, from: source, repo: path, step: "exporting", bytes: 0, total: 0, plan: null, report: null, error: null });
         return;
@@ -215,7 +219,7 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
             <div className="bundle-row">
               <span className="bundle-k">to</span>
               <label className={`bundle-choice${dest === "file" ? " on" : ""}`}><input type="radio" checked={dest === "file"} onChange={() => setDest("file")} /> a file on {source || "this node"}</label>
-              <label className={`bundle-choice${dest === "transfer" ? " on" : ""}`} title="export here, pull it there, show the import plan, install on your confirm"><input type="radio" checked={dest === "transfer"} onChange={() => setDest("transfer")} /> another node (transfer)</label>
+              <label className={`bundle-choice${dest === "transfer" ? " on" : ""}`} title="export, bring it to the node you choose (this one too: another repo here), show the import plan, install on your confirm"><input type="radio" checked={dest === "transfer"} onChange={() => setDest("transfer")} /> a repo, here or on another node (transfer)</label>
             </div>
           )}
           {dest === "file" && (
@@ -232,7 +236,7 @@ export function ExportPanel({ path, node, onClose }: { path: string; node?: stri
                 <select value={tNode} onChange={(e) => setTNode(e.target.value)} style={{ width: "auto" }}>
                   <option value="">choose…</option>
                   {targets.map((n) => (
-                    <option key={n.node} value={n.node} disabled={!n.reachable}>{n.node}{n.self ? " · this node" : ""}{n.reachable ? "" : " · not reachable now"}</option>
+                    <option key={n.node} value={n.node} disabled={!n.reachable}>{n.node}{n.node === source ? " · same node (another repo here)" : n.self ? " · this node" : ""}{n.reachable ? "" : " · not reachable now"}</option>
                   ))}
                 </select>
               </div>

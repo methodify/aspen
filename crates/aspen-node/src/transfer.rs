@@ -266,6 +266,8 @@ struct Job {
     total: u64,
     /// the source's file in its exports folder, once written
     source_file: Option<String>,
+    /// source and target are this node: no pull (v0.52.1)
+    local: bool,
     /// the pulled file in this node's imports folder
     file: Option<String>,
     plan: Option<Value>,
@@ -294,8 +296,10 @@ fn now() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Start a transfer here. `body`: `from` (the source node), `path` (the
-/// repo there) and the export choices as export takes them; `import`:
+/// Start a transfer here. `body`: `from` (the source node; empty or this
+/// node's own name for a transfer within this node, say a session moved
+/// to another repo here), `path` (the repo there) and the export choices
+/// as export takes them; `import`:
 /// `{target, mode, repo_files, names}` for the import here (the export's
 /// `passphrase`, if it seals, opens it here too).
 fn start(inner: Arc<NodeInner>, body: Value) -> Result<Value> {
@@ -309,8 +313,8 @@ fn start(inner: Arc<NodeInner>, body: Value) -> Result<Value> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
-    if from.is_empty() || repo.is_empty() {
-        bail!("a transfer needs the source node and the repo's path there");
+    if repo.is_empty() {
+        bail!("a transfer needs the repo's path on the source");
     }
     // The import here, apart from the export there (both say `names`).
     let imp = body.get("import").cloned().unwrap_or(Value::Null);
@@ -323,11 +327,10 @@ fn start(inner: Arc<NodeInner>, body: Value) -> Result<Value> {
     {
         bail!("say where the repo goes on this node");
     }
-    let mesh = inner
-        .mesh()
-        .ok_or_else(|| anyhow!("this node is not in a mesh"))?;
-    if from == mesh.identity.node {
-        bail!("the source is this node: use import");
+    let self_name = inner.mesh().map(|m| m.identity.node.clone());
+    let local = from.is_empty() || self_name.as_deref() == Some(from.as_str());
+    if !local && self_name.is_none() {
+        bail!("this node is not in a mesh");
     }
     // Old jobs go after a day.
     jobs()
@@ -350,13 +353,19 @@ fn start(inner: Arc<NodeInner>, body: Value) -> Result<Value> {
             repo: repo.clone(),
             step: "exporting".into(),
             started_at: now(),
+            local,
             import,
             ..Default::default()
         },
     );
     let id2 = id.clone();
     tokio::spawn(async move {
-        if let Err(e) = run(&inner, &id2, &from, body).await {
+        let r = if local {
+            run_local(&inner, &id2, body).await
+        } else {
+            run(&inner, &id2, &from, body).await
+        };
+        if let Err(e) = r {
             set(&id2, |j| {
                 j.step = "failed".into();
                 j.error = Some(format!("{e:#}"));
@@ -470,6 +479,57 @@ async fn run(inner: &Arc<NodeInner>, id: &str, from: &str, body: Value) -> Resul
     Ok(())
 }
 
+/// A transfer within this node: export into its exports folder, plan the
+/// import straight from there. Nothing crosses the mesh; the plan and the
+/// confirm are the same.
+async fn run_local(inner: &Arc<NodeInner>, id: &str, body: Value) -> Result<()> {
+    let data_dir = inner
+        .data_dir
+        .clone()
+        .ok_or_else(|| anyhow!("node has no data dir"))?;
+    let mut export = body.clone();
+    for k in ["from", "to", "node", "import", "out"] {
+        export.as_object_mut().map(|o| o.remove(k));
+    }
+    let inner2 = inner.clone();
+    let done =
+        tokio::task::spawn_blocking(move || crate::repobundle::verb_export(&inner2, &export))
+            .await
+            .map_err(|e| anyhow!("{e}"))??;
+    let file = done
+        .get("file")
+        .and_then(|f| f.as_str())
+        .ok_or_else(|| anyhow!("the bundle was written outside the exports folder"))?
+        .to_owned();
+    let path = exports_dir(&data_dir).join(&file);
+    let total = done.get("bytes").and_then(|b| b.as_u64()).unwrap_or(0);
+    set(id, |j| {
+        j.step = "planning".into();
+        j.source_file = Some(file.clone());
+        j.file = Some(path.to_string_lossy().into_owned());
+        j.bytes = total;
+        j.total = total;
+    });
+    let mut req = jobs()
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|j| j.import.clone())
+        .unwrap_or_default();
+    req["file"] = json!(path.to_string_lossy());
+    let inner2 = inner.clone();
+    let plan = tokio::task::spawn_blocking(move || {
+        crate::repobundle::verb_import_preflight(&inner2, &req)
+    })
+    .await
+    .map_err(|e| anyhow!("{e}"))??;
+    set(id, |j| {
+        j.step = "ready".into();
+        j.plan = Some(plan);
+    });
+    Ok(())
+}
+
 fn get(id: &str) -> Result<Value> {
     let j = jobs()
         .lock()
@@ -517,8 +577,15 @@ async fn install(inner: &Arc<NodeInner>, id: &str) -> Result<Value> {
             Err(e) => bail!("{e}"),
         };
     // The source's copy goes (the operator's call); this node keeps its
-    // pulled copy in imports, like an upload.
-    if let (Some(mesh), Some(file)) = (inner.mesh(), j.source_file.as_deref()) {
+    // pulled copy in imports, like an upload. Within this node, the export
+    // is the only copy, and it goes.
+    if let (true, Some(file), Some(dir)) =
+        (j.local, j.source_file.as_deref(), inner.data_dir.as_deref())
+    {
+        if let Ok(p) = export_path(dir, file) {
+            let _ = std::fs::remove_file(p);
+        }
+    } else if let (Some(mesh), Some(file)) = (inner.mesh(), j.source_file.as_deref()) {
         let _ = mesh
             .api_call(
                 &j.from,

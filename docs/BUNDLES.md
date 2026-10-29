@@ -172,6 +172,12 @@ moves too, in 1 MB pieces, so none of it depends on a direct connection:
   deleted. Nothing is installed without that confirm; a failed step
   leaves the source untouched. `transfer_start` and `transfer_install`
   are trust, like import.
+- **Within one node** (v0.52.1): the source node is a target too, listed
+  as *same node (another repo here)*, say to move a session into another
+  repo as a top-up. `from` is empty (or the node's own name): the node
+  exports into its exports folder and plans the import straight from
+  there, with no pull and no mesh needed; install deletes the export.
+  Console identities (`console-…`) are no longer offered as targets.
 
 ## 6. Verified (rig, 2026-09-28)
 

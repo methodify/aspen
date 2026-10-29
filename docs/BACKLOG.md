@@ -39,6 +39,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-10-29: transfer within one node (v0.52.1, queued)
+
+- Moving a session into another repo on the same node was one step away: a transfer could not target its own source node (and the list offered console identities, which are not nodes). The source is now a target, *same node (another repo here)*: the node exports and plans the import from its own exports folder (`run_local` in transfer.rs: no pull, no mesh needed), the plan and confirm as for any transfer, the export deleted after install. Verified on a single node outside any mesh: one session from `proj` topped up into `other`, the plan, the install, the export gone; the panel lists the node as the same-node target.
+
 ## Shipped — 2026-10-27: repos move around the mesh; tabs reorder (v0.52.0)
 
 Proposal U (PROPOSALS-2026-10-U.md), the operator's calls in its §5.
