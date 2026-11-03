@@ -43,3 +43,6 @@
   .wf-agent-detail { padding-left: 12px; }
   .wf-kv { grid-template-columns: 1fr; gap: 2px; }
 }
+/* An agent's task, one line under its row (the full text on open). */
+.wf-agent-task { padding: 0 12px 6px 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.wf-agent-task:hover { color: var(--text-mid); }

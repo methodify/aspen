@@ -39,6 +39,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-11-03: a running workflow keeps its later phases; each agent shows its task (v0.52.1, queued)
+
+- A workflow opened while running showed every phase at first (the live progress frame), then, once the node read it from the journal, only the phases that had started: the journal knows nothing of the rest. The node now reads the phases the script declares (`script_phases` in activity.rs: `export const meta = { phases: [{ title, detail }] }`, a pure literal by the workflow contract) and lays them out in the script's order with their details, whatever the source (live, state or journal). Checked against the 20 workflow scripts on this machine: every meta read, titles and details, nothing outside `meta` taken.
+- Each agent's task (its first message, the prompt the workflow gave it) now comes from its transcript when there is no live progress, and the phase view shows it on one line under the agent's row (all of it, with the report, on open); a phase not started says so. Verified on a temp node with a journal-only run: three phases with details, the started agent's task under its row, *not started yet* on the others.
+
 ## Shipped — 2026-10-29: transfer within one node (v0.52.1, queued)
 
 - Moving a session into another repo on the same node was one step away: a transfer could not target its own source node (and the list offered console identities, which are not nodes). The source is now a target, *same node (another repo here)*: the node exports and plans the import from its own exports folder (`run_local` in transfer.rs: no pull, no mesh needed), the plan and confirm as for any transfer, the export deleted after install. Verified on a single node outside any mesh: one session from `proj` topped up into `other`, the plan, the install, the export gone; the panel lists the node as the same-node target.

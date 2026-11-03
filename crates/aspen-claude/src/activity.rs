@@ -669,10 +669,23 @@ fn agent_file_summary(path: &Path) -> Option<Value> {
     let mut last_tool: Option<String> = None;
     let mut last_summary: Option<String> = None;
     let mut ctx: Option<u64> = None;
+    // The agent's task: its first user message (the prompt the workflow
+    // gave it), for the phase view when there is no live progress.
+    let mut prompt: Option<String> = None;
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if prompt.is_none() && v.get("type").and_then(|t| t.as_str()) == Some("user") {
+            let c = v.get("message").and_then(|m| m.get("content"));
+            prompt = match c {
+                Some(Value::String(t)) => Some(t.clone()),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .find_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_owned)),
+                _ => None,
+            };
+        }
         if first.is_none() {
             first = v
                 .get("timestamp")
@@ -724,6 +737,7 @@ fn agent_file_summary(path: &Path) -> Option<Value> {
         "last_tool_summary": last_summary,
         "tokens": ctx,
         "last_progress_at": (mtime * 1000.0) as u64,
+        "prompt_preview": prompt.map(|p| snippet(&p, 1200)),
     });
     let mut c = cache.lock().unwrap();
     if c.len() > 512 {
@@ -788,6 +802,18 @@ pub fn workflow_detail(
             }
         }
     }
+    let script_path = st.get("scriptPath").cloned().or_else(|| {
+        std::fs::read_dir(workflows_dir(project_path, session_id).join("scripts"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains(run_id))
+            })
+            .map(|p| Value::String(p.to_string_lossy().into_owned()))
+    });
     let has_file = |id: &str| agents_dir.join(format!("agent-{id}.jsonl")).is_file();
     let mut agents: Vec<Value> = Vec::new();
     for p in prog
@@ -892,6 +918,34 @@ pub fn workflow_detail(
             }
         }
     }
+    // Every phase the script declares, in its order, with its detail: the
+    // journal knows only phases that have started, so a running workflow's
+    // later phases vanished once the live frame was gone.
+    if let Some(sp) = script_path.as_ref().and_then(|p| p.as_str()) {
+        let declared = std::fs::read_to_string(sp)
+            .map(|t| script_phases(&t))
+            .unwrap_or_default();
+        if !declared.is_empty() {
+            let mut out: Vec<Value> = Vec::new();
+            for (i, (title, detail)) in declared.iter().enumerate() {
+                let pos = phases
+                    .iter()
+                    .position(|p| p.get("title").and_then(|t| t.as_str()) == Some(title.as_str()));
+                let mut ph = match pos {
+                    Some(k) => phases.remove(k),
+                    None => {
+                        serde_json::json!({ "index": i + 1, "title": title, "detail": null, "agents": [] })
+                    }
+                };
+                if ph.get("detail").is_none_or(|d| d.is_null()) {
+                    ph["detail"] = detail.clone().map(Value::String).unwrap_or(Value::Null);
+                }
+                out.push(ph);
+            }
+            out.append(&mut phases);
+            phases = out;
+        }
+    }
     // Agents into their phases (by index, else by title; else the first).
     for a in agents {
         let idx = a.get("phase_index").and_then(|i| i.as_u64());
@@ -917,18 +971,6 @@ pub fn workflow_detail(
             arr.push(a);
         }
     }
-    let script_path = st.get("scriptPath").cloned().or_else(|| {
-        std::fs::read_dir(workflows_dir(project_path, session_id).join("scripts"))
-            .ok()?
-            .flatten()
-            .map(|e| e.path())
-            .find(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.contains(run_id))
-            })
-            .map(|p| Value::String(p.to_string_lossy().into_owned()))
-    });
     let results = st
         .get("result")
         .and_then(|r| r.as_array())
@@ -953,6 +995,123 @@ pub fn workflow_detail(
         "script_path": script_path,
         "source": if progress.is_some() { "live" } else if state.is_some() { "state" } else { "journal" },
     }))
+}
+
+/// The phases a workflow script declares in `export const meta = { …,
+/// phases: [{ title, detail? }, …] }`: titles and details, in order. The
+/// meta is a pure literal by the workflow contract; anything unreadable
+/// yields nothing.
+pub fn script_phases(script: &str) -> Vec<(String, Option<String>)> {
+    let Some(m) = script.find("export const meta") else {
+        return Vec::new();
+    };
+    let rest = &script[m..];
+    let Some(k) = rest.find("phases") else {
+        return Vec::new();
+    };
+    let Some(open) = rest[k..].find('[') else {
+        return Vec::new();
+    };
+    // The array's text, brackets matched outside strings.
+    let body = &rest[k + open..];
+    let (mut depth, mut end, mut quote) = (0i32, None, None::<char>);
+    let mut prev = ' ';
+    for (i, c) in body.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q && prev != '\\' {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' | '`' => quote = Some(c),
+                '[' | '{' => depth += 1,
+                ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            },
+        }
+        prev = c;
+    }
+    let Some(end) = end else {
+        return Vec::new();
+    };
+    let arr = &body[..end];
+    // `key: 'value'` → value, for one object's text.
+    let field = |obj: &str, key: &str| -> Option<String> {
+        let mut from = 0;
+        while let Some(p) = obj[from..].find(key) {
+            let at = from + p;
+            let before = obj[..at].chars().last().unwrap_or(' ');
+            let after = obj[at + key.len()..].trim_start();
+            if !(before.is_alphanumeric() || before == '_') && after.starts_with(':') {
+                let v = after[1..].trim_start();
+                let q = v.chars().next()?;
+                if matches!(q, '\'' | '"' | '`') {
+                    let mut out = String::new();
+                    let mut esc = false;
+                    for c in v[1..].chars() {
+                        if esc {
+                            out.push(c);
+                            esc = false;
+                        } else if c == '\\' {
+                            esc = true;
+                        } else if c == q {
+                            return Some(out);
+                        } else {
+                            out.push(c);
+                        }
+                    }
+                }
+                return None;
+            }
+            from = at + key.len();
+        }
+        None
+    };
+    // Split into top-level objects.
+    let mut out = Vec::new();
+    let (mut depth, mut start, mut quote) = (0i32, None, None::<char>);
+    let mut prev = ' ';
+    for (i, c) in arr.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q && prev != '\\' {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' | '`' => quote = Some(c),
+                '{' => {
+                    depth += 1;
+                    if depth == 2 {
+                        start = Some(i);
+                    }
+                }
+                '}' => {
+                    if depth == 2 {
+                        if let Some(s0) = start.take() {
+                            let obj = &arr[s0..=i];
+                            if let Some(t) = field(obj, "title") {
+                                out.push((t, field(obj, "detail")));
+                            }
+                        }
+                    }
+                    depth -= 1;
+                }
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            },
+        }
+        prev = c;
+    }
+    out
 }
 
 struct Cached {
@@ -1161,5 +1320,28 @@ mod iso_tests {
             super::parse_iso("2026-09-07T00:00:00.000Z"),
             Some(1788739200.0)
         );
+    }
+
+    #[test]
+    fn a_scripts_declared_phases_are_read_in_order() {
+        let script = r#"export const meta = {
+  name: 'attachments-a1-a4',
+  description: "Attachments {A1-A4}",
+  phases: [
+    { title: 'Technical design', detail: 'the spec, one agent' },
+    { title: "Core", detail: "server and documents [Typst/ICS]" },
+    { title: `Extend` },
+    { title: 'Verify', detail: 'it\'s checked' },
+  ],
+}
+const x = { phases: [{ title: 'not meta' }] }
+"#;
+        let p = super::script_phases(script);
+        let titles: Vec<&str> = p.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(titles, ["Technical design", "Core", "Extend", "Verify"]);
+        assert_eq!(p[1].1.as_deref(), Some("server and documents [Typst/ICS]"));
+        assert_eq!(p[2].1, None);
+        assert_eq!(p[3].1.as_deref(), Some("it's checked"));
+        assert!(super::script_phases("const meta = {}").is_empty());
     }
 }

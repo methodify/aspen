@@ -148,7 +148,7 @@ export default function Workflow() {
           </div>
           {shown?.detail && <div className="mono-meta wf-phase-detail">{shown.detail}</div>}
           <div className="wf-agents">
-            {(shown?.agents ?? []).length === 0 && <div className="empty">no agents in this phase yet</div>}
+            {(shown?.agents ?? []).length === 0 && <div className="empty">{!wf.status || wf.status === "running" ? "not started yet: its agents appear when it runs" : "no agents in this phase"}</div>}
             {(shown?.agents ?? []).map((a) => {
               const isOpen = open === a.agent_id;
               const report = reportOf(a);
@@ -171,6 +171,11 @@ export default function Workflow() {
                     <span className="mono-meta wf-col wf-tools">{a.tool_calls != null ? `${a.tool_calls} tools` : ""}</span>
                     <span className="mono-meta wf-last" title={a.last_tool_summary ?? undefined}>{a.last_tool ? `${a.last_tool}${a.last_tool_summary ? ` · ${a.last_tool_summary}` : ""}` : ""}</span>
                   </div>
+                  {!isOpen && a.prompt_preview && (
+                    <div className="wf-agent-task mono-meta" onClick={() => setOpen(a.agent_id)} title="its task (click for all of it, and the report)">
+                      {a.prompt_preview.replace(/\s+/g, " ").slice(0, 240)}
+                    </div>
+                  )}
                   {isOpen && (
                     <div className="wf-agent-detail">
                       {a.retry_reason && <div className="mono-meta">retried: {a.retry_reason}</div>}
