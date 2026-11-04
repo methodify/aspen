@@ -106,10 +106,39 @@ const presenceColor: Record<Presence, string> = {
 };
 
 const presenceState: Record<Presence, string> = {
-  busy: "busy · streaming",
-  idle: "idle",
-  off: "offline",
+  busy: "running · busy",
+  idle: "running · idle",
+  off: "stopped",
 };
+
+/** The session meter, in the map's SVG: four bars that dance while busy,
+ *  stand while running idle, and lie flat when stopped — the rail's, the
+ *  board's and the tabs' glyph, so a state reads the same everywhere.
+ *  `x` is the left edge, `cy` the vertical centre. */
+function MapMeter({ x, cy, presence }: { x: number; cy: number; presence: Presence }) {
+  const h = 10;
+  const base = cy + h / 2;
+  if (presence === "off") {
+    return <rect x={x} y={cy - 0.75} width={12.5} height={1.5} fill="var(--offline)" />;
+  }
+  const color = presence === "busy" ? "var(--live)" : "var(--idle)";
+  return (
+    <g>
+      {[0, 1, 2, 3].map((i) => (
+        <rect
+          key={i}
+          className={`mm-bar${presence === "busy" ? " busy" : ""}`}
+          x={x + i * 3.5}
+          y={base - h}
+          width={2}
+          height={h}
+          fill={color}
+          style={presence === "busy" ? { animationDelay: `${[0, 0.1, 0.05, 0.16][i]}s` } : undefined}
+        />
+      ))}
+    </g>
+  );
+}
 
 
 /** Group sessions by node, preserving first-seen order. */
@@ -814,16 +843,18 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                       m.s.pending > 0 ? ` · ${m.s.pending} pending` : ""
                     }`}</title>
 
-                    {/* the pill: a presence dot and the name, the rail's row in miniature */}
+                    {/* the pill: the session meter and the name, the rail's row in
+                        miniature. A stopped agent recedes (dashed, faded), so the
+                        running part of the mesh reads at a glance. */}
                     {(() => {
                       const label = `@${name.split("@")[0]}${m.s.remote ? "*" : ""}`;
-                      const w = Math.max(44, 24 + label.length * 6.6);
+                      const w = Math.max(50, 32 + label.length * 6.6);
                       const h = 20;
                       const x0 = m.x - w / 2;
                       const y0 = m.y - h / 2;
-                      const dotX = x0 + 11;
+                      const off = m.presence === "off";
                       return (
-                        <>
+                        <g opacity={off && !selected.includes(agentEndpoint(m.s)) ? 0.62 : 1}>
                           {m.presence === "busy" && (
                             <rect className="mm-pulse" x={x0 - 3} y={y0 - 3} width={w + 6} height={h + 6} fill="none" stroke={color} strokeWidth={1.5} />
                           )}
@@ -835,13 +866,13 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                           )}
                           <path
                             d={`M ${x0 + 5} ${y0} H ${x0 + w} V ${y0 + h} H ${x0} V ${y0 + 5} Z`}
-                            fill="var(--bg-panel)"
-                            stroke={selected.includes(agentEndpoint(m.s)) ? "var(--sig-notice)" : m.presence === "busy" ? color : "var(--line-hi)"}
+                            fill={off ? "var(--bg-base)" : "var(--bg-panel)"}
+                            stroke={selected.includes(agentEndpoint(m.s)) ? "var(--sig-notice)" : m.presence === "busy" ? color : off ? "var(--line-hi)" : "var(--idle)"}
+                            strokeDasharray={off ? "3 2" : undefined}
                             strokeWidth={1}
                           />
-                          <circle cx={dotX} cy={m.y} r={3.5} fill={color} />
-                          {m.presence === "busy" && <circle cx={dotX} cy={m.y} r={6} fill={color} opacity={0.22} />}
-                          <text x={x0 + 20} y={m.y + 3.5} fill="var(--text-hi)" style={{ font: "500 10.5px/1 var(--font-mono)" }}>
+                          <MapMeter x={x0 + 8} cy={m.y} presence={m.presence} />
+                          <text x={x0 + 26} y={m.y + 3.5} fill={off ? "var(--text-dim)" : "var(--text-hi)"} style={{ font: "500 10.5px/1 var(--font-mono)" }}>
                             {label}
                           </text>
                           {m.s.pending > 0 && (
@@ -852,7 +883,7 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                               </text>
                             </>
                           )}
-                        </>
+                        </g>
                       );
                     })()}
                   </g>
@@ -923,9 +954,9 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
                 pointerEvents: "none",
               }}
             >
-              <LegendDot color="var(--live)" label="busy" />
-              <LegendDot color="var(--idle)" label="idle" />
-              <LegendDot color="var(--offline)" label="offline" />
+              <LegendMeter presence="busy" label="busy" />
+              <LegendMeter presence="idle" label="running · idle" />
+              <LegendMeter presence="off" label="stopped" />
               <span className="micro" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <svg width={22} height={8} aria-hidden>
                   <path d="M 0 4 Q 11 -4 22 4" fill="none" stroke="var(--sig-notice)" strokeWidth={1.5} />
@@ -989,16 +1020,19 @@ export default function MeshMap({ toggle }: { toggle?: ReactNode }) {
   );
 }
 
-function LegendDot({ color, label }: { color: string; label: string }) {
+function LegendMeter({ presence, label }: { presence: Presence; label: string }) {
+  const off = presence === "off";
   return (
     <span className="micro" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <svg width={12} height={12} aria-hidden>
+      <svg width={30} height={16} aria-hidden style={{ opacity: off ? 0.62 : 1 }}>
         <path
-          d="M 3 0 L 12 0 L 12 12 L 0 12 L 0 3 Z"
-          fill={color}
-          stroke="var(--line-hi)"
+          d="M 4 1 H 29 V 15 H 1 V 4 Z"
+          fill={off ? "var(--bg-base)" : "var(--bg-panel)"}
+          stroke={presence === "busy" ? "var(--live)" : off ? "var(--line-hi)" : "var(--idle)"}
+          strokeDasharray={off ? "3 2" : undefined}
           strokeWidth={1}
         />
+        <MapMeter x={8} cy={8} presence={presence} />
       </svg>
       <span style={{ color: "var(--text-dim)" }}>{label}</span>
     </span>
@@ -1017,7 +1051,16 @@ const MAP_CSS = `
   100% { opacity: 0;    transform: scale(1.9); }
 }
 .mm-marker:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* The meter's bars rise from the baseline, as the rail's do. */
+.mm-bar { transform-box: fill-box; transform-origin: bottom; }
+.mm-bar.busy { animation: mm-vu 0.42s steps(3) infinite; }
+@keyframes mm-vu {
+  0%   { transform: scaleY(0.25); }
+  50%  { transform: scaleY(1); }
+  100% { transform: scaleY(0.5); }
+}
 @media (prefers-reduced-motion: reduce) {
   .mm-pulse { animation: none !important; display: none; }
+  .mm-bar.busy { animation: none !important; }
 }
 `;

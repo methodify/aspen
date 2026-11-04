@@ -39,6 +39,10 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Shipped — 2026-11-04: the map shows who is running (next release, queued)
+
+- On the Mesh map a running agent looked like a stopped one: state was a 3.5 px dot, and the idle grey and the offline grey were too close to tell apart; only busy (a pulse) and prompts stood out. Each pill now carries the session meter the rail, boards and tabs use (bars dancing while busy, standing while running idle, flat when stopped), so state reads by shape, not colour alone, and a stopped agent recedes: dashed outline, darker fill, dimmed name, faded. The hover and legend say *running · busy*, *running · idle*, *stopped* (offline is a node's word). Reduced motion stills the bars. Verified on a temp node with a running and a stopped agent, both themes.
+
 ## Shipped — 2026-11-03: a running workflow keeps its later phases; each agent shows its task (v0.52.1)
 
 - A workflow opened while running showed every phase at first (the live progress frame), then, once the node read it from the journal, only the phases that had started: the journal knows nothing of the rest. The node now reads the phases the script declares (`script_phases` in activity.rs: `export const meta = { phases: [{ title, detail }] }`, a pure literal by the workflow contract) and lays them out in the script's order with their details, whatever the source (live, state or journal). Checked against the 20 workflow scripts on this machine: every meta read, titles and details, nothing outside `meta` taken.
