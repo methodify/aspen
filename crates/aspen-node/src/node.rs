@@ -218,6 +218,44 @@ pub type HttpGateway = Arc<
 
 /// A streamed `task_progress` frame, summarized for a workflow's row: its
 /// agents by state, tokens and tool uses so far, the phase in progress.
+/// A new `task_progress` frame over the one held: its fields win, and its
+/// `workflow_progress` entries replace the held ones with the same key
+/// (a phase by index, an agent by id) and add the rest, so a frame that
+/// carries a part of the list, or none of it, loses nothing.
+pub fn merge_task_progress(old: &serde_json::Value, new: &serde_json::Value) -> serde_json::Value {
+    let key = |e: &serde_json::Value| -> String {
+        let t = e.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let k = e
+            .get("agentId")
+            .and_then(|a| a.as_str())
+            .map(str::to_owned)
+            .or_else(|| e.get("index").map(|i| i.to_string()))
+            .unwrap_or_default();
+        format!("{t}:{k}")
+    };
+    let mut out = new.clone();
+    let held = old.get("workflow_progress").and_then(|w| w.as_array());
+    let fresh = new.get("workflow_progress").and_then(|w| w.as_array());
+    let list: Vec<serde_json::Value> = match (held, fresh) {
+        (Some(h), None) => h.clone(),
+        (Some(h), Some(f)) => {
+            let mut list = h.clone();
+            for e in f {
+                let k = key(e);
+                match list.iter_mut().find(|x| key(x) == k) {
+                    Some(x) => *x = e.clone(),
+                    None => list.push(e.clone()),
+                }
+            }
+            list
+        }
+        (None, Some(f)) => f.clone(),
+        (None, None) => return out,
+    };
+    out["workflow_progress"] = serde_json::Value::Array(list);
+    out
+}
+
 pub fn workflow_progress_summary(frame: &serde_json::Value) -> serde_json::Value {
     let prog = frame
         .get("workflow_progress")
@@ -4251,7 +4289,14 @@ async fn pump(
             {
                 if let Some(id) = raw.get("task_id").and_then(|t| t.as_str()) {
                     let mut m = sess.task_progress.lock().unwrap();
-                    m.insert(id.to_owned(), raw.clone());
+                    // Merged, not replaced: a frame without the workflow's
+                    // phases and agents (tokens only) used to wipe them, and
+                    // the viewer fell back to the journal and back again.
+                    let merged = match m.get(id) {
+                        Some(old) => merge_task_progress(old, raw),
+                        None => raw.clone(),
+                    };
+                    m.insert(id.to_owned(), merged);
                     // Bounded: the newest 64 tasks are plenty.
                     if m.len() > 64 {
                         let oldest = m
@@ -4341,6 +4386,33 @@ async fn pump(
 
 #[cfg(test)]
 mod title_tests {
+    #[test]
+    fn a_progress_frame_without_the_list_keeps_it() {
+        use serde_json::json;
+        let full = json!({ "task_id": "t", "usage": { "tokens": 1 }, "workflow_progress": [
+            { "type": "workflow_phase", "index": 1, "title": "Build" },
+            { "type": "workflow_phase", "index": 2, "title": "Review" },
+            { "type": "workflow_agent", "agentId": "a1", "state": "running" },
+        ]});
+        // Tokens only: the list stays, the usage is new.
+        let bare = json!({ "task_id": "t", "usage": { "tokens": 9 } });
+        let m = super::merge_task_progress(&full, &bare);
+        assert_eq!(m["usage"]["tokens"], 9);
+        assert_eq!(m["workflow_progress"].as_array().unwrap().len(), 3);
+        // A part of the list: that agent updated, a new one added, the rest kept.
+        let part = json!({ "task_id": "t", "workflow_progress": [
+            { "type": "workflow_agent", "agentId": "a1", "state": "done" },
+            { "type": "workflow_agent", "agentId": "a2", "state": "running" },
+        ]});
+        let m = super::merge_task_progress(&m, &part);
+        let w = m["workflow_progress"].as_array().unwrap();
+        assert_eq!(w.len(), 4);
+        assert_eq!(
+            w.iter().find(|e| e["agentId"] == "a1").unwrap()["state"],
+            "done"
+        );
+    }
+
     fn turn(n: usize, filler: usize) -> Vec<serde_json::Value> {
         vec![
             serde_json::json!({ "role": "user", "uuid": format!("u{n}"), "text": format!("q{n}") }),

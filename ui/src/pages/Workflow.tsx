@@ -3,7 +3,7 @@
  * last tool, the logs, each agent's report, and the script. Live while it
  * runs (the node keeps the harness's streamed progress); from the
  * harness's files once it ended. An agent opens in the subagent view. */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -67,7 +67,9 @@ export default function Workflow() {
   const { name, run } = useParams<{ name: string; run: string }>();
   const [wf, setWf] = useState<WorkflowRun | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [phase, setPhase] = useState<number | null>(null);
+  // The operator's pick, by phase title (an index can mean another phase
+  // when the node answers from another source).
+  const [phase, setPhase] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const running = wf?.status === "running";
@@ -93,13 +95,31 @@ export default function Workflow() {
       window.clearInterval(t);
     };
   }, [name, run]);
+  // One order for the tabs, whatever the node answers from: the order of
+  // the first live (or state) answer, new phases after (v0.52.2). The
+  // journal knows only started phases, in its own order, and the tabs
+  // used to reshuffle when an answer came from it.
+  const order = useRef<string[]>([]);
+  const pkey = (p: { title: string | null; index: number }) => p.title ?? `#${p.index}`;
+  const phases = useMemo(() => {
+    if (!wf) return [];
+    const keys = wf.phases.map(pkey);
+    if (wf.source !== "journal" || order.current.length === 0) {
+      for (const k of keys) if (!order.current.includes(k)) order.current.push(k);
+    }
+    const rank = (k: string) => {
+      const i = order.current.indexOf(k);
+      return i < 0 ? order.current.length + keys.indexOf(k) : i;
+    };
+    return [...wf.phases].sort((a, b) => rank(pkey(a)) - rank(pkey(b)));
+  }, [wf]);
   // Follow the phase in progress until the operator picks one.
   const current = useMemo(() => {
-    if (!wf) return null;
-    const live = wf.phases.find((p) => p.agents.some((a) => a.state === "running"));
-    return (live ?? wf.phases[wf.phases.length - 1])?.index ?? null;
-  }, [wf]);
-  const shown = wf?.phases.find((p) => p.index === (phase ?? current)) ?? wf?.phases[0] ?? null;
+    const live = phases.find((p) => p.agents.some((a) => a.state === "running"));
+    const p = live ?? phases[phases.length - 1];
+    return p ? pkey(p) : null;
+  }, [phases]);
+  const shown = phases.find((p) => pkey(p) === (phase ?? current)) ?? phases[0] ?? null;
   const all = wf?.phases.flatMap((p) => p.agents) ?? [];
   const done = all.filter((a) => a.state === "done" || a.state === "completed").length;
   const failed = all.filter((a) => a.state === "failed" || a.state === "error").length;
@@ -132,12 +152,12 @@ export default function Workflow() {
       {wf && (
         <>
           <div className="wf-phases" role="tablist">
-            {wf.phases.map((p) => {
+            {phases.map((p) => {
               const pd = p.agents.filter((a) => a.state === "done" || a.state === "completed").length;
               const pr = p.agents.filter((a) => a.state === "running").length;
-              const active = p.index === shown?.index;
+              const active = !!shown && pkey(p) === pkey(shown);
               return (
-                <button key={p.index} role="tab" aria-selected={active} className={`wf-phase${active ? " active" : ""}${pr ? " live" : ""}`} onClick={() => setPhase(p.index)} title={p.detail ?? undefined}>
+                <button key={pkey(p)} role="tab" aria-selected={active} className={`wf-phase${active ? " active" : ""}${pr ? " live" : ""}`} onClick={() => setPhase(pkey(p))} title={p.detail ?? undefined}>
                   <span className="wf-phase-title">{p.title ?? `phase ${p.index}`}</span>
                   <span className="mono-meta">{p.agents.length ? `${pd}/${p.agents.length}` : "—"}{pr ? ` · ${pr} running` : ""}</span>
                 </button>
