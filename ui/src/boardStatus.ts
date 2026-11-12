@@ -140,3 +140,23 @@ export function useBoards(): Board[] {
   }, []);
   return boards;
 }
+
+/** A project's life (PROPOSALS-2026-11-A §A-1); absent is active. */
+export function projectStatus(b: Board): "active" | "paused" | "archived" {
+  return b.status === "paused" || b.status === "archived" ? b.status : "active";
+}
+
+/** The rail's projects (A-7): active ones the operator keeps there, in
+ *  their synced order (then by name); and the hidden ones with someone
+ *  waiting on the operator, which are never hidden entirely. */
+export function railProjects(boards: Board[], agents: Agent[], waiting: Set<string>): { shown: Board[]; hiddenWaiting: Board[] } {
+  const active = boards.filter((b) => projectStatus(b) === "active");
+  const order = (b: Board) => b.rail?.order ?? Number.MAX_SAFE_INTEGER;
+  const shown = active
+    .filter((b) => b.rail?.shown !== false)
+    .sort((x, y) => order(x) - order(y) || x.name.localeCompare(y.name));
+  const hiddenWaiting = boards.filter(
+    (b) => (b.rail?.shown === false || projectStatus(b) !== "active") && boardStatus(b, agents, waiting).waiting > 0,
+  );
+  return { shown, hiddenWaiting };
+}

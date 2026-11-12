@@ -52,8 +52,10 @@ the ⋯ button, right-aligned; on a phone it is a bottom sheet. Closes on
 Esc, on a click outside it and outside any panel it opened, and when a
 row acts. Arrow keys walk the rows; the first row takes focus on open.
 
-- **head**: `@name`, harness · model in use.
-- **setup**: model (select), mode (select), render (chat / console /
+- **head**: `@name`, harness · model in use (· effort, when one is set).
+- **setup**: model (select), effort (select, Claude only, v0.53: default · low · medium · high ·
+  xhigh · max; set live by the harness's `/effort`, no model turn, and kept for the next start as
+  `--effort`), mode (select), render (chat / console /
   source), reload plugins & skills, plugins ▸, mcp ▸.
 - **inspect**: charter, recap now (opens the since-you-last-looked bar
   and asks; CATCH_UP_AND_SEARCH.md), reload transcript (v0.34.3: a full

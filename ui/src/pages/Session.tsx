@@ -1177,9 +1177,9 @@ function AddToBoard({ agent, openSignal }: { agent: string; openSignal?: number 
       const pane: BoardNode = { kind: "session", id: `${Date.now().toString(36)}`, agent };
       layout = { kind: "split", id: `${Date.now().toString(36)}s`, dir, sizes: [50, 50], children: [layout, pane] };
     }
-    await api.putBoard({ ...b, layout, updated_at: Date.now() / 1000 }).catch(() => {});
+    await api.patchBoard(b.id, { layout }).catch(() => {});
     setOpen(false);
-    nav(`/board/${b.id}`);
+    nav(`/project/${b.id}`);
   }
   return (
     <span className="artifacts-wrap">
@@ -2583,12 +2583,15 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
     const ids = normalizeModels(runtimeModels(runtime)).map((o) => o.id);
     return ids.length === 0 || ids.includes(defaultResolves);
   }, [runtime, defaultResolves]);
+  // The harness labels its own local replies (`/effort`, `/model`)
+  // `<synthetic>`: not a model, so the readout looks past them.
   const modelInUse = useMemo(() => {
-    const live = agent?.summary?.model;
+    const real = (m: string | null | undefined) => (m && !m.startsWith("<") ? m : null);
+    const live = real(agent?.summary?.model);
     if (live) return live;
     for (let i = transcript.items.length - 1; i >= 0; i--) {
       const it = transcript.items[i]!;
-      if (it.kind === "assistant" && it.model) return it.model;
+      if (it.kind === "assistant" && real(it.model)) return it.model!;
     }
     return null;
   }, [agent?.summary?.model, transcript.items]);
@@ -3079,6 +3082,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
               title={`the model named in the latest reply${agent?.summary?.model ? "" : " (from the transcript on disk)"}${modelValue !== "default" && !modelInUse.startsWith(modelValue) ? " — the selection takes effect on the next turn" : ""}`}
             >
               {modelInUse}
+              {agent?.effort ? <span title="the effort you chose for this agent (⋯ → effort)"> · {agent.effort}</span> : null}
             </span>
           )}
         {busy && exited === null && !subagent && (
@@ -3193,6 +3197,27 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             ))}
           </select>
           </MenuField>
+          {(agent?.harness ?? "claude") === "claude" && (
+            <MenuField label="effort" hint={agent?.live ? "how hard the model thinks: set now (the harness's /effort, no turn) and kept for its next start" : "how hard the model thinks: used from its next start"}>
+              <select
+                className="ctl-select"
+                value={agent?.effort ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value || null;
+                  void api
+                    .setEffort(name, v)
+                    .then(() => refreshAgents())
+                    .catch((err) => setActionError(errText(err)));
+                }}
+                title="effort: the model's default, or a level"
+              >
+                <option value="">default (the model's)</option>
+                {["low", "medium", "high", "xhigh", "max"].map((l) => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+            </MenuField>
+          )}
           <MenuField label="mode" hint="permission mode">
           <select
             className="ctl-select"
@@ -3469,8 +3494,17 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       {liveGate.dialog}
       {subagent && (
         <div className="exited-banner">
+          {searchParams.get("wf") && (
+            // Opened from a workflow (A-11): back to that phase, at this agent.
+            <Link
+              className="btn ghost sm"
+              to={`/session/${encodeURIComponent(name)}/workflow/${encodeURIComponent(searchParams.get("wf")!)}${searchParams.get("phase") ? `?phase=${encodeURIComponent(searchParams.get("phase")!)}` : ""}#agent-${encodeURIComponent(subagent)}`}
+            >
+              ← workflow{searchParams.get("phase") ? ` · ${searchParams.get("phase")}` : ""}
+            </Link>
+          )}
           <span>
-            subagent <span className="mono">{subagent}</span> of <Link to={`/session/${encodeURIComponent(name)}`}>@{name}</Link> — read-only, re-read every 3s while it runs
+            subagent <span className="mono">{subagent}</span> of <Link to={`/session/${encodeURIComponent(name)}`}>@{name}</Link>: read-only, re-read every 3s while it runs
           </span>
         </div>
       )}

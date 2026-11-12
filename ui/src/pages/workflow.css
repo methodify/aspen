@@ -46,3 +46,7 @@
 /* An agent's task, one line under its row (the full text on open). */
 .wf-agent-task { padding: 0 12px 6px 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .wf-agent-task:hover { color: var(--text-mid); }
+/* A big phase's filter (A-11). */
+.wf-filter { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+.wf-filter .seg button { padding: 3px 9px; }
+.wf-filter-text { flex: 1; min-width: 180px; max-width: 360px; }

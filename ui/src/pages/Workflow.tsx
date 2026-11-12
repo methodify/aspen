@@ -4,7 +4,7 @@
  * runs (the node keeps the harness's streamed progress); from the
  * harness's files once it ended. An agent opens in the subagent view. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type WorkflowAgent, type WorkflowRun } from "../api";
@@ -45,6 +45,12 @@ function agentElapsed(a: WorkflowAgent, now: number): string {
   return ms(a.duration_ms);
 }
 
+function stateIs(s: string | null, k: "running" | "failed" | "done"): boolean {
+  if (k === "running") return s === "running";
+  if (k === "failed") return s === "failed" || s === "error";
+  return s === "done" || s === "completed";
+}
+
 function stateClass(s: string | null): string {
   switch (s) {
     case "running":
@@ -68,8 +74,23 @@ export default function Workflow() {
   const [wf, setWf] = useState<WorkflowRun | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // The operator's pick, by phase title (an index can mean another phase
-  // when the node answers from another source).
-  const [phase, setPhase] = useState<string | null>(null);
+  // when the node answers from another source), in the URL (A-11): a
+  // reload, a link or the way back from an agent lands on it.
+  const [params, setParams] = useSearchParams();
+  const phase = params.get("phase");
+  const setPhase = (k: string) =>
+    setParams(
+      (p) => {
+        const n = new URLSearchParams(p);
+        n.set("phase", k);
+        return n;
+      },
+      { replace: true },
+    );
+  // A big phase's filter: by state, and by text in the label or task.
+  const [stateFilter, setStateFilter] = useState<"all" | "running" | "failed" | "done">("all");
+  const [textFilter, setTextFilter] = useState("");
+  const location = useLocation();
   const [open, setOpen] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const running = wf?.status === "running";
@@ -127,7 +148,20 @@ export default function Workflow() {
   const tools = wf?.total_tool_calls ?? wf?.live?.tool_uses ?? (all.some((a) => a.tool_calls) ? all.reduce((n, a) => n + (a.tool_calls ?? 0), 0) : null);
   const started = epochMs(wf?.started_at ?? null);
   const elapsed = wf?.duration_ms ?? (started ? (running ? now : epochMs(wf?.ended_at ?? null) ?? now) - started : null);
-  const agentHref = (id: string) => `/session/${encodeURIComponent(name!)}/agent/${encodeURIComponent(id)}`;
+  // The agent's page knows its way back: this run, this phase, this row.
+  const agentHref = (id: string) =>
+    `/session/${encodeURIComponent(name!)}/agent/${encodeURIComponent(id)}?wf=${encodeURIComponent(run ?? "")}${shown ? `&phase=${encodeURIComponent(pkey(shown))}` : ""}`;
+  // Back from an agent (#agent-<id>): that row, in view and open, once.
+  const scrolled = useRef<string | null>(null);
+  useEffect(() => {
+    const h = location.hash.startsWith("#agent-") ? decodeURIComponent(location.hash.slice(7)) : null;
+    if (!h || scrolled.current === h || !shown) return;
+    const el = document.getElementById(`agent-${h}`);
+    if (!el) return;
+    scrolled.current = h;
+    setOpen(h);
+    el.scrollIntoView({ block: "center" });
+  }, [location.hash, shown]);
   const reportOf = (a: WorkflowAgent) => {
     const key = (a.label ?? "").replace(/^[^:]*:/, "").replace(/\s*\(retry \d+\)$/, "");
     return wf?.results.find((r) => r.key === key || r.key === a.agent_id)?.report ?? a.result_preview ?? null;
@@ -167,13 +201,31 @@ export default function Workflow() {
             <span className="mono-meta">{done}/{all.length} done{failed ? ` · ${failed} failed` : ""}</span>
           </div>
           {shown?.detail && <div className="mono-meta wf-phase-detail">{shown.detail}</div>}
+          {(shown?.agents.length ?? 0) > 8 && (
+            <div className="wf-filter">
+              <span className="seg" role="group" aria-label="show agents">
+                {(["all", "running", "failed", "done"] as const).map((k) => {
+                  const n = k === "all" ? shown!.agents.length : shown!.agents.filter((a) => stateIs(a.state, k)).length;
+                  return (
+                    <button key={k} type="button" aria-pressed={stateFilter === k} className={stateFilter === k ? "on" : ""} onClick={() => setStateFilter(k)} disabled={k !== "all" && n === 0}>
+                      {k} · {n}
+                    </button>
+                  );
+                })}
+              </span>
+              <input className="mono wf-filter-text" placeholder="filter by label or task" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} />
+            </div>
+          )}
           <div className="wf-agents">
             {(shown?.agents ?? []).length === 0 && <div className="empty">{!wf.status || wf.status === "running" ? "not started yet: its agents appear when it runs" : "no agents in this phase"}</div>}
-            {(shown?.agents ?? []).map((a) => {
+            {(shown?.agents ?? [])
+              .filter((a) => stateFilter === "all" || stateIs(a.state, stateFilter))
+              .filter((a) => !textFilter || `${a.label ?? ""} ${a.prompt_preview ?? ""}`.toLowerCase().includes(textFilter.toLowerCase()))
+              .map((a) => {
               const isOpen = open === a.agent_id;
               const report = reportOf(a);
               return (
-                <div key={a.agent_id || a.label || Math.random()} className={`wf-agent ${stateClass(a.state)}${isOpen ? " open" : ""}`}>
+                <div key={a.agent_id || a.label || Math.random()} id={`agent-${a.agent_id}`} className={`wf-agent ${stateClass(a.state)}${isOpen ? " open" : ""}`}>
                   <div className="wf-agent-row" onClick={() => setOpen(isOpen ? null : a.agent_id)}>
                     <span className={`wf-dot ${stateClass(a.state)}`} aria-hidden />
                     <span className="wf-agent-state mono-meta">{a.state ?? "?"}</span>

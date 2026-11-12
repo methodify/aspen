@@ -257,3 +257,29 @@ chord, so `alt+1…9`, `alt+arrows`, `alt+z`, `alt+.` and `alt+[ ]` never
 fired. Chords now compare the physical key (`e.code`): a Mac types `¡`
 for `alt+1`, and shift turns `[` into `{`.
 
+## 12. Boards become projects (v0.53, PROPOSALS-2026-11-A)
+
+A board is now a **project**: a place for work, its layout the **desk**.
+
+- **Fields:** `status` (active · paused · archived), `charter` (to every member), `notes` (the
+  operator's only), `rail` (`{shown, order}`, synced), beside the desk's layout, bench, tab order
+  and pairs.
+- **The page** (`/project/{id}`, `/board/{id}` still works) has four views, the choice in the URL
+  (`?view=`): **desk** (as before), **team** (stage and bench: state, role from each charter's
+  first line, node, last worked; bench, bring back, remove; *+ add a member*), **charter & notes**
+  (edited in place), **activity** (joins, leaves, charter and status changes, renames, and the
+  team's messages). The header carries *in rail*, *pause* / *archive* / *resume*.
+- **Status:** paused keeps the members, says nothing more until it resumes, and leaves the rail;
+  archived is read-only and no one's team (`board_panes` is empty).
+- **Charter layering:** each project an agent is on adds a block to its instructions at spawn (the
+  team, then the charter, capped at 8 KB), between the harness's prompt and the agent's own charter;
+  `bus_status` shows the same.
+- **Ambient notices** (`urgency = "ambient"`): every lifecycle notice (joined, left, charter, status)
+  waits for the next thing written to the agent and never wakes it. Aspen's alone: `bus_send` does
+  not offer it. The `messages` table is rebuilt once to allow it.
+- **Sync:** field by field with hybrid-clock stamps; the console writes patches. A rename or a name
+  fold stamps the fields it rewrites.
+- **The rail** lists active projects in their synced order; the Projects page (`/projects`) groups
+  them (in the rail, drag to order; not in the rail; paused; archived) with an *in rail* toggle on
+  each. A hidden project with someone waiting on the operator shows as *hidden · N waiting*.
+

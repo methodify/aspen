@@ -37,7 +37,22 @@ export function placeInLayout(layout: BoardNode, agent: string, how: PlaceMode):
 export async function placeOnBoard(b: Board, agent: string, how: PlaceMode): Promise<void> {
   if (b.query) return; // dynamic boards compute their own panes
   const next = (b.bench ?? []).some((e) => e.agent === agent) ? unbench(b, agent) : { ...b, layout: placeInLayout(b.layout, agent, how) };
-  await api.putBoard({ ...next, updated_at: Date.now() / 1000 });
+  await api.patchBoard(b.id, boardPatch(b, next));
+}
+
+/** The fields a console writes (the node's `BOARD_FIELDS` but `deleted`). */
+const PATCH_FIELDS = ["name", "layout", "query", "pairs", "bench", "tab_order", "status", "charter", "notes", "rail"] as const;
+
+/** What changed from `base` to `next`, as a patch (A-9): a field gone is
+ *  `null`, so the node clears it. */
+export function boardPatch(base: Board | null, next: Board): Partial<Board> {
+  const out: Record<string, unknown> = {};
+  for (const k of PATCH_FIELDS) {
+    const a = base ? (base as unknown as Record<string, unknown>)[k] : undefined;
+    const b = (next as unknown as Record<string, unknown>)[k];
+    if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) out[k] = b ?? null;
+  }
+  return out as Partial<Board>;
 }
 
 /** Put `agent` on the board with this id, if it exists; returns whether it did. */

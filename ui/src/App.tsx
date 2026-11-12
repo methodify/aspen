@@ -4,7 +4,7 @@ import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "reac
 import { api, type Agent, type BusMessage, type NodeInfo } from "./api";
 import { usePoll } from "./hooks";
 import { BoardMeter, Meter, presenceOf, useTheme } from "./components";
-import { boardStatus, describeStatus, useBoards } from "./boardStatus";
+import { boardStatus, describeStatus, railProjects, useBoards } from "./boardStatus";
 import Now from "./pages/Now";
 import Conversations from "./pages/Conversations";
 import Session from "./pages/Session";
@@ -78,7 +78,7 @@ const NAV: { to: string; key: string; label: string; end?: boolean; phone?: bool
   { to: "/mesh", key: "M", label: "Mesh", phone: true },
   { to: "/history", key: "H", label: "History" },
   { to: "/search", key: "S", label: "Search", phone: true },
-  { to: "/boards", key: "B", label: "Boards", phone: true },
+  { to: "/projects", key: "B", label: "Projects", phone: true },
   { to: "/plugins", key: "P", label: "Plugins" },
   { to: "/usage", key: "U", label: "Usage" },
 ];
@@ -184,6 +184,7 @@ function MeshColumn() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const { agents, inbox, waiting } = useAppData();
+  const rail = useMemo(() => railProjects(boards, agents, waiting), [boards, agents, waiting]);
   const location = useLocation();
   const [ws, setWs] = useState<WorkingSet>(loadWorkingSet);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -297,16 +298,16 @@ function MeshColumn() {
         Fleet · {busy} busy · {live}/{agents.length} live
       </div>
       <div className="rail-scroll">
-      {boards.length > 0 && (
+      {(rail.shown.length > 0 || rail.hiddenWaiting.length > 0) && (
         <>
-          <div className="nav-section label" style={{ marginTop: 6 }}>Boards</div>
-          {boards.map((b) => {
+          <NavLink to="/projects" className="nav-section label rail-section-link" style={{ marginTop: 6 }} title="all projects: show, hide and order them here">Projects</NavLink>
+          {rail.shown.map((b) => {
             // The board's members at a glance (BOARDS.md §10): a bar each,
             // busy first; the pips say who waits on you and who runs
             // background work.
             const st = boardStatus(b, agents, waiting);
             return (
-              <NavLink key={b.id} to={`/board/${b.id}`} className={({ isActive }) => `nav-item rail-board${isActive ? " active" : ""}`} title={`${b.name} — ${describeStatus(st)}`}>
+              <NavLink key={b.id} to={`/project/${b.id}`} className={({ isActive }) => `nav-item rail-board${isActive ? " active" : ""}`} title={`${b.name} — ${describeStatus(st)}`}>
                 <span className="nav-key board-key">
                   <BoardMeter bars={st.bars} label={describeStatus(st)} />
                 </span>
@@ -320,6 +321,13 @@ function MeshColumn() {
               </NavLink>
             );
           })}
+          {rail.hiddenWaiting.length > 0 && (
+            <NavLink to="/projects" className="nav-item rail-hidden-waiting" title={`hidden from the rail, waiting on you: ${rail.hiddenWaiting.map((b) => b.name).join(", ")}`}>
+              <span className="nav-key" />
+              <span className="mono-meta">hidden · {rail.hiddenWaiting.length} waiting</span>
+              <span className="rail-wait-pip" aria-label="waiting on you" />
+            </NavLink>
+          )}
         </>
       )}
       {pinnedRows.length > 0 && (
@@ -689,6 +697,8 @@ export default function App() {
               <Route path="/view/:name" element={<View />} />
               <Route path="/session/:name/files" element={<Files />} />
               <Route path="/boards" element={<BoardsPage />} />
+              <Route path="/projects" element={<BoardsPage />} />
+              <Route path="/project/:id" element={<BoardPage />} />
               <Route path="/plugins" element={<Plugins />} />
               <Route path="/usage" element={<Usage />} />
               <Route path="/attach" element={<Attach />} />

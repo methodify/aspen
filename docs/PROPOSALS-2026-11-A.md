@@ -1,6 +1,6 @@
 # Proposal 2026-11-A — Projects: a place for work, not a split screen
 
-**Status:** accepted 2026-11-11 (answers in §4). The hero is
+**Status:** accepted 2026-11-11 (answers in §4); tranche 1 shipped as v0.53.0 (BOARDS.md §12, SESSION_BAR.md, API.md). As built: rail ordering is drag on the Projects page; effort is Claude-only for now (Codex sets reasoning effort differently). The hero is
 **projects**; riding along are effort, the workflow viewer, and which
 projects the rail shows. A-12 is off the slate (backlog): what the
 operator wants is a durable pause that keeps unfinished agents' state,

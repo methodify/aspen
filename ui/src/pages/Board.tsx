@@ -5,17 +5,18 @@
 // marked; broadcast sends one message to every session pane.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type Agent, type Board, type BoardNode, type BoardPane, type BusMessage, type OpenPrompt } from "../api";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
 import { BoardMeter, ErrorBar, Meter, presenceOf, relTime } from "../components";
 import { scoped } from "../profiles";
-import { boardStatus, describeStatus, matchQuery, type DynamicQuery } from "../boardStatus";
+import { boardStatus, describeStatus, matchQuery, projectStatus, type DynamicQuery } from "../boardStatus";
+import { ActivityView, CharterNotesView, TeamView, type TeamMember } from "./projectViews";
 import { MenuGroup, MenuRow } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
-import { addMember, benchPane, benchSwap, mapTree, panesOf, removePane, stageBench, unbench } from "../boardOps";
+import { addMember, benchPane, benchSwap, boardPatch, mapTree, panesOf, removePane, stageBench, unbench } from "../boardOps";
 import { useTrustedStart } from "../trust";
 import "./board.css";
 
@@ -136,6 +137,17 @@ const ADD = "\u0000add";
 
 export default function BoardPage() {
   const { id = "" } = useParams<{ id: string }>();
+  // The project's view (PROPOSALS-2026-11-A §A-6), in the URL so a reload
+  // or a link keeps it.
+  const [params, setParams] = useSearchParams();
+  const view = (["team", "charter", "activity"] as const).find((v) => v === params.get("view")) ?? "desk";
+  const setView = (v: string) =>
+    setParams((p) => {
+      const n = new URLSearchParams(p);
+      if (v === "desk") n.delete("view");
+      else n.set("view", v);
+      return n;
+    });
   const nav = useNavigate();
   const { agents, waiting, refreshAgents } = useAppData();
   const [reviving, setReviving] = useState(false);
@@ -194,26 +206,36 @@ export default function BoardPage() {
   const [deleteAsk, setDeleteAsk] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const saveTimer = useRef<number | null>(null);
+  // The board as the node last had it: saves send only what changed from
+  // it (A-9), and a re-read replaces it while nothing local is pending.
+  const savedRef = useRef<Board | null>(null);
+  const pending = useRef(false);
 
-  // Load.
+  // Load, and re-read every 10 s: an edit made on another console (a
+  // charter, a status, the rail) shows up here.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async (first: boolean) => {
       try {
         const all = await api.boards();
         const b = all.find((x) => x.id === id);
-        if (!cancelled) {
-          if (b) {
+        if (cancelled) return;
+        if (b) {
+          if (first || (!pending.current && JSON.stringify(b.stamps) !== JSON.stringify(savedRef.current?.stamps))) {
+            savedRef.current = b;
             setBoard(b);
-            setErr(null);
-          } else setErr("no such board (it may live on a node that hasn't synced yet)");
-        }
+          }
+          setErr(null);
+        } else if (first) setErr("no such project (it may live on a node that hasn't synced yet)");
       } catch (e) {
-        if (!cancelled) setErr(e instanceof Error ? e.message : "failed to load boards");
+        if (!cancelled && first) setErr(e instanceof Error ? e.message : "failed to load projects");
       }
-    })();
+    };
+    void load(true);
+    const t = window.setInterval(() => void load(false), 10_000);
     return () => {
       cancelled = true;
+      window.clearInterval(t);
     };
   }, [id]);
 
@@ -249,8 +271,24 @@ export default function BoardPage() {
         if (!cur) return cur;
         const next = { ...f(cur), updated_at: Date.now() / 1000 };
         if (saveTimer.current) window.clearTimeout(saveTimer.current);
+        pending.current = true;
         saveTimer.current = window.setTimeout(() => {
-          api.putBoard(next).catch((e) => setErr(`save: ${e instanceof Error ? e.message : "failed"}`));
+          const patch = boardPatch(savedRef.current, next);
+          if (Object.keys(patch).length === 0) {
+            pending.current = false;
+            return;
+          }
+          api
+            .patchBoard(next.id, patch)
+            .then(async () => {
+              // The node's stamps, so the next re-read sees no change.
+              const fresh = (await api.boards()).find((x) => x.id === next.id);
+              savedRef.current = fresh ?? next;
+            })
+            .catch((e) => setErr(`save: ${e instanceof Error ? e.message : "failed"}`))
+            .finally(() => {
+              pending.current = false;
+            });
         }, 400);
         return next;
       });
@@ -531,6 +569,15 @@ export default function BoardPage() {
   if (err && !board) return <div className="page"><ErrorBar error={err} /><Link to="/boards">← boards</Link></div>;
   if (!board || !tree) return <div className="page dim">loading board…</div>;
   const dynamic = !!board.query;
+  // An archived project is read-only (A-1); its desk is locked as a
+  // dynamic one's layout is.
+  const pstatus = projectStatus(board);
+  const archived = pstatus === "archived";
+  const locked = dynamic || archived;
+  const members: TeamMember[] = [
+    ...sessionPanes.map((p) => ({ agent: p.agent!, pane: p.id, benched: false })),
+    ...bench.map((e) => ({ agent: e.agent, benched: true })),
+  ];
 
   // ---- renderers
   const renderPane = (p: BoardPane, index: number) => {
@@ -539,7 +586,7 @@ export default function BoardPage() {
     // The bar's pieces (PROPOSALS-2026-09-G.md §2): a session pane hands
     // them to its own bar; a view or empty pane keeps the pane bar.
     const barProps = {
-      draggable: !dynamic,
+      draggable: !locked,
       onDragStart: (e: React.DragEvent<HTMLDivElement>) => {
         e.dataTransfer.setData("text/aspen-pane", p.id);
         e.dataTransfer.effectAllowed = "move";
@@ -559,13 +606,13 @@ export default function BoardPage() {
     const menu = (
       <MenuGroup label="pane">
         {p.kind === "session" && p.agent && <MenuRow label="open as a page" hint="this session on its own, outside the board" onClick={() => nav(`/session/${encodeURIComponent(p.agent!)}`)} />}
-        {!dynamic && <MenuRow label="change what this pane shows" hint="pick another session or a file to view" onClick={() => setPicker(p.id)} />}
+        {!locked && <MenuRow label="change what this pane shows" hint="pick another session or a file to view" onClick={() => setPicker(p.id)} />}
         <MenuRow label={zoom === p.id ? "unzoom" : "zoom this pane"} hint="alt+z" onClick={() => setZoom((z) => (z === p.id ? null : p.id))} />
       </MenuGroup>
     );
     const trailing = (
       <>
-        {!dynamic && p.kind === "session" && p.agent && (
+        {!locked && p.kind === "session" && p.agent && (
           partnerOf(p.id) ? (
             <button className="pane-btn" onClick={() => { const pr = pairs.find(([a, b]) => a === p.id || b === p.id); if (pr) void unpair(pr[0], pr[1]); }} title="unpair">⇄×</button>
           ) : pairFrom === p.id ? (
@@ -586,7 +633,7 @@ export default function BoardPage() {
           )
         )}
         <button className="pane-btn" onClick={() => setZoom((z) => (z === p.id ? null : p.id))} title="zoom (alt+z)">{zoom === p.id ? "⤡" : "⤢"}</button>
-        {!dynamic && (
+        {!locked && (
           <>
             <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "row") }))} title="split right">⫿</button>
             <button className="pane-btn" onClick={() => update((b) => ({ ...b, layout: splitPane(b.layout, p.id, "col") }))} title="split down">⫽</button>
@@ -661,13 +708,13 @@ export default function BoardPage() {
           const other = e.dataTransfer.getData("text/aspen-pane");
           const ag = e.dataTransfer.getData("text/aspen-agent");
           const benched = e.dataTransfer.getData("text/aspen-bench");
-          if (benched && !dynamic) {
+          if (benched && !locked) {
             e.preventDefault();
             update((b) => benchSwap(b, p.id, benched));
-          } else if (other && other !== p.id && !dynamic) {
+          } else if (other && other !== p.id && !locked) {
             e.preventDefault();
             update((b) => ({ ...b, layout: swapPanes(b.layout, other, p.id) }));
-          } else if (ag && !dynamic) {
+          } else if (ag && !locked) {
             e.preventDefault();
             update((b) => ({ ...b, layout: setPane(b.layout, p.id, { kind: "session", id: p.id, agent: ag }), bench: (b.bench ?? []).filter((x) => x.agent !== ag) }));
           }
@@ -813,7 +860,7 @@ export default function BoardPage() {
   const renderNode = (n: BoardNode): React.ReactNode => {
     if (n.kind !== "split") return renderPane(n, paneIndex++);
     return (
-      <SplitBox key={n.id} node={n} onSizes={(sizes) => !dynamic && update((b) => ({ ...b, layout: setSizes(b.layout, n.id, sizes) }))} locked={dynamic}>
+      <SplitBox key={n.id} node={n} onSizes={(sizes) => !locked && update((b) => ({ ...b, layout: setSizes(b.layout, n.id, sizes) }))} locked={dynamic}>
         {n.children.map((c) => renderNode(c))}
       </SplitBox>
     );
@@ -825,7 +872,7 @@ export default function BoardPage() {
     <div className="board-page">
       <div className="phone-note">One pane at a time here: pick a session from the strip. Layout editing (splits, pairs) is a desktop verb.</div>
       <div className="board-head">
-        <Link className="mono-meta" to="/boards">boards</Link>
+        <Link className="mono-meta" to="/projects">projects</Link>
         <span className="mono-meta">/</span>
         {renaming ? (
           <input
@@ -848,6 +895,21 @@ export default function BoardPage() {
           </button>
         )}
         {dynamic && <span className="chip mono" title={JSON.stringify(board.query)}>dynamic · {panes.length}</span>}
+        {pstatus !== "active" && <span className={`chip mono project-status ${pstatus}`} title={pstatus === "paused" ? "members stay; no notices until it resumes; not in the rail" : "closed: read-only, no one's team"}>{pstatus}</span>}
+        <span className="seg project-views" role="tablist" aria-label="project view">
+          {(
+            [
+              ["desk", "desk"],
+              ["team", `team · ${members.length}`],
+              ["charter", board.charter ? "charter & notes" : "charter & notes ·"],
+              ["activity", "activity"],
+            ] as const
+          ).map(([k, label]) => (
+            <button key={k} type="button" role="tab" aria-pressed={view === k} aria-selected={view === k} className={view === k ? "on" : ""} onClick={() => setView(k)} title={k === "charter" && !board.charter ? "no charter yet" : undefined}>
+              {label}
+            </button>
+          ))}
+        </span>
         {(() => {
           // The board's members at a glance (BOARDS.md §10), and the one
           // verb a stopped team wants: start the stopped ones.
@@ -859,7 +921,7 @@ export default function BoardPage() {
             <>
               <BoardMeter bars={st.bars} label={describeStatus(st)} />
               <span className="mono-meta" title={st.unknown ? `${st.unknown} pane(s) name a session this console cannot see` : undefined}>{describeStatus(st)}</span>
-              {down.length > 0 && !dynamic && (
+              {down.length > 0 && !locked && (
                 <button
                   className="btn ghost sm"
                   disabled={reviving}
@@ -893,7 +955,22 @@ export default function BoardPage() {
           );
         })()}
         <span style={{ flex: 1 }} />
-        {!narrow && (
+        {!dynamic && (
+          <span className="project-life">
+            <label className="mono-meta" title="this project in the rail, on every console (synced)">
+              <input type="checkbox" checked={board.rail?.shown !== false} disabled={pstatus !== "active"} onChange={(e) => update((b) => ({ ...b, rail: { ...(b.rail ?? {}), shown: e.target.checked } }))} /> in rail
+            </label>
+            {pstatus === "active" ? (
+              <>
+                <button type="button" className="btn ghost sm" onClick={() => update((b) => ({ ...b, status: "paused" }))} title="members stay on the team; they hear nothing more until it resumes; it leaves the rail">pause</button>
+                <button type="button" className="btn ghost sm" onClick={() => update((b) => ({ ...b, status: "archived" }))} title="close it: read-only, and no one's team any more (members are told on their next turn)">archive</button>
+              </>
+            ) : (
+              <button type="button" className="btn sm" onClick={() => update((b) => ({ ...b, status: null }))}>resume</button>
+            )}
+          </span>
+        )}
+        {!narrow && view === "desk" && (
           <span className="seg view-toggle" role="group" aria-label="board view">
             <button type="button" className={viewPref === "layout" ? "on" : ""} aria-pressed={viewPref === "layout"} onClick={() => chooseView("layout")} title="the board's panes side by side">layout</button>
             <button type="button" className={viewPref === "tabs" ? "on" : ""} aria-pressed={viewPref === "tabs"} onClick={() => chooseView("tabs")} title="one member at full size, tabs to switch (alt+1…9, alt+[ ])">tabs</button>
@@ -951,7 +1028,33 @@ export default function BoardPage() {
         )}
       </div>
       <ErrorBar error={err} />
-      {tabsMode ? (
+      {archived && <div className="project-banner mono-meta">archived: read-only, and no one's team. <button type="button" className="link" onClick={() => update((b) => ({ ...b, status: null }))}>resume it</button> to work on it again.</div>}
+      {view === "team" ? (
+        <div className="project-view">
+          <TeamView
+            members={members}
+            agents={agents}
+            attention={attention}
+            readOnly={locked}
+            onBench={(paneId) => update((b) => benchPane(b, paneId))}
+            onBringBack={(ag) => update((b) => unbench(b, ag))}
+            onRemove={(m) =>
+              update((b) =>
+                m.pane ? { ...b, layout: removePane(b.layout, m.pane) ?? emptyPane() } : { ...b, bench: (b.bench ?? []).filter((e) => e.agent !== m.agent) },
+              )
+            }
+            onAdd={() => setPicker(ADD)}
+          />
+        </div>
+      ) : view === "charter" ? (
+        <div className="project-view">
+          <CharterNotesView board={board} readOnly={archived} onSave={(f, v) => update((b) => ({ ...b, [f]: v }))} />
+        </div>
+      ) : view === "activity" ? (
+        <div className="project-view">
+          <ActivityView id={board.id} />
+        </div>
+      ) : tabsMode ? (
         <div className="board-tabs-wrap">
           <div className="board-tabs" role="tablist">
             {tabs.map((t, i) => {
@@ -965,7 +1068,7 @@ export default function BoardPage() {
                     aria-selected={t.key === active?.key}
                     className={`${t.key === active?.key ? "on" : ""}${t.benched ? " benched" : ""}${dragTab === t.key ? " dragging" : ""}${dropAt?.key === t.key ? (dropAt.after ? " drop-after" : " drop-before") : ""}`}
                     onClick={() => selectTab(t.key)}
-                    draggable={!dynamic}
+                    draggable={!locked}
                     title={dynamic ? undefined : "drag to reorder (alt+shift+[ / ])"}
                     onDragStart={(e) => {
                       e.dataTransfer.setData("text/aspen-tab", t.key);
@@ -1002,7 +1105,7 @@ export default function BoardPage() {
                 </span>
               );
             })}
-            {!dynamic && (
+            {!locked && (
               <button type="button" className="board-tab-add" onClick={() => setPicker(ADD)} title="add a member — an agent, or a new one; it joins the layout beside the roomiest pane" aria-label="add a member">
                 +
               </button>
@@ -1023,13 +1126,13 @@ export default function BoardPage() {
       ) : (
         <div className="board-body">{renderNode(tree)}</div>
       )}
-      {benchStrip}
-      {peek && !tabsMode && bench.some((e) => e.agent === peek) && (
+      {view === "desk" && benchStrip}
+      {view === "desk" && peek && !tabsMode && bench.some((e) => e.agent === peek) && (
         <div className="bench-peek panel-in" role="dialog" aria-label={`peek at @${peek.split("@")[0]}`}>
           {renderBenched(peek, `peek:${peek}`)}
         </div>
       )}
-      {pairs.length > 0 && (
+      {view === "desk" && pairs.length > 0 && (
         <div className="pair-strips">
           {pairs.map(([aId, bId]) => {
             const a = sessionPanes.find((p) => p.id === aId)?.agent;
@@ -1279,7 +1382,7 @@ export function BoardsPage() {
     const b: Board = { id: crypto.randomUUID().slice(0, 8), name: nm, layout, query, updated_at: Date.now() / 1000 };
     try {
       await api.putBoard(b);
-      nav(`/board/${b.id}`);
+      nav(`/project/${b.id}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed to create");
     }
@@ -1306,28 +1409,97 @@ export function BoardsPage() {
 
   return (
     <div className="stage-body boards-page">
-      <h1>Boards</h1>
+      <h1>Projects</h1>
       <p className="dim">
-        Layouts of sessions across the estate. A board lives on the node and syncs across the mesh, so every console shows
-        the same set. A session can sit in any number of boards.
+        A project is a place for work: its team (on the desk or the bench), a charter every member reads, your notes, and
+        what happened. Projects live on the nodes and sync across the mesh, so every console shows the same set, in the
+        same order. An agent can be on any number of them.
       </p>
       <ErrorBar error={err} />
-      <div className="boards-grid">
-        {boards.map((b) => (
-          <Link key={b.id} className="board-card" to={`/board/${b.id}`}>
-            <span className="board-card-head">
-              <BoardMeter bars={boardStatus(b, agents, waiting).bars} />
-              <span className="board-card-name">{b.name}</span>
-            </span>
-            <span className="mono-meta">
-              {b.query ? `dynamic · ${describeQuery(b.query)}` : `${panesOf(b.layout).length} panes`}
-            </span>
-            <span className="mono-meta">{describeStatus(boardStatus(b, agents, waiting))}</span>
-          </Link>
-        ))}
-        {boards.length === 0 && <div className="dim">no boards yet</div>}
-      </div>
-      <h2>New board</h2>
+      {(() => {
+        const active = boards.filter((b) => projectStatus(b) === "active");
+        const order = (b: Board) => b.rail?.order ?? Number.MAX_SAFE_INTEGER;
+        const inRail = active.filter((b) => b.rail?.shown !== false).sort((x, y) => order(x) - order(y) || x.name.localeCompare(y.name));
+        const groups: [string, string, Board[]][] = [
+          ["in the rail", "drag to order the rail (synced)", inRail],
+          ["not in the rail", "", active.filter((b) => b.rail?.shown === false)],
+          ["paused", "members stay; no notices until resumed", boards.filter((b) => projectStatus(b) === "paused")],
+          ["archived", "closed: read-only", boards.filter((b) => projectStatus(b) === "archived")],
+        ];
+        const reorder = (fromId: string, toId: string) => {
+          const ids = inRail.map((b) => b.id).filter((x) => x !== fromId);
+          ids.splice(ids.indexOf(toId), 0, fromId);
+          ids.forEach((pid, i) => {
+            const b = inRail.find((x) => x.id === pid)!;
+            if (b.rail?.order !== i) void api.patchBoard(pid, { rail: { ...(b.rail ?? {}), order: i } });
+          });
+          setBoards((cur) => cur.map((b) => (ids.includes(b.id) ? { ...b, rail: { ...(b.rail ?? {}), order: ids.indexOf(b.id) } } : b)));
+        };
+        const card = (b: Board, draggable: boolean) => (
+          <div
+            key={b.id}
+            className={`board-card project-card ${projectStatus(b)}`}
+            draggable={draggable}
+            onDragStart={(e) => {
+              e.dataTransfer.setData("text/aspen-project", b.id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              if (draggable && e.dataTransfer.types.includes("text/aspen-project")) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              const from = e.dataTransfer.getData("text/aspen-project");
+              if (from && from !== b.id) {
+                e.preventDefault();
+                reorder(from, b.id);
+              }
+            }}
+          >
+            <Link className="project-card-link" to={`/project/${b.id}`}>
+              <span className="board-card-head">
+                <BoardMeter bars={boardStatus(b, agents, waiting).bars} />
+                <span className="board-card-name">{b.name}</span>
+                {boardStatus(b, agents, waiting).waiting > 0 && <span className="rail-wait-pip" aria-label="waiting on you" />}
+              </span>
+              {b.charter && <span className="project-card-charter">{b.charter.split("\n")[0]}</span>}
+              <span className="mono-meta">
+                {b.query ? `dynamic · ${describeQuery(b.query)}` : `${panesOf(b.layout).filter((p) => p.kind === "session").length + (b.bench?.length ?? 0)} members`}
+                {" · "}
+                {describeStatus(boardStatus(b, agents, waiting))}
+              </span>
+            </Link>
+            {projectStatus(b) === "active" && (
+              <label className="mono-meta project-card-rail" title="in the rail on every console (synced)">
+                <input
+                  type="checkbox"
+                  checked={b.rail?.shown !== false}
+                  onChange={(e) => {
+                    const rail = { ...(b.rail ?? {}), shown: e.target.checked };
+                    setBoards((cur) => cur.map((x) => (x.id === b.id ? { ...x, rail } : x)));
+                    void api.patchBoard(b.id, { rail });
+                  }}
+                />{" "}
+                in rail
+              </label>
+            )}
+          </div>
+        );
+        return groups.map(([title, hint, list], gi) =>
+          list.length === 0 && gi > 0 ? null : (
+            <div key={title} className="project-group">
+              <div className="project-group-head">
+                <span className="label">{title}</span>
+                {hint && <span className="mono-meta">{hint}</span>}
+              </div>
+              <div className="boards-grid">
+                {list.map((b) => card(b, gi === 0))}
+                {gi === 0 && list.length === 0 && <div className="dim">{boards.length === 0 ? "no projects yet" : "none in the rail"}</div>}
+              </div>
+            </div>
+          ),
+        );
+      })()}
+      <h2>New project</h2>
       <div className="boards-new">
         <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} />
         <span className="seg">

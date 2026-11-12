@@ -312,6 +312,8 @@ export interface Agent {
   last_tool?: string | null;
   /** When it last worked: its transcript's modification time (epoch s). */
   last_active?: number | null;
+  /** The effort the operator chose (low … max); absent is the model's default. */
+  effort?: string | null;
 }
 
 export type Urgency = "gating" | "normal" | "notice";
@@ -726,6 +728,11 @@ export interface BoardSplit {
   children: BoardNode[];
 }
 export type BoardNode = BoardSplit | BoardPane;
+export type ProjectStatus = "active" | "paused" | "archived";
+/** One line of a project's activity (`GET /api/boards/{id}/activity`). */
+export type ProjectActivityItem =
+  | { ts: number; kind: "event"; event: string; detail: Record<string, unknown> }
+  | { ts: number; kind: "message"; message: BusMessage };
 export interface BenchEntry {
   agent: string;
   /** Epoch seconds it was benched. */
@@ -744,6 +751,16 @@ export interface Board {
   /** The tabs' order (PROPOSALS-2026-10-U §U-4): agent addresses (or
    *  `pane:<id>` for a viewer or empty pane); the rest in layout order. */
   tab_order?: string[] | null;
+  /** A project's life (PROPOSALS-2026-11-A §A-1); absent is active. */
+  status?: ProjectStatus | null;
+  /** The project's charter: to every member at spawn and on change. */
+  charter?: string | null;
+  /** The operator's notes; never shown to agents. */
+  notes?: string | null;
+  /** In the rail, and where (synced, A-7). */
+  rail?: { shown?: boolean; order?: number } | null;
+  /** Each field's hybrid-clock stamp (A-9); the node's to set. */
+  stamps?: Record<string, number> | null;
   /** A dynamic board: panes are whatever matches. */
   query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;
@@ -1804,11 +1821,22 @@ export const api = {
   pluginsEffective: (agent: string) =>
     request<{ would_start_with: ActivePlugin[]; missing: string[]; running: ActivePlugin[]; updates: PluginUpdate[] }>(`/api/plugins/effective?agent=${enc(agent)}`),
   boards: () => request<Board[]>("/api/boards"),
+  /** A whole board (create, import). */
   putBoard: async (b: Board) => {
     const r = await request<{ ok: boolean }>(`/api/boards/${enc(b.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
     window.dispatchEvent(new Event("aspen:boards"));
     return r;
   },
+  /** Only the fields that changed (PROPOSALS-2026-11-A §A-9): the node
+   *  stamps each and keeps the rest, so a stale copy cannot revert an edit
+   *  made elsewhere. `null` clears a field. */
+  patchBoard: async (id: string, patch: Partial<Board>) => {
+    const r = await request<{ ok: boolean }>(`/api/boards/${enc(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) });
+    window.dispatchEvent(new Event("aspen:boards"));
+    return r;
+  },
+  projectActivity: (id: string) => request<{ items: ProjectActivityItem[] }>(`/api/boards/${enc(id)}/activity`),
+  setEffort: (name: string, effort: string | null) => post<{ ok: boolean }>(`/api/agents/${enc(name)}/effort`, { effort }),
   deleteBoard: async (id: string) => {
     const r = await request<{ ok: boolean }>(`/api/boards/${enc(id)}`, { method: "DELETE" });
     window.dispatchEvent(new Event("aspen:boards"));

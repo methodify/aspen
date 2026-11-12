@@ -256,13 +256,30 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 ## Boards (v0.12) — BOARDS.md
 
 - `GET /api/boards` — this node's boards (tombstones excluded), newest first.
-- `PUT /api/boards/{id}` body `Board {id, name, layout, query?, pairs?, bench?, updated_at}` — write if newer than what
-  the node holds (last writer wins); broadcasts the roster so peers pull. Response `{ok, changed}`.
-  `bench` is `[{agent, at, slot?: {parent, index, size}}]`, members not shown right now but still the
-  team (PROPOSALS-2026-10-T). A board with no `bench` field (an older console or node) keeps the
-  stored bench; `[]` clears it.
-- `DELETE /api/boards/{id}` — tombstone (propagates across the mesh).
-- Roster field `boards_digest`; mesh op `boards` returns every row including tombstones.
+- `PUT /api/boards/{id}` body: a **patch**, the fields the operator changed (`name`, `layout`, `query`,
+  `pairs`, `bench`, `tab_order`, `status`, `charter`, `notes`, `rail`); a field absent is kept, `null`
+  clears it (an older console sends the whole board, which works the same). Each field sent is
+  stamped by the node's hybrid clock (`stamps`, PROPOSALS-2026-11-A §A-9); `updated_at`, `stamps`
+  and `deleted` in the body are ignored. Broadcasts the roster so peers pull. Response
+  `{ok, changed, updated_at}`.
+  - `bench` is `[{agent, at, slot?: {parent, index, size}}]`, members not shown right now but still the
+    team (PROPOSALS-2026-10-T).
+  - A project's `status` is `active` (or absent) | `paused` | `archived`; `charter` reaches every
+    member at spawn and, on change, as an ambient notice; `notes` are the operator's, never sent to
+    an agent; `rail` is `{shown, order}` (synced).
+- Peers merge rows **field by field**: each field takes the later stamp (a tie goes to the larger
+  value, never to an absent one); a row from a node before v0.53 (no stamps) stamps what it carries
+  with its `updated_at` and keeps what it does not.
+- `GET /api/boards/{id}/activity` — `{items: [{ts, kind: "event", event, detail} | {ts, kind: "message",
+  message}]}`, oldest first: the project's events on this node (`project_joined`, `project_left`,
+  `project_charter`, `project_status`, `project_renamed`, `project_deleted`) and its team's messages
+  (threads `project:<id>`, `board:<id>`, `pair:<id>:…`; ambient notices left out).
+- `DELETE /api/boards/{id}` — tombstone (the `deleted` field stamped; propagates across the mesh).
+- Roster field `boards_digest` (a hash over every row, values and stamps); mesh op `boards` returns
+  every row including tombstones.
+- `POST /api/agents/{name}/effort` `{effort: low|medium|high|xhigh|max|null}` — the effort a Claude
+  agent runs at: kept for its next start (`--effort`), set now on a running one with the harness's
+  own `/effort` (no model turn); `null` is the model's default. Agents carry `effort`.
 - Agents carry `fork_pending` internally (not in the API): a forking spawn sets it, the runtime's
   announced id clears it, and a revive while set forks again.
 

@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS messages(
   sender        TEXT NOT NULL,
   recipient     TEXT NOT NULL,
   to_display    TEXT NOT NULL,
-  urgency       TEXT NOT NULL CHECK(urgency IN ('gating','normal','notice')),
+  urgency       TEXT NOT NULL CHECK(urgency IN ('gating','normal','notice','ambient')),
   body          TEXT NOT NULL,
   record_ref    TEXT,
   created_at    REAL NOT NULL,
@@ -407,8 +407,19 @@ pub fn merge_board_json(
                 (cv.clone(), cs)
             }
         } else if inc_has_stamps {
+            // A tie (two edits stamped at the same instant) goes to the
+            // larger value (never to an absent one), so both sides pick the same.
             match stamp_of(inc, f) {
-                Some(t) if t > cs => (iv.clone(), t),
+                Some(t)
+                    if t > cs
+                        || (t == cs
+                            && !iv.is_null()
+                            && (cv.is_null()
+                                || serde_json::to_string(iv).unwrap_or_default()
+                                    > serde_json::to_string(cv).unwrap_or_default())) =>
+                {
+                    (iv.clone(), t)
+                }
                 _ => (cv.clone(), cs),
             }
         } else if (present || matches!(f, "query" | "pairs")) && inc_t > cs {
@@ -653,6 +664,46 @@ fn additive_columns(conn: &Connection) -> Result<()> {
                 return Err(e.into());
             }
         }
+    }
+    // Ambient notices (PROPOSALS-2026-11-A §A-3): the urgency CHECK cannot
+    // be altered in place, so a store made before v0.53 rebuilds the
+    // table once, rows and indexes kept.
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    if !sql.is_empty() && !sql.contains("'ambient'") {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE messages_v53(
+               id            INTEGER PRIMARY KEY,
+               uuid          TEXT NOT NULL,
+               thread        TEXT,
+               sender        TEXT NOT NULL,
+               recipient     TEXT NOT NULL,
+               to_display    TEXT NOT NULL,
+               urgency       TEXT NOT NULL CHECK(urgency IN ('gating','normal','notice','ambient')),
+               body          TEXT NOT NULL,
+               record_ref    TEXT,
+               created_at    REAL NOT NULL,
+               delivered_at  REAL,
+               delivered_via TEXT,
+               ingest_uuid   TEXT,
+               ingested_at   REAL,
+               post          TEXT
+             );
+             INSERT INTO messages_v53(id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at,delivered_at,delivered_via,ingest_uuid,ingested_at,post)
+               SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,created_at,delivered_at,delivered_via,ingest_uuid,ingested_at,post FROM messages;
+             DROP TABLE messages;
+             ALTER TABLE messages_v53 RENAME TO messages;
+             CREATE INDEX IF NOT EXISTS idx_pending ON messages(recipient, delivered_at);
+             CREATE INDEX IF NOT EXISTS idx_ingest ON messages(ingest_uuid);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_uuid ON messages(uuid);
+             COMMIT;",
+        )?;
     }
     Ok(())
 }
@@ -2092,20 +2143,19 @@ impl BusStore {
 
     /// A digest of (id, updated_at) over every board including tombstones;
     /// rides the roster so peers know when to pull.
+    /// A digest of every board, tombstones included, rides the roster so
+    /// peers know when to pull. It covers each row whole (values and
+    /// per-field stamps, A-9): two nodes that stamped different edits at
+    /// the same instant still differ, and pull.
     pub fn boards_digest(&self) -> String {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare("SELECT id, updated_at FROM boards ORDER BY id") {
-            Ok(s) => s,
-            Err(_) => return String::new(),
-        };
         let mut acc: u64 = 0xcbf29ce484222325;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)));
-        if let Ok(rows) = rows {
-            for (id, t) in rows.flatten() {
-                for b in id.as_bytes().iter().chain(format!("{t:.3}").as_bytes()) {
-                    acc ^= *b as u64;
-                    acc = acc.wrapping_mul(0x100000001b3);
-                }
+        let mut rows = self.boards(true).unwrap_or_default();
+        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        for b in rows {
+            let text = serde_json::to_string(&b).unwrap_or_default();
+            for byte in text.as_bytes() {
+                acc ^= *byte as u64;
+                acc = acc.wrapping_mul(0x100000001b3);
             }
         }
         format!("{acc:016x}")
@@ -3578,5 +3628,35 @@ mod plugin_library_tests {
         assert!(all[0].deleted);
         assert_eq!(all[0].charter.as_ref().unwrap(), "build it");
         assert!(s.boards(false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_store_from_before_ambient_takes_ambient_rows() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("bus.db");
+        {
+            // The table as it was, with a row in it.
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE messages(id INTEGER PRIMARY KEY, uuid TEXT NOT NULL, thread TEXT, sender TEXT NOT NULL,
+                   recipient TEXT NOT NULL, to_display TEXT NOT NULL,
+                   urgency TEXT NOT NULL CHECK(urgency IN ('gating','normal','notice')), body TEXT NOT NULL,
+                   record_ref TEXT, created_at REAL NOT NULL, delivered_at REAL, delivered_via TEXT,
+                   ingest_uuid TEXT, ingested_at REAL, post TEXT);
+                 INSERT INTO messages(uuid,sender,recipient,to_display,urgency,body,created_at)
+                   VALUES('u1','a','b','@b','normal','kept',1.0);",
+            )
+            .unwrap();
+        }
+        let s = BusStore::open(&p).unwrap();
+        s.insert_message("operator", "b", "@b", "ambient", "quiet", None, None, None)
+            .unwrap();
+        let bodies: Vec<String> = s
+            .pending_for("b")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.body)
+            .collect();
+        assert_eq!(bodies, ["kept", "quiet"]);
     }
 }

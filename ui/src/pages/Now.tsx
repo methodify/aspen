@@ -632,12 +632,12 @@ function BoardsBand() {
   return (
     <section className="now-band">
       <div className="now-band-head">
-        <span className="label">Boards</span>
+        <span className="label">Projects</span>
         <span className="mono-meta">{rows.filter((r) => r.st.presence === "busy").length} working · {rows.length} total</span>
       </div>
       <div className="now-boards">
         {rows.map(({ b, st }) => (
-          <Link key={b.id} to={`/board/${b.id}`} className={`now-board ${st.presence}`} title={describeStatus(st)}>
+          <Link key={b.id} to={`/project/${b.id}`} className={`now-board ${st.presence}`} title={describeStatus(st)}>
             <BoardMeter bars={st.bars} label={describeStatus(st)} />
             <span className="now-board-name">{b.name}</span>
             <span className="mono-meta">
