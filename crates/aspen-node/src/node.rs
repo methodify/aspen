@@ -2807,7 +2807,19 @@ impl Node {
             .into_iter()
             .find(|t| t.id == id || t.name == id)
             .ok_or_else(|| anyhow!("no template {id:?}"))?;
-        let spec = &t.spec;
+        // A project template (PROPOSALS-2026-11-A §5) starts one role at a
+        // time: `role` picks it, and the role is the spec.
+        let role_spec = match overrides.get("role").and_then(|r| r.as_u64()) {
+            Some(i) => Some(
+                t.spec
+                    .get("roles")
+                    .and_then(|r| r.get(i as usize))
+                    .cloned()
+                    .ok_or_else(|| anyhow!("the template has no role {i}"))?,
+            ),
+            None => None,
+        };
+        let spec = role_spec.as_ref().unwrap_or(&t.spec);
         let ov = |k: &str| overrides.get(k).filter(|v| !v.is_null());
         let name = ov("name")
             .and_then(|v| v.as_str())
@@ -2883,6 +2895,11 @@ impl Node {
             ..Default::default()
         };
         let sess = self.spawn_agent(&name, repo, opts).await?;
+        if let Some(effort) = pick_str("effort") {
+            if let Err(e) = self.set_effort(&sess.name, Some(&effort)).await {
+                tracing::warn!(agent = %sess.name, err = %e, "template effort not set");
+            }
+        }
         if let Some(title) = pick_str("title") {
             let _ = self.inner.store.set_agent_title(&sess.name, Some(&title));
         }

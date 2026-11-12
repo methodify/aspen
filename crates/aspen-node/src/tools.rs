@@ -30,6 +30,33 @@ rarely need this: gating messages interrupt you and everything else arrives at y
 boundaries. Reach for it to drain deliberately — e.g. before reporting status, so you are not \
 reporting against a ruling you have not read.";
 
+const PROJECT_LIST_DESC: &str = "The operator's projects you are on: each one's name, status, \
+charter (its start) and team size. A project is a team the operator put together for one piece \
+of work; its charter (in your instructions too) says what it is for.";
+const PROJECT_GET_DESC: &str =
+    "One of your projects in full: its charter, the team (each member's \
+role from its own charter, node and state: running, idle, stopped or benched), the decisions \
+pinned so far, where its shared files are, and its files.";
+const PROJECT_POST_DESC: &str = "Post once to everyone else on a project, on the project's thread \
+(instead of messaging each member). Delivered like bus_send: 'normal' (default) wakes an idle \
+member, 'notice' rides along with their next delivery. kind 'decision' also pins the post as a \
+decision: it heads the project's activity and every new member's briefing. Use it for what the \
+team settled, not for progress.";
+const PROJECT_FILES_DESC: &str = "List a project's shared files: path, size, who wrote it, when. \
+The same files are a folder linked into your repo (.aspen/projects/<name>/, kept out of git); \
+your own file tools work there too, and what you change there is shared within seconds.";
+const PROJECT_READ_DESC: &str = "Read a project's shared file (text). `version` reads an earlier \
+version by its sha (project_get lists none; the operator's console shows a file's history).";
+const PROJECT_WRITE_DESC: &str = "Write (create or replace) a project's shared file, text. Every \
+member's node gets it, and the others are told (without being woken). Two writes to one path \
+made apart are both kept: the later one keeps the name, the other becomes `name (from @x).ext`.";
+const PROJECT_DELETE_DESC: &str = "Delete a project's shared file (its history is kept for the \
+operator to restore).";
+
+fn project_arg() -> Value {
+    json!({ "type": "string", "description": "The project's name or id; leave it out when you are on just one." })
+}
+
 fn bus_send_schema() -> Value {
     json!({
         "type": "object",
@@ -74,6 +101,70 @@ impl aspen_core::ToolProvider for BusTools {
                 description: BUS_INBOX_DESC.into(),
                 input_schema: json!({ "type": "object", "properties": {} }),
             },
+            aspen_core::ToolDef {
+                name: "project_list",
+                description: PROJECT_LIST_DESC.into(),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            aspen_core::ToolDef {
+                name: "project_get",
+                description: PROJECT_GET_DESC.into(),
+                input_schema: json!({ "type": "object", "properties": { "project": project_arg() } }),
+            },
+            aspen_core::ToolDef {
+                name: "project_post",
+                description: PROJECT_POST_DESC.into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project": project_arg(),
+                        "body": { "type": "string", "description": "The whole post." },
+                        "kind": { "type": "string", "enum": ["message", "decision"], "default": "message" },
+                        "urgency": { "type": "string", "enum": ["normal", "notice"], "default": "normal" }
+                    },
+                    "required": ["body"]
+                }),
+            },
+            aspen_core::ToolDef {
+                name: "project_files",
+                description: PROJECT_FILES_DESC.into(),
+                input_schema: json!({ "type": "object", "properties": { "project": project_arg() } }),
+            },
+            aspen_core::ToolDef {
+                name: "project_read",
+                description: PROJECT_READ_DESC.into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project": project_arg(),
+                        "path": { "type": "string", "description": "Relative to the project's files, e.g. 'specs/api.md'." },
+                        "version": { "type": "string", "description": "An earlier version's sha." }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            aspen_core::ToolDef {
+                name: "project_write",
+                description: PROJECT_WRITE_DESC.into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project": project_arg(),
+                        "path": { "type": "string", "description": "Relative, e.g. 'specs/api.md'; folders are made as needed." },
+                        "content": { "type": "string", "description": "The whole file." }
+                    },
+                    "required": ["path", "content"]
+                }),
+            },
+            aspen_core::ToolDef {
+                name: "project_delete",
+                description: PROJECT_DELETE_DESC.into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "project": project_arg(), "path": { "type": "string" } },
+                    "required": ["path"]
+                }),
+            },
         ]
     }
     fn call(&self, name: &str, args: Value) -> std::result::Result<String, String> {
@@ -81,8 +172,228 @@ impl aspen_core::ToolProvider for BusTools {
             "bus_send" => bus_send(&self.inner, &self.me, args),
             "bus_status" => bus_status(&self.inner, &self.me),
             "bus_inbox" => bus_inbox(&self.inner, &self.me),
+            "project_list" => project_list(&self.inner, &self.me),
+            "project_get" => project_get(&self.inner, &self.me, &args),
+            "project_post" => {
+                let b = pick(&self.inner, &self.me, &args)?;
+                let body = args
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing 'body'")?;
+                let urgency = args
+                    .get("urgency")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal");
+                if urgency == "gating" {
+                    return Err(
+                        "a project post is normal or notice; bus_send interrupts one peer".into(),
+                    );
+                }
+                let decision = args.get("kind").and_then(|v| v.as_str()) == Some("decision");
+                crate::projects::post(&self.inner, &self.me, &b, body, urgency, decision)
+                    .map(|n| n.join("\n"))
+            }
+            "project_files" => project_files(&self.inner, &self.me, &args),
+            "project_read" => project_read(&self.inner, &self.me, &args),
+            "project_write" => {
+                let b = pick(&self.inner, &self.me, &args)?;
+                let path = str_arg(&args, "path")?;
+                let content = str_arg(&args, "content")?;
+                let e =
+                    crate::projfiles::write(&self.inner, &b.id, path, content.as_bytes(), &self.me)
+                        .map_err(|e| e.to_string())?;
+                crate::federation::broadcast_roster(&self.inner);
+                Ok(format!(
+                    "Wrote {} ({} bytes) in \u{201c}{}\u{201d}; the team is told.",
+                    e.path, e.size, b.name
+                ))
+            }
+            "project_delete" => {
+                let b = pick(&self.inner, &self.me, &args)?;
+                let path = str_arg(&args, "path")?;
+                crate::projfiles::delete(&self.inner, &b.id, path, &self.me)
+                    .map_err(|e| e.to_string())?;
+                crate::federation::broadcast_roster(&self.inner);
+                Ok(format!("Deleted {path} in \u{201c}{}\u{201d}.", b.name))
+            }
             other => Err(format!("unknown tool {other:?}")),
         }
+    }
+}
+
+fn str_arg<'a>(args: &'a Value, k: &str) -> Result<&'a str, String> {
+    args.get(k)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("missing '{k}'"))
+}
+
+fn pick(inner: &Arc<NodeInner>, me: &str, args: &Value) -> Result<crate::store::Board, String> {
+    crate::projects::pick(inner, me, args.get("project").and_then(|v| v.as_str()))
+}
+
+fn size_text(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn project_list(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
+    let mine = crate::projects::of_agent(inner, me);
+    if mine.is_empty() {
+        return Ok("You are on no project.".into());
+    }
+    let mut out = Vec::new();
+    for b in mine {
+        let team = crate::topology::board_panes(inner, &b).len();
+        let charter = crate::projects::charter(&b)
+            .map(|c| {
+                let short: String = c.chars().take(200).collect();
+                format!(
+                    "\n  charter: {}{}",
+                    short.replace('\n', " "),
+                    if c.chars().count() > 200 { "…" } else { "" }
+                )
+            })
+            .unwrap_or_default();
+        out.push(format!(
+            "\u{201c}{}\u{201d} (id {}) — {}, {} on the team{}",
+            b.name,
+            b.id,
+            crate::projects::status(&b),
+            team,
+            charter
+        ));
+    }
+    Ok(out.join("\n"))
+}
+
+fn project_get(inner: &Arc<NodeInner>, me: &str, args: &Value) -> Result<String, String> {
+    let b = pick(inner, me, args)?;
+    let mut out = vec![format!(
+        "Project \u{201c}{}\u{201d} (id {}), {}.",
+        b.name,
+        b.id,
+        crate::projects::status(&b)
+    )];
+    match crate::projects::charter(&b) {
+        Some(c) => out.push(format!("\nCharter:\n{c}")),
+        None => out.push("\nNo charter.".into()),
+    }
+    out.push("\nTeam:".into());
+    for m in crate::projects::team(inner, &b) {
+        let agent = m["agent"].as_str().unwrap_or("?");
+        let you = if agent == me { " (you)" } else { "" };
+        let role = m["role"]
+            .as_str()
+            .map(|r| format!(" — {r}"))
+            .unwrap_or_default();
+        let state = if m["benched"].as_bool() == Some(true) {
+            "benched".to_owned()
+        } else {
+            m["state"].as_str().unwrap_or("?").to_owned()
+        };
+        out.push(format!(
+            "- @{agent}{you}{role} [{}, {state}]",
+            m["node"].as_str().unwrap_or("?")
+        ));
+    }
+    let decisions = crate::projects::decisions(&b);
+    if !decisions.is_empty() {
+        out.push("\nDecisions:".into());
+        for d in decisions.iter().rev().take(20) {
+            out.push(format!(
+                "- {} (@{})",
+                d["text"].as_str().unwrap_or(""),
+                crate::addr::bare(d["by"].as_str().unwrap_or("?"))
+            ));
+        }
+    }
+    if let Some(f) = crate::projfiles::folder_for(inner, me, &b) {
+        out.push(format!("\nShared files: {f}"));
+    }
+    let files = crate::projfiles::listing(inner, &b.id);
+    if !files.is_empty() {
+        out.push(format!(
+            "{} file(s); project_files lists them.",
+            files.len()
+        ));
+    }
+    Ok(out.join("\n"))
+}
+
+fn project_files(inner: &Arc<NodeInner>, me: &str, args: &Value) -> Result<String, String> {
+    let b = pick(inner, me, args)?;
+    let files = crate::projfiles::listing(inner, &b.id);
+    let at = crate::projfiles::folder_for(inner, me, &b)
+        .map(|f| format!(" (folder: {f})"))
+        .unwrap_or_default();
+    if files.is_empty() {
+        return Ok(format!("\u{201c}{}\u{201d} has no files yet{at}.", b.name));
+    }
+    let mut out = vec![format!("Files of \u{201c}{}\u{201d}{at}:", b.name)];
+    for e in files {
+        let both = if e.conflict { " [both kept]" } else { "" };
+        out.push(format!(
+            "- {} — {} — {}{both}",
+            e.path,
+            size_text(e.size),
+            if e.by.starts_with('(') || e.by == "operator" {
+                e.by.clone()
+            } else {
+                format!("@{}", crate::addr::bare(&e.by))
+            }
+        ));
+    }
+    Ok(out.join("\n"))
+}
+
+fn project_read(inner: &Arc<NodeInner>, me: &str, args: &Value) -> Result<String, String> {
+    let b = pick(inner, me, args)?;
+    let path = crate::projfiles::clean_path(str_arg(args, "path")?).map_err(|e| e.to_string())?;
+    let e = inner
+        .store
+        .file_entry(&b.id, &path)
+        .map_err(|e| e.to_string())?
+        .filter(|e| !e.deleted)
+        .ok_or_else(|| {
+            format!(
+                "no file {path:?} in \u{201c}{}\u{201d}; project_files lists them",
+                b.name
+            )
+        })?;
+    let sha = match args.get("version").and_then(|v| v.as_str()) {
+        Some(v) if v == e.sha || e.history.iter().any(|h| h.sha == v) => v.to_owned(),
+        Some(v) => return Err(format!("{path:?} has no version {v}")),
+        None => e.sha.clone(),
+    };
+    if !crate::projfiles::has_blob(inner, &sha) {
+        if let Ok(h) = tokio::runtime::Handle::try_current() {
+            let inner = inner.clone();
+            let node = e.node.clone();
+            let sha = sha.clone();
+            h.spawn(async move {
+                let _ = crate::projfiles::fetch_blob(&inner, &sha, Some(&node)).await;
+            });
+        }
+        return Err(format!(
+            "{path} is not on this node yet (written on {}); fetching it now — read again in a few seconds",
+            e.node
+        ));
+    }
+    let bytes = crate::projfiles::read_blob(inner, &sha).map_err(|e| e.to_string())?;
+    match crate::projfiles::as_text(&bytes) {
+        Some(t) => Ok(t.to_owned()),
+        None => Err(format!(
+            "{path} is binary ({}); open it in the folder{}",
+            size_text(bytes.len() as u64),
+            crate::projfiles::folder_for(inner, me, &b)
+                .map(|f| format!(" {f}"))
+                .unwrap_or_default()
+        )),
     }
 }
 
@@ -439,6 +750,7 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
                                 plugin_updates: None,
                                 last_active: None,
                                 effort: None,
+                                role: None,
                             }),
                         ))
                     }

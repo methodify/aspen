@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError } from "./api";
+import { api, ApiError, isProjectTemplate } from "./api";
 import type { Channel, Repo, Template } from "./api";
 import { useAppData } from "./App";
 import { pwa } from "./pwa";
@@ -127,7 +127,7 @@ export default function Palette() {
       inputRef.current?.focus();
       void api.channels().then(setChannels).catch(() => setChannels([]));
       void api.repos().then(setRepos).catch(() => setRepos([]));
-      api.templates().then(setTemplates).catch(() => setTemplates([]));
+      api.templates().then((ts) => setTemplates(ts.filter((t) => !isProjectTemplate(t)))).catch(() => setTemplates([]));
     } else {
       if (closeTimer.current !== null) {
         window.clearTimeout(closeTimer.current);

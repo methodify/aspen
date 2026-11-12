@@ -267,6 +267,28 @@ pub struct StoredMessage {
     pub post: Option<String>,
 }
 
+impl StoredMessage {
+    /// The message as the console and peers read it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "uuid": self.uuid,
+            "sender": self.sender,
+            "recipient": self.recipient,
+            "to_display": self.to_display,
+            "urgency": self.urgency,
+            "body": self.body,
+            "thread": self.thread,
+            "record": self.record_ref,
+            "created_at": self.created_at,
+            "delivered_at": self.delivered_at,
+            "delivered_via": self.delivered_via,
+            "ingested_at": self.ingested_at,
+            "post": self.post,
+        })
+    }
+}
+
 /// One logical channel post (a fan-out collapsed to a single entry).
 #[derive(Debug, Clone)]
 pub struct ChannelPost {
@@ -327,6 +349,10 @@ pub struct Board {
     /// The rail: `{shown, order}`, synced like the rest (A-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rail: Option<serde_json::Value>,
+    /// The team's decisions (§5): `[{id, at, by, text, pinned, edited?}]`,
+    /// a set merged by id, never a value replaced whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<serde_json::Value>,
     /// Field-level last-writer-wins (A-9): each field's hybrid-clock
     /// stamp. Absent on a row from a node before v0.53.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,8 +374,58 @@ pub const BOARD_FIELDS: &[&str] = &[
     "charter",
     "notes",
     "rail",
+    "decisions",
     "deleted",
 ];
+
+/// Merge two decision lists (PROPOSALS-2026-11-A §5): the union by id;
+/// for one id the later edit (`edited`, else `at`), a tie to the larger
+/// JSON so every node picks the same. Oldest first.
+pub fn merge_decisions(a: &serde_json::Value, b: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let mut by: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    let when = |d: &Value| {
+        d.get("edited")
+            .and_then(|t| t.as_f64())
+            .or_else(|| d.get("at").and_then(|t| t.as_f64()))
+            .unwrap_or(0.0)
+    };
+    for d in a
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(b.as_array().into_iter().flatten())
+    {
+        let Some(id) = d.get("id").and_then(|i| i.as_str()) else {
+            continue;
+        };
+        let take = match by.get(id) {
+            None => true,
+            Some(cur) => {
+                let (tc, td) = (when(cur), when(d));
+                td > tc
+                    || (td == tc
+                        && serde_json::to_string(d).unwrap_or_default()
+                            > serde_json::to_string(cur).unwrap_or_default())
+            }
+        };
+        if take {
+            by.insert(id.to_owned(), d.clone());
+        }
+    }
+    let mut out: Vec<Value> = by.into_values().collect();
+    out.sort_by(|x, y| {
+        let at = |d: &Value| d.get("at").and_then(|t| t.as_f64()).unwrap_or(0.0);
+        at(x)
+            .partial_cmp(&at(y))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if out.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(out)
+    }
+}
 
 /// Merge an incoming board (JSON) over the held one, field by field.
 ///
@@ -391,7 +467,18 @@ pub fn merge_board_json(
         let cs = cur.and_then(|c| stamp_of(c, f)).unwrap_or(cur_t);
         let present = inc.get(f).is_some();
         let iv = inc.get(f).unwrap_or(&null);
-        let (v, t) = if cur.is_none() {
+        let (v, t) = if f == "decisions" && cur.is_some() {
+            // A set: whoever sends it adds to it.
+            let v = merge_decisions(cv, iv);
+            let t = if v == *cv {
+                cs
+            } else if console {
+                now
+            } else {
+                stamp_of(inc, f).unwrap_or(inc_t).max(cs)
+            };
+            (v, t)
+        } else if cur.is_none() {
             (
                 iv.clone(),
                 if console {
@@ -658,6 +745,7 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE boards ADD COLUMN rail TEXT",
         "ALTER TABLE boards ADD COLUMN stamps TEXT",
         "ALTER TABLE agents ADD COLUMN effort TEXT",
+        "ALTER TABLE boards ADD COLUMN decisions TEXT",
     ] {
         if let Err(e) = conn.execute(stmt, []) {
             if !e.to_string().contains("duplicate column") {
@@ -665,6 +753,17 @@ fn additive_columns(conn: &Connection) -> Result<()> {
             }
         }
     }
+    // Project files (PROPOSALS-2026-11-A §5): the manifest, synced, and
+    // what this node last saw in each project folder.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_files(
+           project TEXT NOT NULL, path TEXT NOT NULL, entry TEXT NOT NULL,
+           PRIMARY KEY(project, path));
+         CREATE TABLE IF NOT EXISTS project_disk(
+           project TEXT NOT NULL, path TEXT NOT NULL, sha TEXT NOT NULL,
+           size INTEGER NOT NULL, mtime REAL NOT NULL,
+           PRIMARY KEY(project, path));",
+    )?;
     // Ambient notices (PROPOSALS-2026-11-A §A-3): the urgency CHECK cannot
     // be altered in place, so a store made before v0.53 rebuilds the
     // table once, rows and indexes kept.
@@ -2014,7 +2113,7 @@ impl BusStore {
     pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps FROM boards ORDER BY updated_at DESC",
+            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps, decisions FROM boards ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -2051,6 +2150,9 @@ impl BusStore {
                         .and_then(|q| serde_json::from_str(&q).ok()),
                     stamps: r
                         .get::<_, Option<String>>(13)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    decisions: r
+                        .get::<_, Option<String>>(14)?
                         .and_then(|q| serde_json::from_str(&q).ok()),
                 })
             })?
@@ -2104,10 +2206,10 @@ impl BusStore {
         let j = |v: &Option<serde_json::Value>| v.as_ref().map(|q| q.to_string());
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps, decisions)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7,
-               bench=?8, tab_order=?9, status=?10, charter=?11, notes=?12, rail=?13, stamps=?14",
+               bench=?8, tab_order=?9, status=?10, charter=?11, notes=?12, rail=?13, stamps=?14, decisions=?15",
             params![
                 b.id,
                 b.name,
@@ -2122,7 +2224,8 @@ impl BusStore {
                 j(&b.charter),
                 j(&b.notes),
                 j(&b.rail),
-                j(&b.stamps)
+                j(&b.stamps),
+                j(&b.decisions)
             ],
         )?;
         Ok(())
@@ -2159,6 +2262,146 @@ impl BusStore {
             }
         }
         format!("{acc:016x}")
+    }
+
+    // --------------------------------------------------------- project files
+
+    /// The manifest (PROPOSALS-2026-11-A §5): every entry of one project,
+    /// or of all, deleted ones included.
+    pub fn file_entries(&self, project: Option<&str>) -> Result<Vec<crate::projfiles::FileEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT entry FROM project_files WHERE (?1 IS NULL OR project = ?1) ORDER BY project, path",
+        )?;
+        let rows = stmt
+            .query_map(params![project], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|t| serde_json::from_str(&t).ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn file_entry(
+        &self,
+        project: &str,
+        path: &str,
+    ) -> Result<Option<crate::projfiles::FileEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let t: Option<String> = conn
+            .query_row(
+                "SELECT entry FROM project_files WHERE project = ?1 AND path = ?2",
+                params![project, path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(t.and_then(|t| serde_json::from_str(&t).ok()))
+    }
+
+    pub fn put_file_entry(&self, e: &crate::projfiles::FileEntry) -> Result<()> {
+        self.hlc_observe(e.at);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO project_files(project, path, entry) VALUES(?1, ?2, ?3)
+             ON CONFLICT(project, path) DO UPDATE SET entry = ?3",
+            params![e.project, e.path, serde_json::to_string(e)?],
+        )?;
+        Ok(())
+    }
+
+    /// A digest over the whole manifest; rides the roster like boards'.
+    pub fn project_files_digest(&self) -> String {
+        let mut acc: u64 = 0xcbf29ce484222325;
+        let conn = self.conn.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare("SELECT entry FROM project_files ORDER BY project, path")
+        else {
+            return String::new();
+        };
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map(|it| it.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+        for text in rows {
+            for byte in text.as_bytes() {
+                acc ^= *byte as u64;
+                acc = acc.wrapping_mul(0x100000001b3);
+            }
+        }
+        format!("{acc:016x}")
+    }
+
+    /// What this node last saw (or wrote) in a project folder: path →
+    /// (sha, size, mtime).
+    pub fn disk_state(
+        &self,
+        project: &str,
+    ) -> Result<std::collections::HashMap<String, (String, u64, f64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT path, sha, size, mtime FROM project_disk WHERE project = ?1")?;
+        let rows = stmt
+            .query_map(params![project], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)? as u64,
+                        r.get::<_, f64>(3)?,
+                    ),
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn set_disk_state(
+        &self,
+        project: &str,
+        path: &str,
+        st: Option<(&str, u64, f64)>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        match st {
+            Some((sha, size, mtime)) => conn.execute(
+                "INSERT INTO project_disk(project, path, sha, size, mtime) VALUES(?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(project, path) DO UPDATE SET sha = ?3, size = ?4, mtime = ?5",
+                params![project, path, sha, size as i64, mtime],
+            )?,
+            None => conn.execute(
+                "DELETE FROM project_disk WHERE project = ?1 AND path = ?2",
+                params![project, path],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// The newest undelivered ambient message to `recipient` on `thread`
+    /// whose body starts with `prefix`, to grow in place (§5's digest).
+    pub fn pending_ambient(
+        &self,
+        recipient: &str,
+        thread: &str,
+        prefix: &str,
+    ) -> Result<Option<(i64, String)>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT id, body FROM messages WHERE recipient = ?1 AND thread = ?2 AND urgency = 'ambient'
+                   AND delivered_at IS NULL AND substr(body, 1, length(?3)) = ?3
+                 ORDER BY id DESC LIMIT 1",
+                params![recipient, thread, prefix],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn set_message_body(&self, id: i64, body: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET body = ?2 WHERE id = ?1",
+            params![id, body],
+        )?;
+        Ok(())
     }
 
     // ----------------------------------------------------- plugin registry
@@ -3544,6 +3787,7 @@ mod plugin_library_tests {
             notes: None,
             rail: None,
             stamps: None,
+            decisions: None,
             updated_at: 1.0,
             deleted: false,
         })
@@ -3567,6 +3811,33 @@ mod plugin_library_tests {
             s.boards(false).unwrap()[0].tab_order.clone().unwrap(),
             serde_json::json!(["keep@pw"])
         );
+    }
+
+    #[test]
+    fn decisions_merge_as_a_set() {
+        use serde_json::json;
+        let a = json!({ "id": "p", "name": "P", "decisions": [{ "id": "d1", "at": 1.0, "by": "x", "text": "one", "pinned": true }],
+                        "stamps": { "decisions": 5.0, "name": 1.0 }, "updated_at": 5.0 });
+        let b = json!({ "id": "p", "name": "P", "decisions": [{ "id": "d2", "at": 2.0, "by": "y", "text": "two", "pinned": true }],
+                        "stamps": { "decisions": 6.0, "name": 1.0 }, "updated_at": 6.0 });
+        // Each side takes the other's: both decisions, either way round.
+        let ab = merge_board_json(Some(&a), &b, false, 7.0);
+        let ba = merge_board_json(Some(&b), &a, false, 7.0);
+        assert_eq!(ab["decisions"].as_array().unwrap().len(), 2);
+        assert_eq!(ab["decisions"], ba["decisions"]);
+        // An unpin (a later edit) wins over the pinned copy.
+        let unpin = json!({ "id": "p", "decisions": [{ "id": "d1", "at": 1.0, "by": "x", "text": "one", "pinned": false, "edited": 9.0 }] });
+        let c = merge_board_json(Some(&ab), &unpin, true, 9.5);
+        let d1 = c["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "d1")
+            .unwrap()
+            .clone();
+        assert_eq!(d1["pinned"], json!(false));
+        let again = merge_board_json(Some(&c), &a, false, 10.0);
+        assert_eq!(again["decisions"], c["decisions"]);
     }
 
     #[test]

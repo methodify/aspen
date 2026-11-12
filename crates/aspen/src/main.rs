@@ -625,6 +625,9 @@ async fn main() -> Result<()> {
             // TLS: keep a leaf from the mesh root while a listener is
             // beyond loopback (docs/TLS.md).
             aspen_node::tls::spawn_loop(node.inner.clone());
+            // Project files: fetch, write and watch each member project's
+            // folder; keep the repo links (PROPOSALS-2026-11-A §5).
+            aspen_node::projfiles::spawn_loop(node.inner.clone());
             // daemon.json is written by serve() once the port is bound and
             // removed here only if it is still ours — a failed bind must not
             // clobber a healthy daemon's state file.

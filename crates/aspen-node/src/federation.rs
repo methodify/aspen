@@ -57,6 +57,9 @@ pub struct RemoteAgent {
     /// When it last worked (its transcript's mtime), epoch seconds.
     #[serde(default)]
     pub last_active: Option<f64>,
+    /// Its role: the first line of its charter (PROPOSALS-2026-11-A §A-4).
+    #[serde(default)]
+    pub role: Option<String>,
     /// The effort the operator chose (A-10); None is the model's default.
     #[serde(default)]
     pub effort: Option<String>,
@@ -146,6 +149,9 @@ pub fn op_capability(op: &str) -> Capability {
         | "bookmarks"
         | "plugins_effective"
         | "boards"
+        | "project_files"
+        | "project_blob"
+        | "project_activity"
         | "plugin_registry"
         | "plugins_registry_view"
         | "plugins_status"
@@ -1126,6 +1132,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                 "harness": a.harness,
                 "last_active": inner.last_active(a),
                 "effort": inner.store.agent_effort(&a.name),
+                "role": a.charter.as_deref().map(crate::projects::role_line).filter(|r| !r.is_empty()),
                 "mcp": live.as_ref().map(|m| crate::node::mcp_summary(m)),
                 "plugins": live.as_ref().map(|m| json!(m.plugins)),
                 "plugin_updates": match (live.as_ref(), inner.data_dir.as_deref()) {
@@ -1167,6 +1174,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
         "tls_ca": mesh.and_then(|m| inner.mesh().and_then(|st| st.tls_ca_of(m)))
             .or_else(|| inner.mesh().and_then(|st| st.tls_ca_of(&st.mesh_name()))),
         "boards_digest": if for_primary { Some(inner.store.boards_digest()) } else { None },
+        "project_files_digest": if for_primary { Some(inner.store.project_files_digest()) } else { None },
         "plugins_digest": if for_primary { Some(inner.store.plugin_registry_digest()) } else { None },
         "templates_digest": if for_primary { Some(inner.store.templates_digest()) } else { None },
         "harness_defaults_digest": if for_primary { Some(inner.store.harness_defaults_digest()) } else { None },
@@ -1714,6 +1722,15 @@ async fn link_loop(
                             });
                         }
                     }
+                    if let Some(d) = payload.get("project_files_digest").and_then(|d| d.as_str()) {
+                        if d != inner.store.project_files_digest() {
+                            let inner2 = inner.clone();
+                            let peer2 = peer.to_owned();
+                            tokio::spawn(async move {
+                                sync_project_files_from(&inner2, &peer2).await;
+                            });
+                        }
+                    }
                     if let Some(d) = payload.get("templates_digest").and_then(|d| d.as_str()) {
                         if d != inner.store.templates_digest() {
                             let inner2 = inner.clone();
@@ -2019,6 +2036,9 @@ fn exposure_precheck(
         && matches!(
             op,
             "boards"
+                | "project_files"
+                | "project_blob"
+                | "project_activity"
                 | "plugin_registry"
                 | "plugins_sync"
                 | "plugins_registry_view"
@@ -2453,6 +2473,28 @@ async fn serve_api_req(
                 .unwrap_or_default()))
         }
         "boards" => Ok(json!(node.inner.store.boards(true)?)),
+        "project_files" => Ok(json!(node.inner.store.file_entries(None)?)),
+        "project_blob" => {
+            let sha = body
+                .get("sha")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("missing sha"))?;
+            let offset = body.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+            crate::projfiles::blob_piece(&node.inner, sha, offset)
+        }
+        "project_activity" => {
+            let id = body
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("missing id"))?;
+            Ok(json!({ "messages": node
+                .inner
+                .store
+                .project_messages(id, 200)?
+                .iter()
+                .map(|m| m.to_json())
+                .collect::<Vec<_>>() }))
+        }
         "plugin_registry" => Ok(crate::plugins::registry_tables(&node.inner)),
         "plugins_status" => Ok(crate::plugins::node_status(&node.inner)),
         "plugins_sync" => {
@@ -3431,6 +3473,19 @@ async fn sync_boards_from(inner: &Arc<NodeInner>, peer: &str) {
         "boards",
         "boards",
         |b: &crate::store::Board| crate::boards::upsert_and_notify(inner, b).unwrap_or(false),
+    )
+    .await;
+}
+
+/// Pull a peer's project-file manifest and merge it entry by entry
+/// (PROPOSALS-2026-11-A §5); the blobs follow on their own.
+async fn sync_project_files_from(inner: &Arc<NodeInner>, peer: &str) {
+    pull_table(
+        inner,
+        peer,
+        "project_files",
+        "project files",
+        |e: &crate::projfiles::FileEntry| crate::projfiles::merge_incoming(inner, e),
     )
     .await;
 }

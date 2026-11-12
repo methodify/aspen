@@ -733,6 +733,41 @@ export type ProjectStatus = "active" | "paused" | "archived";
 export type ProjectActivityItem =
   | { ts: number; kind: "event"; event: string; detail: Record<string, unknown> }
   | { ts: number; kind: "message"; message: BusMessage };
+/** A decision the team pinned (PROPOSALS-2026-11-A §5). */
+export interface ProjectDecision {
+  id: string;
+  at: number;
+  by: string;
+  text: string;
+  pinned?: boolean;
+  edited?: number;
+}
+/** One path in a project's files (§5). */
+export interface ProjectFile {
+  project: string;
+  path: string;
+  rev: string;
+  sha: string;
+  size: number;
+  by: string;
+  node: string;
+  at: number;
+  history: { sha: string; size: number; by: string; at: number }[];
+  conflict?: boolean;
+  /** This node holds the content. */
+  here?: boolean;
+}
+export interface ProjectFiles {
+  files: ProjectFile[];
+  total: number;
+  limit: number;
+  /** The folder on the console's node, when a member is there. */
+  folder: string | null;
+}
+export interface ProjectSearch {
+  files: { path: string; lines: { n: number; text: string }[] }[];
+  messages: BusMessage[];
+}
 export interface BenchEntry {
   agent: string;
   /** Epoch seconds it was benched. */
@@ -761,6 +796,8 @@ export interface Board {
   rail?: { shown?: boolean; order?: number } | null;
   /** Each field's hybrid-clock stamp (A-9); the node's to set. */
   stamps?: Record<string, number> | null;
+  /** The team's decisions (§5): a set merged by id. */
+  decisions?: ProjectDecision[] | null;
   /** A dynamic board: panes are whatever matches. */
   query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;
@@ -1100,6 +1137,23 @@ export interface TemplateSpec {
   board?: { id: string; mode: "fill" | "right" | "down" } | null;
   title?: string;
 }
+/** A project template (PROPOSALS-2026-11-A §5): a charter and the roles
+ *  to start, each in its repo on its node. */
+export interface ProjectRole {
+  name: string;
+  repo: string;
+  node?: string;
+  harness?: Harness;
+  model?: string;
+  effort?: string;
+  charter?: string;
+}
+export interface ProjectTemplateSpec {
+  kind: "project";
+  charter?: string;
+  roles: ProjectRole[];
+}
+export const isProjectTemplate = (t: Template): boolean => (t.spec as { kind?: string }).kind === "project";
 export interface Template {
   id: string;
   name: string;
@@ -1684,6 +1738,29 @@ const enc = encodeURIComponent;
 /** What the other names on a transcript get when one keeps it. */
 export type OthersGet = "copy" | "fresh" | "merge";
 
+/** Bytes at an API path, as a Blob with its media type: through the
+ *  tunnel when attached, else straight from the node. */
+async function blobAt(p: string): Promise<Blob> {
+  if (tunnel.enabled) {
+    const r = await tunnel.http("GET", p);
+    if (r.status < 200 || r.status >= 300) throw new ApiError(r.status, r.body ?? `${r.status}`);
+    const type = r.content_type ?? "application/octet-stream";
+    if (r.body_b64) {
+      const bin = atob(r.body_b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type });
+    }
+    return new Blob([r.body ?? ""], { type });
+  }
+  const token = nodeToken();
+  const headers = new Headers();
+  if (token) headers.set("X-Aspen-Token", token);
+  const res = await fetch(`${apiBase()}${p}`, { headers });
+  if (!res.ok) throw new ApiError(res.status, (await res.text()) || res.statusText);
+  return res.blob();
+}
+
 export const api = {
   node: () => request<NodeInfo>("/api/node"),
 
@@ -1836,6 +1913,26 @@ export const api = {
     return r;
   },
   projectActivity: (id: string) => request<{ items: ProjectActivityItem[] }>(`/api/boards/${enc(id)}/activity`),
+  projectPost: (id: string, body: string, kind: "message" | "decision" = "message") =>
+    post<{ ok: boolean; notes: string[] }>(`/api/boards/${enc(id)}/post`, { body, kind }),
+  projectDecision: (id: string, text: string) => post<{ ok: boolean }>(`/api/boards/${enc(id)}/decisions`, { text }),
+  projectDecisionPin: (id: string, did: string, pinned: boolean) =>
+    post<{ ok: boolean }>(`/api/boards/${enc(id)}/decisions/${enc(did)}`, { pinned }),
+  projectFiles: (id: string) => request<ProjectFiles>(`/api/boards/${enc(id)}/files`),
+  /** A project file's bytes (an earlier version by sha). */
+  projectFileBlob: (id: string, path: string, v?: string) =>
+    blobAt(`/api/boards/${enc(id)}/files/raw?path=${enc(path)}${v ? `&v=${enc(v)}` : ""}`),
+  projectFileUpload: async (id: string, path: string, data: Blob) => {
+    const buf = new Uint8Array(await data.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return post<{ ok: boolean; entry: ProjectFile }>(`/api/boards/${enc(id)}/files/upload`, { path, data_b64: btoa(bin) });
+  },
+  projectFileDelete: (id: string, path: string) =>
+    request<{ ok: boolean }>(`/api/boards/${enc(id)}/files?path=${enc(path)}`, { method: "DELETE" }),
+  projectFileRestore: (id: string, path: string, sha: string) =>
+    post<{ ok: boolean }>(`/api/boards/${enc(id)}/files/restore`, { path, sha }),
+  projectSearch: (id: string, q: string) => request<ProjectSearch>(`/api/boards/${enc(id)}/search?q=${enc(q)}`),
   setEffort: (name: string, effort: string | null) => post<{ ok: boolean }>(`/api/agents/${enc(name)}/effort`, { effort }),
   deleteBoard: async (id: string) => {
     const r = await request<{ ok: boolean }>(`/api/boards/${enc(id)}`, { method: "DELETE" });
@@ -1849,7 +1946,7 @@ export const api = {
   putTemplate: (id: string, name: string, spec: TemplateSpec) =>
     request<{ ok: boolean; template: Template }>(`/api/templates/${enc(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, spec }) }),
   deleteTemplate: (id: string) => request<{ ok: boolean }>(`/api/templates/${enc(id)}`, { method: "DELETE" }),
-  templateSpawn: (id: string, body: { node?: string; name?: string; repo?: string; charter?: string; model?: string; extra_args?: string; skip_permissions?: boolean; title?: string; acknowledge_trust?: boolean }) =>
+  templateSpawn: (id: string, body: { node?: string; name?: string; repo?: string; charter?: string; model?: string; extra_args?: string; skip_permissions?: boolean; title?: string; acknowledge_trust?: boolean; role?: number }) =>
     post<TemplateSpawnResult>(`/api/templates/${enc(id)}/spawn`, body),
   evacuate: (node: string, to: string) => post<unknown>(`/api/mesh/${enc(node)}/evacuate`, { to }),
   movePreflight: (name: string, to: string) => request<MovePreflight>(`/api/agents/${enc(name)}/move/preflight?to=${enc(to)}`),

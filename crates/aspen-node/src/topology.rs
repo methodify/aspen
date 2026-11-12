@@ -481,6 +481,14 @@ pub fn guidance(inner: &Arc<NodeInner>, agent: &str) -> String {
     // A project's charter sits between the harness's instructions and the
     // agent's own charter (PROPOSALS-2026-11-A §A-2): what the whole team
     // is for, then this agent's part in it.
+    let folders: std::collections::HashMap<String, String> = if n.boards.is_empty() {
+        Default::default()
+    } else {
+        crate::projects::of_agent(inner, agent)
+            .into_iter()
+            .filter_map(|b| crate::projfiles::folder_for(inner, agent, &b).map(|f| (b.name, f)))
+            .collect()
+    };
     for (b, ms, charter) in &n.boards {
         let mut line = if ms.is_empty() {
             format!("On the operator's project “{b}” (alone there right now).")
@@ -496,6 +504,11 @@ pub fn guidance(inner: &Arc<NodeInner>, agent: &str) -> String {
         if let Some(c) = charter {
             line.push_str(&format!(
                 "\nThe project's charter (for everyone on it):\n{c}"
+            ));
+        }
+        if let Some(f) = folders.get(b) {
+            line.push_str(&format!(
+                "\nIts shared files: {f} (project_post reaches the whole team; project_get shows it)."
             ));
         }
         lines.push(line);

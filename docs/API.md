@@ -277,6 +277,26 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - `DELETE /api/boards/{id}` — tombstone (the `deleted` field stamped; propagates across the mesh).
 - Roster field `boards_digest` (a hash over every row, values and stamps); mesh op `boards` returns
   every row including tombstones.
+- A project the team shares (PROPOSALS-2026-11-A §5, BOARDS.md §13):
+  - `POST /api/boards/{id}/post {body, kind?: "message"|"decision", urgency?}` — the operator posts
+    on the team thread (`kind: "decision"` also pins it). `{ok, notes}`.
+  - `POST /api/boards/{id}/decisions {text}` — pin a decision; `POST /api/boards/{id}/decisions/{did}
+    {pinned}` — pin or unpin one. Boards carry `decisions: [{id, at, by, text, pinned, edited?}]`,
+    merged as a set by id.
+  - `GET /api/boards/{id}/files` — `{files: [entry + here], total, limit, folder}`; an entry is
+    `{project, path, rev, sha, size, by, node, at, ancestors, history: [{sha, size, by, at}],
+    conflict, deleted}`.
+  - `GET /api/boards/{id}/files/raw?path=…[&v=sha]` — the bytes (fetched from a peer when missing).
+  - `PUT /api/boards/{id}/files?path=…` (raw body) or `POST /api/boards/{id}/files/upload {path,
+    data_b64}` — write as the operator; `DELETE /api/boards/{id}/files?path=…`;
+    `POST /api/boards/{id}/files/restore {path, sha}`.
+  - `GET /api/boards/{id}/search?q=` — `{files: [{path, lines: [{n, text}]}], messages}`.
+  - `GET /api/boards/{id}/activity` gathers the team thread from every reachable peer (mesh op
+    `project_activity`).
+  - Mesh: roster field `project_files_digest`; ops `project_files` (the manifest),
+    `project_blob {sha, offset}` (`{size, data}` base64, 1 MB pieces). Roster agents carry `role`
+    (their charter's first line).
+  - `POST /api/templates/{id}/spawn` takes `role` (an index into a project template's `roles`).
 - `POST /api/agents/{name}/effort` `{effort: low|medium|high|xhigh|max|null}` — the effort a Claude
   agent runs at: kept for its next start (`--effort`), set now on a running one with the harness's
   own `/effort` (no model turn); `null` is the model's default. Agents carry `effort`.

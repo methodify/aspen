@@ -56,7 +56,7 @@ store,adapter,event}.rs` (the vocabulary and traits),
   the chosen `decision_id`. The operator broker (`permit.rs`) is
   harness-neutral: questions always reach the operator, the bus tools
   are auto-allowed by name, everything else by kind.
-- `ToolProvider` — the bus tools (`bus_send`, `bus_status`, `bus_inbox`)
+- `ToolProvider` — the bus tools (`bus_send`, `bus_status`, `bus_inbox`) and, since v0.54, the project tools (`project_list`, `project_get`, `project_post`, `project_files`, `project_read`, `project_write`, `project_delete`; BOARDS.md §13)
   as `list()` + `call()`; Claude mounts it as its in-process MCP server
   (`McpServer::from_provider`); Codex will reach it through a stdio bridge.
 

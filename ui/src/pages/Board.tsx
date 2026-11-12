@@ -6,17 +6,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type Agent, type Board, type BoardNode, type BoardPane, type BusMessage, type OpenPrompt } from "../api";
+import { api, isProjectTemplate, type Agent, type Board, type BoardNode, type BoardPane, type BusMessage, type OpenPrompt, type ProjectTemplateSpec, type Template, type TemplateSpec } from "../api";
 import { useAppData } from "../App";
 import { useHotkeys } from "../hotkeys";
 import { BoardMeter, ErrorBar, Meter, presenceOf, relTime } from "../components";
 import { scoped } from "../profiles";
 import { boardStatus, describeStatus, matchQuery, projectStatus, type DynamicQuery } from "../boardStatus";
-import { ActivityView, CharterNotesView, TeamView, type TeamMember } from "./projectViews";
+import { ActivityView, CharterNotesView, FilesView, SearchView, TeamView, type TeamMember } from "./projectViews";
 import { MenuGroup, MenuRow } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
-import { addMember, benchPane, benchSwap, boardPatch, mapTree, panesOf, removePane, stageBench, unbench } from "../boardOps";
+import { addMember, benchPane, benchSwap, boardPatch, mapTree, panesOf, placeOnBoardId, removePane, stageBench, unbench } from "../boardOps";
 import { useTrustedStart } from "../trust";
 import "./board.css";
 
@@ -140,7 +140,7 @@ export default function BoardPage() {
   // The project's view (PROPOSALS-2026-11-A §A-6), in the URL so a reload
   // or a link keeps it.
   const [params, setParams] = useSearchParams();
-  const view = (["team", "charter", "activity"] as const).find((v) => v === params.get("view")) ?? "desk";
+  const view = (["team", "charter", "activity", "files", "search"] as const).find((v) => v === params.get("view")) ?? "desk";
   const setView = (v: string) =>
     setParams((p) => {
       const n = new URLSearchParams(p);
@@ -210,6 +210,8 @@ export default function BoardPage() {
   // it (A-9), and a re-read replaces it while nothing local is pending.
   const savedRef = useRef<Board | null>(null);
   const pending = useRef(false);
+  // A write made outside the patch path (a decision) asks for a re-read.
+  const [reloadTick, setReloadTick] = useState(0);
 
   // Load, and re-read every 10 s: an edit made on another console (a
   // charter, a status, the rail) shows up here.
@@ -237,7 +239,7 @@ export default function BoardPage() {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [id]);
+  }, [id, reloadTick]);
 
   useEffect(() => {
     const onResize = () => setNarrow(window.innerWidth < 900);
@@ -903,6 +905,8 @@ export default function BoardPage() {
               ["team", `team · ${members.length}`],
               ["charter", board.charter ? "charter & notes" : "charter & notes ·"],
               ["activity", "activity"],
+              ["files", "files"],
+              ["search", "search"],
             ] as const
           ).map(([k, label]) => (
             <button key={k} type="button" role="tab" aria-pressed={view === k} aria-selected={view === k} className={view === k ? "on" : ""} onClick={() => setView(k)} title={k === "charter" && !board.charter ? "no charter yet" : undefined}>
@@ -1006,6 +1010,32 @@ export default function BoardPage() {
             pin
           </button>
         )}
+        {!dynamic && (
+          <button
+            className="btn sm"
+            title="a template of this project: its charter and each member's role (name, repo, node, harness, effort, charter), to start the same team again"
+            onClick={() => {
+              const roles = members
+                .map((m) => agentOf(m.agent))
+                .filter((a): a is Agent => !!a)
+                .map((a) => ({
+                  name: a.bare ?? a.name.split("@")[0]!,
+                  repo: a.channel,
+                  node: a.node,
+                  harness: a.harness,
+                  effort: a.effort ?? undefined,
+                  charter: a.charter ?? undefined,
+                }));
+              const tname = `${board.name} team`;
+              void api
+                .putTemplate(crypto.randomUUID().slice(0, 8), tname, { kind: "project", charter: board.charter ?? undefined, roles } as unknown as TemplateSpec)
+                .then(() => setErr(`saved as the template “${tname}” (${roles.length} role${roles.length === 1 ? "" : "s"}); start it from New project`))
+                .catch((e) => setErr(e instanceof Error ? e.message : "failed to save the template"));
+            }}
+          >
+            save as template
+          </button>
+        )}
         <button
           className="btn sm"
           onClick={() => {
@@ -1052,7 +1082,15 @@ export default function BoardPage() {
         </div>
       ) : view === "activity" ? (
         <div className="project-view">
-          <ActivityView id={board.id} />
+          <ActivityView board={board} readOnly={archived} onChanged={() => setReloadTick((t) => t + 1)} />
+        </div>
+      ) : view === "files" ? (
+        <div className="project-view">
+          <FilesView board={board} readOnly={archived} />
+        </div>
+      ) : view === "search" ? (
+        <div className="project-view">
+          <SearchView board={board} members={members.map((m) => m.agent)} />
         </div>
       ) : tabsMode ? (
         <div className="board-tabs-wrap">
@@ -1366,6 +1404,59 @@ export function BoardsPage() {
   const [name, setName] = useState("");
   const [dyn, setDyn] = useState<DynamicQuery>({ state: "live", style: "grid" });
   const [dynName, setDynName] = useState("");
+  // Start a team from a project template (PROPOSALS-2026-11-A §5).
+  const [ptemplates, setPtemplates] = useState<Template[]>([]);
+  const [ptid, setPtid] = useState("");
+  const [ptName, setPtName] = useState("");
+  const [ptLines, setPtLines] = useState<string[]>([]);
+  const [ptBusy, setPtBusy] = useState(false);
+  const [ptMade, setPtMade] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .templates()
+      .then((ts) => setPtemplates(ts.filter((t) => !t.deleted && isProjectTemplate(t))))
+      .catch(() => setPtemplates([]));
+  }, []);
+  async function fromTemplate() {
+    const t = ptemplates.find((x) => x.id === ptid);
+    if (!t) return;
+    const spec = t.spec as unknown as ProjectTemplateSpec;
+    const id = crypto.randomUUID().slice(0, 8);
+    const nm = ptName.trim() || t.name.replace(/ team$/, "");
+    setPtBusy(true);
+    const lines: string[] = [];
+    const say = (l: string) => {
+      lines.push(l);
+      setPtLines([...lines]);
+    };
+    try {
+      await api.putBoard({ id, name: nm, layout: emptyPane(), updated_at: Date.now() / 1000 });
+      if (spec.charter) await api.patchBoard(id, { charter: spec.charter });
+      say(`made “${nm}”`);
+      let failed = 0;
+      for (const [i, role] of (spec.roles ?? []).entries()) {
+        say(`starting @${role.name} in ${role.repo}${role.node ? ` on ${role.node}` : ""}…`);
+        try {
+          const r = await api.templateSpawn(t.id, { role: i, node: role.node });
+          await placeOnBoardId(id, r.name, "fill");
+          lines[lines.length - 1] = `@${role.name}: started and on the desk`;
+        } catch (e) {
+          failed++;
+          lines[lines.length - 1] = `@${role.name}: not started — ${e instanceof Error ? e.message : String(e)}`;
+        }
+        setPtLines([...lines]);
+      }
+      if (failed === 0) nav(`/project/${id}`);
+      else {
+        say("the rest went ahead");
+        setPtMade(id);
+      }
+    } catch (e) {
+      say(e instanceof Error ? e.message : "failed");
+    } finally {
+      setPtBusy(false);
+    }
+  }
 
   async function load() {
     try {
@@ -1517,6 +1608,34 @@ export function BoardsPage() {
           <textarea className="mono" rows={6} style={{ width: "100%", maxWidth: 720 }} placeholder="paste a board's JSON (from export)" value={importText} onChange={(e) => setImportText(e.target.value)} />
           <button className="btn primary sm" onClick={() => void importJson()} disabled={!importText.trim()}>import</button>
         </div>
+      )}
+      {ptemplates.length > 0 && (
+        <>
+          <h2>New project from a template</h2>
+          <p className="dim">A saved team: the charter, then each role started in its repo on its node and put on the desk. A role that cannot start is reported; the rest go ahead.</p>
+          <div className="boards-new">
+            <select value={ptid} onChange={(e) => setPtid(e.target.value)} aria-label="project template">
+              <option value="">choose a template…</option>
+              {ptemplates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} · {((t.spec as unknown as ProjectTemplateSpec).roles ?? []).length} roles
+                </option>
+              ))}
+            </select>
+            <input placeholder="project name" value={ptName} onChange={(e) => setPtName(e.target.value)} />
+            <button className="btn primary sm" disabled={!ptid || ptBusy} onClick={() => void fromTemplate()}>
+              {ptBusy ? "starting…" : "start the team"}
+            </button>
+          </div>
+          {ptLines.length > 0 && (
+            <div className="mono-meta project-template-log">
+              {ptLines.map((l, i) => (
+                <div key={i}>{l}</div>
+              ))}
+              {ptMade && <Link to={`/project/${ptMade}`}>open the project</Link>}
+            </div>
+          )}
+        </>
       )}
       <h2>New dynamic board</h2>
       <p className="dim">Panes are whatever matches, laid out automatically; they come and go with the fleet.</p>

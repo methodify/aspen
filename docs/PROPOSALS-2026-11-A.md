@@ -1,6 +1,6 @@
 # Proposal 2026-11-A — Projects: a place for work, not a split screen
 
-**Status:** accepted 2026-11-11 (answers in §4); tranche 1 shipped as v0.53.0 (BOARDS.md §12, SESSION_BAR.md, API.md). As built: rail ordering is drag on the Projects page; effort is Claude-only for now (Codex sets reasoning effort differently). The hero is
+**Status:** accepted 2026-11-11 (answers in §4); tranche 1 shipped as v0.53.0 (BOARDS.md §12, SESSION_BAR.md, API.md). Tranche 2 built as §5 describes (BOARDS.md §13), for v0.54.0. As built: rail ordering is drag on the Projects page; effort is Claude-only for now (Codex sets reasoning effort differently). The hero is
 **projects**; riding along are effort, the workflow viewer, and which
 projects the rail shows. A-12 is off the slate (backlog): what the
 operator wants is a durable pause that keeps unfinished agents' state,
@@ -325,3 +325,89 @@ this rides in this slate.
    visible to and authorable by the operator (backlog M-1).
 7. Workflow stop/resume: **backlog** (W-1), until the harness can pause
    with unfinished agents' state kept.
+
+## 5. Tranche 2, as designed (2026-11-11)
+
+The details §2 left open, decided before building.
+
+### The team thread and the tools (A-4)
+
+- `project_post` fans one post out to every other member (desk and
+  bench, every node), thread `project:<id>`, one post id. Urgency is
+  `normal` (wakes an idle member) or `notice`; never ambient.
+- The operator posts on the same thread from the project's Activity.
+- **Activity spans the mesh.** A post lives on the sender's node and on
+  each recipient's, so the console's node may hold none of it. Its
+  Activity asks each reachable peer (`project_activity`) and merges the
+  messages by post id; events stay this node's (every node records the
+  same lifecycle).
+- A project is named by its id or its name (any case); an agent on one
+  project may leave it out.
+- `bus_status` gains a *Your projects* section: each project, its
+  status, the team with each member's role and state, and the folder.
+
+### Decisions (A-8)
+
+- A synced field `decisions`: `[{id, at, by, text, pinned}]`. It is a
+  set, not a value: a merge takes the union by id, and for one id the
+  later edit (`edited`, else `at`). Two members deciding at once both land.
+- `project_post` with `kind: "decision"` posts and adds one; the
+  operator adds, or unpins, from Activity. Pinned decisions head
+  Activity and the briefing.
+
+### Project files (A-5)
+
+- **Manifest:** a table of `(project, path)` → `{rev, sha, size, by,
+  node, at, ancestors[≤32], history[≤10], conflict, deleted}`, synced by digest like
+  boards (`project_files_digest`, op `project_files`).
+- **Blobs:** `<data>/blobs/<sha256>`. A node with a member of the
+  project fetches what it lacks at once (op `project_blob`, 1 MB
+  pieces, from the writer's node first). A node without one (the
+  console's, perhaps) fetches on first read.
+- **Merging a path:** the incoming entry wins if it descends from ours
+  (its ancestors hold our revision); ours stays if ours descends
+  from it. Otherwise they were written apart: the later `(at, rev)`
+  keeps the name, the other is kept as `name (from @x).ext`, marked
+  *both kept*. Every node decides the same way, so they converge.
+- **The folder:** `<data>/projects/<id>/` on a member's node, the files
+  as of the manifest. Linked into each local member's repo as
+  `.aspen/projects/<slug>` (a symlink; a junction on Windows), `.aspen/`
+  added to `.git/info/exclude`; the link goes when the repo has no
+  member left. Only links Aspen made are ever removed.
+- **Watching:** each such folder is scanned every few seconds (size and
+  modification time, hashed only when they change). A change found
+  there becomes a version by the one local member mid-turn, if exactly
+  one is, else by `(folder on <node>)`. A file removed there is
+  deleted. Editor droppings (`.swp`, `~`, `.DS_Store`, lock files) are
+  ignored.
+- **Limits:** relative paths, no `..`, 64 MB per project, nothing made
+  executable.
+- **Notice:** one ambient digest per member, grown in place while it
+  waits: *"Files changed in “X”: specs/api.md (@arch)"*. Never to the
+  writer.
+- **Tools:** `project_files`, `project_read` (text; a binary file is
+  named with its folder path), `project_write` (text), `project_delete`.
+  The console lists, uploads, downloads, deletes, and restores from a
+  path's history.
+
+### Briefing (A-8)
+
+A member's joining notice carries the charter, the team (role, node),
+the folder and the file list (first 40), and the pinned decisions.
+
+### Templates (A-8)
+
+- A **project template** is a template whose spec is
+  `{kind: "project", charter, roles: [{name, repo, node?, harness?,
+  model?, effort?, charter?}]}`.
+- *Save as template* on a project takes its charter and each member's.
+  *New project → from a template* makes the project, then starts each
+  role (on its node, in its repo) and puts it on the desk; a role that
+  cannot start is reported, the rest go ahead.
+- Session-template pickers skip project templates.
+
+### Search (A-8)
+
+The project's Search: its members' transcripts (the mesh search,
+narrowed to the members), its files (text, by line) and its team
+thread.

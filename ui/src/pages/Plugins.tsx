@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
-import { api, type MarketSource, type PluginRegistry, type PluginRule, type CatalogPlugin, type MeshInfo, type Template, type TemplateSpec, type Board, type NodePluginStatus } from "../api";
+import { api, isProjectTemplate, type ProjectTemplateSpec, type MarketSource, type PluginRegistry, type PluginRule, type CatalogPlugin, type MeshInfo, type Template, type TemplateSpec, type Board, type NodePluginStatus } from "../api";
 import { useAppData } from "../App";
 import { ErrorBar, relTime } from "../components";
 import { libraryIndex, pluginKey, PluginFinder, ProvidesChips, searchPlugins, titleOf, whereItLives } from "../pluginLib";
@@ -818,6 +818,11 @@ function TemplatesSection({ catalog, lib }: { catalog: CatalogPlugin[]; lib: Map
         {templates.map((t) => (
           <div className="mk-row" key={t.id}>
             <span className="mono mk-name">{t.name}</span>
+            {isProjectTemplate(t) ? (
+              <span className="mono-meta">
+                project team · {((t.spec as unknown as ProjectTemplateSpec).roles ?? []).map((r) => `@${r.name}`).join(", ") || "no roles"}
+              </span>
+            ) : (
             <span className="mono-meta">
               {t.spec.repo ? `#${t.spec.repo}` : "any repo"}
               {t.spec.harness ? ` · ${t.spec.harness}` : ""}
@@ -826,9 +831,16 @@ function TemplatesSection({ catalog, lib }: { catalog: CatalogPlugin[]; lib: Map
               {t.spec.plugins?.length ? ` · ${t.spec.plugins.map((p) => p.plugin).join(", ")}` : ""}
               {t.spec.board ? ` · board ${boards.find((b) => b.id === t.spec.board?.id)?.name ?? t.spec.board.id}` : ""}
             </span>
+            )}
             <span style={{ flex: 1 }} />
-            <button className="btn primary sm" onClick={() => nav(`/?new=${encodeURIComponent(t.id)}`)} title="open the new-session panel with this template filled in">start…</button>
-            <button className="btn sm" onClick={() => setEditing(t)}>edit</button>
+            {isProjectTemplate(t) ? (
+              <button className="btn primary sm" onClick={() => nav("/projects")} title="start the team from New project, on the Projects page">start…</button>
+            ) : (
+              <>
+                <button className="btn primary sm" onClick={() => nav(`/?new=${encodeURIComponent(t.id)}`)} title="open the new-session panel with this template filled in">start…</button>
+                <button className="btn sm" onClick={() => setEditing(t)}>edit</button>
+              </>
+            )}
             {removeAsk === t.id ? (
               <span className="inline-confirm">
                 <span className="mono-meta">remove {t.name}?</span>

@@ -271,6 +271,34 @@ pub async fn serve(
         )
         .route("/repos/export", post(post_bundle_export))
         .route("/boards/{id}/activity", get(get_project_activity))
+        // A project the team shares (PROPOSALS-2026-11-A §5).
+        .route("/boards/{id}/post", post(post_project_post))
+        .route("/boards/{id}/decisions", post(post_project_decision))
+        .route(
+            "/boards/{id}/decisions/{did}",
+            post(post_project_decision_pin),
+        )
+        .route(
+            "/boards/{id}/files",
+            get(get_project_files)
+                .put(put_project_file)
+                .delete(delete_project_file)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    aspen_node::projfiles::MAX_PROJECT_BYTES as usize + 1024 * 1024,
+                )),
+        )
+        .route("/boards/{id}/files/raw", get(get_project_file_raw))
+        .route(
+            "/boards/{id}/files/upload",
+            post(post_project_file_upload).layer(axum::extract::DefaultBodyLimit::max(
+                (aspen_node::projfiles::MAX_PROJECT_BYTES as usize) * 4 / 3 + 1024 * 1024,
+            )),
+        )
+        .route(
+            "/boards/{id}/files/restore",
+            post(post_project_file_restore),
+        )
+        .route("/boards/{id}/search", get(get_project_search))
         // Moving repos around the mesh (PROPOSALS-2026-10-U).
         .route("/fs/list", get(get_fs_list))
         .route(
@@ -2945,13 +2973,9 @@ async fn get_project_activity(State(s): S, Path(id): Path<String>) -> impl IntoR
         .into_iter()
         .map(|e| json!({ "ts": e.ts, "kind": "event", "event": e.kind, "detail": e.detail }))
         .collect();
-    items.extend(
-        store
-            .project_messages(&id, 300)
-            .unwrap_or_default()
-            .iter()
-            .map(|m| json!({ "ts": m.created_at, "kind": "message", "message": message_json(m) })),
-    );
+    for m in project_messages_mesh(&s, &id).await {
+        items.push(json!({ "ts": m["created_at"], "kind": "message", "message": m }));
+    }
     items.sort_by(|a, b| {
         a["ts"]
             .as_f64()
@@ -2959,6 +2983,424 @@ async fn get_project_activity(State(s): S, Path(id): Path<String>) -> impl IntoR
             .total_cmp(&b["ts"].as_f64().unwrap_or(0.0))
     });
     Json(json!({ "items": items }))
+}
+
+/// A project's team thread from this node and every reachable peer: a
+/// post lives on its sender's node and each recipient's, so the console's
+/// node may hold none of it (PROPOSALS-2026-11-A §5). One row per post.
+async fn project_messages_mesh(s: &AppState, id: &str) -> Vec<Value> {
+    let mut all: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .project_messages(id, 300)
+        .unwrap_or_default()
+        .iter()
+        .map(message_json)
+        .collect();
+    if let Some(mesh) = s.node.inner.mesh() {
+        let calls = mesh
+            .peers()
+            .into_iter()
+            .filter(|p| mesh.link_up(&p.cert.node))
+            .map(|peer| {
+                let mesh = mesh.clone();
+                let id = id.to_owned();
+                async move {
+                    mesh.api_call(
+                        &peer.cert.node,
+                        "project_activity",
+                        "",
+                        json!({ "id": id }),
+                        std::time::Duration::from_secs(8),
+                    )
+                    .await
+                    .ok()
+                }
+            });
+        for v in futures_util::future::join_all(calls)
+            .await
+            .into_iter()
+            .flatten()
+        {
+            all.extend(
+                v.get("messages")
+                    .and_then(|m| m.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    // The same post seen from several nodes: its time and text agree (the
+    // sender is spelled from each node's side: `far@q` there, `far@q@b`
+    // here). This node's copy comes first and stays.
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|m| {
+        let key = format!(
+            "{:.3}|{}|{}",
+            m["created_at"].as_f64().unwrap_or(0.0),
+            aspen_node::addr::bare(m["sender"].as_str().unwrap_or("")),
+            m["body"].as_str().unwrap_or("")
+        );
+        seen.insert(key)
+    });
+    all
+}
+
+#[derive(Deserialize)]
+struct ProjectPostBody {
+    body: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    urgency: Option<String>,
+}
+
+fn project_board(s: &AppState, id: &str) -> Option<aspen_node::store::Board> {
+    s.node
+        .inner
+        .store
+        .boards(false)
+        .ok()?
+        .into_iter()
+        .find(|b| b.id == id)
+}
+
+/// POST /api/boards/{id}/post — the operator posts on the team thread.
+async fn post_project_post(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<ProjectPostBody>,
+) -> impl IntoResponse {
+    let Some(board) = project_board(&s, &id) else {
+        return err(StatusCode::NOT_FOUND, "no such project").into_response();
+    };
+    let decision = b.kind.as_deref() == Some("decision");
+    match aspen_node::projects::post(
+        &s.node.inner,
+        "operator",
+        &board,
+        &b.body,
+        b.urgency.as_deref().unwrap_or("normal"),
+        decision,
+    ) {
+        Ok(notes) => Json(json!({ "ok": true, "notes": notes })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DecisionBody {
+    text: String,
+}
+
+/// POST /api/boards/{id}/decisions — the operator pins a decision.
+async fn post_project_decision(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<DecisionBody>,
+) -> impl IntoResponse {
+    let Some(board) = project_board(&s, &id) else {
+        return err(StatusCode::NOT_FOUND, "no such project").into_response();
+    };
+    if b.text.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "an empty decision").into_response();
+    }
+    match aspen_node::projects::add_decision(&s.node.inner, &board, "operator", b.text.trim()) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PinBody {
+    pinned: bool,
+}
+
+/// POST /api/boards/{id}/decisions/{did} `{pinned}` — pin or unpin.
+async fn post_project_decision_pin(
+    State(s): S,
+    Path((id, did)): Path<(String, String)>,
+    Json(b): Json<PinBody>,
+) -> impl IntoResponse {
+    let Some(board) = project_board(&s, &id) else {
+        return err(StatusCode::NOT_FOUND, "no such project").into_response();
+    };
+    let Some(mut d) = board
+        .decisions
+        .as_ref()
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.iter().find(|d| d["id"].as_str() == Some(did.as_str())))
+        .cloned()
+    else {
+        return err(StatusCode::NOT_FOUND, "no such decision").into_response();
+    };
+    d["pinned"] = json!(b.pinned);
+    d["edited"] = json!(s.node.inner.store.hlc_now());
+    match aspen_node::boards::patch_and_notify(
+        &s.node.inner,
+        &json!({ "id": id, "decisions": [d] }),
+    ) {
+        Ok(_) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProjectFileQuery {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    v: Option<String>,
+}
+
+/// GET /api/boards/{id}/files — the manifest (current entries, both-kept
+/// copies marked, each with its history), the total and the limit.
+async fn get_project_files(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
+    let inner = &s.node.inner;
+    let files = aspen_node::projfiles::listing(inner, &id);
+    let total: u64 = files.iter().map(|e| e.size).sum();
+    let present: Vec<bool> = files
+        .iter()
+        .map(|e| aspen_node::projfiles::has_blob(inner, &e.sha))
+        .collect();
+    let rows: Vec<Value> = files
+        .iter()
+        .zip(present)
+        .map(|(e, here)| {
+            let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
+            v["here"] = json!(here);
+            v
+        })
+        .collect();
+    let folder = aspen_node::projfiles::folder(inner, &id)
+        .filter(|f| f.is_dir())
+        .map(|f| f.to_string_lossy().into_owned());
+    Json(json!({
+        "files": rows,
+        "total": total,
+        "limit": aspen_node::projfiles::MAX_PROJECT_BYTES,
+        "folder": folder,
+    }))
+}
+
+fn guess_type(path: &str, bytes: &[u8]) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "json" => "application/json; charset=utf-8",
+        "html" | "htm" => "text/plain; charset=utf-8",
+        _ if aspen_node::projfiles::as_text(bytes).is_some() => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET /api/boards/{id}/files/raw?path=…[&v=sha] — the content (an
+/// earlier version by sha), fetched from a peer when this node lacks it.
+async fn get_project_file_raw(
+    State(s): S,
+    Path(id): Path<String>,
+    Query(q): Query<ProjectFileQuery>,
+) -> impl IntoResponse {
+    let Some(path) = q.path else {
+        return err(StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    match aspen_node::projfiles::read(&s.node.inner, &id, &path, q.v.as_deref()).await {
+        Ok((e, bytes)) => {
+            let ct = guess_type(&e.path, &bytes);
+            let name = e.path.rsplit('/').next().unwrap_or("file").replace('"', "");
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, ct.to_owned()),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        format!("inline; filename=\"{name}\""),
+                    ),
+                    (
+                        axum::http::header::HeaderName::from_static("x-content-type-options"),
+                        "nosniff".to_owned(),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
+    }
+}
+
+/// PUT /api/boards/{id}/files?path=… — the body is the file; written as
+/// the operator.
+async fn put_project_file(
+    State(s): S,
+    Path(id): Path<String>,
+    Query(q): Query<ProjectFileQuery>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let Some(path) = q.path else {
+        return err(StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    let inner = s.node.inner.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        aspen_node::projfiles::write(&inner, &id, &path, &body, "operator")
+    })
+    .await;
+    match r {
+        Ok(Ok(e)) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true, "entry": e })).into_response()
+        }
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct UploadBody {
+    path: String,
+    data_b64: String,
+}
+
+/// POST /api/boards/{id}/files/upload `{path, data_b64}` — the same write
+/// as PUT, in a JSON body (the console's way, through a relay too).
+async fn post_project_file_upload(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<UploadBody>,
+) -> impl IntoResponse {
+    let bytes = match aspen_node::projfiles::decode_b64(&b.data_b64) {
+        Ok(x) => x,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("not base64: {e}")).into_response(),
+    };
+    let inner = s.node.inner.clone();
+    let path = b.path.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        aspen_node::projfiles::write(&inner, &id, &path, &bytes, "operator")
+    })
+    .await;
+    match r {
+        Ok(Ok(e)) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true, "entry": e })).into_response()
+        }
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn delete_project_file(
+    State(s): S,
+    Path(id): Path<String>,
+    Query(q): Query<ProjectFileQuery>,
+) -> impl IntoResponse {
+    let Some(path) = q.path else {
+        return err(StatusCode::BAD_REQUEST, "missing path").into_response();
+    };
+    match aspen_node::projfiles::delete(&s.node.inner, &id, &path, "operator") {
+        Ok(()) => {
+            aspen_node::federation::broadcast_roster(&s.node.inner);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RestoreBody {
+    path: String,
+    sha: String,
+}
+
+/// POST /api/boards/{id}/files/restore `{path, sha}` — an earlier version
+/// becomes the current one (a new version; nothing is lost).
+async fn post_project_file_restore(
+    State(s): S,
+    Path(id): Path<String>,
+    Json(b): Json<RestoreBody>,
+) -> impl IntoResponse {
+    let inner = s.node.inner.clone();
+    let bytes = match aspen_node::projfiles::read(&inner, &id, &b.path, Some(&b.sha)).await {
+        Ok((_, bytes)) => bytes,
+        Err(e) => return err(StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
+    };
+    match aspen_node::projfiles::write(&inner, &id, &b.path, &bytes, "operator") {
+        Ok(e) => {
+            aspen_node::federation::broadcast_roster(&inner);
+            Json(json!({ "ok": true, "entry": e })).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProjectSearchQuery {
+    q: String,
+}
+
+/// GET /api/boards/{id}/search?q= — the project's files (text, by line)
+/// and its team thread. Its members' transcripts come from /api/search,
+/// narrowed by the console.
+async fn get_project_search(
+    State(s): S,
+    Path(id): Path<String>,
+    Query(q): Query<ProjectSearchQuery>,
+) -> impl IntoResponse {
+    let needle = q.q.trim().to_lowercase();
+    if needle.chars().count() < 2 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "the query needs at least two characters",
+        )
+        .into_response();
+    }
+    let inner = &s.node.inner;
+    let mut files = Vec::new();
+    for e in aspen_node::projfiles::listing(inner, &id) {
+        if e.size > 4 * 1024 * 1024 {
+            continue;
+        }
+        let path_hit = e.path.to_lowercase().contains(&needle);
+        let Ok(bytes) = aspen_node::projfiles::read_blob(inner, &e.sha) else {
+            if path_hit {
+                files.push(json!({ "path": e.path, "lines": [] }));
+            }
+            continue;
+        };
+        let Some(text) = aspen_node::projfiles::as_text(&bytes) else {
+            if path_hit {
+                files.push(json!({ "path": e.path, "lines": [] }));
+            }
+            continue;
+        };
+        let lines: Vec<Value> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.to_lowercase().contains(&needle))
+            .take(8)
+            .map(|(i, l)| json!({ "n": i + 1, "text": l.chars().take(300).collect::<String>() }))
+            .collect();
+        if path_hit || !lines.is_empty() {
+            files.push(json!({ "path": e.path, "lines": lines }));
+        }
+    }
+    let messages: Vec<Value> = project_messages_mesh(&s, &id)
+        .await
+        .into_iter()
+        .filter(|m| {
+            m["body"]
+                .as_str()
+                .is_some_and(|b| b.to_lowercase().contains(&needle))
+        })
+        .collect();
+    Json(json!({ "files": files, "messages": messages })).into_response()
 }
 
 /// PUT /api/boards/{id}: the console's write, a patch of the fields the
@@ -4826,6 +5268,8 @@ struct TemplateSpawnBody {
     extra_args: Option<String>,
     skip_permissions: Option<bool>,
     title: Option<String>,
+    /// A project template's role to start (PROPOSALS-2026-11-A §5).
+    role: Option<u64>,
     #[serde(default)]
     acknowledge_trust: bool,
 }
@@ -4841,6 +5285,7 @@ async fn post_template_spawn(
     let overrides = json!({
         "name": b.name, "repo": b.repo, "charter": b.charter, "model": b.model,
         "extra_args": b.extra_args, "skip_permissions": b.skip_permissions, "title": b.title,
+        "role": b.role,
     });
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
         let Some(mesh) = s.node.inner.mesh() else {
@@ -4870,17 +5315,19 @@ async fn post_template_spawn(
     }
     // Trust gate: resolve the repo the way the node will, then check it.
     let repo_ref = b.repo.clone().or_else(|| {
-        s.node
+        let t = s
+            .node
             .inner
             .store
             .templates(false)
             .ok()?
             .into_iter()
-            .find(|t| t.id == id || t.name == id)?
-            .spec
-            .get("repo")?
-            .as_str()
-            .map(str::to_owned)
+            .find(|t| t.id == id || t.name == id)?;
+        let spec = match b.role {
+            Some(i) => t.spec.get("roles")?.get(i as usize)?.clone(),
+            None => t.spec,
+        };
+        spec.get("repo")?.as_str().map(str::to_owned)
     });
     if let Some(r) = repo_ref.as_deref() {
         let path = if std::path::Path::new(r).is_absolute() {
@@ -6837,21 +7284,7 @@ async fn post_reload(State(s): S, Path(name): Path<String>) -> impl IntoResponse
 // ------------------------------------------------------------------------ bus
 
 fn message_json(m: &aspen_node::StoredMessage) -> Value {
-    json!({
-        "id": m.id,
-        "sender": m.sender,
-        "recipient": m.recipient,
-        "to_display": m.to_display,
-        "urgency": m.urgency,
-        "body": m.body,
-        "thread": m.thread,
-        "record": m.record_ref,
-        "created_at": m.created_at,
-        "delivered_at": m.delivered_at,
-        "delivered_via": m.delivered_via,
-        "ingested_at": m.ingested_at,
-        "post": m.post,
-    })
+    m.to_json()
 }
 
 #[derive(Deserialize)]

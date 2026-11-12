@@ -24,6 +24,8 @@ pub mod pending;
 pub mod permit;
 pub mod plugins;
 pub mod procs;
+pub mod projects;
+pub mod projfiles;
 pub mod push;
 pub mod release;
 pub mod replicate;

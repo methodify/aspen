@@ -1,7 +1,7 @@
 // The new-session panel: name + repo + charter/model/args/skip, through
 // the trust gate. Shared by Now and the Mesh list.
 import { useEffect, useState } from "react";
-import { api, type Harness, type HarnessInfo, type StartAgentRequest, type Template } from "./api";
+import { api, isProjectTemplate, type Harness, type HarnessInfo, type StartAgentRequest, type Template } from "./api";
 import { type TrustedStart } from "./trust";
 import { ErrorBar } from "./components";
 
@@ -37,7 +37,7 @@ export function NewSessionPanel({
   const [harness, setHarness] = useState<Harness | "">("");
 
   useEffect(() => {
-    api.templates().then(setTemplates).catch(() => setTemplates([]));
+    api.templates().then((ts) => setTemplates(ts.filter((t) => !isProjectTemplate(t)))).catch(() => setTemplates([]));
     api.node().then((n) => setHarnesses(n.harnesses ?? [])).catch(() => setHarnesses([]));
   }, []);
   // Choosing a template fills the form (everything stays editable); the

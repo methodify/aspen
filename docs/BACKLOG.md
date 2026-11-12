@@ -46,6 +46,18 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-11: projects, tranche 2 (v0.54.0, queued)
+
+Proposal 2026-11-A §5 (as designed before building).
+- **Agent project tools** (A-4): `project_list`, `project_get`, `project_post`, and the files tools; `bus_status` and spawn instructions name each project's folder; roster agents carry a role.
+- **The team thread** across the mesh: Activity gathers posts from every reachable node; the operator posts there.
+- **Decisions** (A-8): a synced set merged by id; pinned at the head of Activity and in briefings.
+- **Project files** (A-5): manifest plus blobs, synced and pulled in pieces; a folder per member node linked into member repos (`.aspen/projects/<slug>`, excluded locally); a 3 s scan turns folder edits into versions; writes made apart are both kept the same way on every node; ten versions per path and restore; one growing ambient digest per member.
+- **Briefing** on joining: charter, team with roles, decisions, folder, files.
+- **Project templates:** save a project's team; start one with each role on its node.
+- **Search** within a project: files, team thread, members' transcripts.
+- Verified on a two-node rig (isolated homes, real `claude` processes): a project across a and b linked `.aspen/projects/tiller` into both repos with git clean; joining briefings on both nodes; a tool write on a appeared in b's linked folder; an edit through b's link became a version on a; simultaneous writes to one path on a and b converged to the same manifest on both with the other version kept as `plan (from a).md`; a delete in a's folder removed b's copy; posts and a decision from b showed once in a's Activity; restore; a two-role template started one role per node with its charter and effort; the console's Activity, Files (preview, history), Search and Projects pages in both themes and at phone width.
+
 ## Shipped — 2026-11-11: projects, tranche 1 (v0.53.0)
 
 Proposal 2026-11-A (PROPOSALS-2026-11-A.md), the operator's calls in its §4.

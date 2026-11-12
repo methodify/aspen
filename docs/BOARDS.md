@@ -283,3 +283,40 @@ A board is now a **project**: a place for work, its layout the **desk**.
   them (in the rail, drag to order; not in the rail; paused; archived) with an *in rail* toggle on
   each. A hidden project with someone waiting on the operator shows as *hidden · N waiting*.
 
+## 13. A project the team shares (v0.54, PROPOSALS-2026-11-A §5)
+
+- **Agent tools** (beside the bus tools, both harnesses): `project_list`, `project_get` (charter,
+  team with roles, nodes and states, decisions, the folder), `project_post` (one post to every other
+  member on thread `project:<id>`, `normal` or `notice`; `kind: "decision"` also pins it),
+  `project_files`, `project_read`, `project_write`, `project_delete`. A project is named by id or
+  name; an agent on one project may leave it out. `bus_status` and the spawn instructions name the
+  folder.
+- **The team thread** shows in the project's Activity, gathered from every reachable node (a post
+  lives on its sender's node and each recipient's). The operator posts there too.
+- **Decisions** are a synced set (`decisions`, merged by id; an unpin is a later edit). Pinned ones
+  head Activity and every new member's briefing.
+- **The briefing:** a member's joining notice (ambient) carries the charter, the team with roles,
+  the decisions, the folder and the file list.
+- **Project files:** a manifest synced like boards (per-path entries with revisions, ancestors and
+  the last 10 versions) and content-addressed blobs (`<data>/blobs/`), pulled in 1 MB pieces.
+  - On a node with a member, a real folder `<data>/projects/<id>/`, linked into each local member's
+    repo as `.aspen/projects/<slug>` (a symlink; a junction on Windows) with `/.aspen/` added to
+    `.git/info/exclude`. The link goes when the repo has no member left; only Aspen's own links
+    are removed.
+  - The folder is scanned every 3 s: a change there is a version (by the node's only member, or the
+    one mid-turn, else `(folder on <node>)`); a file removed there is deleted. Editor droppings are
+    ignored.
+  - Two writes to one path made apart: the later `(at, rev)` keeps the name, the other is kept as
+    `name (from @x).ext`, marked *both kept*. A write on top of a version this folder had not seen
+    yet is kept beside it the same way.
+  - 64 MB per project; relative paths only; nothing is made executable.
+  - Members (not the writer) get one ambient digest that grows while it waits, a line per path.
+  - The console's Files view lists, previews (text, images), edits text, uploads (button or drop),
+    downloads, deletes and restores from a path's history.
+- **Search** within a project: its files (by line), its team thread, and its members' transcripts
+  (the mesh search, narrowed to the team).
+- **Project templates:** *save as template* takes the charter and each member's role (name, repo,
+  node, harness, effort, charter); *New project from a template* makes the project and starts each
+  role on its node (`POST /api/templates/{id}/spawn {role}`), placing it on the desk. Session-template
+  pickers leave project templates out.
+

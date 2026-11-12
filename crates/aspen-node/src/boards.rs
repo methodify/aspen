@@ -225,17 +225,15 @@ fn notify(inner: &Arc<NodeInner>, before: Option<&Board>, after: &Board) {
                 )
             }
         } else if !was {
-            let charter = charter(after)
-                .map(|c| format!("\n\nIts charter:\n{c}"))
-                .unwrap_or_default();
-            if mates_new.is_empty() {
-                format!("[project] The operator put you on the project \u{201c}{name}\u{201d} (alone there so far).{charter}")
+            let head = if mates_new.is_empty() {
+                format!("[project] The operator put you on the project \u{201c}{name}\u{201d} (alone there so far).")
             } else {
                 format!(
-                    "[project] The operator put you on the project \u{201c}{name}\u{201d} with {}: they are your team for it; bus_status lists them.{charter}",
+                    "[project] The operator put you on the project \u{201c}{name}\u{201d} with {}: they are your team for it.",
                     list(&mates_new)
                 )
-            }
+            };
+            format!("{head}{}", briefing(inner, after, agent))
         } else {
             let joined: Vec<&String> = mates_new
                 .iter()
@@ -266,4 +264,76 @@ fn notify(inner: &Arc<NodeInner>, before: Option<&Board>, after: &Board) {
         };
         say(agent, body);
     }
+}
+
+/// What a new member needs to be up to speed without asking anyone
+/// (PROPOSALS-2026-11-A §A-8): the charter, the team, the files and the
+/// decisions so far.
+fn briefing(inner: &Arc<NodeInner>, b: &Board, agent: &str) -> String {
+    let mut out = String::new();
+    if let Some(c) = charter(b) {
+        let c = if c.len() > CHARTER_NOTICE_MAX {
+            let mut end = CHARTER_NOTICE_MAX;
+            while !c.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &c[..end])
+        } else {
+            c.to_owned()
+        };
+        out.push_str(&format!("\n\nIts charter:\n{c}"));
+    }
+    let team: Vec<String> = crate::projects::team(inner, b)
+        .into_iter()
+        .filter(|m| m["agent"].as_str() != Some(agent))
+        .map(|m| {
+            let role = m["role"]
+                .as_str()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default();
+            format!(
+                "- @{}{role} [{}]",
+                crate::addr::bare(m["agent"].as_str().unwrap_or("?")),
+                m["node"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    if !team.is_empty() {
+        out.push_str(&format!("\n\nThe team:\n{}", team.join("\n")));
+    }
+    let decisions = crate::projects::decisions(b);
+    if !decisions.is_empty() {
+        out.push_str("\n\nDecided so far:");
+        for d in decisions.iter().rev().take(10).rev() {
+            out.push_str(&format!(
+                "\n- {} (@{})",
+                d["text"].as_str().unwrap_or(""),
+                crate::addr::bare(d["by"].as_str().unwrap_or("?"))
+            ));
+        }
+    }
+    let files = crate::projfiles::listing(inner, &b.id);
+    let folder = crate::projfiles::folder_for(inner, agent, b);
+    if !files.is_empty() || folder.is_some() {
+        out.push_str("\n\nShared files");
+        if let Some(f) = &folder {
+            out.push_str(&format!(" ({f})"));
+        }
+        if files.is_empty() {
+            out.push_str(": none yet.");
+        } else {
+            out.push(':');
+            for e in files.iter().take(40) {
+                out.push_str(&format!("\n- {}", e.path));
+            }
+            if files.len() > 40 {
+                out.push_str(&format!(
+                    "\n- and {} more (project_files)",
+                    files.len() - 40
+                ));
+            }
+        }
+    }
+    out.push_str("\n\nproject_post reaches the whole team; project_get shows all of this again.");
+    out
 }
