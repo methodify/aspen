@@ -46,7 +46,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
-## Shipped — 2026-11-11: projects, tranche 2 (v0.54.0, queued)
+## Shipped — 2026-11-11: projects, tranche 2 (v0.54.0)
 
 Proposal 2026-11-A §5 (as designed before building).
 - **Agent project tools** (A-4): `project_list`, `project_get`, `project_post`, and the files tools; `bus_status` and spawn instructions name each project's folder; roster agents carry a role.
