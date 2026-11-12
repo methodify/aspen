@@ -48,7 +48,7 @@
 
   /* session */
   .session-bar { gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
-  .session-bar .session-name { font-size: 0.85rem; max-width: 34vw; }
+  .session-bar .session-name { font-size: 0.85rem; max-width: 34vw; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
   .session-bar .session-title, .session-bar .session-repo, .session-bar .ctl-model-inuse, .session-bar .ctx-bar { display: none; }
   .session-bar .harness-chip { display: none; }
   /* the ⋯ menu is a bottom sheet */
@@ -60,6 +60,8 @@
   .tool-card, .bubble { max-width: calc(100% - var(--chat-gutter)); }
   .catchup { padding: 6px var(--sp-3); }
   .catchup-row { flex-wrap: wrap; }
+  .catchup-recap:not(.open) { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .catchup-recap { flex-basis: 100%; }
 
   /* need-cards: the verbs drop to their own line, right-aligned */
   .need-cue { row-gap: 6px; }

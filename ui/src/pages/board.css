@@ -207,3 +207,16 @@
   .project-act-when { text-align: left; }
   .project-views { overflow-x: auto; max-width: 100%; }
 }
+/* A phone: the header is one line (where, how it is, ⋯) over the views,
+   one scrolling row; the rest is in the ⋯ menu, so the team has the room. */
+@media (max-width: 720px) {
+  .board-head { gap: 6px; padding: 4px 10px; row-gap: 4px; }
+  .board-head .board-name { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .board-head .project-views { order: 10; flex: 1 0 100%; display: flex; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .board-head .project-views::-webkit-scrollbar { display: none; }
+  .board-head .project-views button { flex: 1 0 auto; padding: 4px 8px; }
+  .board-head .inline-confirm { flex-basis: 100%; }
+  /* One member at a time here: the tab names it, and splitting, pairing
+     and zooming are desktop verbs. */
+  .board-page .session-bar .bar-trailing, .board-page .session-bar .pane-index { display: none; }
+}

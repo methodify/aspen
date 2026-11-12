@@ -46,6 +46,12 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-12: room for the team on a phone (v0.54.1, queued)
+
+- The project header on a phone is two rows (name and status with ⋯, then the views in one scrolling row) instead of four; its verbs moved into a ⋯ sheet (save as template, export and delete there at every width).
+- A pane's bar on a phone shows the bare name, ellipsized, without the layout verbs; the catch-up recap folds to three lines.
+- Verified at 390 px in the dark theme (header 61 px, the sheet's groups, the name whole) and at 1200 px (status verbs kept, ⋯ added).
+
 ## Shipped — 2026-11-11: projects, tranche 2 (v0.54.0)
 
 Proposal 2026-11-A §5 (as designed before building).

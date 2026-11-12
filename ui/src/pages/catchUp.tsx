@@ -201,6 +201,8 @@ export function CatchUpBar({
     void ask();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askSignal]);
+  // On a phone the recap folds to three lines; a tap shows it all.
+  const [recapOpen, setRecapOpen] = useState(false);
   const parts: string[] = [];
   if (cu.turns) parts.push(`${cu.turns} turn${cu.turns === 1 ? "" : "s"}`);
   if (cu.tools) parts.push(`${cu.tools} tool use${cu.tools === 1 ? "" : "s"}${cu.toolNames.length ? ` (${cu.toolNames.map(([n, c]) => `${n} ×${c}`).join(", ")})` : ""}`);
@@ -238,7 +240,13 @@ export function CatchUpBar({
       {(recap !== null || err) && (
         <div className="catchup-row">
           <span className="mono-meta">recap</span>
-          {err ? <span className="error-text mono-meta">{err}</span> : <span className="catchup-recap">{recap}</span>}
+          {err ? (
+            <span className="error-text mono-meta">{err}</span>
+          ) : (
+            <span className={`catchup-recap${recapOpen ? " open" : ""}`} onClick={() => setRecapOpen((o) => !o)} title={recapOpen ? "fold" : "show it all"}>
+              {recap}
+            </span>
+          )}
           {canRecap && (
             <label className="mono-meta catchup-auto" title="ask for a recap automatically when you come back after five minutes or more">
               <input

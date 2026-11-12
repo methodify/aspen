@@ -13,7 +13,7 @@ import { BoardMeter, ErrorBar, Meter, presenceOf, relTime } from "../components"
 import { scoped } from "../profiles";
 import { boardStatus, describeStatus, matchQuery, projectStatus, type DynamicQuery } from "../boardStatus";
 import { ActivityView, CharterNotesView, FilesView, SearchView, TeamView, type TeamMember } from "./projectViews";
-import { MenuGroup, MenuRow } from "../sessionBar";
+import { MenuGroup, MenuRow, SessionMenu } from "../sessionBar";
 import { SessionView } from "./Session";
 import View from "./View";
 import { addMember, benchPane, benchSwap, boardPatch, mapTree, panesOf, placeOnBoardId, removePane, stageBench, unbench } from "../boardOps";
@@ -164,6 +164,16 @@ export default function BoardPage() {
   const [picker, setPicker] = useState<string | null>(null); // pane id being filled
   const [attention, setAttention] = useState<Set<string>>(new Set());
   const [narrow, setNarrow] = useState(() => window.innerWidth < 900);
+  // A phone: the header folds into one line and the ⋯ menu.
+  const [phone, setPhone] = useState(() => window.innerWidth <= 720);
+  const [projMenu, setProjMenu] = useState(false);
+  const [projMenuAt, setProjMenuAt] = useState<{ top: number; left: number; right: number } | null>(null);
+  const openProjMenu = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    setProjMenuAt({ top: r.bottom + 4, left: r.left, right: Math.max(8, window.innerWidth - r.right) });
+    setProjMenu((o) => !o);
+  };
+  const closeProjMenu = useCallback(() => setProjMenu(false), []);
   // Tabs or layout (PROPOSALS-2026-10-T §4): per board on this console,
   // the last choice the default for a board never set. Below 900px a
   // board is always tabs.
@@ -242,7 +252,10 @@ export default function BoardPage() {
   }, [id, reloadTick]);
 
   useEffect(() => {
-    const onResize = () => setNarrow(window.innerWidth < 900);
+    const onResize = () => {
+      setNarrow(window.innerWidth < 900);
+      setPhone(window.innerWidth <= 720);
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -870,6 +883,55 @@ export default function BoardPage() {
 
   const zoomed = zoom ? panes.find((p) => p.id === zoom) : null;
 
+  // The project's own verbs (save as template, export, delete, and on a
+  // phone the status ones too) live in its ⋯ menu, so the team gets the
+  // room.
+  const saveTemplate = () => {
+    const roles = members
+      .map((m) => agentOf(m.agent))
+      .filter((a): a is Agent => !!a)
+      .map((a) => ({
+        name: a.bare ?? a.name.split("@")[0]!,
+        repo: a.channel,
+        node: a.node,
+        harness: a.harness,
+        effort: a.effort ?? undefined,
+        charter: a.charter ?? undefined,
+      }));
+    const tname = `${board.name} team`;
+    void api
+      .putTemplate(crypto.randomUUID().slice(0, 8), tname, { kind: "project", charter: board.charter ?? undefined, roles } as unknown as TemplateSpec)
+      .then(() => setErr(`saved as the template “${tname}” (${roles.length} role${roles.length === 1 ? "" : "s"}); start it from New project`))
+      .catch((e) => setErr(e instanceof Error ? e.message : "failed to save the template"));
+  };
+  const exportJson = () => {
+    void navigator.clipboard?.writeText(JSON.stringify(board, null, 2));
+    setErr("project JSON copied to the clipboard");
+  };
+  const benchedNames = new Set(bench.map((e) => agentOf(e.agent)?.name ?? e.agent));
+  const stoppedOnStage = boardStatus(board, agents, waiting).members.filter((a) => !a.live && !a.moved_to && !benchedNames.has(a.name));
+  const startStopped = () => {
+    setReviving(true);
+    setReviveNote(null);
+    void (async () => {
+      let ok = 0;
+      const skipped: string[] = [];
+      for (const a of stoppedOnStage) {
+        try {
+          await api.revive(a.name);
+          ok++;
+        } catch {
+          skipped.push(`@${a.bare ?? a.name.split("@")[0]}`);
+        }
+      }
+      await refreshAgents();
+      setReviving(false);
+      setReviveNote(skipped.length ? `started ${ok}; ${skipped.join(", ")} need a choice — open ${skipped.length === 1 ? "it" : "them"}` : `started ${ok}`);
+    })();
+  };
+  const viewLabel = (k: string): string =>
+    k === "team" ? (phone ? `team ${members.length}` : `team · ${members.length}`) : k === "charter" ? (phone ? "charter" : board.charter ? "charter & notes" : "charter & notes ·") : k;
+
   return (
     <div className="board-page">
       <div className="phone-note">One pane at a time here: pick a session from the strip. Layout editing (splits, pairs) is a desktop verb.</div>
@@ -901,9 +963,9 @@ export default function BoardPage() {
         <span className="seg project-views" role="tablist" aria-label="project view">
           {(
             [
-              ["desk", "desk"],
-              ["team", `team · ${members.length}`],
-              ["charter", board.charter ? "charter & notes" : "charter & notes ·"],
+              ["desk", viewLabel("desk")],
+              ["team", viewLabel("team")],
+              ["charter", viewLabel("charter")],
               ["activity", "activity"],
               ["files", "files"],
               ["search", "search"],
@@ -925,41 +987,23 @@ export default function BoardPage() {
             <>
               <BoardMeter bars={st.bars} label={describeStatus(st)} />
               <span className="mono-meta" title={st.unknown ? `${st.unknown} pane(s) name a session this console cannot see` : undefined}>{describeStatus(st)}</span>
-              {down.length > 0 && !locked && (
+              {down.length > 0 && !locked && !phone && (
                 <button
                   className="btn ghost sm"
                   disabled={reviving}
                   title={`start the stopped sessions on this board: ${down.map((a) => `@${a.bare ?? a.name.split("@")[0]}`).join(", ")}`}
-                  onClick={() => {
-                    setReviving(true);
-                    setReviveNote(null);
-                    void (async () => {
-                      let ok = 0;
-                      const skipped: string[] = [];
-                      for (const a of down) {
-                        try {
-                          await api.revive(a.name);
-                          ok++;
-                        } catch {
-                          skipped.push(`@${a.bare ?? a.name.split("@")[0]}`);
-                        }
-                      }
-                      await refreshAgents();
-                      setReviving(false);
-                      setReviveNote(skipped.length ? `started ${ok}; ${skipped.join(", ")} need a choice — open ${skipped.length === 1 ? "it" : "them"}` : `started ${ok}`);
-                    })();
-                  }}
+                  onClick={startStopped}
                 >
                   {reviving ? "starting…" : `start the stopped (${down.length})`}
                 </button>
               )}
               {reviveNote && <span className="mono-meta">{reviveNote}</span>}
-              {bench.length > 0 && <span className="mono-meta">· {bench.length} benched</span>}
+              {bench.length > 0 && !phone && <span className="mono-meta">· {bench.length} benched</span>}
             </>
           );
         })()}
         <span style={{ flex: 1 }} />
-        {!dynamic && (
+        {!dynamic && !phone && (
           <span className="project-life">
             <label className="mono-meta" title="this project in the rail, on every console (synced)">
               <input type="checkbox" checked={board.rail?.shown !== false} disabled={pstatus !== "active"} onChange={(e) => update((b) => ({ ...b, rail: { ...(b.rail ?? {}), shown: e.target.checked } }))} /> in rail
@@ -980,7 +1024,7 @@ export default function BoardPage() {
             <button type="button" className={viewPref === "tabs" ? "on" : ""} aria-pressed={viewPref === "tabs"} onClick={() => chooseView("tabs")} title="one member at full size, tabs to switch (alt+1…9, alt+[ ])">tabs</button>
           </span>
         )}
-        <label className={`bcast-toggle${broadcast ? " on" : ""}`} title="send the focused pane's messages to every session pane on this board">
+        {!phone && <label className={`bcast-toggle${broadcast ? " on" : ""}`} title="send the focused pane's messages to every session pane on this board">
           <input
             type="checkbox"
             checked={broadcast}
@@ -993,7 +1037,7 @@ export default function BoardPage() {
             }}
           />
           broadcast
-        </label>
+        </label>}
         {bcastAsk && (
           <span className="inline-confirm">
             <span className="mono-meta">every message you send in any pane goes to all {sessionPanes.length} session panes —</span>
@@ -1010,53 +1054,61 @@ export default function BoardPage() {
             pin
           </button>
         )}
-        {!dynamic && (
-          <button
-            className="btn sm"
-            title="a template of this project: its charter and each member's role (name, repo, node, harness, effort, charter), to start the same team again"
-            onClick={() => {
-              const roles = members
-                .map((m) => agentOf(m.agent))
-                .filter((a): a is Agent => !!a)
-                .map((a) => ({
-                  name: a.bare ?? a.name.split("@")[0]!,
-                  repo: a.channel,
-                  node: a.node,
-                  harness: a.harness,
-                  effort: a.effort ?? undefined,
-                  charter: a.charter ?? undefined,
-                }));
-              const tname = `${board.name} team`;
-              void api
-                .putTemplate(crypto.randomUUID().slice(0, 8), tname, { kind: "project", charter: board.charter ?? undefined, roles } as unknown as TemplateSpec)
-                .then(() => setErr(`saved as the template “${tname}” (${roles.length} role${roles.length === 1 ? "" : "s"}); start it from New project`))
-                .catch((e) => setErr(e instanceof Error ? e.message : "failed to save the template"));
-            }}
-          >
-            save as template
-          </button>
-        )}
-        <button
-          className="btn sm"
-          onClick={() => {
-            const data = JSON.stringify(board, null, 2);
-            void navigator.clipboard?.writeText(data);
-            setErr("board JSON copied to the clipboard");
-          }}
-          title="copy this board as JSON"
-        >
-          export
-        </button>
-        {deleteAsk ? (
+        {deleteAsk && (
           <span className="inline-confirm">
             <span className="mono-meta">delete "{board.name}"?</span>
-            <button className="btn sm" onClick={async () => { await api.deleteBoard(board.id).catch(() => {}); nav("/boards"); }}>yes, delete</button>
+            <button className="btn sm" onClick={async () => { await api.deleteBoard(board.id).catch(() => {}); nav("/projects"); }}>yes, delete</button>
             <button className="btn sm" onClick={() => setDeleteAsk(false)}>keep</button>
           </span>
-        ) : (
-          <button className="btn sm" onClick={() => setDeleteAsk(true)}>delete</button>
         )}
+        <button type="button" className="btn ghost sm bar-menu-btn project-menu-btn" aria-haspopup="menu" aria-expanded={projMenu} onClick={(e) => openProjMenu(e.currentTarget)} title="more for this project">⋯</button>
       </div>
+      <SessionMenu open={projMenu} onClose={closeProjMenu} anchor={projMenuAt}>
+        <div className="menu-head">
+          <span className="mono">{board.name}</span>
+          <span className="mono-meta">{pstatus}</span>
+        </div>
+        {phone && !dynamic && (
+          <MenuGroup label="project">
+            <MenuRow
+              label={board.rail?.shown !== false ? "take it out of the rail" : "put it in the rail"}
+              hint="on every console (synced)"
+              disabled={pstatus !== "active"}
+              onClick={() => { setProjMenu(false); update((b) => ({ ...b, rail: { ...(b.rail ?? {}), shown: b.rail?.shown === false } })); }}
+            />
+            {pstatus === "active" ? (
+              <>
+                <MenuRow label="pause" hint="members stay; they hear nothing more until it resumes; it leaves the rail" onClick={() => { setProjMenu(false); update((b) => ({ ...b, status: "paused" })); }} />
+                <MenuRow label="archive" hint="read-only, and no one's team any more" onClick={() => { setProjMenu(false); update((b) => ({ ...b, status: "archived" })); }} />
+              </>
+            ) : (
+              <MenuRow label="resume" onClick={() => { setProjMenu(false); update((b) => ({ ...b, status: null })); }} />
+            )}
+          </MenuGroup>
+        )}
+        {phone && (
+          <MenuGroup label="team">
+            {stoppedOnStage.length > 0 && !locked && (
+              <MenuRow label={reviving ? "starting…" : `start the stopped (${stoppedOnStage.length})`} disabled={reviving} onClick={() => { setProjMenu(false); startStopped(); }} />
+            )}
+            <MenuRow
+              label={broadcast ? "broadcast: on — turn off" : "broadcast to every pane…"}
+              hint="send the focused pane's messages to every session pane"
+              onClick={() => {
+                setProjMenu(false);
+                if (broadcast) setBroadcast(false);
+                else if (bcastArmed) setBroadcast(true);
+                else setBcastAsk(true);
+              }}
+            />
+          </MenuGroup>
+        )}
+        <MenuGroup label="more">
+          {!dynamic && <MenuRow label="save as template" hint="its charter and each member's role, to start the same team again" onClick={() => { setProjMenu(false); saveTemplate(); }} />}
+          <MenuRow label="export" hint="copy this project as JSON" onClick={() => { setProjMenu(false); exportJson(); }} />
+          <MenuRow label="delete…" hint="asks first" onClick={() => { setProjMenu(false); setDeleteAsk(true); }} />
+        </MenuGroup>
+      </SessionMenu>
       <ErrorBar error={err} />
       {archived && <div className="project-banner mono-meta">archived: read-only, and no one's team. <button type="button" className="link" onClick={() => update((b) => ({ ...b, status: null }))}>resume it</button> to work on it again.</div>}
       {view === "team" ? (

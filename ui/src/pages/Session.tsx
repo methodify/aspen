@@ -2952,7 +2952,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       <div className={`session-bar${pane ? " in-pane" : ""}`} {...(pane?.barProps ?? {})}>
         {pane?.leading}
         <PresenceGlyph presence={barPresence(agent, wsState, exited !== null, !!subagent)} />
-        <span className="mono session-name" title={`@${name}${agent ? ` · ${agent.repo ?? `node ${agent.node}`} · #${agent.channel}` : ""}${title ? ` · ${title}` : ""}`}>@{name}</span>
+        <span className="mono session-name" title={`@${name}${agent ? ` · ${agent.repo ?? `node ${agent.node}`} · #${agent.channel}` : ""}${title ? ` · ${title}` : ""}`}>@{pane ? name.split("@")[0] : name}</span>
         {agent?.harness && (
           <span className="chip mono harness-chip" title={`this session runs on ${agent.harness}${modelInUse ? ` · latest reply from ${modelInUse}` : ""}`}>
             {agent.harness}

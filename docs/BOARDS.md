@@ -319,4 +319,9 @@ A board is now a **project**: a place for work, its layout the **desk**.
   node, harness, effort, charter); *New project from a template* makes the project and starts each
   role on its node (`POST /api/templates/{id}/spawn {role}`), placing it on the desk. Session-template
   pickers leave project templates out.
+- **On a phone** (≤ 720 px) the project header is two rows: where (projects / name, status), how
+  the team is, and ⋯; then the views in one scrolling row. Pause, archive, the rail, starting the
+  stopped and broadcast move into ⋯ (a bottom sheet); save as template, export and delete live there
+  at every width. A pane's bar shows the bare name and drops the layout verbs (the tab names the
+  member), and the catch-up recap folds to three lines (tap for all).
 
