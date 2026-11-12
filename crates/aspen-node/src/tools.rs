@@ -438,6 +438,7 @@ fn delivery_note(inner: &Arc<NodeInner>, recipient: &str, urgency: &str) -> Stri
                                 plugins: None,
                                 plugin_updates: None,
                                 last_active: None,
+                                effort: None,
                             }),
                         ))
                     }
@@ -506,7 +507,7 @@ fn bus_status(inner: &Arc<NodeInner>, me: &str) -> Result<String, String> {
         .cloned()
         .chain(neighborhood.links.iter().flat_map(|r| r.targets.clone()))
         .chain(neighborhood.channels.iter().flat_map(|(_, m)| m.clone()))
-        .chain(neighborhood.boards.iter().flat_map(|(_, m)| m.clone()))
+        .chain(neighborhood.boards.iter().flat_map(|(_, m, _)| m.clone()))
         .collect();
     lines.push(
         "Everyone on the bus (addresses as you should write them; * = in your neighborhood):"

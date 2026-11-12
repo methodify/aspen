@@ -398,6 +398,14 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                                     {
                                         a.detail["run_id"] = Value::String(run);
                                     }
+                                    // The script it runs, while it runs: the
+                                    // run's state file (which names it too)
+                                    // is written only when it ends.
+                                    if a.detail.get("script_path").is_none_or(|d| d.is_null()) {
+                                        if let Some(p) = line_after(&text, "Script:") {
+                                            a.detail["script_path"] = Value::String(p);
+                                        }
+                                    }
                                     if let Some(sum) = line_after(&text, "Summary:") {
                                         if a.detail.get("description").is_none_or(|d| d.is_null()) {
                                             a.detail["description"] = Value::String(sum.clone());
@@ -1249,6 +1257,8 @@ mod tests {
         assert_eq!(acts[0].id, "wt1");
         assert_eq!(acts[0].label, "wave-4");
         assert_eq!(acts[0].detail["run_id"], "wf_1e0966ef-8da");
+        // The script it runs, from the launch result, before any state file.
+        assert_eq!(acts[0].detail["script_path"], "x");
         assert_eq!(acts[0].detail["description"], "nine builders");
         assert_eq!(acts[0].status, "completed");
     }

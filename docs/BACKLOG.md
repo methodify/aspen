@@ -39,6 +39,13 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | G-8 | sessions | **Hot reload of a content update** where the harness re-reads plugin dirs (`reload_plugins`), without a restart. | PROPOSALS-2026-09-E.md §3 |
 | P-2 | servicing | Release signing (minisign) before `auto` policy is recommended in public. | SERVICING.md §14 |
 
+## Next: project memory and durable workflow pause (2026-11-11)
+
+| ID | Area | What | Proposal |
+|---|---|---|---|
+| M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
+| W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
+
 ## Shipped — 2026-11-06: a workflow's view holds still (v0.52.2)
 
 - A running workflow's page flipped between *live* and *journal* every few seconds, its phase tabs reshuffled each time, and the selected tab jumped to another phase. The node kept only the latest `task_progress` frame per task, and the harness sends some without the workflow's phases and agents (tokens only): such a frame wiped the list, the next read had no progress and answered from the journal (started phases only, in its own order), and the next full frame brought live back. Frames are now merged (`merge_task_progress`: new fields win, `workflow_progress` entries replace their match by phase index or agent id, the rest kept), so a running workflow stays live. The page keys the selected phase by title (an index meant another phase after a reorder) and keeps one tab order, the first live or state answer's, so the tabs cannot reshuffle whatever the source.

@@ -314,9 +314,130 @@ pub struct Board {
     /// it does not name follow in layout order. The layout does not move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_order: Option<serde_json::Value>,
+    /// A project's life (PROPOSALS-2026-11-A §A-1): active | paused |
+    /// archived. None reads as active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<serde_json::Value>,
+    /// The project's charter, to every member at spawn (A-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charter: Option<serde_json::Value>,
+    /// The operator's notes; never shown to agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<serde_json::Value>,
+    /// The rail: `{shown, order}`, synced like the rest (A-7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rail: Option<serde_json::Value>,
+    /// Field-level last-writer-wins (A-9): each field's hybrid-clock
+    /// stamp. Absent on a row from a node before v0.53.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamps: Option<serde_json::Value>,
     pub updated_at: f64,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// The fields a board merges one by one (PROPOSALS-2026-11-A §A-9).
+pub const BOARD_FIELDS: &[&str] = &[
+    "name",
+    "layout",
+    "query",
+    "pairs",
+    "bench",
+    "tab_order",
+    "status",
+    "charter",
+    "notes",
+    "rail",
+    "deleted",
+];
+
+/// Merge an incoming board (JSON) over the held one, field by field.
+///
+/// - From a **peer**: each field takes the side with the later stamp. A
+///   row with no stamps (a node before v0.53) stamps every field it
+///   carries with its `updated_at`; a field it does not carry is kept,
+///   except `query` and `pairs`, which such a row replaced whole.
+/// - From the **console**: it sends a patch, only the fields the operator
+///   changed (an older console sends the whole board), so a field present
+///   and different is an edit, stamped `now`; a field it does not send is
+///   kept. A console that held a stale copy of a field it did not touch
+///   therefore cannot revert a newer edit made elsewhere.
+pub fn merge_board_json(
+    cur: Option<&serde_json::Value>,
+    inc: &serde_json::Value,
+    console: bool,
+    now: f64,
+) -> serde_json::Value {
+    use serde_json::{json, Map, Value};
+    let null = Value::Null;
+    let stamp_of = |b: &Value, f: &str| -> Option<f64> {
+        b.get("stamps")
+            .and_then(|s| s.get(f))
+            .and_then(|t| t.as_f64())
+    };
+    let cur_t = cur
+        .and_then(|c| c.get("updated_at"))
+        .and_then(|t| t.as_f64())
+        .unwrap_or(0.0);
+    let inc_t = inc
+        .get("updated_at")
+        .and_then(|t| t.as_f64())
+        .unwrap_or(0.0);
+    let inc_has_stamps = inc.get("stamps").is_some_and(|s| s.is_object());
+    let mut out = Map::new();
+    let mut stamps = Map::new();
+    for &f in BOARD_FIELDS {
+        let cv = cur.and_then(|c| c.get(f)).unwrap_or(&null);
+        let cs = cur.and_then(|c| stamp_of(c, f)).unwrap_or(cur_t);
+        let present = inc.get(f).is_some();
+        let iv = inc.get(f).unwrap_or(&null);
+        let (v, t) = if cur.is_none() {
+            (
+                iv.clone(),
+                if console {
+                    now
+                } else {
+                    stamp_of(inc, f).unwrap_or(inc_t)
+                },
+            )
+        } else if console {
+            if present && iv != cv {
+                (iv.clone(), now)
+            } else {
+                (cv.clone(), cs)
+            }
+        } else if inc_has_stamps {
+            match stamp_of(inc, f) {
+                Some(t) if t > cs => (iv.clone(), t),
+                _ => (cv.clone(), cs),
+            }
+        } else if (present || matches!(f, "query" | "pairs")) && inc_t > cs {
+            (iv.clone(), inc_t)
+        } else {
+            (cv.clone(), cs)
+        };
+        if !v.is_null() {
+            out.insert(f.to_owned(), v);
+        }
+        stamps.insert(f.to_owned(), json!(t));
+    }
+    let updated = stamps
+        .values()
+        .filter_map(|t| t.as_f64())
+        .fold(0.0_f64, f64::max);
+    out.insert("id".into(), inc.get("id").cloned().unwrap_or(null));
+    if !out.contains_key("name") {
+        out.insert("name".into(), json!(""));
+    }
+    if !out.contains_key("layout") {
+        out.insert("layout".into(), json!({ "kind": "empty", "id": "x" }));
+    }
+    if !out.contains_key("deleted") {
+        out.insert("deleted".into(), json!(false));
+    }
+    out.insert("stamps".into(), Value::Object(stamps));
+    out.insert("updated_at".into(), json!(updated));
+    Value::Object(out)
 }
 
 /// One entry in the fleet event log.
@@ -520,6 +641,12 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE push_subs ADD COLUMN vapid TEXT",
         "ALTER TABLE boards ADD COLUMN bench TEXT",
         "ALTER TABLE boards ADD COLUMN tab_order TEXT",
+        "ALTER TABLE boards ADD COLUMN status TEXT",
+        "ALTER TABLE boards ADD COLUMN charter TEXT",
+        "ALTER TABLE boards ADD COLUMN notes TEXT",
+        "ALTER TABLE boards ADD COLUMN rail TEXT",
+        "ALTER TABLE boards ADD COLUMN stamps TEXT",
+        "ALTER TABLE agents ADD COLUMN effort TEXT",
     ] {
         if let Err(e) = conn.execute(stmt, []) {
             if !e.to_string().contains("duplicate column") {
@@ -914,6 +1041,28 @@ impl BusStore {
         conn.execute(
             "UPDATE agents SET session_id=NULL, fork_pending=0 WHERE name=?1",
             params![name],
+        )?;
+        Ok(())
+    }
+
+    /// The effort the operator chose for an agent (PROPOSALS-2026-11-A
+    /// §A-10); None is the model's default.
+    pub fn agent_effort(&self, name: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT effort FROM agents WHERE name=?1",
+            params![name],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    pub fn set_agent_effort(&self, name: &str, effort: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET effort=?2 WHERE name=?1",
+            params![name, effort],
         )?;
         Ok(())
     }
@@ -1498,6 +1647,40 @@ impl BusStore {
         Ok(rows)
     }
 
+    /// A project's messages (PROPOSALS-2026-11-A §A-6): its team thread,
+    /// the older `board:` thread and its pairs' threads, newest `limit`,
+    /// oldest first. Aspen's ambient notices are left out (the project's
+    /// events say what they said), and a post to several members is one.
+    pub fn project_messages(&self, id: &str, limit: i64) -> Result<Vec<StoredMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
+                    created_at,delivered_at,delivered_via,ingested_at,post
+             FROM messages
+             WHERE (thread = ?1 OR thread = ?2 OR thread LIKE ?3) AND urgency != 'ambient'
+             ORDER BY created_at DESC LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![
+                    format!("project:{id}"),
+                    format!("board:{id}"),
+                    format!("pair:{id}:%"),
+                    limit * 4
+                ],
+                row_to_message,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<StoredMessage> = rows
+            .into_iter()
+            .filter(|m| seen.insert(m.post.clone().unwrap_or_else(|| m.id.to_string())))
+            .take(limit as usize)
+            .collect();
+        out.reverse();
+        Ok(out)
+    }
+
     /// Bus rows in a time window (for the History timeline).
     pub fn messages_between(&self, from: f64, to: f64, limit: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().unwrap();
@@ -1780,7 +1963,7 @@ impl BusStore {
     pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order FROM boards ORDER BY updated_at DESC",
+            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps FROM boards ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1803,6 +1986,21 @@ impl BusStore {
                     tab_order: r
                         .get::<_, Option<String>>(8)?
                         .and_then(|q| serde_json::from_str(&q).ok()),
+                    status: r
+                        .get::<_, Option<String>>(9)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    charter: r
+                        .get::<_, Option<String>>(10)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    notes: r
+                        .get::<_, Option<String>>(11)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    rail: r
+                        .get::<_, Option<String>>(12)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    stamps: r
+                        .get::<_, Option<String>>(13)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1812,48 +2010,83 @@ impl BusStore {
             .collect())
     }
 
-    /// Write a board if it is newer than what we hold (last writer wins
-    /// by `updated_at`); returns whether anything changed. A board with no
-    /// `bench` at all comes from a console or node older than the bench
-    /// (PROPOSALS-2026-10-T): the stored bench stays. An empty one clears it.
+    /// Merge a board from a peer, field by field (A-9); returns whether
+    /// the stored row changed.
     pub fn upsert_board(&self, b: &Board) -> Result<bool> {
         self.hlc_observe(b.updated_at);
-        let conn = self.conn.lock().unwrap();
-        let cur: Option<f64> = conn
-            .query_row(
-                "SELECT updated_at FROM boards WHERE id=?1",
-                params![b.id],
-                |r| r.get(0),
-            )
-            .ok();
-        if cur.is_some_and(|t| t >= b.updated_at) {
+        self.merge_board(&serde_json::to_value(b)?, false)
+    }
+
+    /// Merge the console's write (its raw JSON: a field it does not send
+    /// is kept), the edited fields stamped now.
+    pub fn upsert_board_from_console(&self, b: &serde_json::Value) -> Result<bool> {
+        self.merge_board(b, true)
+    }
+
+    fn merge_board(&self, inc: &serde_json::Value, console: bool) -> Result<bool> {
+        let id = inc
+            .get("id")
+            .and_then(|i| i.as_str())
+            .ok_or_else(|| anyhow::anyhow!("a board needs an id"))?
+            .to_owned();
+        let now = self.hlc_now();
+        let cur = self
+            .boards(true)?
+            .into_iter()
+            .find(|x| x.id == id)
+            .map(serde_json::to_value)
+            .transpose()?;
+        let merged = merge_board_json(cur.as_ref(), inc, console, now);
+        let unchanged = cur.as_ref().is_some_and(|c| {
+            BOARD_FIELDS.iter().all(|f| c.get(*f) == merged.get(*f))
+                && c.get("stamps") == merged.get("stamps")
+        });
+        if unchanged {
             return Ok(false);
         }
+        let b: Board = serde_json::from_value(merged)?;
+        self.write_board(&b)?;
+        Ok(true)
+    }
+
+    fn write_board(&self, b: &Board) -> Result<()> {
+        let j = |v: &Option<serde_json::Value>| v.as_ref().map(|q| q.to_string());
+        let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7, bench=COALESCE(?8, bench), tab_order=COALESCE(?9, tab_order)",
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7,
+               bench=?8, tab_order=?9, status=?10, charter=?11, notes=?12, rail=?13, stamps=?14",
             params![
                 b.id,
                 b.name,
                 serde_json::to_string(&b.layout)?,
                 b.updated_at,
                 b.deleted as i64,
-                b.query.as_ref().map(|q| q.to_string()),
-                b.pairs.as_ref().map(|q| q.to_string()),
-                b.bench.as_ref().map(|q| q.to_string()),
-                b.tab_order.as_ref().map(|q| q.to_string())
+                j(&b.query),
+                j(&b.pairs),
+                j(&b.bench),
+                j(&b.tab_order),
+                j(&b.status),
+                j(&b.charter),
+                j(&b.notes),
+                j(&b.rail),
+                j(&b.stamps)
             ],
         )?;
-        Ok(true)
+        Ok(())
     }
 
+    /// Tombstone a board: `deleted` stamped now, the rest kept (so a peer
+    /// merging it field by field takes the delete).
     pub fn delete_board(&self, id: &str) -> Result<()> {
-        let t = self.hlc_now();
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE boards SET deleted=1, updated_at=?2 WHERE id=?1",
-            params![id, t],
-        )?;
+        let mut v = serde_json::json!({ "id": id, "deleted": true });
+        if let Some(cur) = self.boards(true)?.into_iter().find(|x| x.id == id) {
+            if let Some(st) = cur.stamps {
+                v["stamps"] = st;
+            }
+        }
+        self.merge_board(&v, true)?;
         Ok(())
     }
 
@@ -2385,23 +2618,31 @@ impl BusStore {
         }
         // Board panes: `key@node` (and the bare key on a node with no mesh).
         // The bench (`[{agent, …}]`) is walked as a split's children.
-        type Row = (String, String, Option<String>, Option<String>);
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
         let mut boards: Vec<Row> = Vec::new();
         {
-            let mut stmt =
-                conn.prepare("SELECT id, layout, bench, tab_order FROM boards WHERE deleted=0")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, layout, bench, tab_order, stamps FROM boards WHERE deleted=0",
+            )?;
             for r in stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, Option<String>>(2)?,
                     r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
                 ))
             })? {
                 boards.push(r?);
             }
         }
-        for (id, layout, bench, tab_order) in boards {
+        for (id, layout, bench, tab_order, stamps) in boards {
             let mut v: serde_json::Value = match serde_json::from_str(&layout) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -2472,14 +2713,25 @@ impl BusStore {
                     out
                 });
             if hit {
+                // The fields it rewrote get a fresh stamp (A-9), or a peer
+                // merging field by field would keep its old names.
+                let mut st: serde_json::Value = stamps
+                    .and_then(|x| serde_json::from_str(&x).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if let Some(o) = st.as_object_mut() {
+                    for f in ["layout", "bench", "tab_order"] {
+                        o.insert(f.to_owned(), serde_json::json!(t));
+                    }
+                }
                 conn.execute(
-                    "UPDATE boards SET layout=?2, bench=COALESCE(?4, bench), tab_order=COALESCE(?5, tab_order), updated_at=?3 WHERE id=?1",
+                    "UPDATE boards SET layout=?2, bench=COALESCE(?4, bench), tab_order=COALESCE(?5, tab_order), stamps=?6, updated_at=?3 WHERE id=?1",
                     params![
                         id,
                         v.to_string(),
                         t,
                         bench.map(|b| b["children"].to_string()),
-                        tab_order.map(|o| serde_json::json!(o).to_string())
+                        tab_order.map(|o| serde_json::json!(o).to_string()),
+                        st.to_string()
                     ],
                 )?;
             }
@@ -3237,6 +3489,11 @@ mod plugin_library_tests {
             pairs: None,
             bench: Some(serde_json::json!([{ "agent": "a@pw", "at": 1.0 }])),
             tab_order: Some(serde_json::json!(["keep@pw", "a@pw"])),
+            status: None,
+            charter: None,
+            notes: None,
+            rail: None,
+            stamps: None,
             updated_at: 1.0,
             deleted: false,
         })
@@ -3260,5 +3517,66 @@ mod plugin_library_tests {
             s.boards(false).unwrap()[0].tab_order.clone().unwrap(),
             serde_json::json!(["keep@pw"])
         );
+    }
+
+    #[test]
+    fn a_board_merges_field_by_field() {
+        use serde_json::json;
+        let base = json!({ "id": "b", "name": "team", "layout": { "kind": "empty", "id": "e" },
+            "charter": "old", "deleted": false, "updated_at": 1.0,
+            "stamps": { "name": 1.0, "layout": 1.0, "charter": 1.0, "deleted": 1.0 } });
+        // Two nodes edit different fields apart: both edits survive.
+        let mut a = base.clone();
+        a["name"] = json!("team A");
+        a["stamps"]["name"] = json!(5.0);
+        let mut b = base.clone();
+        b["charter"] = json!("new charter");
+        b["stamps"]["charter"] = json!(6.0);
+        let m = merge_board_json(
+            Some(&merge_board_json(Some(&base), &a, false, 0.0)),
+            &b,
+            false,
+            0.0,
+        );
+        assert_eq!(m["name"], "team A");
+        assert_eq!(m["charter"], "new charter");
+        assert_eq!(m["updated_at"], 6.0);
+
+        // The console renames with a patch: the rename lands, the charter
+        // it never sent (newer, from elsewhere) stays.
+        let patch = json!({ "id": "b", "name": "renamed" });
+        let m2 = merge_board_json(Some(&m), &patch, true, 7.0);
+        assert_eq!(m2["name"], "renamed");
+        assert_eq!(m2["stamps"]["name"], 7.0);
+        assert_eq!(m2["charter"], "new charter");
+
+        // An older console sends no stamps and none of the new fields: its
+        // edit is taken, the fields it does not know are kept.
+        let legacy = json!({ "id": "b", "name": "legacy", "layout": { "kind": "empty", "id": "e" }, "deleted": false, "updated_at": 0.0 });
+        let m3 = merge_board_json(Some(&m2), &legacy, true, 8.0);
+        assert_eq!(m3["name"], "legacy");
+        assert_eq!(m3["charter"], "new charter");
+
+        // A node before v0.53 (no stamps) with a newer row: its fields win,
+        // the ones it does not carry are kept.
+        let old_node = json!({ "id": "b", "name": "from old", "layout": { "kind": "empty", "id": "e" }, "deleted": false, "updated_at": 9.0 });
+        let m4 = merge_board_json(Some(&m3), &old_node, false, 0.0);
+        assert_eq!(m4["name"], "from old");
+        assert_eq!(m4["charter"], "new charter");
+    }
+
+    #[test]
+    fn a_console_write_and_a_delete_are_stamped() {
+        let s = BusStore::open_in_memory().unwrap();
+        let v = serde_json::json!({ "id": "p", "name": "proj", "layout": { "kind": "empty", "id": "e" }, "charter": "build it" });
+        assert!(s.upsert_board_from_console(&v).unwrap());
+        // The same write again changes nothing.
+        let held = serde_json::to_value(&s.boards(false).unwrap()[0]).unwrap();
+        assert!(!s.upsert_board_from_console(&held).unwrap());
+        s.delete_board("p").unwrap();
+        let all = s.boards(true).unwrap();
+        assert!(all[0].deleted);
+        assert_eq!(all[0].charter.as_ref().unwrap(), "build it");
+        assert!(s.boards(false).unwrap().is_empty());
     }
 }

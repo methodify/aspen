@@ -195,9 +195,10 @@ pub struct Neighborhood {
     pub repo_mates: Vec<String>,
     pub links: Vec<Reach>,
     pub channels: Vec<(String, Vec<String>)>,
-    /// Boards this agent sits on (BOARDS.md §9): (board name, the other
-    /// session panes' addresses, as the agent should write them).
-    pub boards: Vec<(String, Vec<String>)>,
+    /// Projects this agent is on (BOARDS.md §9; PROPOSALS-2026-11-A):
+    /// (name, the other members' addresses as the agent should write them,
+    /// the project's charter if it has one).
+    pub boards: Vec<(String, Vec<String>, Option<String>)>,
 }
 
 /// The session addresses in a board layout (session and viewer panes).
@@ -247,7 +248,9 @@ pub fn layout_agents(node: &serde_json::Value, out: &mut Vec<String>) {
 /// local key for an agent on this node, `key@node` for one elsewhere.
 /// Empty for a dynamic board (a fleet query).
 pub fn board_panes(inner: &Arc<NodeInner>, b: &crate::store::Board) -> Vec<String> {
-    if b.query.is_some() {
+    // A dynamic project's members are a query; an archived one is no
+    // one's team (PROPOSALS-2026-11-A §A-1).
+    if b.query.is_some() || b.status.as_ref().and_then(|s| s.as_str()) == Some("archived") {
         return Vec::new();
     }
     let self_node = inner.mesh().map(|m| m.identity.node.clone());
@@ -286,7 +289,10 @@ pub fn board_panes(inner: &Arc<NodeInner>, b: &crate::store::Board) -> Vec<Strin
     panes.iter().map(|p| bus_form(p)).collect()
 }
 
-pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<String>)> {
+pub fn board_mates(
+    inner: &Arc<NodeInner>,
+    agent: &str,
+) -> Vec<(String, Vec<String>, Option<String>)> {
     let mut out = Vec::new();
     for b in inner.store.boards(false).unwrap_or_default() {
         let panes = board_panes(inner, &b);
@@ -294,9 +300,30 @@ pub fn board_mates(inner: &Arc<NodeInner>, agent: &str) -> Vec<(String, Vec<Stri
             continue;
         }
         let others: Vec<String> = panes.into_iter().filter(|p| p != agent).collect();
-        out.push((b.name.clone(), others));
+        let charter = b
+            .charter
+            .as_ref()
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| cap(c, PROJECT_CHARTER_MAX));
+        out.push((b.name.clone(), others, charter));
     }
     out
+}
+
+/// The most of a project's charter an agent's instructions carry.
+const PROJECT_CHARTER_MAX: usize = 8 * 1024;
+
+fn cap(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// Everything an agent can see/reach by topology.
@@ -375,7 +402,7 @@ pub fn in_neighborhood(inner: &Arc<NodeInner>, from: &str, to: &str) -> bool {
     if n.channels.iter().any(|(_, ms)| ms.iter().any(|m| m == to)) {
         return true;
     }
-    n.boards.iter().any(|(_, ms)| ms.iter().any(|m| m == to))
+    n.boards.iter().any(|(_, ms, _)| ms.iter().any(|m| m == to))
 }
 
 /// The set of link targets for bare-name resolution: addresses reachable
@@ -386,7 +413,7 @@ pub fn link_targets(inner: &Arc<NodeInner>, from: &str) -> BTreeSet<String> {
     n.links
         .into_iter()
         .flat_map(|r| r.targets)
-        .chain(n.boards.into_iter().flat_map(|(_, ms)| ms))
+        .chain(n.boards.into_iter().flat_map(|(_, ms, _)| ms))
         .collect()
 }
 
@@ -451,18 +478,27 @@ pub fn guidance(inner: &Arc<NodeInner>, agent: &str) -> String {
                 .join(", ")
         ));
     }
-    for (b, ms) in &n.boards {
-        lines.push(if ms.is_empty() {
-            format!("On the operator's board “{b}” (alone there right now).")
+    // A project's charter sits between the harness's instructions and the
+    // agent's own charter (PROPOSALS-2026-11-A §A-2): what the whole team
+    // is for, then this agent's part in it.
+    for (b, ms, charter) in &n.boards {
+        let mut line = if ms.is_empty() {
+            format!("On the operator's project “{b}” (alone there right now).")
         } else {
             format!(
-                "On the operator's board “{b}” with {} — the operator works with you together there; they are your team for it.",
+                "On the operator's project “{b}” with {}: the operator works with you together there; they are your team for it.",
                 ms.iter()
                     .map(|m| format!("@{m}"))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
-        });
+        };
+        if let Some(c) = charter {
+            line.push_str(&format!(
+                "\nThe project's charter (for everyone on it):\n{c}"
+            ));
+        }
+        lines.push(line);
     }
     lines.join("\n")
 }

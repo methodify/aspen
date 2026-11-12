@@ -256,6 +256,9 @@ pub fn merge_task_progress(old: &serde_json::Value, new: &serde_json::Value) -> 
     out
 }
 
+/// The effort levels Claude Code takes (`--effort`, `/effort`).
+pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
 pub fn workflow_progress_summary(frame: &serde_json::Value) -> serde_json::Value {
     let prog = frame
         .get("workflow_progress")
@@ -1702,7 +1705,15 @@ impl Node {
                     .map(|h| h.args.clone())
             })
             .unwrap_or_default();
-        let extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
+        let mut extra_args = crate::settings::split_args(&defaults, opts.extra_args.as_deref())?;
+        // The operator's effort for this agent (A-10), after the runtime's
+        // defaults so it wins.
+        if harness == Harness::Claude {
+            if let Some(e) = self.inner.store.agent_effort(name) {
+                extra_args.push("--effort".into());
+                extra_args.push(e);
+            }
+        }
         // Plugins by scope (plugins.rs): every enclosing rule's plugin, at
         // its cached version, as plugin dirs — for harnesses that take them.
         let (active_plugins, missing_plugins) = match (
@@ -3364,6 +3375,36 @@ impl Node {
         sess.handle.set_model(model).await
     }
 
+    /// The effort an agent runs at (A-10): kept for its next start
+    /// (`--effort`), and on a running Claude session set now with its own
+    /// `/effort` command (local to the harness: no model turn). None goes
+    /// back to the model's default.
+    pub async fn set_effort(&self, name: &str, effort: Option<&str>) -> Result<()> {
+        if let Some(e) = effort {
+            if !EFFORTS.contains(&e) {
+                return Err(anyhow!("effort is one of {}", EFFORTS.join(", ")));
+            }
+        }
+        let row = self.agent_row(name)?;
+        if row.harness != Harness::Claude {
+            return Err(anyhow!(
+                "effort is set for Claude sessions (this one runs on {})",
+                row.harness.as_str()
+            ));
+        }
+        self.inner.store.set_agent_effort(name, effort)?;
+        if let Some(sess) = self.inner.live(name) {
+            sess.handle
+                .send_user(format!("/effort {}", effort.unwrap_or("auto")))
+                .await?;
+        }
+        let _ =
+            self.inner
+                .store
+                .record_event(name, "effort", serde_json::json!({ "effort": effort }));
+        Ok(())
+    }
+
     /// Live-switch a session's permission mode.
     pub async fn set_permission_mode(&self, name: &str, mode: &str) -> Result<()> {
         let sess = self
@@ -3671,6 +3712,11 @@ impl Node {
                 .flatten()
                 .ok_or_else(|| anyhow!("no workflow run {run_id} in @{name}'s session"))?;
         if let Some(a) = &act {
+            if v.get("script_path").is_none_or(|p| p.is_null()) {
+                if let Some(p) = a.pointer("/detail/script_path").filter(|p| p.is_string()) {
+                    v["script_path"] = p.clone();
+                }
+            }
             v["task_id"] = a.get("id").cloned().unwrap_or(serde_json::Value::Null);
             if v.get("name").is_none_or(|n| n.is_null()) {
                 v["name"] = a.get("label").cloned().unwrap_or(serde_json::Value::Null);

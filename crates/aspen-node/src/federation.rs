@@ -57,6 +57,9 @@ pub struct RemoteAgent {
     /// When it last worked (its transcript's mtime), epoch seconds.
     #[serde(default)]
     pub last_active: Option<f64>,
+    /// The effort the operator chose (A-10); None is the model's default.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 pub struct MeshState {
@@ -1122,6 +1125,7 @@ pub fn roster_payload_for(inner: &Arc<NodeInner>, mesh: Option<&str>) -> Value {
                 "activities": live.as_ref().map(|m| m.activity_counts.lock().unwrap().clone()),
                 "harness": a.harness,
                 "last_active": inner.last_active(a),
+                "effort": inner.store.agent_effort(&a.name),
                 "mcp": live.as_ref().map(|m| crate::node::mcp_summary(m)),
                 "plugins": live.as_ref().map(|m| json!(m.plugins)),
                 "plugin_updates": match (live.as_ref(), inner.data_dir.as_deref()) {
@@ -2186,6 +2190,11 @@ async fn serve_api_req(
                 .move_to(agent, session, body.get("at").and_then(|a| a.as_str()))
                 .await?;
             Ok(json!({ "name": sess.name }))
+        }
+        "set_effort" => {
+            node.set_effort(agent, body.get("effort").and_then(|e| e.as_str()))
+                .await?;
+            Ok(json!({ "ok": true }))
         }
         "keep_transcript" => {
             let others_get = body

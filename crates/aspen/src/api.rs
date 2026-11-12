@@ -217,6 +217,7 @@ pub async fn serve(
         .route("/agents/{name}/runtime", get(get_runtime))
         .route("/agents/{name}/context", get(get_context))
         .route("/agents/{name}/model", post(post_model))
+        .route("/agents/{name}/effort", post(post_effort))
         .route("/agents/{name}/mode", post(post_mode))
         .route("/agents/{name}/title", post(post_title))
         .route("/agents/{name}/charter", post(post_charter))
@@ -269,6 +270,7 @@ pub async fn serve(
             post(post_bundle_export_preflight),
         )
         .route("/repos/export", post(post_bundle_export))
+        .route("/boards/{id}/activity", get(get_project_activity))
         // Moving repos around the mesh (PROPOSALS-2026-10-U).
         .route("/fs/list", get(get_fs_list))
         .route(
@@ -2062,6 +2064,7 @@ fn agent_json(s: &AppState, a: &aspen_node::store::AgentRow) -> Value {
         "busy_since": busy_since,
         "last_tool": last_tool,
         "last_active": s.node.inner.last_active(a),
+        "effort": s.node.inner.store.agent_effort(&a.name),
         "repo": a.repo.to_string_lossy(),
         "channel": a.channel,
         "session_id": a.session_id,
@@ -2127,6 +2130,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "mesh": mesh.mesh_of_peer(node),
                             "harness": a.harness,
                             "last_active": a.last_active,
+                            "effort": a.effort,
                             "mcp": if reachable { a.mcp.clone() } else { None },
                             "plugins": if reachable { a.plugins.clone().unwrap_or_else(|| json!([])) } else { json!([]) },
                             "plugin_updates": if reachable { a.plugin_updates.clone().unwrap_or_else(|| json!([])) } else { json!([]) },
@@ -2930,22 +2934,66 @@ async fn get_boards(State(s): S) -> impl IntoResponse {
     }
 }
 
+/// GET /api/boards/{id}/activity — a project's timeline on this node
+/// (PROPOSALS-2026-11-A §A-6): its events (joins, leaves, charter,
+/// status, renames) and its team's messages, oldest first.
+async fn get_project_activity(State(s): S, Path(id): Path<String>) -> impl IntoResponse {
+    let store = &s.node.inner.store;
+    let mut items: Vec<Value> = store
+        .events(0.0, f64::MAX, Some(&format!("project:{id}")), 500)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| json!({ "ts": e.ts, "kind": "event", "event": e.kind, "detail": e.detail }))
+        .collect();
+    items.extend(
+        store
+            .project_messages(&id, 300)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| json!({ "ts": m.created_at, "kind": "message", "message": message_json(m) })),
+    );
+    items.sort_by(|a, b| {
+        a["ts"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["ts"].as_f64().unwrap_or(0.0))
+    });
+    Json(json!({ "items": items }))
+}
+
+/// PUT /api/boards/{id}: the console's write, a patch of the fields the
+/// operator changed (an older console sends the whole board). Each field
+/// it sends is stamped by this node's clock (PROPOSALS-2026-11-A §A-9);
+/// the rest are kept.
 async fn put_board(
     State(s): S,
     Path(id): Path<String>,
-    Json(mut b): Json<aspen_node::store::Board>,
+    Json(mut b): Json<Value>,
 ) -> impl IntoResponse {
-    b.id = id;
-    b.deleted = false;
-    // The console sends no timestamp (or an old one): the node's clock
-    // decides, so a write here is later than anything it has merged.
-    b.updated_at = s.node.inner.store.hlc_now();
-    match aspen_node::boards::upsert_and_notify(&s.node.inner, &b) {
+    let Some(o) = b.as_object_mut() else {
+        return err(StatusCode::BAD_REQUEST, "a board is an object").into_response();
+    };
+    o.insert("id".into(), json!(id));
+    // The node's clock decides; a console's stamps or deleted flag are not
+    // its to set (delete is DELETE).
+    for k in ["updated_at", "stamps", "deleted"] {
+        o.remove(k);
+    }
+    match aspen_node::boards::patch_and_notify(&s.node.inner, &b) {
         Ok(changed) => {
             if changed {
                 aspen_node::federation::broadcast_roster(&s.node.inner);
             }
-            Json(json!({ "ok": true, "changed": changed, "updated_at": b.updated_at }))
+            let updated_at = s
+                .node
+                .inner
+                .store
+                .boards(false)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|x| x.id == id)
+                .map(|x| x.updated_at);
+            Json(json!({ "ok": true, "changed": changed, "updated_at": updated_at }))
                 .into_response()
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -3881,6 +3929,34 @@ async fn post_keep_transcript(
     }
     match s.node.keep_transcript(&name, &others_get).await {
         Ok(others) => Json(json!({ "others": others })).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct EffortBody {
+    /// low | medium | high | xhigh | max; null is the model's default.
+    effort: Option<String>,
+}
+
+/// POST /api/agents/{name}/effort — the effort the agent runs at (A-10).
+async fn post_effort(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<EffortBody>,
+) -> impl IntoResponse {
+    if let Some((bare, node)) = remote_parts(&s, &name) {
+        return proxy_agent(
+            &s,
+            &node,
+            "set_effort",
+            &bare,
+            json!({ "effort": b.effort }),
+        )
+        .await;
+    }
+    match s.node.set_effort(&name, b.effort.as_deref()).await {
+        Ok(()) => Json(json!({ "ok": true, "effort": b.effort })).into_response(),
         Err(e) => err(StatusCode::CONFLICT, format!("{e:#}")).into_response(),
     }
 }

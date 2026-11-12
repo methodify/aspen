@@ -11,7 +11,9 @@
 //! - recipient not running  → rows stay pending; delivered at next spawn
 //!
 //! Urgency is carried in the envelope for the recipient to read; it no
-//! longer changes timing. Everything pending delivers together, in send
+//! longer changes timing — except **ambient** (PROPOSALS-2026-11-A §A-3),
+//! Aspen's own notices that can wait: they never wake anyone, and go out
+//! with the next thing written to the agent. Agents cannot send ambient. Everything pending delivers together, in send
 //! order. What a mid-turn write does *not* guarantee is a wake at the
 //! boundary when the harness has no further model request in that turn:
 //! node.rs watches the replay acks and nudges at the boundary for
@@ -54,15 +56,21 @@ pub async fn run(inner: Arc<NodeInner>, mut rx: mpsc::UnboundedReceiver<String>)
             }
             continue;
         };
-        if let Err(e) = attempt(&inner, &sess).await {
+        if let Err(e) = attempt(&inner, &sess, false).await {
             tracing::warn!(recipient, error = %e, "bus delivery attempt failed; rows remain pending");
         }
     }
 }
 
-async fn attempt(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) -> anyhow::Result<()> {
+/// Write what is pending. Ambient rows alone wait (`force` writes them:
+/// an operator message is about to go, and they go first).
+async fn attempt(
+    inner: &Arc<NodeInner>,
+    sess: &Arc<ManagedSession>,
+    force: bool,
+) -> anyhow::Result<()> {
     let pending = inner.store.pending_for(&sess.name)?;
-    if pending.is_empty() {
+    if pending.is_empty() || (!force && pending.iter().all(|m| m.urgency == "ambient")) {
         return Ok(());
     }
     let busy = sess.turn_state() == TurnState::Busy;
@@ -109,7 +117,7 @@ pub async fn flush_notices(inner: &Arc<NodeInner>, sess: &Arc<ManagedSession>) {
     if pending.is_empty() {
         return;
     }
-    if let Err(e) = attempt(inner, sess).await {
+    if let Err(e) = attempt(inner, sess, true).await {
         tracing::warn!(agent = %sess.name, error = %e, "pending mail before an operator message: attempt failed");
     }
 }
