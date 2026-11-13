@@ -312,6 +312,8 @@ export interface Agent {
   last_tool?: string | null;
   /** When it last worked: its transcript's modification time (epoch s). */
   last_active?: number | null;
+  /** A remote agent's role: its charter's first line (its charter stays on its node). */
+  role?: string | null;
   /** The effort the operator chose (low … max); absent is the model's default. */
   effort?: string | null;
 }
@@ -1086,6 +1088,12 @@ export interface StartAgentRequest {
   posture?: Posture;
   /** Target node; omit or self name = local, a peer name spawns remotely. */
   node?: string;
+  /** The starter prompt: the first message once it is up (PROPOSALS-2026-11-B). */
+  prompt?: string;
+  /** A project (board id) to put it on first. */
+  project?: string;
+  /** The effort it starts at (Claude). */
+  effort?: string;
 }
 
 /** A node's repos in the mesh-wide Library view (GET /api/mesh/repos). */
@@ -1136,6 +1144,13 @@ export interface TemplateSpec {
   plugins?: { marketplace: string; plugin: string; pin?: string | null }[];
   board?: { id: string; mode: "fill" | "right" | "down" } | null;
   title?: string;
+  /** The node it is for (PROPOSALS-2026-11-B §B-2); absent: anywhere. */
+  node?: string;
+  /** The starter prompt, sent as the first message; `{{name}}`, `{{node}}`,
+   *  `{{repo}}`, `{{project}}`, `{{charter}}` are filled in. */
+  prompt?: string;
+  /** The effort it starts at (Claude). */
+  effort?: string;
 }
 /** A project template (PROPOSALS-2026-11-A §5): a charter and the roles
  *  to start, each in its repo on its node. */
@@ -1154,6 +1169,17 @@ export interface ProjectTemplateSpec {
   roles: ProjectRole[];
 }
 export const isProjectTemplate = (t: Template): boolean => (t.spec as { kind?: string }).kind === "project";
+/** A session template that can start here (PROPOSALS-2026-11-B §B-2): its
+ *  node is empty or this one, its repo empty or this one (handle, folder
+ *  name or path). */
+export function templateFits(t: Template, node: string, repo?: { path: string; handle?: string | null }): boolean {
+  if (t.deleted || isProjectTemplate(t)) return false;
+  if (t.spec.node && t.spec.node !== node) return false;
+  const r = t.spec.repo?.trim();
+  if (!r || !repo) return true;
+  const base = repo.path.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  return r === repo.handle || r === base || r === repo.path;
+}
 export interface Template {
   id: string;
   name: string;
@@ -1946,7 +1972,7 @@ export const api = {
   putTemplate: (id: string, name: string, spec: TemplateSpec) =>
     request<{ ok: boolean; template: Template }>(`/api/templates/${enc(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, spec }) }),
   deleteTemplate: (id: string) => request<{ ok: boolean }>(`/api/templates/${enc(id)}`, { method: "DELETE" }),
-  templateSpawn: (id: string, body: { node?: string; name?: string; repo?: string; charter?: string; model?: string; extra_args?: string; skip_permissions?: boolean; title?: string; acknowledge_trust?: boolean; role?: number }) =>
+  templateSpawn: (id: string, body: { node?: string; name?: string; repo?: string; charter?: string; model?: string; extra_args?: string; skip_permissions?: boolean; title?: string; acknowledge_trust?: boolean; role?: number; prompt?: string; project?: string; effort?: string }) =>
     post<TemplateSpawnResult>(`/api/templates/${enc(id)}/spawn`, body),
   evacuate: (node: string, to: string) => post<unknown>(`/api/mesh/${enc(node)}/evacuate`, { to }),
   movePreflight: (name: string, to: string) => request<MovePreflight>(`/api/agents/${enc(name)}/move/preflight?to=${enc(to)}`),
@@ -2037,12 +2063,16 @@ export const api = {
 
   repos: () => request<Repo[]>("/api/repos"),
   /** `node`: register on that peer (the path is one on that node). */
-  addRepo: (path: string, skipPermissions?: boolean, node?: string) =>
+  addRepo: (path: string, skipPermissions?: boolean, node?: string, opts?: { create?: boolean; gitInit?: boolean }) =>
     post<Repo>("/api/repos", {
       path,
       ...(skipPermissions !== undefined ? { skip_permissions: skipPermissions } : {}),
       ...(node ? { node } : {}),
+      ...(opts?.create ? { create: true } : {}),
+      ...(opts?.gitInit ? { git_init: true } : {}),
     }),
+  /** A new folder inside `dir` on a node (PROPOSALS-2026-11-B §B-1). */
+  fsMkdir: (node: string | undefined, dir: string, name: string) => post<{ path: string }>("/api/fs/mkdir", { node, dir, name }),
   setRepoHarness: (path: string, harness: Harness | null, node?: string) =>
     post<{ ok: boolean }>("/api/repos/harness", { path, harness, ...(node ? { node } : {}) }),
   setRepoSkip: (path: string, skipPermissions: boolean, node?: string) =>

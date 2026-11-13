@@ -203,6 +203,19 @@ rules** for the new address first, so the process starts with its
 template's board (first empty pane, or a split). The trust gate applies
 as for any spawn. Templates are edited on the Plugins page.
 
+### Where a template belongs, and what it says first (v0.55, PROPOSALS-2026-11-B)
+
+- `node`: the node it is for. Empty: anywhere. Set: offered only there (the Mesh view's start
+  dialog, Now's panel starts it there), and that node alone will start it (another refuses).
+- `prompt`: the **starter prompt**, sent as the operator's first message once the session is up.
+  `{{name}}`, `{{node}}`, `{{repo}}`, `{{project}}`, `{{charter}}` (the project's) are filled in.
+- `effort`: the effort it starts at (Claude).
+- A template **fits** a place when its node is empty or that node and its repo is empty or names
+  that repo (handle, folder name or path). The Mesh view's start dialog on a repo offers the ones
+  that fit, this node's first, and takes a starter prompt and a project to join with or without one.
+- **Save as template…** in a session's ⋯ menu captures its runtime, model, effort, charter and
+  plugins, scoped to its node, and opens the editor (`/plugins?tab=templates&edit=<id>`).
+
 ## 8. Not built
 
 Per-plugin usage from transcripts; marketplace auth (private git over

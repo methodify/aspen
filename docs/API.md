@@ -360,6 +360,19 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - Every mesh-wide row's `updated_at` now comes from the store's hybrid logical clock.
 
 
+## Starting where the work is (v0.55) — PROPOSALS-2026-11-B
+
+- `POST /api/repos {path, node?, skip_permissions?, create?, git_init?}` — `create` makes a missing
+  folder (parents too) on that node; `git_init` runs `git init` unless it is in a work tree already.
+  A file at the path is refused. (Mesh op `node_repo_add` takes the same.)
+- `POST /api/fs/mkdir {node?, dir, name}` — a new folder inside `dir` (one name, no separators);
+  `{path}`. Mesh op `fs_mkdir` (trust class, like adding a repo).
+- `POST /api/agents` and `POST /api/templates/{id}/spawn` take `prompt` (the starter prompt: the
+  operator's first message once it is up, blanks filled), `project` (a board id: put on its desk
+  first, so the joining briefing is waiting) and `effort`. Templates carry `node`, `prompt`,
+  `effort`; a template whose `node` is another node is refused.
+- Agents from peers carry `role` (their charter's first line).
+
 ## Templates, evacuate, preflight (v0.17) — PLUGINS.md §7b, SERVICING.md §13b, MIGRATION.md §4b
 
 - `GET /api/templates`; `PUT /api/templates/{id}` body `{name, spec}`; `DELETE` tombstones. Roster

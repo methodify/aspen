@@ -259,3 +259,60 @@ pub fn post(
     }
     Ok(notes)
 }
+
+/// Put a local agent on a project's desk (PROPOSALS-2026-11-B §B-3): the
+/// first empty pane, else a new pane to the right. Returns whether the
+/// project changed (false: already on it).
+pub fn place_member(inner: &Arc<NodeInner>, board_id: &str, key: &str) -> anyhow::Result<bool> {
+    let b = inner
+        .store
+        .boards(false)?
+        .into_iter()
+        .find(|b| b.id == board_id)
+        .ok_or_else(|| anyhow::anyhow!("no project {board_id:?}"))?;
+    if b.query.is_some() {
+        anyhow::bail!("a dynamic board has no members to add");
+    }
+    if status(&b) == "archived" {
+        anyhow::bail!("the project is archived");
+    }
+    if crate::topology::board_panes(inner, &b)
+        .iter()
+        .any(|m| m == key)
+    {
+        return Ok(false);
+    }
+    let addr = match inner.mesh() {
+        Some(m) => format!("{key}@{}", m.identity.node),
+        None => key.to_owned(),
+    };
+    let short = uuid::Uuid::new_v4().simple().to_string();
+    let pane = json!({ "kind": "session", "id": format!("p{}", &short[..8]), "agent": addr });
+    fn fill(n: &mut Value, pane: &Value) -> bool {
+        match n.get("kind").and_then(|k| k.as_str()) {
+            Some("empty") => {
+                let id = n.get("id").cloned().unwrap_or(Value::Null);
+                *n = pane.clone();
+                n["id"] = id;
+                true
+            }
+            Some("split") => n
+                .get_mut("children")
+                .and_then(|c| c.as_array_mut())
+                .is_some_and(|cs| cs.iter_mut().any(|c| fill(c, pane))),
+            _ => false,
+        }
+    }
+    let mut layout = b.layout.clone();
+    if !fill(&mut layout, &pane) {
+        layout = json!({
+            "kind": "split",
+            "id": format!("s{}", &short[8..16]),
+            "dir": "row",
+            "sizes": [50, 50],
+            "children": [layout, pane],
+        });
+    }
+    crate::boards::patch_and_notify(inner, &json!({ "id": b.id, "layout": layout }))?;
+    Ok(true)
+}

@@ -948,3 +948,13 @@ button.link:hover { text-decoration-style: solid; }
 .menu-ctx-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--sig-info, var(--accent)); }
 .menu-ctx-bar > span.hot { background: var(--sig-notice); }
 .menu-ctx .btn { margin-left: auto; }
+
+/* The start dialog on a repo row (PROPOSALS-2026-11-B §B-3). */
+.start-dialog { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-hi); background: var(--surface-1); }
+.start-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.start-row > input { flex: 1 1 160px; min-width: 0; }
+.start-row > select { flex: 1 1 200px; min-width: 0; }
+.start-field { display: grid; gap: 4px; }
+.start-field textarea { width: 100%; resize: vertical; font: 0.9rem/1.45 var(--font-body); }
+.start-inline { display: inline-flex; align-items: center; gap: 6px; }
+.start-inline select { min-width: 0; }

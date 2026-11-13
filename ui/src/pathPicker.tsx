@@ -31,6 +31,19 @@ export function PathPicker({
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [hidden, setHidden] = useState(false);
+  // A new folder in the one shown (PROPOSALS-2026-11-B §B-1).
+  const [naming, setNaming] = useState<string | null>(null);
+  const mkdir = () => {
+    const name = (naming ?? "").trim();
+    if (!name || !list?.dir) return;
+    api
+      .fsMkdir(node, list.dir, name)
+      .then((r) => {
+        setNaming(null);
+        open(r.path);
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  };
   const open = (dir?: string | null) => {
     setErr(null);
     setQ("");
@@ -78,10 +91,26 @@ export function PathPicker({
             )}
             <span className="mono path-dir" title={list.dir}>{list.dir}</span>
             <span style={{ flex: 1 }} />
+            {mode === "dir" && naming === null && (
+              <button type="button" className="btn ghost sm" onClick={() => setNaming("")} title="make a folder here and open it">new folder…</button>
+            )}
             {mode === "dir" && (
               <button type="button" className="btn primary sm" onClick={() => onPick(list.dir!)}>use this folder</button>
             )}
           </div>
+        )}
+        {naming !== null && (
+          <form
+            className="path-tools"
+            onSubmit={(e) => {
+              e.preventDefault();
+              mkdir();
+            }}
+          >
+            <input className="picker-search mono" placeholder="folder name" value={naming} onChange={(e) => setNaming(e.target.value)} autoFocus aria-label="new folder name" />
+            <button type="submit" className="btn primary sm" disabled={!naming.trim()}>make it</button>
+            <button type="button" className="btn ghost sm" onClick={() => setNaming(null)}>cancel</button>
+          </form>
         )}
         {err && <div className="error-text mono-meta" style={{ padding: "4px 12px" }}>{err}</div>}
         {list?.dir && (

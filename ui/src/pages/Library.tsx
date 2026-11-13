@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { scoped } from "../profiles";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PathPicker } from "../pathPicker";
+import { StartDialog, type StartChoice } from "../startDialog";
 import { api, ApiError, type MeshRepoNode, type OthersGet, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
@@ -109,9 +110,12 @@ function NameComposer({
 
 // ── Repositories section ───────────────────────────────────────────────────
 
+/** Two spellings of one folder (a trailing separator, a node's own case). */
+const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, "") === b.replace(/[\\/]+$/, "");
+
 /** Add a repository here or on any linked peer: the path is one on the
  *  chosen node, and that node registers it (op `node_repo_add`). */
-function AddRepoForm({ onAdded }: { onAdded: () => void }) {
+function AddRepoForm({ onAdded }: { onAdded: (node: string, path: string) => void }) {
   const [nodes, setNodes] = useState<{ node: string; me: boolean }[]>([]);
   const [onNode, setOnNode] = useState<string>("");
   useEffect(() => {
@@ -126,6 +130,9 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
   }, []);
   const [path, setPath] = useState("");
   const [skip, setSkip] = useState(false);
+  // A folder that is not there yet is made (B-1); a git repo only if asked.
+  const [create, setCreate] = useState(true);
+  const [gitInit, setGitInit] = useState(false);
   const [busy, setBusy] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,10 +148,11 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
     setBusy(true);
     try {
       const me = nodes.find((n) => n.me)?.node;
-      await api.addRepo(path.trim(), skip ? true : undefined, onNode && onNode !== me ? onNode : undefined);
+      const r = await api.addRepo(path.trim(), skip ? true : undefined, onNode && onNode !== me ? onNode : undefined, { create, gitInit });
       setPath("");
       setSkip(false);
-      onAdded();
+      setGitInit(false);
+      onAdded(onNode || me || "", r.path ?? path.trim());
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -186,6 +194,14 @@ function AddRepoForm({ onAdded }: { onAdded: () => void }) {
             style={{ width: "auto" }}
           />
           skip permissions by default
+        </label>
+        <label className="micro" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }} title="a folder that is not there yet is made (with its parents) on that node">
+          <input type="checkbox" checked={create} onChange={(e) => setCreate(e.target.checked)} style={{ width: "auto" }} />
+          create it if missing
+        </label>
+        <label className="micro" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-mid)" }} title="run git init there (skipped if it is already in a work tree)">
+          <input type="checkbox" checked={gitInit} onChange={(e) => setGitInit(e.target.checked)} style={{ width: "auto" }} />
+          make it a git repo
         </label>
         <button type="submit" className="btn sm" disabled={busy}>
           {busy ? "adding…" : "add"}
@@ -405,8 +421,18 @@ function RepoStrip({
   onForgotten,
   onNewSession,
   onError,
+  nodeName,
+  self,
+  autoStart,
+  onAutoStarted,
 }: {
   repo: Repo;
+  /** The node's mesh name (for templates scoped to it). */
+  nodeName: string;
+  self: boolean;
+  /** Open the start dialog at once (just added, B-4). */
+  autoStart?: boolean;
+  onAutoStarted?: () => void;
   /** The owning peer for a remote repo; undefined = this node. Every
    *  control acts on the owning node over the mesh. */
   node?: string;
@@ -414,13 +440,20 @@ function RepoStrip({
   onSelect: () => void;
   onChanged: () => void;
   onForgotten: () => void;
-  onNewSession: (repo: string, name: string) => void;
+  onNewSession: (repo: string, choice: StartChoice) => void;
   onError: (msg: string) => void;
 }) {
   const [skipBusy, setSkipBusy] = useState(false);
   const [confirmForget, setConfirmForget] = useState(false);
   const [forgetting, setForgetting] = useState(false);
   const [namingNew, setNamingNew] = useState(false);
+  useEffect(() => {
+    if (autoStart) {
+      setNamingNew(true);
+      onAutoStarted?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
   const [renaming, setRenaming] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -661,13 +694,13 @@ function RepoStrip({
       </div>
 
       {namingNew && (
-        <NameComposer
-          label="agent name"
-          initial=""
-          submitLabel="start"
-          onSubmit={(name) => {
+        <StartDialog
+          node={nodeName}
+          self={self}
+          repo={{ path: repo.path, handle: repo.handle }}
+          onStart={(choice) => {
             setNamingNew(false);
-            onNewSession(repo.path, name);
+            onNewSession(repo.path, choice);
           }}
           onCancel={() => setNamingNew(false)}
         />
@@ -802,6 +835,7 @@ function RepositoriesSection({
     }
   }, [stayHere]);
   const [started, setStarted] = useState<string[]>([]);
+  const [justAdded, setJustAdded] = useState<{ node: string; path: string } | null>(null);
   function afterStart(agentName: string) {
     if (!stayHere) {
       navigate(`/session/${encodeURIComponent(agentName)}`);
@@ -812,13 +846,18 @@ function RepositoriesSection({
     void meshPoll.refresh();
   }
 
-  async function newSession(node: string, repo: string, name: string) {
+  async function newSession(node: string, repo: string, c: StartChoice) {
     setActionError(null);
     try {
       const agent = await trust.start({
-        name,
+        name: c.name,
         repo,
         node: isSelf(node) ? undefined : node,
+        ...(c.template ? { template: c.template } : {}),
+        ...(c.prompt ? { prompt: c.prompt } : {}),
+        ...(c.project ? { project: c.project } : {}),
+        ...(c.effort ? { effort: c.effort } : {}),
+        ...(c.harness ? { harness: c.harness } : {}),
       });
       if (agent === null) return; // operator declined the trust review
       afterStart(agent.name);
@@ -932,7 +971,15 @@ function RepositoriesSection({
 
       <MeshPanel />
       <ServicingPanel />
-      <AddRepoForm onAdded={refresh} />
+      <AddRepoForm
+        onAdded={(node, path) => {
+          refresh();
+          // Then start an agent there (B-4): its node opens and its start
+          // dialog with it, once the list has it.
+          setOpenNodes((o) => ({ ...o, [node]: true }));
+          setJustAdded({ node, path });
+        }}
+      />
       <ImportRow onDone={refresh} />
       <HarnessDefaults />
       <ReplicasSection />
@@ -996,8 +1043,12 @@ function RepositoriesSection({
                         refresh();
                         if (selKey === k) setSelKey(null);
                       }}
-                      onNewSession={(repo, name) => void newSession(n.node, repo, name)}
+                      onNewSession={(repo, c) => void newSession(n.node, repo, c)}
                       onError={setActionError}
+                      nodeName={n.node}
+                      self={n.self}
+                      autoStart={justAdded?.node === n.node && samePath(justAdded.path, r.path)}
+                      onAutoStarted={() => setJustAdded(null)}
                     />
                     {selKey === k && (
                       <div

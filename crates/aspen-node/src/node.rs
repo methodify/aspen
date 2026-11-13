@@ -1916,6 +1916,44 @@ impl Node {
         Ok(managed)
     }
 
+    /// After a start (PROPOSALS-2026-11-B §B-2, §B-3): put the agent on a
+    /// project's desk (so the joining briefing is waiting for it), then
+    /// send the starter prompt as the operator's first message once the
+    /// session is up. Both are best effort and reported in the log.
+    pub fn after_start(&self, key: &str, prompt: Option<String>, project: Option<String>) {
+        if prompt.is_none() && project.is_none() {
+            return;
+        }
+        let node = self.clone();
+        let key = key.to_owned();
+        tokio::spawn(async move {
+            if let Some(pid) = project.as_deref() {
+                match crate::projects::place_member(&node.inner, pid, &key) {
+                    Ok(true) => crate::federation::broadcast_roster(&node.inner),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(agent = %key, project = pid, err = %e, "not put on the project")
+                    }
+                }
+            }
+            let Some(text) = prompt.filter(|t| !t.trim().is_empty()) else {
+                return;
+            };
+            let text = expand_starter(&node.inner, &text, &key, project.as_deref());
+            for _ in 0..240 {
+                if node.inner.live(&key).is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            // A beat for the harness to finish starting up.
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            if let Err(e) = node.send_operator_message(&key, text).await {
+                tracing::warn!(agent = %key, err = %e, "starter prompt not sent");
+            }
+        });
+    }
+
     /// Operator input into a session. Pending notices ride along first — the
     /// one lane a notice may use besides another delivery.
     pub async fn send_operator_message(&self, name: &str, text: String) -> Result<String> {
@@ -2821,6 +2859,20 @@ impl Node {
         };
         let spec = role_spec.as_ref().unwrap_or(&t.spec);
         let ov = |k: &str| overrides.get(k).filter(|v| !v.is_null());
+        // A template made for one node starts only there (PROPOSALS-2026-11-B §B-2).
+        if let Some(home) = spec
+            .get("node")
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.is_empty())
+        {
+            let me = self.inner.mesh().map(|m| m.identity.node.clone());
+            if me.as_deref().is_some_and(|m| m != home) {
+                return Err(anyhow!(
+                    "the template {:?} is for node {home}; start it there",
+                    t.name
+                ));
+            }
+        }
         let name = ov("name")
             .and_then(|v| v.as_str())
             .map(str::to_owned)
@@ -2900,6 +2952,7 @@ impl Node {
                 tracing::warn!(agent = %sess.name, err = %e, "template effort not set");
             }
         }
+        self.after_start(&sess.name, pick_str("prompt"), pick_str("project"));
         if let Some(title) = pick_str("title") {
             let _ = self.inner.store.set_agent_title(&sess.name, Some(&title));
         }
@@ -4445,6 +4498,36 @@ async fn pump(
         }
         let _ = sess.events.send(ev); // no receivers is fine
     }
+}
+
+/// A starter prompt's blanks (PROPOSALS-2026-11-B §B-2): `{{name}}`,
+/// `{{node}}`, `{{repo}}`, `{{project}}`, `{{charter}}` (the project's).
+pub fn expand_starter(inner: &NodeInner, text: &str, key: &str, project: Option<&str>) -> String {
+    let node = inner
+        .mesh()
+        .map(|m| m.identity.node.clone())
+        .unwrap_or_else(|| "this node".into());
+    let repo = crate::addr::repo_of(key).unwrap_or("").to_owned();
+    let board = project.and_then(|id| {
+        inner
+            .store
+            .boards(false)
+            .ok()?
+            .into_iter()
+            .find(|b| b.id == id)
+    });
+    let pname = board.as_ref().map(|b| b.name.clone()).unwrap_or_default();
+    let charter = board
+        .as_ref()
+        .and_then(|b| b.charter.as_ref())
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_owned();
+    text.replace("{{name}}", crate::addr::bare(key))
+        .replace("{{node}}", &node)
+        .replace("{{repo}}", &repo)
+        .replace("{{project}}", &pname)
+        .replace("{{charter}}", &charter)
 }
 
 #[cfg(test)]

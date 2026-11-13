@@ -324,4 +324,7 @@ A board is now a **project**: a place for work, its layout the **desk**.
   stopped and broadcast move into ⋯ (a bottom sheet); save as template, export and delete live there
   at every width. A pane's bar shows the bare name and drops the layout verbs (the tab names the
   member), and the catch-up recap folds to three lines (tap for all).
+- **The desk, at a glance** (v0.55): the Team view counts who is on the team and who is on the
+  desk, and each member has a *desk* checkbox: unchecked benches it (still on the team, still
+  briefed, still on the thread), checked brings it back where it sat.
 

@@ -43,6 +43,7 @@ import {
   type ActivityCounts,
   type McpList,
   type ProcessInfo,
+  type TemplateSpec,
 } from "./../api";
 import { parseSessionEvent, type SessionEvent } from "./../events";
 import {
@@ -3182,6 +3183,32 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
         </div>
         <MenuGroup label="setup">
           <MenuRow label="rename this name…" hint={agent?.live ? "stop the session first — a running name cannot move" : "the address, rail entry, boards and history follow"} onClick={() => { closeMenu(); setRenaming(bareName); }} disabled={!!agent?.live} />
+          {agent && !subagent && (
+            <MenuRow
+              label="save as template…"
+              hint="its runtime, model, effort, charter and plugins, for this node; then add a starter prompt (PROPOSALS-2026-11-B §B-4)"
+              onClick={() => {
+                closeMenu();
+                const id = `t-${Date.now().toString(36)}`;
+                const spec: TemplateSpec = {
+                  name: bareName,
+                  repo: agent.channel || undefined,
+                  node: agent.node || undefined,
+                  harness: agent.harness,
+                  model: modelInUse && !modelInUse.startsWith("<") ? modelInUse : undefined,
+                  effort: agent.effort ?? undefined,
+                  charter: agent.charter ?? undefined,
+                  permission: "ask",
+                  plugins: (agent.plugins ?? []).map((p) => ({ marketplace: p.marketplace, plugin: p.plugin })),
+                };
+                for (const k of Object.keys(spec) as (keyof TemplateSpec)[]) if (spec[k] === undefined) delete spec[k];
+                void api
+                  .putTemplate(id, `@${bareName} on ${agent.node}`, spec)
+                  .then(() => nav(`/plugins?tab=templates&edit=${encodeURIComponent(id)}`))
+                  .catch((e) => setCtlError(e instanceof Error ? e.message : "could not save the template"));
+              }}
+            />
+          )}
           <MenuField label="model" hint={`switch model — takes effect next turn${modelInUse ? `; the latest reply came from ${modelInUse}` : ""}`}>
           <select
             className="ctl-select"

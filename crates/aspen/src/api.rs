@@ -301,6 +301,7 @@ pub async fn serve(
         .route("/boards/{id}/search", get(get_project_search))
         // Moving repos around the mesh (PROPOSALS-2026-10-U).
         .route("/fs/list", get(get_fs_list))
+        .route("/fs/mkdir", post(post_fs_mkdir))
         .route(
             "/repos/import/upload/{id}",
             post(post_upload_chunk).get(get_upload_size),
@@ -662,6 +663,25 @@ struct NodeDirQuery {
 /// GET /api/fs/list?node=&dir= — a node's directory, names only (U-1).
 async fn get_fs_list(State(s): S, Query(q): Query<NodeDirQuery>) -> impl IntoResponse {
     transfer_verb(&s, q.node.as_deref(), "fs_list", json!({ "dir": q.dir })).await
+}
+
+#[derive(Deserialize)]
+struct MkdirBody {
+    node: Option<String>,
+    dir: String,
+    name: String,
+}
+
+/// POST /api/fs/mkdir `{node?, dir, name}` — a new folder on a node
+/// (PROPOSALS-2026-11-B §B-1).
+async fn post_fs_mkdir(State(s): S, Json(b): Json<MkdirBody>) -> impl IntoResponse {
+    transfer_verb(
+        &s,
+        b.node.as_deref(),
+        "fs_mkdir",
+        json!({ "dir": b.dir, "name": b.name }),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -2159,6 +2179,7 @@ async fn get_agents(State(s): S) -> impl IntoResponse {
                             "harness": a.harness,
                             "last_active": a.last_active,
                             "effort": a.effort,
+                            "role": a.role,
                             "mcp": if reachable { a.mcp.clone() } else { None },
                             "plugins": if reachable { a.plugins.clone().unwrap_or_else(|| json!([])) } else { json!([]) },
                             "plugin_updates": if reachable { a.plugin_updates.clone().unwrap_or_else(|| json!([])) } else { json!([]) },
@@ -2203,6 +2224,13 @@ struct SpawnBody {
     /// Target node for the session. Absent or this node's own name = local;
     /// a peer name spawns on that node over the mesh.
     node: Option<String>,
+    /// The starter prompt: the operator's first message once it is up
+    /// (PROPOSALS-2026-11-B §B-3).
+    prompt: Option<String>,
+    /// A project to put it on first.
+    project: Option<String>,
+    /// The effort it starts at (Claude).
+    effort: Option<String>,
 }
 
 async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoResponse {
@@ -2235,6 +2263,7 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             "resume_choice": body.resume_choice,
             "harness": body.harness, "posture": body.posture,
             "title": body.title, "extra_args": body.extra_args,
+            "prompt": body.prompt, "project": body.project, "effort": body.effort,
         });
         return match mesh.api_call(node, "spawn", "", req, REMOTE_TIMEOUT).await {
             // The remote signals an untrusted repo the same way local does:
@@ -2317,6 +2346,12 @@ async fn post_agent(State(s): S, Json(body): Json<SpawnBody>) -> impl IntoRespon
             if let Some(title) = body.title.as_deref().filter(|t| !t.trim().is_empty()) {
                 let _ = s.node.inner.store.set_agent_title(&key, Some(title));
             }
+            if let Some(e) = body.effort.as_deref().filter(|e| !e.is_empty()) {
+                let _ = s.node.set_effort(&key, Some(e)).await;
+            }
+            let nonempty = |v: &Option<String>| v.clone().filter(|x| !x.trim().is_empty());
+            s.node
+                .after_start(&key, nonempty(&body.prompt), nonempty(&body.project));
             let rows = s.node.inner.store.agents().unwrap_or_default();
             match rows.iter().find(|a| a.name == key) {
                 Some(a) => Json(agent_json(&s, a)).into_response(),
@@ -5270,6 +5305,11 @@ struct TemplateSpawnBody {
     title: Option<String>,
     /// A project template's role to start (PROPOSALS-2026-11-A §5).
     role: Option<u64>,
+    /// The starter prompt (overrides the template's) and the project to
+    /// join (PROPOSALS-2026-11-B).
+    prompt: Option<String>,
+    project: Option<String>,
+    effort: Option<String>,
     #[serde(default)]
     acknowledge_trust: bool,
 }
@@ -5285,7 +5325,7 @@ async fn post_template_spawn(
     let overrides = json!({
         "name": b.name, "repo": b.repo, "charter": b.charter, "model": b.model,
         "extra_args": b.extra_args, "skip_permissions": b.skip_permissions, "title": b.title,
-        "role": b.role,
+        "role": b.role, "prompt": b.prompt, "project": b.project, "effort": b.effort,
     });
     if let Some(node) = b.node.as_deref().filter(|n| !is_self_node(&s, n)) {
         let Some(mesh) = s.node.inner.mesh() else {
@@ -6912,6 +6952,12 @@ async fn post_repo_expose(State(s): S, Json(b): Json<ExposeBody>) -> impl IntoRe
 struct RepoAddBody {
     path: String,
     skip_permissions: Option<bool>,
+    /// Make the folder if it is not there (PROPOSALS-2026-11-B §B-1).
+    #[serde(default)]
+    create: bool,
+    /// `git init` in it.
+    #[serde(default)]
+    git_init: bool,
     /// Register on this peer instead (the path is one on that node).
     node: Option<String>,
 }
@@ -6923,16 +6969,16 @@ async fn post_repo(State(s): S, Json(b): Json<RepoAddBody>) -> impl IntoResponse
             node,
             "node_repo_add",
             "",
-            json!({ "path": b.path, "skip_permissions": b.skip_permissions }),
+            json!({ "path": b.path, "skip_permissions": b.skip_permissions, "create": b.create, "git_init": b.git_init }),
         )
         .await;
     }
     // Register only real directories, stored in the one normalized form
-    // every other entry point uses (see aspen_node::node::normalize_repo).
-    let path = match dunce::canonicalize(std::path::Path::new(&b.path)) {
-        Ok(p) if p.is_dir() => p,
-        Ok(_) => return err(StatusCode::BAD_REQUEST, "not a directory").into_response(),
-        Err(e) => return err(StatusCode::BAD_REQUEST, format!("{}: {e}", b.path)).into_response(),
+    // every other entry point uses (see aspen_node::node::normalize_repo);
+    // a missing one is made first when asked (B-1).
+    let path = match aspen_node::transfer::prepare_repo_dir(&b.path, b.create, b.git_init) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
     };
     if let Err(e) = s.node.inner.store.add_repo(&path, b.skip_permissions) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();

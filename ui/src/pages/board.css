@@ -149,6 +149,9 @@
 .project-member-state { min-width: 56px; }
 .project-member-when { min-width: 7ch; text-align: right; }
 .project-member-verbs { display: inline-flex; gap: 4px; }
+.project-team-head { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.project-team-head > span:last-child { min-width: 34px; text-align: center; }
+.project-member-desk { display: inline-flex; justify-content: center; min-width: 34px; cursor: pointer; }
 .project-member .rail-wait-pip { width: 7px; height: 7px; }
 .project-team-add { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
 .project-texts { display: flex; flex-direction: column; gap: 18px; max-width: 980px; }

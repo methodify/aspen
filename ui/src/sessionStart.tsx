@@ -78,7 +78,12 @@ export function NewSessionPanel({
     setErr(null);
     setBusy(true);
     const req: StartAgentRequest = { name: name.trim(), repo: repo.trim() };
-    if (template) req.template = template;
+    if (template) {
+      req.template = template;
+      // A template made for one node starts there (PROPOSALS-2026-11-B §B-2).
+      const t = templates.find((x) => x.id === template || x.name === template);
+      if (t?.spec.node) req.node = t.spec.node;
+    }
     if (charter.trim()) req.charter = charter.trim();
     if (model.trim()) req.model = model.trim();
     if (extraArgs.trim()) req.extra_args = extraArgs.trim();
@@ -128,6 +133,8 @@ export function NewSessionPanel({
                 {t.spec.repo ? ` · ${t.spec.repo}` : ""}
                 {t.spec.plugins?.length ? ` · ${t.spec.plugins.length} plugin${t.spec.plugins.length === 1 ? "" : "s"}` : ""}
                 {t.spec.board ? " · board" : ""}
+                {t.spec.node ? ` · on ${t.spec.node}` : ""}
+                {t.spec.prompt ? " · starter" : ""}
               </option>
             ))}
           </select>

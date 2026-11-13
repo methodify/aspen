@@ -25,7 +25,7 @@ function lookup(agents: Agent[], name: string): Agent | undefined {
 function roleOf(a: Agent | undefined): string | null {
   const c = a?.charter?.trim();
   if (c) return c.split("\n")[0]!.replace(/^#+\s*/, "").slice(0, 140);
-  return a?.title ?? null;
+  return a?.role ?? a?.title ?? null;
 }
 
 export function TeamView({
@@ -48,8 +48,16 @@ export function TeamView({
   onAdd: () => void;
 }) {
   const [confirm, setConfirm] = useState<string | null>(null);
+  const onDesk = members.filter((m) => !m.benched).length;
   return (
     <div className="project-team">
+      {members.length > 0 && (
+        <div className="project-team-head mono-meta">
+          <span>{members.length} on the team · {onDesk} on the desk</span>
+          <span style={{ flex: 1 }} />
+          <span title="on the desk: shown as a pane; off: benched, still on the team (it keeps its briefings and the team thread)">desk</span>
+        </div>
+      )}
       {members.length === 0 && <div className="empty">no one on this project yet</div>}
       {members.map((m) => {
         const a = lookup(agents, m.agent);
@@ -63,13 +71,17 @@ export function TeamView({
             <span className="chip mono">{a?.node ?? m.agent.split("@")[2] ?? "this node"}</span>
             <span className="mono-meta project-member-state">{state}</span>
             <span className="mono-meta project-member-when">{a?.last_active ? relTime(a.last_active) : ""}</span>
+            <label className="project-member-desk" title={m.benched ? "benched: on the team, not on the desk — check to put it back" : "on the desk — uncheck to bench it (still on the team)"}>
+              <input
+                type="checkbox"
+                checked={!m.benched}
+                disabled={readOnly || (!m.benched && !m.pane)}
+                onChange={(e) => (e.target.checked ? onBringBack(m.agent) : m.pane && onBench(m.pane))}
+                aria-label={`@${bare(m.agent)} on the desk`}
+              />
+            </label>
             {!readOnly && (
               <span className="project-member-verbs">
-                {m.benched ? (
-                  <button type="button" className="btn ghost sm" onClick={() => onBringBack(m.agent)} title="back onto the desk">bring back</button>
-                ) : (
-                  m.pane && <button type="button" className="btn ghost sm" onClick={() => onBench(m.pane!)} title="off the desk for now, still on the team">bench</button>
-                )}
                 {confirm === m.agent ? (
                   <>
                     <button type="button" className="btn sm" onClick={() => { setConfirm(null); onRemove(m); }}>remove from team</button>

@@ -184,6 +184,7 @@ pub fn op_capability(op: &str) -> Capability {
         "adoption"
         | "node_repo_skip"
         | "node_repo_add"
+        | "fs_mkdir"
         | "repo_import_preflight"
         | "repo_import"
         | "transfer_start"
@@ -2885,11 +2886,9 @@ async fn serve_api_req(
                 .and_then(|r| r.as_str())
                 .ok_or_else(|| anyhow!("missing path"))?;
             let skip = body.get("skip_permissions").and_then(|b| b.as_bool());
-            let p = match dunce::canonicalize(std::path::Path::new(path)) {
-                Ok(p) if p.is_dir() => p,
-                Ok(_) => return Err(anyhow!("{path}: not a directory on this node")),
-                Err(e) => return Err(anyhow!("{path}: {e} (on this node)")),
-            };
+            let flag = |k: &str| body.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
+            let p = crate::transfer::prepare_repo_dir(path, flag("create"), flag("git_init"))
+                .map_err(|e| anyhow!("{e} (on this node)"))?;
             node.inner.store.add_repo(&p, skip)?;
             let row = node
                 .inner
@@ -3062,6 +3061,16 @@ async fn serve_api_req(
             {
                 let _ = node.inner.store.set_agent_title(&key, Some(title));
             }
+            let s = |k: &str| {
+                body.get(k)
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .map(str::to_owned)
+            };
+            if let Some(e) = s("effort") {
+                let _ = node.set_effort(&key, Some(&e)).await;
+            }
+            node.after_start(&key, s("prompt"), s("project"));
             Ok(json!({ "name": key }))
         }
         // ------------------------------------------------- servicing ops

@@ -49,6 +49,10 @@ async function startRequest(req: StartAgentRequest): Promise<Agent> {
     skip_permissions: req.skip_permissions,
     title: req.title,
     acknowledge_trust: req.acknowledge_trust,
+    node: req.node,
+    prompt: req.prompt,
+    project: req.project,
+    effort: req.effort,
   });
   if (r.board?.id) {
     try {

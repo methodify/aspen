@@ -46,6 +46,18 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-13: starting agents where the work is (v0.55.0, queued)
+
+Proposal 2026-11-B (PROPOSALS-2026-11-B.md).
+- **A folder that is not there yet** (B-1): Add repository makes a missing folder (and, if asked, `git init`) on any node; the path picker makes a new folder.
+- **Templates that know where they belong** (B-2): a node scope, a starter prompt with blanks (`{{name}} {{node}} {{repo}} {{project}} {{charter}}`), effort; a node refuses another node's template.
+- **One start dialog** (B-3): the Mesh view's *new session* on a repo offers the templates that fit there, a starter prompt, a project to join, runtime and effort; the plain start takes `prompt`, `project`, `effort` too.
+- **Reach** (B-4): adding a repo opens its start dialog; *save as template…* from a session's ⋯ menu; the template editor shows node scope, starter prompt and effort; Now's panel starts a node's template on that node.
+- **The desk at a glance:** the project's Team view has a *desk* checkbox per member and a count (on the team · on the desk), replacing bench and bring back.
+- Remote agents carry their role (their charter's first line) to the console.
+- Verified on a two-node rig: a missing folder on b made and registered from a's console; a b-only template refused on a; started on b into a project with effort high, placed on the desk, the briefing first and then the starter prompt with every blank filled; a plain start with `git_init`, a starter prompt and the project placed beside it; the start dialog on b's repo offering b's template and starting into the project from the UI; adding a missing folder opening its start dialog; the desk checkbox benching and bringing back a member.
+- Not now: per-node plugin checks for a template; templates that make their own folder by pattern.
+
 ## Shipped — 2026-11-13: a resumed subagent shows as running (v0.54.2)
 
 - An agent resumed by `SendMessage` (its result names `resumedAgentId`) runs again in the activity ledger until its next notification; a message that only queues changes nothing; settling after a restart counts from the resume. Rows say *resumed* and time from it (ACTIVITY.md).

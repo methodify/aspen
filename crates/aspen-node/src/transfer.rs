@@ -17,6 +17,7 @@ use crate::repobundle::{exports_dir, imports_dir, EXT};
 /// The ops this module answers, local or from a peer.
 pub const OPS: &[&str] = &[
     "fs_list",
+    "fs_mkdir",
     "upload_chunk",
     "upload_size",
     "upload_done",
@@ -56,6 +57,7 @@ pub async fn dispatch(inner: &Arc<NodeInner>, op: &str, body: &Value) -> Result<
                 .await
                 .map_err(|e| anyhow!("{e}"))?
         }
+        "fs_mkdir" => fs_mkdir(&s("dir"), &s("name")),
         "upload_chunk" => upload_chunk(&data_dir, &s("id"), n("offset"), &s("data")),
         "upload_size" => Ok(json!({ "size": upload_size(&data_dir, &s("id"))? })),
         "upload_done" => upload_done(&data_dir, &s("id")),
@@ -112,6 +114,69 @@ fn starts(inner: &NodeInner) -> Vec<Value> {
         push("/", PathBuf::from("/"));
     }
     out
+}
+
+fn expand_home(p: &str) -> PathBuf {
+    let expanded = match p.strip_prefix('~') {
+        Some(rest) => home()
+            .map(|h| h.join(rest.trim_start_matches(['/', '\\'])))
+            .unwrap_or_else(|| PathBuf::from(p)),
+        None => PathBuf::from(p),
+    };
+    std::path::absolute(&expanded).unwrap_or(expanded)
+}
+
+/// A new folder `name` inside `dir` (PROPOSALS-2026-11-B §B-1): one name,
+/// no separators; an existing folder is fine, a file is refused.
+pub fn fs_mkdir(dir: &str, name: &str) -> Result<Value> {
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+        bail!("a folder name, without separators");
+    }
+    let parent = expand_home(dir);
+    if !parent.is_dir() {
+        bail!("{}: not a folder", parent.display());
+    }
+    let p = parent.join(name);
+    if p.exists() && !p.is_dir() {
+        bail!("{}: a file is there", p.display());
+    }
+    std::fs::create_dir_all(&p).map_err(|e| anyhow!("{}: {e}", p.display()))?;
+    Ok(json!({ "path": p.to_string_lossy() }))
+}
+
+/// Get a repository's folder ready to register (B-1): an existing folder
+/// as it is; a missing one made (parents too) when `create`; `git init`
+/// in it when `git_init` and it is not in a work tree yet. Returns the
+/// canonical path.
+pub fn prepare_repo_dir(path: &str, create: bool, git_init: bool) -> Result<PathBuf> {
+    let p = expand_home(path.trim());
+    if p.exists() && !p.is_dir() {
+        bail!("{}: a file, not a folder", p.display());
+    }
+    if !p.exists() {
+        if !create {
+            bail!("{}: not there yet (create it to add it)", p.display());
+        }
+        std::fs::create_dir_all(&p).map_err(|e| anyhow!("{}: {e}", p.display()))?;
+    }
+    let p = dunce::canonicalize(&p).map_err(|e| anyhow!("{}: {e}", p.display()))?;
+    if git_init && !in_work_tree(&p) {
+        let out = crate::gitstate::quiet_command("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(&p)
+            .output()
+            .map_err(|e| anyhow!("git init: {e}"))?;
+        if !out.status.success() {
+            bail!("git init: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+    }
+    Ok(p)
+}
+
+fn in_work_tree(p: &Path) -> bool {
+    p.ancestors().any(|a| a.join(".git").exists())
 }
 
 /// One directory's entries: name, kind, size, modified time. Never opens
@@ -606,6 +671,34 @@ async fn install(inner: &Arc<NodeInner>, id: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_that_is_not_there_is_made_when_asked() {
+        let t = tempfile::tempdir().unwrap();
+        let want = t.path().join("work").join("d365");
+        let w = want.to_string_lossy().into_owned();
+        // Not there, not asked to make it: refused, nothing made.
+        assert!(prepare_repo_dir(&w, false, false)
+            .unwrap_err()
+            .to_string()
+            .contains("not there yet"));
+        assert!(!want.exists());
+        let p = prepare_repo_dir(&w, true, true).unwrap();
+        assert!(p.is_dir());
+        assert!(p.join(".git").exists(), "git init ran");
+        // Again: the same folder, as it is.
+        assert_eq!(prepare_repo_dir(&w, true, true).unwrap(), p);
+        // A file is never a repo folder.
+        let f = t.path().join("note.txt");
+        std::fs::write(&f, "x").unwrap();
+        assert!(prepare_repo_dir(&f.to_string_lossy(), true, false).is_err());
+        // A new folder inside one: one name, no separators.
+        let made = fs_mkdir(&t.path().to_string_lossy(), "fresh").unwrap();
+        assert!(Path::new(made["path"].as_str().unwrap()).is_dir());
+        assert!(fs_mkdir(&t.path().to_string_lossy(), "a/b").is_err());
+        assert!(fs_mkdir(&t.path().to_string_lossy(), "..").is_err());
+        assert!(fs_mkdir(&t.path().to_string_lossy(), "note.txt").is_err());
+    }
 
     #[test]
     fn an_upload_comes_in_pieces_and_resumes() {

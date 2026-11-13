@@ -175,7 +175,7 @@ export default function Plugins() {
         />
       )}
       {tab === "marketplaces" && <MarketplacesTab reg={reg} lib={lib} reload={load} setErr={setErr} setNote={setNote} />}
-      {tab === "templates" && <TemplatesSection catalog={catalog} lib={lib} />}
+      {tab === "templates" && <TemplatesSection catalog={catalog} lib={lib} editId={params.get("edit")} />}
     </div>
   );
 }
@@ -785,11 +785,21 @@ function Matrix({
 
 /** Session templates (PLUGINS.md §templates): named recipes, synced
  *  mesh-wide, spawned from Now's panel, the palette, or the CLI. */
-function TemplatesSection({ catalog, lib }: { catalog: CatalogPlugin[]; lib: Map<string, string> }) {
+function TemplatesSection({ catalog, lib, editId }: { catalog: CatalogPlugin[]; lib: Map<string, string>; editId?: string | null }) {
   const nav = useNavigate();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [boards, setBoards] = useState<Board[]>([]);
   const [editing, setEditing] = useState<Template | null>(null);
+  // `?edit=<id>` opens that template's editor (save as template, B-4).
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (opened || !editId) return;
+    const t = templates.find((x) => x.id === editId);
+    if (t) {
+      setEditing(t);
+      setOpened(true);
+    }
+  }, [editId, templates, opened]);
   const [err, setErr] = useState<string | null>(null);
   const [removeAsk, setRemoveAsk] = useState<string | null>(null);
   async function load() {
@@ -830,6 +840,9 @@ function TemplatesSection({ catalog, lib }: { catalog: CatalogPlugin[]; lib: Map
               {t.spec.permission === "skip" ? " · skip permissions" : ""}
               {t.spec.plugins?.length ? ` · ${t.spec.plugins.map((p) => p.plugin).join(", ")}` : ""}
               {t.spec.board ? ` · board ${boards.find((b) => b.id === t.spec.board?.id)?.name ?? t.spec.board.id}` : ""}
+              {t.spec.effort ? ` · effort ${t.spec.effort}` : ""}
+              {t.spec.prompt ? " · starter prompt" : ""}
+              {t.spec.node ? ` · on ${t.spec.node} only` : " · any node"}
             </span>
             )}
             <span style={{ flex: 1 }} />
@@ -881,6 +894,14 @@ function TemplateEditor({ t, catalog, lib, boards, onClose, onSaved }: { t: Temp
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (patch: Partial<TemplateSpec>) => setSpec((s) => ({ ...s, ...patch }));
+  // The mesh's nodes, for a template made for one of them (B-2).
+  const [nodeNames, setNodeNames] = useState<string[]>([]);
+  useEffect(() => {
+    api
+      .mesh()
+      .then((m) => setNodeNames([m.node, ...(m.peers ?? []).map((p) => p.node)]))
+      .catch(() => setNodeNames([]));
+  }, []);
   const has = (p: CatalogPlugin) => (spec.plugins ?? []).some((x) => x.marketplace === p.marketplace && x.plugin === p.name);
   const toggle = (p: CatalogPlugin) =>
     set({ plugins: has(p) ? (spec.plugins ?? []).filter((x) => !(x.marketplace === p.marketplace && x.plugin === p.name)) : [...(spec.plugins ?? []), { marketplace: p.marketplace, plugin: p.name }] });
@@ -943,6 +964,36 @@ function TemplateEditor({ t, catalog, lib, boards, onClose, onSaved }: { t: Temp
         <span className="label">Charter (optional)</span>
         <textarea rows={3} value={spec.charter ?? ""} onChange={(e) => set({ charter: e.target.value })} placeholder="what sessions from this template are here to do" />
       </label>
+      <label style={{ display: "grid", gap: 4 }}>
+        <span className="label">Starter prompt (optional): its first message once it is up</span>
+        <textarea
+          rows={4}
+          value={spec.prompt ?? ""}
+          onChange={(e) => set({ prompt: e.target.value })}
+          placeholder={"e.g. We're joining {{project}} as its D365 developer. Read the skills you have, then wait for me to tell you what to do."}
+        />
+        <span className="mono-meta">{"{{name}} {{node}} {{repo}} {{project}} {{charter}}"} are filled in when it starts</span>
+      </label>
+      <div className="grid cols">
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Where it can start</span>
+          <select value={spec.node ?? ""} onChange={(e) => set({ node: e.target.value || undefined })}>
+            <option value="">any node (mesh-wide)</option>
+            {Array.from(new Set([...nodeNames, ...(spec.node ? [spec.node] : [])])).map((n) => (
+              <option key={n} value={n}>only on {n}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span className="label">Effort (Claude)</span>
+          <select value={spec.effort ?? ""} onChange={(e) => set({ effort: e.target.value || undefined })}>
+            <option value="">default</option>
+            {["low", "medium", "high", "xhigh", "max"].map((x) => (
+              <option key={x} value={x}>{x}</option>
+            ))}
+          </select>
+        </label>
+      </div>
       <div className="grid cols">
         <label style={{ display: "grid", gap: 4 }}>
           <span className="label">Runtime</span>
