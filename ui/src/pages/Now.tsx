@@ -601,12 +601,13 @@ function ActivityBand({ items }: { items: FleetActivityItem[] }) {
                   </span>
                   <span className="mono-meta act-detail">
                     {a.kind === "task" && typeof a.detail["command"] === "string" ? `$ ${String(a.detail["command"]).slice(0, 140)}` : ""}
+                    {a.kind === "agent" && typeof a.detail["resumes"] === "number" ? `resumed${Number(a.detail["resumes"]) > 1 ? ` ×${a.detail["resumes"]}` : ""} · ` : ""}
                     {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
                     {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 140) : ""}
                     {a.kind === "monitor" && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
                   </span>
                 </span>
-                <span className="mono-meta act-status live">running {fmtElapsed(a.started_at)}</span>
+                <span className="mono-meta act-status live">running {fmtElapsed(typeof a.detail["resumed_at"] === "string" ? a.detail["resumed_at"] : a.started_at)}</span>
               </div>
             ))}
           </div>

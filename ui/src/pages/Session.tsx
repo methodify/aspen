@@ -700,6 +700,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
                         </span>
                         <span className="mono-meta act-detail">
                           {(a.kind === "task" || a.kind === "monitor") && script ? `$ ${script.slice(0, 120)}` : ""}
+                          {a.kind === "agent" && typeof a.detail["resumes"] === "number" ? `resumed${Number(a.detail["resumes"]) > 1 ? ` ×${a.detail["resumes"]}` : ""} · ` : ""}
                           {a.kind === "agent" && typeof a.detail["agent_type"] === "string" ? `${a.detail["agent_type"]} · ` : ""}
                           {a.kind === "agent" && typeof a.detail["prompt"] === "string" ? String(a.detail["prompt"]).slice(0, 120) : ""}
                           {a.kind === "monitor" && !script && typeof a.detail["delay_seconds"] === "number" ? `in ${a.detail["delay_seconds"]}s` : ""}
@@ -707,7 +708,7 @@ function ActivityMenu({ agent, counts, openSignal }: { agent: string; counts: Ac
                         </span>
                       </span>
                       <span className={`mono-meta act-status ${a.status === "running" ? "live" : ""}`}>
-                        {a.status === "running" ? `running ${fmtElapsed(a.started_at, null)}` : `${a.status}${a.ended_at ? ` · ${fmtElapsed(a.started_at, a.ended_at)}` : ""}`}
+                        {a.status === "running" ? `running ${fmtElapsed(typeof a.detail["resumed_at"] === "string" ? a.detail["resumed_at"] : a.started_at, null)}` : `${a.status}${a.ended_at ? ` · ${fmtElapsed(typeof a.detail["resumed_at"] === "string" ? a.detail["resumed_at"] : a.started_at, a.ended_at)}` : ""}`}
                       </span>
                     </div>
                     {isOpen && (

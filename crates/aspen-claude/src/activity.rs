@@ -8,7 +8,10 @@
 //! "Command running in background with ID: …", "wf_…"); the end is the
 //! `<task-notification>` user line the harness injects when the work
 //! stops, with `<task-id>` and `<status>`. A synchronous `Agent` (result
-//! returned in the same call) starts and ends at once.
+//! returned in the same call) starts and ends at once. A finished agent
+//! can be **resumed**: a `SendMessage` to it whose result names
+//! `resumedAgentId` (a message to one still running only queues); it runs
+//! again until a new notification for the same id.
 //!
 //! The ledger is derived from the file — for a live session too — and
 //! cached by the file's size and mtime, so the roster can carry counts
@@ -182,9 +185,78 @@ fn apply_notification(acts: &mut [Activity], text: &str, ts: &Option<String>) {
     }
 }
 
+/// A `SendMessage` result that resumed a stopped agent: its row runs again
+/// (or, if this transcript never launched it, a row starts here).
+fn resume_agent(
+    acts: &mut Vec<Activity>,
+    result: &str,
+    summary: Option<String>,
+    tuid: &str,
+    ts: &Option<String>,
+) {
+    let id = serde_json::from_str::<Value>(result.trim())
+        .ok()
+        .and_then(|v| {
+            v.get("resumedAgentId")
+                .and_then(|i| i.as_str())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            // Not JSON (a future shape): the field by name.
+            result
+                .split("\"resumedAgentId\":\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .map(str::to_owned)
+        });
+    let Some(id) = id.filter(|i| !i.is_empty()) else {
+        return;
+    };
+    let resumes = |a: &Activity| {
+        a.detail
+            .get("resumes")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0)
+    };
+    if let Some(a) = acts
+        .iter_mut()
+        .rev()
+        .find(|a| a.kind == "agent" && a.id == id)
+    {
+        let n = resumes(a) + 1;
+        a.status = "running".into();
+        a.ended_at = None;
+        a.detail["resumes"] = Value::from(n);
+        a.detail["resumed_at"] = ts.clone().map(Value::String).unwrap_or(Value::Null);
+        if let Some(s) = summary {
+            a.detail["resume_note"] = Value::String(snippet(&s, 200));
+        }
+        return;
+    }
+    acts.push(Activity {
+        id,
+        kind: "agent".into(),
+        label: summary
+            .clone()
+            .map(|s| snippet(&s, 80))
+            .unwrap_or_else(|| "resumed agent".into()),
+        tool_use_id: tuid.to_owned(),
+        started_at: ts.clone(),
+        ended_at: None,
+        status: "running".into(),
+        detail: serde_json::json!({ "resumes": 1, "resumed_at": ts, "resume_note": summary }),
+        has_transcript: false,
+    });
+}
+
 /// Replay a transcript's lines into a ledger.
 pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>) -> Vec<Activity> {
     let mut acts: Vec<Activity> = Vec::new();
+    // `SendMessage` calls by tool_use id: (to, summary). Their results say
+    // whether the message resumed a stopped agent.
+    #[allow(clippy::type_complexity)]
+    let mut sends: std::collections::HashMap<String, (String, Option<String>)> =
+        std::collections::HashMap::new();
     for line in lines {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -247,6 +319,15 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                         .and_then(|i| i.as_str())
                         .unwrap_or("")
                         .to_owned();
+                    if name == "SendMessage" {
+                        let to = input.get("to").and_then(|t| t.as_str()).unwrap_or("");
+                        let summary = input
+                            .get("summary")
+                            .and_then(|t| t.as_str())
+                            .map(str::to_owned);
+                        sends.insert(tuid.clone(), (to.to_owned(), summary));
+                        continue;
+                    }
                     let (kind, label, detail) = match name {
                         "Bash"
                             if input.get("run_in_background").and_then(|x| x.as_bool())
@@ -355,6 +436,12 @@ pub fn derive(lines: impl Iterator<Item = String>, subagents_dir: Option<&Path>)
                         let tuid = b.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or("");
                         let text = text_of(b.get("content").unwrap_or(&Value::Null));
                         let is_err = b.get("is_error").and_then(|e| e.as_bool()) == Some(true);
+                        if let Some((_to, summary)) = sends.remove(tuid) {
+                            if !is_err {
+                                resume_agent(&mut acts, &text, summary, tuid, &ts);
+                            }
+                            continue;
+                        }
                         if let Some(a) = acts.iter_mut().find(|a| a.tool_use_id == tuid) {
                             match a.kind.as_str() {
                                 "agent" => {
@@ -614,7 +701,14 @@ fn apply_workflow_states(acts: &mut [Activity], project_path: &Path, session_id:
 pub fn settle_before(acts: &mut [Activity], process_started: Option<f64>) {
     let Some(ps) = process_started else { return };
     for a in acts.iter_mut().filter(|a| a.status == "running") {
-        let started = a.started_at.as_deref().and_then(parse_iso).unwrap_or(0.0);
+        // A resumed agent runs from its resume, not its first launch.
+        let started = a
+            .detail
+            .get("resumed_at")
+            .and_then(|t| t.as_str())
+            .or(a.started_at.as_deref())
+            .and_then(parse_iso)
+            .unwrap_or(0.0);
         if started < ps {
             a.status = "unknown".into();
         }
@@ -1307,6 +1401,34 @@ mod tests {
             name_from_script_path("/a/b/wave-4-wf_1e0966ef-8da.js").as_deref(),
             Some("wave-4")
         );
+    }
+
+    #[test]
+    fn a_resumed_agent_runs_again_until_its_next_notification() {
+        let lines = [
+            r#"{"type":"assistant","timestamp":"2026-11-12T10:00:00Z","message":{"content":[{"type":"tool_use","id":"tu1","name":"Agent","input":{"description":"Polish WP-299"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T10:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Async agent launched successfully. agentId: a32dd3f (internal)"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T10:30:00Z","message":{"role":"user","content":"<task-notification>\n<task-id>a32dd3f</task-id>\n<status>completed</status>\n<summary>Agent stopped</summary>\n</task-notification>"}}"#,
+            // A message to it while it is still running only queues.
+            r#"{"type":"assistant","timestamp":"2026-11-12T11:00:00Z","message":{"content":[{"type":"tool_use","id":"tu2","name":"SendMessage","input":{"to":"zzz","summary":"note","message":"x"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T11:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu2","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Message queued for delivery to zzz at its next tool round.\"}"}]}]}}"#,
+            // The resume after a reboot.
+            r#"{"type":"assistant","timestamp":"2026-11-12T12:00:00Z","message":{"content":[{"type":"tool_use","id":"tu3","name":"SendMessage","input":{"to":"a32dd3f","summary":"Resume WP-299 after machine reboot","message":"go on"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-12T12:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu3","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Resuming agent a32dd3f\",\"resumedAgentId\":\"a32dd3f\"}"}]}]}}"#,
+        ];
+        let mut acts = derive(lines.iter().map(|s| s.to_string()), None);
+        assert_eq!(acts.len(), 1, "a queued message is no row of its own");
+        assert_eq!(acts[0].status, "running");
+        assert_eq!(acts[0].detail["resumes"], 1);
+        // The process started after the first launch but before the
+        // resume: it is still running, not settled.
+        settle_before(&mut acts, parse_iso("2026-11-12T11:30:00Z"));
+        assert_eq!(acts[0].status, "running");
+        let mut more: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        more.push(r#"{"type":"user","timestamp":"2026-11-12T13:00:00Z","message":{"role":"user","content":"<task-notification>\n<task-id>a32dd3f</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"}}"#.into());
+        let acts = derive(more.into_iter(), None);
+        assert_eq!(acts[0].status, "completed");
+        assert_eq!(acts[0].ended_at.as_deref(), Some("2026-11-12T13:00:00Z"));
     }
 
     #[test]

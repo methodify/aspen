@@ -86,6 +86,21 @@ a live tail of a subagent over a socket rather than a poll;
 recognizing tasks the harness stopped without a notification (they age
 out with the stale rule at the next restart).
 
+## A resumed agent (v0.54.2)
+
+A finished (or interrupted) agent can be resumed: the session calls `SendMessage` to its id,
+and the result says so with `resumedAgentId` (`"Resuming agent …"`, or "was stopped …; resumed
+it in the background"). A message to an agent still running only queues ("Message queued for
+delivery … at its next tool round") and changes nothing. On a resume the agent's row runs again:
+`status: running`, `ended_at` cleared, `detail.resumes` counted and `detail.resumed_at` set; the
+next `<task-notification>` for the id ends it as before. An agent this transcript never launched
+gets a row of its own from the resume. Settling after a restart counts from the resume, so an
+agent resumed after a reboot is not marked `unknown` for having first started before it. Rows read
+*resumed* (or *resumed ×N*) and time from the resume.
+
+Checked against a real session with twelve resumed agents (one resumed five times): each ran
+again from its resume and ended at its later notification.
+
 ## Details, stop, processes (v0.24, PROPOSALS-MCP.md §6.4)
 
 The composer's status line carries the running count (`1 monitor ·`)
