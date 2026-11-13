@@ -14,6 +14,7 @@ import { scoped } from "../profiles";
 import { boardStatus, describeStatus, matchQuery, projectStatus, type DynamicQuery } from "../boardStatus";
 import { ActivityView, CharterNotesView, FilesView, SearchView, TeamView, type TeamMember } from "./projectViews";
 import { MenuGroup, MenuRow, SessionMenu } from "../sessionBar";
+import { StartDialog, type StartChoice } from "../startDialog";
 import { SessionView } from "./Session";
 import View from "./View";
 import { addMember, benchPane, benchSwap, boardPatch, mapTree, panesOf, placeOnBoardId, removePane, stageBench, unbench } from "../boardOps";
@@ -1248,6 +1249,7 @@ export default function BoardPage() {
           agents={agents}
           attention={attention}
           title={picker === ADD ? "Add to the board" : undefined}
+          project={dynamic ? undefined : { id: board.id, name: board.name }}
           members={new Set([...sessionPanes.map((p) => p.agent!), ...bench.map((e) => e.agent)])}
           onPick={(pane) => {
             if (picker === ADD) {
@@ -1336,6 +1338,7 @@ function Picker({
   onClose,
   title = "What goes in this pane?",
   members,
+  project,
 }: {
   agents: Agent[];
   attention: Set<string>;
@@ -1344,6 +1347,8 @@ function Picker({
   title?: string;
   /** Who is on the board already (stage or bench): marked in the list. */
   members?: Set<string>;
+  /** The project a new agent joins (its starter prompt's {{project}}). */
+  project?: { id: string; name: string };
 }) {
   const [q, setQ] = useState("");
   const [viewPath, setViewPath] = useState("");
@@ -1352,7 +1357,6 @@ function Picker({
   const trust = useTrustedStart();
   const [repos, setRepos] = useState<{ key: string; node: string; self: boolean; path: string; handle: string }[]>([]);
   const [newRepo, setNewRepo] = useState("");
-  const [newName, setNewName] = useState("");
   const [starting, setStarting] = useState(false);
   const [newErr, setNewErr] = useState<string | null>(null);
   useEffect(() => {
@@ -1366,14 +1370,24 @@ function Picker({
       })
       .catch(() => {});
   }, []);
-  async function startNew() {
+  // A template that fits the repo, a starter prompt (PROPOSALS-2026-11-B):
+  // the same start dialog as the Mesh view's, joining this project.
+  async function startNew(c: StartChoice) {
     const r = repos.find((x) => x.key === newRepo);
-    const n = newName.trim();
-    if (!r || !n) return;
+    if (!r) return;
     setStarting(true);
     setNewErr(null);
     try {
-      const a = await trust.start({ name: n, repo: r.path, node: r.self ? undefined : r.node });
+      const a = await trust.start({
+        name: c.name,
+        repo: r.path,
+        node: r.self ? undefined : r.node,
+        ...(c.template ? { template: c.template } : {}),
+        ...(c.prompt ? { prompt: c.prompt } : {}),
+        ...(c.effort ? { effort: c.effort } : {}),
+        ...(c.harness ? { harness: c.harness } : {}),
+        ...(project ? { project: project.id } : {}),
+      });
       if (a) onPick({ kind: "session", id: "", agent: a.name });
     } catch (e) {
       setNewErr(e instanceof Error ? e.message : String(e));
@@ -1407,25 +1421,31 @@ function Picker({
           ))}
           {list.length === 0 && <div className="dim" style={{ padding: 8 }}>no sessions match</div>}
         </div>
-        <form
-          className="picker-view"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void startNew();
-          }}
-        >
-          <span className="mono-meta">or a new agent:</span>
+        <div className="picker-view">
+          <span className="mono-meta">or a new agent in:</span>
           <select value={newRepo} onChange={(e) => setNewRepo(e.target.value)} aria-label="repo for the new agent">
             <option value="">repo…</option>
             {repos.map((r) => (
               <option key={r.key} value={r.key}>#{r.handle}{r.self ? "" : ` · ${r.node}`}</option>
             ))}
           </select>
-          <span className="mono-meta">@</span>
-          <input className="mono" placeholder="name" value={newName} onChange={(e) => setNewName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""))} aria-label="new agent name" />
-          <button type="submit" className="btn sm primary" disabled={!newRepo || !newName.trim() || starting}>{starting ? "starting…" : "start"}</button>
+          {starting && <span className="mono-meta">starting…</span>}
           {newErr && <span className="error-text mono-meta">{newErr}</span>}
-        </form>
+        </div>
+        {(() => {
+          const r = repos.find((x) => x.key === newRepo);
+          return r && !starting ? (
+            <StartDialog
+              key={r.key}
+              node={r.node}
+              self={r.self}
+              repo={{ path: r.path, handle: r.handle }}
+              project={project}
+              onStart={(c) => void startNew(c)}
+              onCancel={() => setNewRepo("")}
+            />
+          ) : null;
+        })()}
         {trust.dialog}
         <div className="picker-view">
           <span className="mono-meta">or an artifact viewer:</span>

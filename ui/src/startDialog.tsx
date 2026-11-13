@@ -20,6 +20,7 @@ export function StartDialog({
   node,
   self,
   repo,
+  project: fixedProject,
   onStart,
   onCancel,
 }: {
@@ -28,6 +29,8 @@ export function StartDialog({
   /** It is the console's own node. */
   self: boolean;
   repo: { path: string; handle?: string | null };
+  /** Started into this project (the board's picker): no project choice. */
+  project?: { id: string; name: string };
   onStart: (c: StartChoice) => void;
   onCancel: () => void;
 }) {
@@ -74,7 +77,7 @@ export function StartDialog({
       name: n,
       template: tid || undefined,
       prompt: prompt.trim() ? prompt : undefined,
-      project: project || undefined,
+      project: fixedProject?.id ?? (project || undefined),
       effort: effort || undefined,
       harness: harness || undefined,
     });
@@ -121,6 +124,9 @@ export function StartDialog({
         <span className="mono-meta">sent once it is up · {"{{name}} {{node}} {{repo}} {{project}} {{charter}}"} are filled in</span>
       </label>
       <div className="start-row">
+        {fixedProject ? (
+          <span className="mono-meta">joins “{fixedProject.name}”</span>
+        ) : (
         <label className="start-inline">
           <span className="label">join a project</span>
           <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="project">
@@ -133,6 +139,7 @@ export function StartDialog({
             ))}
           </select>
         </label>
+        )}
         <button type="button" className="link mono-meta" onClick={() => setMore(!more)}>
           {more ? "less" : "runtime, effort…"}
         </button>

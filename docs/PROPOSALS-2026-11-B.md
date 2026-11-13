@@ -85,6 +85,8 @@ The plain start (`POST /api/agents`, here or on a peer) takes `prompt` and
 - Now's new-session panel and the palette list a node-scoped template with
   its node, and start it there.
 
+- (v0.55.1) The board's *add to the board* picker uses the same start dialog, joining its project.
+
 ### Not now
 
 - Per-node plugin availability checks (a template naming a plugin a node
