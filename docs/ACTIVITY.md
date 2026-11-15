@@ -192,3 +192,12 @@ subagent view, which now finds workflow agents under
 `subagents/workflows/`), the logs (retries, stalls) and the script.
 Polls every 3 s. On a phone the row keeps the label, elapsed, last tool
 and tokens.
+
+### Progress frames, one row per agent (v0.55.2)
+
+A running workflow's live frames are merged as they come (the node keeps the latest list). An
+agent is keyed by its run `index`, which its first, queued frame already has; its `agentId` comes
+only once it starts. A newer frame's fields replace the held ones, and a field it lacks (an id
+learned earlier) stays. Keying by `agentId` alone had made a queued agent and the same agent
+running two rows, both in the phase's count.
+

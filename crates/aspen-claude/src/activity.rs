@@ -918,10 +918,33 @@ pub fn workflow_detail(
     });
     let has_file = |id: &str| agents_dir.join(format!("agent-{id}.jsonl")).is_file();
     let mut agents: Vec<Value> = Vec::new();
+    // One row per agent: its frames share its `index` (an id comes only
+    // once it starts), so fold them, the later fields winning.
+    let mut folded: Vec<Value> = Vec::new();
     for p in prog
         .iter()
         .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("workflow_agent"))
     {
+        let idx = p.get("index").filter(|i| !i.is_null());
+        let id = p.get("agentId").and_then(|a| a.as_str());
+        let hit = folded.iter_mut().find(|x| {
+            (idx.is_some() && x.get("index") == idx)
+                || (id.is_some() && x.get("agentId").and_then(|a| a.as_str()) == id)
+        });
+        match (hit, p.as_object()) {
+            (Some(x), Some(m)) => {
+                if let Some(o) = x.as_object_mut() {
+                    for (k, v) in m {
+                        if !v.is_null() {
+                            o.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            _ => folded.push(p.clone()),
+        }
+    }
+    for p in folded.iter() {
         let id = p.get("agentId").and_then(|a| a.as_str()).unwrap_or("");
         agents.push(serde_json::json!({
             "agent_id": id,

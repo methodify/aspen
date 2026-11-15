@@ -46,6 +46,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-15: one row per workflow agent (v0.55.2)
+
+- A big workflow's phase showed some agents twice while running, one row with no id and one with its work, both counted in the phase's total but only one in its done count. An agent's first (queued) progress frame has its run `index` but no `agentId` yet, and frames were merged by `agentId`, so the started frame became a second row. Frames now merge by `index` (then `agentId`), a later frame's fields over the earlier's (an id learned stays), and rows already held twice fold into one; the workflow view folds them too.
+- Checked against real runs on disk: every agent's `index` is unique across phases.
+
 ## Shipped — 2026-11-13: templates where a project adds a member (v0.55.1)
 
 - The board's *add to the board* picker (*+ add a member*, an empty pane) starts a new agent with the same start dialog as the Mesh view: pick the repo, then a template that fits it, a starter prompt, runtime and effort; it joins this project (so `{{project}}` is filled and the briefing comes first).

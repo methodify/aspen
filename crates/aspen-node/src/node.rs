@@ -223,13 +223,16 @@ pub type HttpGateway = Arc<
 /// (a phase by index, an agent by id) and add the rest, so a frame that
 /// carries a part of the list, or none of it, loses nothing.
 pub fn merge_task_progress(old: &serde_json::Value, new: &serde_json::Value) -> serde_json::Value {
+    // An agent is its `index` in the run (there from its first, queued
+    // frame); `agentId` comes only once it starts, so keying by it made a
+    // queued frame and a running one two rows. A phase is its index too.
     let key = |e: &serde_json::Value| -> String {
         let t = e.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let k = e
-            .get("agentId")
-            .and_then(|a| a.as_str())
-            .map(str::to_owned)
-            .or_else(|| e.get("index").map(|i| i.to_string()))
+            .get("index")
+            .filter(|i| !i.is_null())
+            .map(|i| i.to_string())
+            .or_else(|| e.get("agentId").and_then(|a| a.as_str()).map(str::to_owned))
             .unwrap_or_default();
         format!("{t}:{k}")
     };
@@ -243,7 +246,9 @@ pub fn merge_task_progress(old: &serde_json::Value, new: &serde_json::Value) -> 
             for e in f {
                 let k = key(e);
                 match list.iter_mut().find(|x| key(x) == k) {
-                    Some(x) => *x = e.clone(),
+                    // The newer frame's fields win; one it lacks (an id
+                    // learned earlier) stays.
+                    Some(x) => overlay(x, e),
                     None => list.push(e.clone()),
                 }
             }
@@ -252,7 +257,41 @@ pub fn merge_task_progress(old: &serde_json::Value, new: &serde_json::Value) -> 
         (None, Some(f)) => f.clone(),
         (None, None) => return out,
     };
-    out["workflow_progress"] = serde_json::Value::Array(list);
+    out["workflow_progress"] = serde_json::Value::Array(fold_progress(list));
+    out
+}
+
+fn overlay(into: &mut serde_json::Value, from: &serde_json::Value) {
+    match (into.as_object_mut(), from.as_object()) {
+        (Some(a), Some(b)) => {
+            for (k, v) in b {
+                if !v.is_null() {
+                    a.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        _ => *into = from.clone(),
+    }
+}
+
+/// One entry per agent (and per phase): rows already held twice, from
+/// before agents were keyed by index, fold into the later one.
+pub fn fold_progress(list: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for e in list {
+        let ty = e.get("type").and_then(|t| t.as_str()).map(str::to_owned);
+        let idx = e.get("index").filter(|i| !i.is_null()).cloned();
+        let id = e.get("agentId").and_then(|a| a.as_str()).map(str::to_owned);
+        let same = |x: &serde_json::Value| {
+            x.get("type").and_then(|t| t.as_str()) == ty.as_deref()
+                && ((idx.is_some() && x.get("index") == idx.as_ref())
+                    || (id.is_some() && x.get("agentId").and_then(|a| a.as_str()) == id.as_deref()))
+        };
+        match out.iter_mut().find(|x| same(x)) {
+            Some(x) => overlay(x, &e),
+            None => out.push(e),
+        }
+    }
     out
 }
 
@@ -4557,6 +4596,54 @@ mod title_tests {
             w.iter().find(|e| e["agentId"] == "a1").unwrap()["state"],
             "done"
         );
+    }
+
+    #[test]
+    fn an_agent_queued_then_started_is_one_row() {
+        use serde_json::json;
+        // Queued: an index, no id yet.
+        let q = json!({ "task_id": "t", "workflow_progress": [
+            { "type": "workflow_phase", "index": 1, "title": "Research" },
+            { "type": "workflow_agent", "index": 2, "label": "research:driver", "phaseIndex": 1, "state": "queued" },
+        ]});
+        // Started: the same index, now with its id and work.
+        let started = json!({ "task_id": "t", "workflow_progress": [
+            { "type": "workflow_agent", "index": 2, "agentId": "a4f", "label": "research:driver", "phaseIndex": 1, "state": "running", "tokens": 100 },
+        ]});
+        let m = super::merge_task_progress(&q, &started);
+        let agents: Vec<_> = m["workflow_progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "workflow_agent")
+            .cloned()
+            .collect();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["agentId"], "a4f");
+        assert_eq!(agents[0]["state"], "running");
+        // A later frame without the id keeps it; done counts once.
+        let done = json!({ "task_id": "t", "workflow_progress": [
+            { "type": "workflow_agent", "index": 2, "state": "done" },
+        ]});
+        let m = super::merge_task_progress(&m, &done);
+        let a: Vec<_> = m["workflow_progress"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "workflow_agent")
+            .cloned()
+            .collect();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0]["agentId"], "a4f");
+        assert_eq!(a[0]["state"], "done");
+        // Rows held twice from before fold into one.
+        let held = vec![
+            json!({ "type": "workflow_agent", "index": 3, "state": "queued" }),
+            json!({ "type": "workflow_agent", "index": 3, "agentId": "b1", "state": "done" }),
+        ];
+        let f = super::fold_progress(held);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0]["agentId"], "b1");
     }
 
     fn turn(n: usize, filler: usize) -> Vec<serde_json::Value> {
