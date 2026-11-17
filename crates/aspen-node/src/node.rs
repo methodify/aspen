@@ -1967,6 +1967,20 @@ impl Node {
         let key = key.to_owned();
         tokio::spawn(async move {
             if let Some(pid) = project.as_deref() {
+                // A project made a moment ago on another console reaches
+                // this node with the next roster: wait for it a little.
+                for _ in 0..40 {
+                    let here = node
+                        .inner
+                        .store
+                        .boards(false)
+                        .map(|bs| bs.iter().any(|b| b.id == pid))
+                        .unwrap_or(false);
+                    if here {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
                 match crate::projects::place_member(&node.inner, pid, &key) {
                     Ok(true) => crate::federation::broadcast_roster(&node.inner),
                     Ok(false) => {}

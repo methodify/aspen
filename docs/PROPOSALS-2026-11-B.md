@@ -87,6 +87,8 @@ The plain start (`POST /api/agents`, here or on a peer) takes `prompt` and
 
 - (v0.55.1) The board's *add to the board* picker uses the same start dialog, joining its project.
 
+- (v0.55.3) One new-session dialog for every fresh start (title bar +, Now, palette, template links), the start dialog everywhere (repo menu too), a new project made inline, and the old form's charter, model, args and permissions under *more*.
+
 ### Not now
 
 - Per-node plugin availability checks (a template naming a plugin a node

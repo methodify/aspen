@@ -14,7 +14,7 @@ import { scoped } from "../profiles";
 import { boardStatus, describeStatus, matchQuery, projectStatus, type DynamicQuery } from "../boardStatus";
 import { ActivityView, CharterNotesView, FilesView, SearchView, TeamView, type TeamMember } from "./projectViews";
 import { MenuGroup, MenuRow, SessionMenu } from "../sessionBar";
-import { StartDialog, type StartChoice } from "../startDialog";
+import { StartDialog, startFields, type StartChoice } from "../startDialog";
 import { SessionView } from "./Session";
 import View from "./View";
 import { addMember, benchPane, benchSwap, boardPatch, mapTree, panesOf, placeOnBoardId, removePane, stageBench, unbench } from "../boardOps";
@@ -1379,14 +1379,9 @@ function Picker({
     setNewErr(null);
     try {
       const a = await trust.start({
-        name: c.name,
         repo: r.path,
         node: r.self ? undefined : r.node,
-        ...(c.template ? { template: c.template } : {}),
-        ...(c.prompt ? { prompt: c.prompt } : {}),
-        ...(c.effort ? { effort: c.effort } : {}),
-        ...(c.harness ? { harness: c.harness } : {}),
-        ...(project ? { project: project.id } : {}),
+        ...startFields(c),
       });
       if (a) onPick({ kind: "session", id: "", agent: a.name });
     } catch (e) {

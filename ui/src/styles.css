@@ -958,3 +958,16 @@ button.link:hover { text-decoration-style: solid; }
 .start-field textarea { width: 100%; resize: vertical; font: 0.9rem/1.45 var(--font-body); }
 .start-inline { display: inline-flex; align-items: center; gap: 6px; }
 .start-inline select { min-width: 0; }
+
+/* The title bar's new-session +: quiet until hovered (PROPOSALS-2026-11-B). */
+.statusbar .sb-new {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 4px;
+  background: transparent; color: var(--text-mid); font: 600 16px/1 var(--font-mono); cursor: pointer;
+}
+.statusbar .sb-new:hover, .statusbar .sb-new:focus-visible { color: var(--text-hi); border-color: var(--line-hi); background: var(--surface-1); }
+/* The new-session dialog: wide enough for the start dialog's rows. */
+.trust-panel.new-session { width: 760px; display: flex; flex-direction: column; gap: 10px; }
+.new-session-repo { flex: 1 1 260px; min-width: 0; }
+.new-session-repo select { flex: 1; min-width: 0; max-width: 100%; }
+.new-project-name { flex: 1 1 200px; min-width: 0; }

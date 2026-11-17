@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { scoped } from "../profiles";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PathPicker } from "../pathPicker";
-import { StartDialog, type StartChoice } from "../startDialog";
+import { StartDialog, startFields, type StartChoice } from "../startDialog";
 import { api, ApiError, type MeshRepoNode, type OthersGet, type Harness, type HarnessDefaultsView, type Repo, type SessionInfo, type SkillEntry } from "../api";
 import { usePoll, type Poll } from "../hooks";
 import { Empty, ErrorBar, relTime } from "../components";
@@ -850,14 +850,9 @@ function RepositoriesSection({
     setActionError(null);
     try {
       const agent = await trust.start({
-        name: c.name,
         repo,
         node: isSelf(node) ? undefined : node,
-        ...(c.template ? { template: c.template } : {}),
-        ...(c.prompt ? { prompt: c.prompt } : {}),
-        ...(c.project ? { project: c.project } : {}),
-        ...(c.effort ? { effort: c.effort } : {}),
-        ...(c.harness ? { harness: c.harness } : {}),
+        ...startFields(c),
       });
       if (agent === null) return; // operator declined the trust review
       afterStart(agent.name);

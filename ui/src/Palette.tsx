@@ -12,7 +12,8 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError, isProjectTemplate } from "./api";
+import { api, isProjectTemplate } from "./api";
+import { openNewSession } from "./sessionStart";
 import type { Channel, Repo, Template } from "./api";
 import { useAppData } from "./App";
 import { pwa } from "./pwa";
@@ -74,7 +75,7 @@ function Dot({ presence }: { presence: Presence }) {
 
 export default function Palette() {
   const nav = useNavigate();
-  const { agents, refreshAgents } = useAppData();
+  const { agents } = useAppData();
   const sessionCmds = useSessionCommands();
 
   const [open, setOpen] = useState(false);
@@ -189,33 +190,6 @@ export default function Palette() {
     }
   }, []);
 
-  const doStart = useCallback(
-    async (name: string, repo: string) => {
-      setPending(true);
-      setStatus({ text: `starting @${name} in ${repo}…`, err: false });
-      try {
-        await api.startAgent({ name, repo });
-        void refreshAgents();
-        setOpen(false);
-        nav(`/session/${encodeURIComponent(name)}`);
-      } catch (e) {
-        // The Sessions/Library pages own the full trust review flow —
-        // point there instead of dead-ending on the raw 428.
-        const untrusted = e instanceof ApiError && e.status === 428;
-        setStatus({
-          text: untrusted
-            ? "untrusted repository — start it from Now (n) or Mesh (m) to review what it auto-runs"
-            : e instanceof Error
-              ? e.message
-              : String(e),
-          err: true,
-        });
-      } finally {
-        setPending(false);
-      }
-    },
-    [nav, refreshAgents],
-  );
 
   const items = useMemo<Item[]>(() => {
     const t = q.trim();
@@ -353,7 +327,12 @@ export default function Palette() {
                 <span className="pal-mono">{r.path}</span>
               </>
             ),
-            run: () => doStart(name, r.path),
+            // The new-session dialog, filled in: a template, a starter
+            // prompt and the trust review all live there.
+            run: () => {
+              setOpen(false);
+              openNewSession({ name, repo: r.path });
+            },
           });
         }
         if (matches.length === 0) {
@@ -426,7 +405,10 @@ export default function Palette() {
               {tp.spec.repo && <span className="pal-sub">#{tp.spec.repo}</span>}
             </>
           ),
-          run: () => goto(`/?new=${encodeURIComponent(tp.id)}`),
+          run: () => {
+            setOpen(false);
+            openNewSession({ template: tp.id, ...(tp.spec.node ? { node: tp.spec.node } : {}) });
+          },
         },
       });
     }
@@ -594,7 +576,7 @@ export default function Palette() {
     }
 
     return out;
-  }, [q, agents, channels, repos, doSend, doInterrupt, doStart, fill, goto, theme, toggleTheme]);
+  }, [q, agents, channels, repos, doSend, doInterrupt, fill, goto, theme, toggleTheme]);
 
   const selIdx = items.length === 0 ? 0 : Math.min(sel, items.length - 1);
 

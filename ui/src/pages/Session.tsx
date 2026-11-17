@@ -1193,12 +1193,12 @@ function AddToBoard({ agent, openSignal }: { agent: string; openSignal?: number 
           setOpen((o) => !o);
           if (!open) api.boards().then(setBoards).catch(() => setBoards([]));
         }}
-        title="put this session in a board"
+        title="put this session on a project's desk"
       >
-        board ▾
+        project ▾
       </button>
       {open && (
-        <PanelFrame at={at} width={380} title="add to a board" onClose={() => setOpen(false)}>
+        <PanelFrame at={at} width={380} title="add to a project" onClose={() => setOpen(false)}>
             {boards === null ? (
               <div className="row dim">loading…</div>
             ) : (
@@ -1212,7 +1212,7 @@ function AddToBoard({ agent, openSignal }: { agent: string; openSignal?: number 
                   </div>
                 ))}
                 <div className="row">
-                  <Link to="/boards" className="mono-meta" onClick={() => setOpen(false)}>new board…</Link>
+                  <Link to="/projects" className="mono-meta" onClick={() => setOpen(false)}>new project…</Link>
                 </div>
               </>
             )}
@@ -2927,7 +2927,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
       { id: "artifacts", group: "inspect", label: "artifacts", hint: "files this session wrote, edited or read", run: () => setArtifactsSignal((n) => n + 1) },
       { id: "files", group: "inspect", label: "files", hint: "browse the agent's repo and folders; newest files first under recent", run: () => nav(`/session/${encodeURIComponent(name)}/files`) },
       { id: "activity", group: "inspect", label: "activity", hint: "background tasks, subagents, workflows, monitors", run: () => setActivitySignal((n) => n + 1) },
-      ...(pane ? [] : [{ id: "board", group: "move" as const, label: "add to a board", run: () => setBoardSignal((n) => n + 1) }]),
+      ...(pane ? [] : [{ id: "board", group: "move" as const, label: "add to a project", run: () => setBoardSignal((n) => n + 1) }]),
       ...(["chat", "console", "source"] as const).map((m) => ({ id: `render:${m}`, group: "setup" as const, label: `render as ${m}`, run: () => changeRenderMode(m) })),
       ...(exited === null
         ? [

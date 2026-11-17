@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type Agent } from "./api";
 import { useAppData } from "./App";
+import { StartDialog, startFields, type StartChoice } from "./startDialog";
 import { Meter, presenceOf, relTime } from "./components";
 import { useTrustedStart } from "./trust";
 
@@ -33,7 +34,7 @@ export function RepoMenu({ agent, team, onClose }: { agent: Agent; team?: TeamVe
   const { agents, waiting, refreshAgents, node: nodeInfo } = useAppData();
   const trust = useTrustedStart();
   const ref = useRef<HTMLDivElement>(null);
-  const [name, setName] = useState("");
+  const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showElsewhere, setShowElsewhere] = useState(false);
@@ -106,13 +107,14 @@ export function RepoMenu({ agent, team, onClose }: { agent: Agent; team?: TeamVe
       setErr(e instanceof Error ? e.message : String(e));
     }
   };
-  async function startNew() {
-    const n = name.trim();
-    if (!n || !repoPath) return;
+  // The shared start dialog (PROPOSALS-2026-11-B §B-3): a template that
+  // fits, a starter prompt, a project.
+  async function startNew(c: StartChoice) {
+    if (!repoPath) return;
     setBusy(true);
     setErr(null);
     try {
-      const a = await trust.start({ name: n, repo: repoPath, node: agent.remote ? agent.node : undefined });
+      const a = await trust.start({ repo: repoPath, node: agent.remote ? agent.node : undefined, ...startFields(c) });
       if (a) {
         await refreshAgents();
         if (team) {
@@ -193,19 +195,22 @@ export function RepoMenu({ agent, team, onClose }: { agent: Agent; team?: TeamVe
           )}
         </>
       )}
-      <form
-        className="repo-menu-new"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void startNew();
-        }}
-      >
-        <span className="mono-meta">new agent here</span>
-        <span className="mono-meta">@</span>
-        <input className="mono" value={name} onChange={(e) => setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""))} placeholder="name" aria-label="new agent name" disabled={!repoPath} />
-        <button type="submit" className="btn primary sm" disabled={!name.trim() || !repoPath || busy}>{busy ? "starting…" : "start"}</button>
-        {team && <span className="mono-meta">(opens in this pane)</span>}
-      </form>
+      {starting && repoPath ? (
+        <StartDialog
+          node={meshNode ?? agent.node}
+          self={!agent.remote}
+          repo={{ path: repoPath, handle: agent.channel }}
+          onStart={(c) => void startNew(c)}
+          onCancel={() => setStarting(false)}
+        />
+      ) : (
+        <div className="repo-menu-new">
+          <button type="button" className="btn sm" disabled={!repoPath || busy} onClick={() => setStarting(true)}>
+            {busy ? "starting…" : "new agent here…"}
+          </button>
+          {team && <span className="mono-meta">(opens in this pane)</span>}
+        </div>
+      )}
       {err && <div className="error-text mono-meta">{err}</div>}
       <div className="repo-menu-foot">
         {repoPath && meshNode && (

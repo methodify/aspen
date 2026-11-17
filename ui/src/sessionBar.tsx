@@ -4,7 +4,7 @@
 // the controls. Presence is one glyph; the bar has three verb slots and
 // two readout slots, and the next feature goes in the menu.
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 export type BarPresence = "busy" | "live" | "reconnecting" | "exited" | "readonly";
@@ -151,6 +151,29 @@ export function panelAnchor(el: HTMLElement | null, width: number): { top: numbe
  *  can go down the list), or on its × (PROPOSALS-2026-09-G.md §3). */
 export function PanelFrame({ at, width, className, title, extra, onClose, children, style }: { at: { top: number; left: number }; width: number; className?: string; title?: string; extra?: ReactNode; onClose: () => void; children: ReactNode; style?: React.CSSProperties }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // Opened from a row low in the menu, a panel ran off the bottom of the
+  // window (the board panel was unusable): keep it inside, moving it up or
+  // left as far as it must, and scrolling inside when it is taller still.
+  const [pos, setPos] = useState(at);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      const r = el.getBoundingClientRect();
+      const m = 8;
+      const top = Math.max(m, Math.min(at.top, window.innerHeight - r.height - m));
+      const left = Math.max(m, Math.min(at.left, window.innerWidth - r.width - m));
+      setPos((p) => (p.top === top && p.left === left ? p : { top, left }));
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    window.addEventListener("resize", fit);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, [at.top, at.left]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -172,7 +195,7 @@ export function PanelFrame({ at, width, className, title, extra, onClose, childr
     };
   }, [onClose]);
   return createPortal(
-    <div ref={ref} className={`artifacts-menu panel-frame${className ? ` ${className}` : ""}`} style={{ position: "fixed", top: at.top, left: at.left, right: "auto", width, ...style }} role="dialog" aria-label={title}>
+    <div ref={ref} className={`artifacts-menu panel-frame${className ? ` ${className}` : ""}`} style={{ position: "fixed", top: pos.top, left: pos.left, right: "auto", width, maxHeight: "calc(100vh - 16px)", ...style }} role="dialog" aria-label={title}>
       {title !== undefined && (
         <div className="row panel-head">
           <span className="label">{title}</span>

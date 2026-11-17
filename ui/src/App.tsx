@@ -21,6 +21,7 @@ import History from "./pages/History";
 import Preview from "./pages/Preview";
 import Search from "./pages/Search";
 import Palette from "./Palette";
+import { NewSessionHost, openNewSession } from "./sessionStart";
 import { NoticesBell, NoticesProvider } from "./notices";
 import { GlobalHotkeys, HotkeysProvider } from "./hotkeys";
 import { evictStaleTranscripts } from "./transcript";
@@ -582,6 +583,7 @@ function StatusBar() {
         <span className="brand"><img className="brand-mark" src={`${import.meta.env.BASE_URL}aspen-mark.svg`} alt="" width="18" height="18" />ASP<b>E</b>N</span>
         <button type="button" className="btn ghost sm palette-btn" onClick={() => window.dispatchEvent(new Event("aspen:palette"))} title="command palette (⌘K / ctrl+K)" aria-label="open the command palette">⌘</button>
         <MeshSwitcher node={node} />
+        <button type="button" className="sb-new" onClick={() => openNewSession()} title="new session (n on Now)" aria-label="start a new session">+</button>
       </span>
       <span className="spacer" />
       <span className="presence-strip" title={`${busy} in a turn · ${idle} live and idle · ${off} not running`} aria-label="fleet presence">
@@ -682,6 +684,7 @@ export default function App() {
         <NoticesProvider>
         <GlobalHotkeys />
         <Palette />
+        <NewSessionHost />
         <div className="shell">
         <StatusBar />
         <div className="body-grid">

@@ -34,7 +34,7 @@ import { useAppData } from "../App";
 import { boardStatus, describeStatus, useBoards } from "../boardStatus";
 import { useHotkeys } from "../hotkeys";
 import { useLiveGate, useTrustedStart } from "../trust";
-import { NewSessionPanel } from "../sessionStart";
+import { openNewSession } from "../sessionStart";
 import { AdoptionCard, MemoryConflictCard, NodeChip, PermCard, QuestionCard } from "../needs";
 import { UpdateCard } from "../servicing";
 import {
@@ -237,11 +237,13 @@ export default function Now() {
   const trust = useTrustedStart();
   const liveGate = useLiveGate();
   const [params, setParams] = useSearchParams();
+  // `/?new=<template>` (a template's *start…*): the new-session dialog.
   const newFrom = params.get("new");
-  const [panelOpen, setPanelOpen] = useState(false);
   useEffect(() => {
-    if (newFrom !== null) setPanelOpen(true);
-  }, [newFrom]);
+    if (newFrom === null) return;
+    openNewSession(newFrom ? { template: newFrom } : {});
+    setParams({}, { replace: true });
+  }, [newFrom, setParams]);
   const [query, setQuery] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -270,7 +272,7 @@ export default function Now() {
   const now = serverNow();
 
   useHotkeys("now", [
-    { key: "n", description: "new session", handler: () => setPanelOpen(true) },
+    { key: "n", description: "new session", handler: () => openNewSession() },
     { key: "/", description: "filter the fleet", handler: () => document.getElementById("now-filter")?.focus() },
   ]);
 
@@ -358,7 +360,7 @@ export default function Now() {
           style={{ width: 240 }}
           aria-label="filter fleet"
         />
-        <button className="btn primary sm" onClick={() => setPanelOpen(true)}>
+        <button className="btn primary sm" onClick={() => openNewSession()}>
           + new session
         </button>
       </div>
@@ -367,24 +369,6 @@ export default function Now() {
         {trust.dialog}
         {liveGate.dialog}
         <ErrorBar error={err} />
-        {panelOpen && (
-          <NewSessionPanel
-            startFn={trust.start}
-            repoPaths={[]}
-            existing={agents.map((a) => a.name)}
-            initialTemplate={newFrom || undefined}
-            onClose={() => {
-              setPanelOpen(false);
-              if (newFrom !== null) setParams({});
-            }}
-            onStarted={async (name) => {
-              setPanelOpen(false);
-              if (newFrom !== null) setParams({});
-              await refreshAgents();
-              nav(`/session/${encodeURIComponent(name)}`);
-            }}
-          />
-        )}
 
         {/* ─────────────────────────── NEEDS YOU ─────────────────────────── */}
         <section className="now-band">
@@ -490,7 +474,7 @@ export default function Now() {
           {agents.length === 0 ? (
             <Empty mark="◦">
               No sessions in the mesh yet.{" "}
-              <button className="btn ghost sm" onClick={() => setPanelOpen(true)}>+ new session</button>
+              <button className="btn ghost sm" onClick={() => openNewSession()}>+ new session</button>
             </Empty>
           ) : active.length === 0 ? (
             <Empty mark="—">{q ? `Nothing active matches “${query}”.` : "Nothing active right now."}</Empty>

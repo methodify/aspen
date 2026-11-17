@@ -1,245 +1,207 @@
-// The new-session panel: name + repo + charter/model/args/skip, through
-// the trust gate. Shared by Now and the Mesh list.
-import { useEffect, useState } from "react";
-import { api, isProjectTemplate, type Harness, type HarnessInfo, type StartAgentRequest, type Template } from "./api";
-import { type TrustedStart } from "./trust";
-import { ErrorBar } from "./components";
+// The new-session dialog (PROPOSALS-2026-11-B §B-3): one way to start an
+// agent from anywhere. Choose the node, then a repo there (or another
+// folder, made if missing), then the shared start dialog: a template that
+// fits, a starter prompt, a project, and the rest under "more".
+//
+// Opened from the title bar's +, Now's button and its `n` key, the palette
+// (`start …`, `new session from template …`) and a template's *start…*
+// (`/?new=<id>`), all through `openNewSession`.
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { api, templateFits, type MeshRepoNode, type Template } from "./api";
+import { useAppData } from "./App";
+import { PathPicker } from "./pathPicker";
+import { StartDialog, startFields } from "./startDialog";
+import { useTrustedStart } from "./trust";
 
-const NAME_RE = /^[A-Za-z0-9_-]+$/;
+export interface NewSessionInit {
+  node?: string;
+  /** A repo path on that node. */
+  repo?: string;
+  name?: string;
+  /** A template id or name. */
+  template?: string;
+}
 
-export function NewSessionPanel({
-  startFn,
-  repoPaths,
-  existing,
-  onClose,
-  onStarted,
-  initialTemplate,
-}: {
-  startFn: TrustedStart;
-  repoPaths: string[];
-  existing: string[];
-  onClose: () => void;
-  onStarted: (name: string) => void | Promise<void>;
-  /** Preselect a template (id or name) — from the Plugins page or the palette. */
-  initialTemplate?: string;
-}) {
-  const [name, setName] = useState("");
-  const [repo, setRepo] = useState("");
-  const [charter, setCharter] = useState("");
-  const [model, setModel] = useState("");
-  const [extraArgs, setExtraArgs] = useState("");
-  const [skip, setSkip] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [template, setTemplate] = useState<string>("");
-  const [harnesses, setHarnesses] = useState<HarnessInfo[]>([]);
-  const [harness, setHarness] = useState<Harness | "">("");
+const EVENT = "aspen:new-session";
 
+/** Open the new-session dialog, wherever the console is. */
+export function openNewSession(init: NewSessionInit = {}) {
+  window.dispatchEvent(new CustomEvent<NewSessionInit>(EVENT, { detail: init }));
+}
+
+/** Mounted once (App): listens for `openNewSession` and shows the dialog. */
+export function NewSessionHost() {
+  const [init, setInit] = useState<NewSessionInit | null>(null);
   useEffect(() => {
-    api.templates().then((ts) => setTemplates(ts.filter((t) => !isProjectTemplate(t)))).catch(() => setTemplates([]));
-    api.node().then((n) => setHarnesses(n.harnesses ?? [])).catch(() => setHarnesses([]));
+    const on = (e: Event) => setInit((e as CustomEvent<NewSessionInit>).detail ?? {});
+    window.addEventListener(EVENT, on);
+    return () => window.removeEventListener(EVENT, on);
   }, []);
-  // Choosing a template fills the form (everything stays editable); the
-  // spawn itself goes through the template so plugins and board placement
-  // come with it (PLUGINS.md §templates).
-  function pickTemplate(id: string) {
-    setTemplate(id);
-    const t = templates.find((x) => x.id === id || x.name === id);
-    if (!t) return;
-    if (t.spec.name) setName(t.spec.name);
-    if (t.spec.repo) setRepo(repoPaths.find((p) => p.endsWith(`/${t.spec.repo}`) || p.endsWith(`\\${t.spec.repo}`)) ?? t.spec.repo);
-    setCharter(t.spec.charter ?? "");
-    setModel(t.spec.model ?? "");
-    setExtraArgs(t.spec.extra_args ?? "");
-    setSkip(t.spec.permission === "skip");
-  }
+  if (!init) return null;
+  return <NewSessionDialog init={init} onClose={() => setInit(null)} />;
+}
+
+const OTHER = "\u0000other";
+
+function NewSessionDialog({ init, onClose }: { init: NewSessionInit; onClose: () => void }) {
+  const nav = useNavigate();
+  const { refreshAgents } = useAppData();
+  const trust = useTrustedStart();
+  const [nodes, setNodes] = useState<MeshRepoNode[] | null>(null);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [node, setNode] = useState(init.node ?? "");
+  const [repo, setRepo] = useState(init.repo ?? "");
+  const [folder, setFolder] = useState("");
+  const [browse, setBrowse] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = () =>
+    api
+      .meshRepos()
+      .then((r) => setNodes(r.nodes.filter((n) => n.self || n.reachable)))
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => {
-    if (initialTemplate && templates.length && !template) pickTemplate(initialTemplate);
+    void load();
+    api.templates().then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+  // A template names where it belongs: its node, and its repo there.
+  const tpl = templates.find((t) => !!init.template && (t.id === init.template || t.name === init.template));
+  useEffect(() => {
+    if (!nodes) return;
+    const self = nodes.find((n) => n.self)?.node ?? nodes[0]?.node ?? "";
+    setNode((cur) => cur || tpl?.spec.node || self);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTemplate, templates]);
-
-  function validate(): string | null {
-    const n = name.trim();
-    if (!n) return "agent name is required";
-    if (!NAME_RE.test(n)) return "name may use only letters, digits, - and _";
-    if (n === "operator") return "“operator” is reserved";
-    if (existing.includes(n)) return `@${n} already exists`;
-    if (!repo.trim()) return "repository path is required";
-    return null;
-  }
-
-  async function submit() {
-    const problem = validate();
-    if (problem) {
-      setErr(problem);
-      return;
-    }
+  }, [nodes, tpl?.id]);
+  const here = nodes?.find((n) => n.node === node);
+  useEffect(() => {
+    if (!here || repo) return;
+    const fit = tpl ? here.repos.find((r) => templateFits(tpl, here.node, r) && !!tpl.spec.repo) : undefined;
+    if (fit) setRepo(fit.path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [here?.node, tpl?.id]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => e.key === "Escape" && !browse && onClose();
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose, browse]);
+  const chosen = useMemo(() => here?.repos.find((r) => r.path === repo), [here, repo]);
+  const addFolder = async () => {
+    const p = folder.trim();
+    if (!p || !here) return;
+    setBusy("adding the folder…");
     setErr(null);
-    setBusy(true);
-    const req: StartAgentRequest = { name: name.trim(), repo: repo.trim() };
-    if (template) {
-      req.template = template;
-      // A template made for one node starts there (PROPOSALS-2026-11-B §B-2).
-      const t = templates.find((x) => x.id === template || x.name === template);
-      if (t?.spec.node) req.node = t.spec.node;
-    }
-    if (charter.trim()) req.charter = charter.trim();
-    if (model.trim()) req.model = model.trim();
-    if (extraArgs.trim()) req.extra_args = extraArgs.trim();
-    if (skip) req.skip_permissions = true;
-    if (harness) req.harness = harness;
     try {
-      const agent = await startFn(req);
-      if (agent === null) {
-        // Operator declined the trust review.
-        setBusy(false);
-        return;
-      }
-      await onStarted(agent.name);
+      const r = await api.addRepo(p, undefined, here.self ? undefined : here.node, { create: true });
+      await load();
+      setRepo(r.path ?? p);
+      setFolder("");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "failed to start session");
-      setBusy(false);
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
     }
-  }
-
+  };
   return (
-    <form
-      className="strip"
-      style={{ display: "grid", gap: 12, marginBottom: 20 }}
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center" }}>
-        <span className="label">New session</span>
-        <span style={{ flex: 1 }} />
-        <button type="button" className="btn ghost sm" onClick={onClose}>
-          close
-        </button>
+    <div className="trust-backdrop" onClick={onClose} role="presentation">
+      <div className="trust-panel new-session" role="dialog" aria-label="new session" onClick={(e) => e.stopPropagation()}>
+        <div className="trust-head">
+          <span className="label">New session</span>
+          {tpl && <span className="mono-meta" style={{ marginLeft: 8 }}>from {tpl.name}</span>}
+          <span style={{ flex: 1 }} />
+          <button className="btn ghost sm" onClick={onClose}>esc</button>
+        </div>
+        <div className="start-row new-session-where">
+          <label className="start-inline">
+            <span className="label">node</span>
+            <select
+              value={node}
+              onChange={(e) => {
+                setNode(e.target.value);
+                setRepo("");
+              }}
+              aria-label="node"
+            >
+              {(nodes ?? []).map((n) => (
+                <option key={n.node} value={n.node}>
+                  {n.node}
+                  {n.self ? " · this node" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="start-inline new-session-repo">
+            <span className="label">in</span>
+            <select value={repo} onChange={(e) => setRepo(e.target.value)} aria-label="repository">
+              <option value="">choose a repo…</option>
+              {(here?.repos ?? []).map((r) => (
+                <option key={r.path} value={r.path}>
+                  #{r.handle ?? r.path.split(/[\\/]/).pop()} · {r.path}
+                </option>
+              ))}
+              <option value={OTHER}>another folder…</option>
+            </select>
+          </label>
+        </div>
+        {repo === OTHER && here && (
+          <form
+            className="start-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addFolder();
+            }}
+          >
+            <input className="mono" value={folder} onChange={(e) => setFolder(e.target.value)} placeholder={`a folder on ${here.node} (made if it is not there)`} autoFocus spellCheck={false} />
+            <button type="button" className="btn ghost sm" onClick={() => setBrowse(true)}>browse…</button>
+            <button type="submit" className="btn sm" disabled={!folder.trim() || !!busy}>use it</button>
+          </form>
+        )}
+        {busy && <div className="mono-meta">{busy}</div>}
+        {err && <div className="error-text mono-meta">{err}</div>}
+        {!nodes && <div className="dim">loading…</div>}
+        {here && chosen && (
+          <StartDialog
+            key={`${here.node}\u0000${chosen.path}`}
+            node={here.node}
+            self={here.self}
+            repo={{ path: chosen.path, handle: chosen.handle }}
+            initialTemplate={init.template}
+            initialName={init.name}
+            onCancel={onClose}
+            onStart={(c) => {
+              setBusy(`starting @${c.name}…`);
+              setErr(null);
+              trust
+                .start({ repo: chosen.path, node: here.self ? undefined : here.node, ...startFields(c) })
+                .then(async (a) => {
+                  setBusy(null);
+                  if (!a) return;
+                  await refreshAgents();
+                  onClose();
+                  nav(`/session/${encodeURIComponent(a.name)}`);
+                })
+                .catch((e) => {
+                  setBusy(null);
+                  setErr(e instanceof Error ? e.message : String(e));
+                });
+            }}
+          />
+        )}
+        {trust.dialog}
+        {browse && here && (
+          <PathPicker
+            node={here.self ? undefined : here.node}
+            mode="dir"
+            start={folder}
+            title="A folder for the new session"
+            onPick={(p) => {
+              setFolder(p);
+              setBrowse(false);
+            }}
+            onClose={() => setBrowse(false)}
+          />
+        )}
       </div>
-
-      <ErrorBar error={err} />
-
-      {templates.length > 0 && (
-        <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">From template (optional)</span>
-          <select value={template} onChange={(e) => pickTemplate(e.target.value)} aria-label="template">
-            <option value="">— none —</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-                {t.spec.repo ? ` · ${t.spec.repo}` : ""}
-                {t.spec.plugins?.length ? ` · ${t.spec.plugins.length} plugin${t.spec.plugins.length === 1 ? "" : "s"}` : ""}
-                {t.spec.board ? " · board" : ""}
-                {t.spec.node ? ` · on ${t.spec.node}` : ""}
-                {t.spec.prompt ? " · starter" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      <div className="grid cols">
-        <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">Agent name</span>
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. west"
-            spellCheck={false}
-            aria-label="agent name"
-          />
-        </label>
-        <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">Repository path</span>
-          <input
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            placeholder="/path/to/repo"
-            list="known-repos"
-            spellCheck={false}
-            aria-label="repository path"
-          />
-          <datalist id="known-repos">
-            {repoPaths.map((p) => (
-              <option key={p} value={p} />
-            ))}
-          </datalist>
-        </label>
-      </div>
-
-      <label style={{ display: "grid", gap: 4 }}>
-        <span className="label">Charter (optional)</span>
-        <textarea
-          rows={3}
-          value={charter}
-          onChange={(e) => setCharter(e.target.value)}
-          placeholder="what this agent is here to do"
-          aria-label="charter"
-        />
-      </label>
-
-      {harnesses.length > 1 && (
-        <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">Runtime</span>
-          <select value={harness} onChange={(e) => setHarness(e.target.value as Harness | "")} aria-label="runtime">
-            <option value="">— repo default —</option>
-            {harnesses.map((h) => (
-              <option key={h.name} value={h.name}>
-                {h.name}
-                {h.version ? ` ${h.version}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      <div className="grid cols">
-        <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">Model (optional)</span>
-          <input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="default"
-            spellCheck={false}
-            aria-label="model"
-          />
-        </label>
-        <label style={{ display: "grid", gap: 4 }}>
-          <span className="label">Runtime args (optional)</span>
-          <input
-            value={extraArgs}
-            onChange={(e) => setExtraArgs(e.target.value)}
-            placeholder="e.g. --chrome (after harness defaults)"
-            spellCheck={false}
-            aria-label="runtime args"
-          />
-        </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, alignSelf: "end", paddingBottom: 6 }}>
-          <input
-            type="checkbox"
-            checked={skip}
-            onChange={(e) => setSkip(e.target.checked)}
-            style={{ width: "auto" }}
-          />
-          <span className="mono" style={{ color: skip ? "var(--sig-gate)" : "var(--text-mid)" }}>
-            skip permission prompts (dangerous)
-          </span>
-        </label>
-      </div>
-
-      <div style={{ display: "flex", gap: 8 }}>
-        <span style={{ flex: 1 }} />
-        <button type="button" className="btn ghost" onClick={onClose} disabled={busy}>
-          cancel
-        </button>
-        <button type="submit" className="btn primary" disabled={busy}>
-          {busy ? "starting…" : "start session"}
-        </button>
-      </div>
-    </form>
+    </div>
   );
 }
