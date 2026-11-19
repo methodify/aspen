@@ -46,7 +46,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
-## Shipped — 2026-11-16: one way to start an agent, everywhere (v0.55.3, queued)
+## Shipped — 2026-11-16: one way to start an agent, everywhere (v0.55.3)
 
 - **One new-session dialog** (`openNewSession`, mounted once): choose the node, a repo there or another folder (made if missing), then the shared start dialog. It replaces Now's old form and opens from a quiet **+** in the title bar (beside the mesh switcher), Now's button and `n`, a template's *start…* (`/?new=<id>`), and the palette (`start <name> in <repo>` and *new session from template*, which before started bare, without the trust review). A template names its node and repo, and the dialog goes there.
 - **Every fresh start goes through the start dialog**: the Mesh view's repo rows, a project's add-a-member picker, the session bar's repo menu (*new agent here…*, before a name only), and the new-session dialog; one request builder (`startFields`). Resume, branch and a project template's roles stay their own acts.
