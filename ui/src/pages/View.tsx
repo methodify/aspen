@@ -12,6 +12,7 @@ import { api, ApiError, type FileStat } from "../api";
 import { ErrorBar, relTime } from "../components";
 import { linkifyPaths } from "../pathLinks";
 import { useAppData } from "../App";
+import { ServeFolder } from "../serveFolder";
 import { canShareFiles, copyFile, prepareFile, qualifiedAgent, shareFile, TapAgain, type AspenFileRef } from "../fileActions";
 import "./view.css";
 import { fmtBytes } from "./sessionExtras";
@@ -73,6 +74,8 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
   }, [stat?.path, stat?.mtime]);
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // A refused file can be served from here (PROPOSALS-2026-11-C §C-3).
+  const [retry, setRetry] = useState(0);
   const [mode, setMode] = useState<Mode>("rendered");
   const [loading, setLoading] = useState(true);
 
@@ -156,7 +159,7 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
     return () => {
       cancelled = true;
     };
-  }, [name, path, node]);
+  }, [name, path, node, retry]);
 
   // The document's directory, for relative references inside it.
   const dir = path.replace(/[\\/][^\\/]*$/, "");
@@ -279,6 +282,18 @@ export default function View(props: { agent?: string; path?: string; embedded?: 
       </div>
       {copied && <div className="mono-meta" style={{ padding: "2px 0" }}>{copied}</div>}
       <ErrorBar error={err} />
+      {err?.includes("not served") && (
+        <ServeFolder
+          name={name}
+          agent={agents.find((a) => a.name === name)}
+          folder={(() => {
+            const m = /not served: (.*?) is outside/.exec(err);
+            const full = m?.[1] ?? path;
+            return full.replace(/[\\/][^\\/]*$/, "") || full;
+          })()}
+          onDone={() => setRetry((n) => n + 1)}
+        />
+      )}
       <div className="view-body">{body}</div>
     </div>
   );

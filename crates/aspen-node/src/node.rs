@@ -2648,32 +2648,131 @@ impl Node {
             .ok_or_else(|| anyhow!("no agent named @{name} on record"))
     }
 
-    /// Files this agent's session named in tool calls, newest first.
+    /// Files this agent's session (and its subagents) named in tool calls,
+    /// newest first.
     pub fn artifacts(&self, name: &str) -> Result<Vec<crate::artifacts::Artifact>> {
         let row = self.agent_row(name)?;
         Ok(row
             .session_id
             .as_deref()
             .map(|sid| {
-                crate::artifacts::touched_paths_for(
+                crate::artifacts::session_work(
                     row.harness,
                     &self.inner.store_for(row.harness).main_path(&row.repo, sid),
                 )
+                .0
             })
             .unwrap_or_default())
+    }
+
+    /// Folders the operator added to what this agent's files may come from
+    /// (PROPOSALS-2026-11-C §C-3): (label, path, scope). Its own, its
+    /// repo's, and those of each project it is on, for this node.
+    pub fn added_roots(
+        &self,
+        row: &crate::store::AgentRow,
+    ) -> Vec<(String, std::path::PathBuf, String)> {
+        let repo_scope = format!(
+            "repo:{}",
+            crate::node::normalize_repo(&row.repo).to_string_lossy()
+        );
+        let agent_scope = format!("agent:{}", row.name);
+        let mut out: Vec<(String, std::path::PathBuf, String)> = self
+            .inner
+            .store
+            .served_roots(&[agent_scope.clone(), repo_scope.clone()])
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(scope, p)| {
+                let label = if scope == agent_scope {
+                    "added for this agent"
+                } else {
+                    "added for the repo"
+                };
+                (label.to_owned(), std::path::PathBuf::from(p), scope)
+            })
+            .collect();
+        let me = self.my_node_name();
+        for b in crate::projects::of_agent(&self.inner, &row.name) {
+            for r in b
+                .roots
+                .as_ref()
+                .and_then(|r| r.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let node = r.get("node").and_then(|n| n.as_str()).unwrap_or("");
+                let Some(path) = r.get("path").and_then(|p| p.as_str()) else {
+                    continue;
+                };
+                if node.is_empty() || node == me {
+                    out.push((
+                        format!("added for project {}", b.name),
+                        std::path::PathBuf::from(path),
+                        format!("project:{}", b.id),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// Everything this agent's files may come from (artifacts.rs).
+    pub fn agent_space(&self, row: &crate::store::AgentRow) -> crate::artifacts::Space {
+        let extra: Vec<(String, std::path::PathBuf)> = self
+            .added_roots(row)
+            .into_iter()
+            .map(|(l, p, _)| (l, p))
+            .collect();
+        crate::artifacts::space(
+            self.inner.data_dir.as_deref(),
+            &row.repo,
+            row.session_id.as_deref(),
+            row.harness,
+            &extra,
+        )
     }
 
     /// Resolve a path the operator wants to see for this agent, under the
     /// serving rule (artifacts.rs).
     pub fn agent_file(&self, name: &str, path: &str) -> Result<std::path::PathBuf> {
         let row = self.agent_row(name)?;
-        crate::artifacts::resolve(
-            self.inner.data_dir.as_deref(),
-            &row.repo,
-            row.session_id.as_deref(),
-            path,
-            row.harness,
-        )
+        crate::artifacts::resolve(&self.agent_space(&row), &row.repo, path)
+    }
+
+    /// Add (or remove) a folder the agent's files may come from: for this
+    /// agent or for every agent of its repo (C-3). The folder must exist.
+    pub fn set_served_root(&self, name: &str, path: &str, scope: &str, add: bool) -> Result<()> {
+        let row = self.agent_row(name)?;
+        let scope = match scope {
+            "agent" => format!("agent:{}", row.name),
+            "repo" => format!(
+                "repo:{}",
+                crate::node::normalize_repo(&row.repo).to_string_lossy()
+            ),
+            s if s.starts_with("agent:") || s.starts_with("repo:") => s.to_owned(),
+            other => return Err(anyhow!("scope is agent or repo, not {other:?}")),
+        };
+        if add {
+            let p = dunce::canonicalize(path).map_err(|e| anyhow!("{path}: {e}"))?;
+            if !p.is_dir() {
+                return Err(anyhow!("{path}: not a folder"));
+            }
+            if p.parent().is_none() {
+                return Err(anyhow!("not the root of the disk"));
+            }
+            self.inner
+                .store
+                .add_served_root(&scope, &p.to_string_lossy())?;
+            let _ = self.inner.store.record_event(
+                &row.name,
+                "served_root",
+                serde_json::json!({ "scope": scope, "path": p.to_string_lossy() }),
+            );
+        } else {
+            self.inner.store.remove_served_root(&scope, path)?;
+        }
+        Ok(())
     }
 
     pub fn file_stat(&self, name: &str, path: &str) -> Result<serde_json::Value> {
@@ -2700,31 +2799,34 @@ impl Node {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs_f64())
             .or(row.last_spawned_at);
+        let _ = dd;
+        let space = self.agent_space(&row);
         if let Some(d) = dir.filter(|d| !d.trim().is_empty()) {
-            return crate::artifacts::list_dir(dd, &row.repo, row.session_id.as_deref(), d, since);
+            return crate::artifacts::list_dir(&space, &row.repo, d, since);
         }
-        let roots = crate::artifacts::roots(dd, &row.repo, row.session_id.as_deref());
-        let named: Vec<serde_json::Value> = match row.session_id.as_deref() {
-            Some(sid) => {
-                let st = self.inner.store_for(row.harness);
-                let main = st.main_path(&row.repo, sid);
-                crate::artifacts::touched_paths_for(row.harness, &main)
-                    .into_iter()
-                    .filter_map(|a| {
-                        let p = std::path::PathBuf::from(&a.path);
-                        let c = std::fs::canonicalize(&p).unwrap_or(p);
-                        (!roots.iter().any(|(_, r)| c.starts_with(r)) && c.is_file()).then(|| {
-                            serde_json::json!({ "path": c.to_string_lossy(), "stat": crate::artifacts::stat(&c) })
-                        })
-                    })
-                    .collect()
-            }
-            None => Vec::new(),
-        };
+        let added = self.added_roots(&row);
+        let roots = &space.roots;
+        let named: Vec<serde_json::Value> = space
+            .named
+            .iter()
+            .filter_map(|a| {
+                let p = std::path::PathBuf::from(&a.path);
+                let c = std::fs::canonicalize(&p).unwrap_or(p);
+                (!roots.iter().any(|(_, r)| c.starts_with(r)) && c.is_file()).then(|| {
+                    serde_json::json!({ "path": c.to_string_lossy(), "stat": crate::artifacts::stat(&c) })
+                })
+            })
+            .collect();
         Ok(serde_json::json!({
             "roots": roots
                 .iter()
-                .map(|(l, p)| serde_json::json!({ "label": l, "path": p.to_string_lossy(), "exists": p.is_dir() }))
+                .map(|(l, p)| {
+                    let scope = added
+                        .iter()
+                        .find(|(_, ap, _)| std::fs::canonicalize(ap).unwrap_or_else(|_| ap.clone()) == *p)
+                        .map(|(_, _, sc)| sc.clone());
+                    serde_json::json!({ "label": l, "path": p.to_string_lossy(), "exists": p.is_dir(), "scope": scope })
+                })
                 .collect::<Vec<_>>(),
             "named": named,
             "since": since,

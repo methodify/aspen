@@ -971,3 +971,6 @@ button.link:hover { text-decoration-style: solid; }
 .new-session-repo { flex: 1 1 260px; min-width: 0; }
 .new-session-repo select { flex: 1; min-width: 0; max-width: 100%; }
 .new-project-name { flex: 1 1 200px; min-width: 0; }
+
+/* Serve a folder (PROPOSALS-2026-11-C §C-3). */
+.serve-folder { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 12px; overflow-wrap: anywhere; }

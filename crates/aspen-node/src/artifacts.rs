@@ -264,7 +264,7 @@ fn canon(p: &Path) -> PathBuf {
 /// The directories an agent's files may come from, labelled: the repo, the
 /// session's own data, plans, temp and its attachments. One list for
 /// reading (`resolve`) and listing (`list_dir`), so they cannot disagree.
-pub fn roots(
+fn base_roots(
     data_dir: Option<&Path>,
     repo: &Path,
     session_id: Option<&str>,
@@ -294,6 +294,285 @@ pub fn roots(
     v
 }
 
+/// What may be served for one session (PROPOSALS-2026-11-C): its roots,
+/// labelled, and the files its tool calls (and its subagents') named.
+#[derive(Debug, Clone, Default)]
+pub struct Space {
+    pub roots: Vec<(String, PathBuf)>,
+    pub named: Vec<Artifact>,
+}
+
+/// The session's main transcript path.
+pub fn main_path(harness: aspen_core::Harness, repo: &Path, sid: &str) -> PathBuf {
+    match harness {
+        aspen_core::Harness::Claude => aspen_claude::transcript::transcript_path(repo, sid),
+        aspen_core::Harness::Codex => {
+            aspen_core::SessionStore::main_path(&aspen_codex::CodexStore::new(), repo, sid)
+        }
+    }
+}
+
+/// The session's space: the fixed roots, every worktree of its repo, every
+/// work tree it worked in (C-2), the roots the operator added (`extra`,
+/// C-3), and the files named by its own and its subagents' tool calls.
+pub fn space(
+    data_dir: Option<&Path>,
+    repo: &Path,
+    session_id: Option<&str>,
+    harness: aspen_core::Harness,
+    extra: &[(String, PathBuf)],
+) -> Space {
+    let mut roots: Vec<(String, PathBuf)> = base_roots(data_dir, repo, session_id)
+        .into_iter()
+        .map(|(l, p)| (l.to_owned(), p))
+        .collect();
+    let add = |label: &str, p: PathBuf, roots: &mut Vec<(String, PathBuf)>| {
+        let p = canon(&p);
+        if !roots.iter().any(|(_, r)| p.starts_with(r)) {
+            roots.push((label.to_owned(), p));
+        }
+    };
+    for w in repo_worktrees(repo) {
+        add("worktree of the repo", w, &mut roots);
+    }
+    let (named, worked) = match session_id {
+        Some(sid) => session_work(harness, &main_path(harness, repo, sid)),
+        None => (Vec::new(), Vec::new()),
+    };
+    for w in worked {
+        add("worked in", w, &mut roots);
+    }
+    for (label, p) in extra {
+        add(label, p.clone(), &mut roots);
+    }
+    Space { roots, named }
+}
+
+/// The transcripts of one session: the main one and, for Claude, every
+/// subagent's and workflow agent's under `<session>/subagents/` (C-1).
+fn session_transcripts(harness: aspen_core::Harness, main: &Path) -> Vec<PathBuf> {
+    let mut out = vec![main.to_path_buf()];
+    if harness == aspen_core::Harness::Claude {
+        fn walk(d: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+            let Ok(rd) = std::fs::read_dir(d) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() && depth < 4 {
+                    walk(&p, out, depth + 1);
+                } else if p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("agent-") && n.ends_with(".jsonl"))
+                {
+                    out.push(p);
+                }
+            }
+        }
+        walk(&main.with_extension("").join("subagents"), &mut out, 0);
+    }
+    out
+}
+
+type Work = (u64, Vec<Artifact>, Vec<PathBuf>);
+
+fn work_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Work>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Work>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// What a session named (main and subagents) and the work trees it worked
+/// in, cached until any of its transcripts changes.
+pub fn session_work(harness: aspen_core::Harness, main: &Path) -> (Vec<Artifact>, Vec<PathBuf>) {
+    let files = session_transcripts(harness, main);
+    let mut fp: u64 = 0xcbf29ce484222325;
+    for f in &files {
+        if let Ok(m) = std::fs::metadata(f) {
+            let mt = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            for x in [m.len(), mt] {
+                fp ^= x;
+                fp = fp.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    if let Some((f, n, w)) = work_cache().lock().unwrap().get(main) {
+        if *f == fp {
+            return (n.clone(), w.clone());
+        }
+    }
+    let mut named: Vec<Artifact> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for f in &files {
+        for a in touched_paths_for(harness, f) {
+            if !named.iter().any(|x| x.path == a.path) {
+                named.push(a);
+            }
+        }
+        if harness == aspen_core::Harness::Claude {
+            dirs.extend(shell_dirs(f));
+        }
+    }
+    // Written or edited files name the trees they are in (a read alone
+    // does not: reading a file elsewhere is not working there).
+    for a in named.iter().filter(|a| a.kind != "read") {
+        if let Some(d) = Path::new(&expand_home(&a.path)).parent() {
+            dirs.push(d.to_path_buf());
+        }
+    }
+    let mut worked: Vec<PathBuf> = Vec::new();
+    for d in dirs {
+        if let Some(t) = work_tree_of(&d) {
+            if !worked.contains(&t) {
+                worked.push(t);
+            }
+        }
+    }
+    work_cache()
+        .lock()
+        .unwrap()
+        .insert(main.to_path_buf(), (fp, named.clone(), worked.clone()));
+    (named, worked)
+}
+
+/// Directories a session's shell calls ran in: each line's `cwd`, and in
+/// Bash commands every `cd <dir>`, `pushd <dir>` and `git -C <dir>`.
+fn shell_dirs(transcript: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(transcript) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let cwd = v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
+        if let Some(c) = &cwd {
+            if !out.contains(c) {
+                out.push(c.clone());
+            }
+        }
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        for b in v
+            .pointer("/message/content")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if b.get("type").and_then(|t| t.as_str()) != Some("tool_use")
+                || b.get("name").and_then(|n| n.as_str()) != Some("Bash")
+            {
+                continue;
+            }
+            let Some(cmd) = b.pointer("/input/command").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            for d in command_dirs(cmd) {
+                let p = expand_home(&d);
+                let p = if p.is_absolute() {
+                    p
+                } else if let Some(c) = &cwd {
+                    c.join(p)
+                } else {
+                    continue;
+                };
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The directory arguments of `cd`, `pushd` and `git -C` in a shell
+/// command (each statement's start: after `&&`, `||`, `;`, `|`, `(`, a
+/// newline).
+pub fn command_dirs(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let unquote = |t: &str| t.trim_matches(|c| c == '"' || c == '\'').to_owned();
+    for stmt in cmd.split(['\n', ';', '(', '|', '&']) {
+        let toks: Vec<&str> = stmt.split_whitespace().collect();
+        match toks.as_slice() {
+            ["cd", d, ..] | ["pushd", d, ..] if !d.starts_with('-') => out.push(unquote(d)),
+            ["git", "-C", d, ..] => out.push(unquote(d)),
+            _ => {}
+        }
+    }
+    out.retain(|d| !d.is_empty() && !d.contains('$') && !d.contains('`'));
+    out
+}
+
+/// The top of the git checkout holding `p` (a `.git` folder, or a
+/// worktree's `.git` file). Never the home folder or above it, never `/`.
+pub fn work_tree_of(p: &Path) -> Option<PathBuf> {
+    let home = home_dir().map(|h| canon(&h));
+    let p = canon(p);
+    let top = p
+        .ancestors()
+        .find(|a| a.join(".git").exists())?
+        .to_path_buf();
+    if top.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&top)) {
+        return None;
+    }
+    Some(top)
+}
+
+type WorktreeCache =
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::Instant, Vec<PathBuf>)>>;
+
+fn worktree_cache() -> &'static WorktreeCache {
+    static C: std::sync::OnceLock<WorktreeCache> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Every worktree of the repo's checkout (`git worktree list`), wherever it
+/// lives; held for a minute.
+pub fn repo_worktrees(repo: &Path) -> Vec<PathBuf> {
+    let key = canon(repo);
+    if let Some((at, v)) = worktree_cache().lock().unwrap().get(&key) {
+        if at.elapsed() < std::time::Duration::from_secs(60) {
+            return v.clone();
+        }
+    }
+    let mut v: Vec<PathBuf> = Vec::new();
+    if work_tree_of(&key).is_some() {
+        if let Ok(out) = crate::gitstate::quiet_command("git")
+            .arg("-C")
+            .arg(&key)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+        {
+            let listed: Vec<PathBuf> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| l.strip_prefix("worktree "))
+                .map(|p| canon(Path::new(p)))
+                .collect();
+            // Only an answer about this checkout: a folder whose `.git` git
+            // does not take (or a folder nested in another checkout) gets
+            // the enclosing checkout's list, which is not the repo's.
+            if listed.contains(&key) {
+                for p in listed {
+                    if p != key && !key.starts_with(&p) && work_tree_of(&p).is_some() {
+                        v.push(p);
+                    }
+                }
+            }
+        }
+    }
+    worktree_cache()
+        .lock()
+        .unwrap()
+        .insert(key, (std::time::Instant::now(), v.clone()));
+    v
+}
+
 /// At most this many entries in one listing.
 pub const LIST_MAX: usize = 2000;
 
@@ -303,20 +582,14 @@ pub const LIST_MAX: usize = 2000;
 /// served. `.git` is left out; dotfiles and gitignored names are marked
 /// `hidden`. In temp, only entries changed since `since` (temp is shared
 /// by everything on the machine).
-pub fn list_dir(
-    data_dir: Option<&Path>,
-    repo: &Path,
-    session_id: Option<&str>,
-    dir: &str,
-    since: Option<f64>,
-) -> Result<Value> {
+pub fn list_dir(space: &Space, repo: &Path, dir: &str, since: Option<f64>) -> Result<Value> {
     let raw = expand_home(dir.trim());
     let target = canon(&if raw.is_absolute() {
         raw
     } else {
         repo.join(raw)
     });
-    let roots = roots(data_dir, repo, session_id);
+    let roots = &space.roots;
     let Some((label, root)) = roots
         .iter()
         .filter(|(_, r)| target.starts_with(r))
@@ -324,7 +597,7 @@ pub fn list_dir(
         .cloned()
     else {
         return Err(anyhow!(
-            "not served: {} is outside the agent's repo, the session's own data, temp and its attachments",
+            "not served: {} is outside the agent's repo, the work trees it worked in, the session's own data, temp, its attachments and the folders you added",
             target.display()
         ));
     };
@@ -369,7 +642,7 @@ pub fn list_dir(
         names.push(name);
     }
     // Gitignored names, in one `git check-ignore` for the whole listing.
-    if label == "repo" && !names.is_empty() {
+    if label != "temp" && !names.is_empty() && work_tree_of(&target).is_some() {
         let ignored = git_ignored(&target, &names);
         for e in entries.iter_mut() {
             if e["name"].as_str().is_some_and(|n| ignored.contains(n)) {
@@ -493,13 +766,7 @@ pub fn recent_files(repo: &Path, limit: usize) -> Vec<Value> {
         .collect()
 }
 
-pub fn resolve(
-    data_dir: Option<&Path>,
-    repo: &Path,
-    session_id: Option<&str>,
-    path: &str,
-    harness: aspen_core::Harness,
-) -> Result<PathBuf> {
+pub fn resolve(space: &Space, repo: &Path, path: &str) -> Result<PathBuf> {
     let raw = expand_home(path.trim());
     let target = if raw.is_absolute() {
         raw
@@ -508,31 +775,18 @@ pub fn resolve(
         repo.join(raw)
     };
     let target = canon(&target);
-
-    let roots: Vec<PathBuf> = roots(data_dir, repo, session_id)
-        .into_iter()
-        .map(|(_, p)| p)
-        .collect();
-    if roots.iter().any(|r| target.starts_with(r)) {
+    if space.roots.iter().any(|(_, r)| target.starts_with(r)) {
         return Ok(target);
     }
-    if let Some(sid) = session_id {
-        let main = match harness {
-            aspen_core::Harness::Claude => aspen_claude::transcript::transcript_path(repo, sid),
-            aspen_core::Harness::Codex => {
-                aspen_core::SessionStore::main_path(&aspen_codex::CodexStore::new(), repo, sid)
-            }
-        };
-        let touched = touched_paths_for(harness, &main);
-        if touched
-            .iter()
-            .any(|a| canon(&expand_home(&a.path)) == target)
-        {
-            return Ok(target);
-        }
+    if space
+        .named
+        .iter()
+        .any(|a| canon(&expand_home(&a.path)) == target)
+    {
+        return Ok(target);
     }
     Err(anyhow!(
-        "not served: {} is outside the agent's repo, the session's own data, temp, its attachments, and the files its tool calls named",
+        "not served: {} is outside the agent's repo, the work trees it worked in, the session's own data, temp, its attachments, the folders you added, and the files its tool calls named",
         target.display()
     ))
 }
@@ -757,6 +1011,80 @@ pub fn compose_with_attachments(
 
 #[cfg(test)]
 mod list_tests {
+
+    #[test]
+    fn shell_commands_name_the_folders_they_run_in() {
+        let d = super::command_dirs(
+            "cd /home/x/src/peer-hw/hardware/cad && sed -i 's/a/b/' p.py; git -C ~/src/other log -1 | head; pushd \"/tmp/q\" && cd -",
+        );
+        assert_eq!(
+            d,
+            vec!["/home/x/src/peer-hw/hardware/cad", "~/src/other", "/tmp/q"]
+        );
+        assert!(super::command_dirs("cd $HOME/x && ls").is_empty());
+    }
+
+    #[test]
+    fn a_session_works_in_peer_checkouts_its_subagents_and_shell_touched() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let mk = |n: &str| {
+            let p = root.join(n);
+            std::fs::create_dir_all(p.join(".git")).unwrap();
+            std::fs::create_dir_all(p.join("hardware/cad")).unwrap();
+            p
+        };
+        let repo = mk("deck");
+        let hw = mk("deck-hw");
+        let notes = mk("deck-notes");
+        let elsewhere = root.join("not-a-checkout");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        // The main transcript: shell work in deck-hw, a read elsewhere.
+        let main = root.join("proj").join("s1.jsonl");
+        std::fs::create_dir_all(main.parent().unwrap()).unwrap();
+        let bash = serde_json::json!({"type":"assistant","cwd": repo,"message":{"content":[
+            {"type":"tool_use","id":"t1","name":"Bash","input":{"command": format!("cd {}/hardware/cad && sed -i s/a/b/ params.py", hw.display())}},
+            {"type":"tool_use","id":"t2","name":"Read","input":{"file_path": elsewhere.join("x.md")}}
+        ]}});
+        std::fs::write(&main, format!("{bash}\n")).unwrap();
+        // A subagent wrote in deck-notes.
+        let sub = root.join("proj").join("s1").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        let write = serde_json::json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":"w1","name":"Write","input":{"file_path": notes.join("buylist.md"), "content":"x"}}
+        ]}});
+        std::fs::write(sub.join("agent-a1.jsonl"), format!("{write}\n")).unwrap();
+        let (named, worked) = super::session_work(aspen_core::Harness::Claude, &main);
+        let c = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        assert!(worked.contains(&c(&hw)), "shell worked there: {worked:?}");
+        assert!(worked.contains(&c(&notes)), "a subagent wrote there");
+        assert!(
+            !worked.iter().any(|w| w.starts_with(c(&elsewhere))),
+            "a read is not work"
+        );
+        assert!(
+            named.iter().any(|a| a.path.ends_with("buylist.md")),
+            "a subagent's file is named"
+        );
+        // The space serves the peer checkouts whole, not the other folder.
+        let sp = super::Space {
+            roots: worked
+                .iter()
+                .map(|w| ("worked in".to_string(), w.clone()))
+                .collect(),
+            named,
+        };
+        std::fs::write(hw.join("hardware/cad/params.py"), "x").unwrap();
+        assert!(super::resolve(
+            &sp,
+            &repo,
+            &hw.join("hardware/cad/params.py").to_string_lossy()
+        )
+        .is_ok());
+        std::fs::write(elsewhere.join("y.md"), "y").unwrap();
+        assert!(super::resolve(&sp, &repo, &elsewhere.join("y.md").to_string_lossy()).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -773,7 +1101,13 @@ mod list_tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, repo.join("escape")).unwrap();
 
-        let v = list_dir(None, &repo, None, ".", None).unwrap();
+        let v = list_dir(
+            &space(None, &repo, None, aspen_core::Harness::Claude, &[]),
+            &repo,
+            ".",
+            None,
+        )
+        .unwrap();
         let names: Vec<&str> = v["entries"]
             .as_array()
             .unwrap()
@@ -799,10 +1133,28 @@ mod list_tests {
                 .unwrap();
             assert_eq!(esc["served"], false);
             // Listing through the link is refused: it resolves outside.
-            assert!(list_dir(None, &repo, None, "escape", None).is_err());
+            assert!(list_dir(
+                &space(None, &repo, None, aspen_core::Harness::Claude, &[]),
+                &repo,
+                "escape",
+                None
+            )
+            .is_err());
         }
-        assert!(list_dir(None, &repo, None, &outside.to_string_lossy(), None).is_err());
-        let sub = list_dir(None, &repo, None, "docs", None).unwrap();
+        assert!(list_dir(
+            &space(None, &repo, None, aspen_core::Harness::Claude, &[]),
+            &repo,
+            &outside.to_string_lossy(),
+            None
+        )
+        .is_err());
+        let sub = list_dir(
+            &space(None, &repo, None, aspen_core::Harness::Claude, &[]),
+            &repo,
+            "docs",
+            None,
+        )
+        .unwrap();
         assert_eq!(sub["entries"][0]["name"], "report.md");
         assert!(sub["parent"].as_str().unwrap().ends_with("repo"));
     }

@@ -163,6 +163,10 @@ pub async fn serve(
         .route("/sessions/import", post(post_import))
         .route("/agents/{name}/file", get(get_agent_file))
         .route("/agents/{name}/files", get(get_agent_files))
+        .route(
+            "/agents/{name}/roots",
+            post(post_agent_root).delete(delete_agent_root),
+        )
         .route("/agents/{name}/files/recent", get(get_agent_files_recent))
         .route("/agents/{name}/branch", post(post_branch))
         .route("/agents/{name}/branch/undo", post(post_branch_undo))
@@ -4082,6 +4086,51 @@ async fn get_agent_files(
         Ok(Ok(v)) => Json(v).into_response(),
         Ok(Err(e)) => err(StatusCode::FORBIDDEN, format!("{e:#}")).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RootBody {
+    path: String,
+    /// `agent` or `repo` (a project's folders are a field of the project).
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// POST /api/agents/{name}/roots `{path, scope}` — serve a folder for this
+/// agent or every agent of its repo (PROPOSALS-2026-11-C §C-3).
+async fn post_agent_root(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<RootBody>,
+) -> impl IntoResponse {
+    agent_root(&s, &name, b, true).await
+}
+
+/// DELETE /api/agents/{name}/roots `{path, scope}` — stop serving it.
+async fn delete_agent_root(
+    State(s): S,
+    Path(name): Path<String>,
+    Json(b): Json<RootBody>,
+) -> impl IntoResponse {
+    agent_root(&s, &name, b, false).await
+}
+
+async fn agent_root(s: &AppState, name: &str, b: RootBody, add: bool) -> axum::response::Response {
+    let scope = b.scope.unwrap_or_else(|| "agent".into());
+    if let Some((bare, node)) = remote_parts(s, name) {
+        return proxy(
+            s,
+            &node,
+            "served_root",
+            &bare,
+            json!({ "path": b.path, "scope": scope, "add": add }),
+        )
+        .await;
+    }
+    match s.node.set_served_root(name, &b.path, &scope, add) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
     }
 }
 

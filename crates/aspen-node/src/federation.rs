@@ -185,6 +185,7 @@ pub fn op_capability(op: &str) -> Capability {
         | "node_repo_skip"
         | "node_repo_add"
         | "fs_mkdir"
+        | "served_root"
         | "repo_import_preflight"
         | "repo_import"
         | "transfer_start"
@@ -2585,6 +2586,16 @@ async fn serve_api_req(
             body.get("path").and_then(|p| p.as_str()).unwrap_or(""),
         ),
         "file_list" => node.file_list(agent, body.get("dir").and_then(|p| p.as_str())),
+        "served_root" => node
+            .set_served_root(
+                agent,
+                body.get("path").and_then(|p| p.as_str()).unwrap_or(""),
+                body.get("scope")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("agent"),
+                body.get("add").and_then(|p| p.as_bool()).unwrap_or(true),
+            )
+            .map(|()| json!({ "ok": true })),
         "file_recent" => node.file_recent(
             agent,
             body.get("limit").and_then(|l| l.as_u64()).unwrap_or(50) as usize,

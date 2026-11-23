@@ -46,6 +46,15 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-22: where a session works, not only where it started (v0.56.0, queued)
+
+Proposal 2026-11-C (PROPOSALS-2026-11-C.md).
+- **Subagents count** (C-1): files named by subagents' and workflow agents' tool calls are served like the main session's.
+- **Work trees it worked in** (C-2): every worktree of the agent's repo, and every git checkout the session (or a subagent) wrote in or ran a shell command in (`cd`, `pushd`, `git -C`, the line's `cwd`), is served whole. Never home or above, never a non-git folder; a read alone is not work.
+- **Folders you add** (C-3): for the agent, every agent of its repo, or every member of a project (a synced project field, applied on each member's node); from a refused file in one click or the Files page's *+ add a folder*; removable from the root chip.
+- **Seeing it** (C-4): Files chips name each root and why (*worked in*, *worktree of the repo*, *+ project X*); refusals name every rule.
+- Verified: unit tests (shell directories, subagents, peer checkouts, a read is not work, worktree lists about another checkout ignored); the real cyberdeck session (the buy list and shell-edited files in `cyberdeck-hw` open, `~/.ssh/config` does not); a temporary node (a peer checkout refused until the session worked there, then served; a loose folder served for the agent, removed, then for the project; `.ssh` refused); the refusal's *serve for @main* in the browser opening the file.
+
 ## Shipped — 2026-11-16: one way to start an agent, everywhere (v0.55.3)
 
 - **One new-session dialog** (`openNewSession`, mounted once): choose the node, a repo there or another folder (made if missing), then the shared start dialog. It replaces Now's old form and opens from a quiet **+** in the title bar (beside the mesh switcher), Now's button and `n`, a template's *start…* (`/?new=<id>`), and the palette (`start <name> in <repo>` and *new session from template*, which before started bare, without the trust review). A template names its node and repo, and the dialog goes there.

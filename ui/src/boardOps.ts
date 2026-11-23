@@ -41,7 +41,7 @@ export async function placeOnBoard(b: Board, agent: string, how: PlaceMode): Pro
 }
 
 /** The fields a console writes (the node's `BOARD_FIELDS` but `deleted`). */
-const PATCH_FIELDS = ["name", "layout", "query", "pairs", "bench", "tab_order", "status", "charter", "notes", "rail"] as const;
+const PATCH_FIELDS = ["name", "layout", "query", "pairs", "bench", "tab_order", "status", "charter", "notes", "rail", "roots"] as const;
 
 /** What changed from `base` to `next`, as a patch (A-9): a field gone is
  *  `null`, so the node clears it. */

@@ -349,6 +349,10 @@ pub struct Board {
     /// The rail: `{shown, order}`, synced like the rest (A-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rail: Option<serde_json::Value>,
+    /// Folders served to the project's members (PROPOSALS-2026-11-C §C-3):
+    /// `[{node, path}]`, each applied on its node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roots: Option<serde_json::Value>,
     /// The team's decisions (§5): `[{id, at, by, text, pinned, edited?}]`,
     /// a set merged by id, never a value replaced whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,6 +379,7 @@ pub const BOARD_FIELDS: &[&str] = &[
     "notes",
     "rail",
     "decisions",
+    "roots",
     "deleted",
 ];
 
@@ -746,6 +751,7 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE boards ADD COLUMN stamps TEXT",
         "ALTER TABLE agents ADD COLUMN effort TEXT",
         "ALTER TABLE boards ADD COLUMN decisions TEXT",
+        "ALTER TABLE boards ADD COLUMN roots TEXT",
     ] {
         if let Err(e) = conn.execute(stmt, []) {
             if !e.to_string().contains("duplicate column") {
@@ -759,6 +765,9 @@ fn additive_columns(conn: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS project_files(
            project TEXT NOT NULL, path TEXT NOT NULL, entry TEXT NOT NULL,
            PRIMARY KEY(project, path));
+         CREATE TABLE IF NOT EXISTS served_roots(
+           scope TEXT NOT NULL, path TEXT NOT NULL, added_at REAL NOT NULL,
+           PRIMARY KEY(scope, path));
          CREATE TABLE IF NOT EXISTS project_disk(
            project TEXT NOT NULL, path TEXT NOT NULL, sha TEXT NOT NULL,
            size INTEGER NOT NULL, mtime REAL NOT NULL,
@@ -2113,7 +2122,7 @@ impl BusStore {
     pub fn boards(&self, with_deleted: bool) -> Result<Vec<Board>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps, decisions FROM boards ORDER BY updated_at DESC",
+            "SELECT id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps, decisions, roots FROM boards ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -2153,6 +2162,9 @@ impl BusStore {
                         .and_then(|q| serde_json::from_str(&q).ok()),
                     decisions: r
                         .get::<_, Option<String>>(14)?
+                        .and_then(|q| serde_json::from_str(&q).ok()),
+                    roots: r
+                        .get::<_, Option<String>>(15)?
                         .and_then(|q| serde_json::from_str(&q).ok()),
                 })
             })?
@@ -2206,10 +2218,10 @@ impl BusStore {
         let j = |v: &Option<serde_json::Value>| v.as_ref().map(|q| q.to_string());
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps, decisions)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO boards(id, name, layout, updated_at, deleted, query, pairs, bench, tab_order, status, charter, notes, rail, stamps, decisions, roots)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET name=?2, layout=?3, updated_at=?4, deleted=?5, query=?6, pairs=?7,
-               bench=?8, tab_order=?9, status=?10, charter=?11, notes=?12, rail=?13, stamps=?14, decisions=?15",
+               bench=?8, tab_order=?9, status=?10, charter=?11, notes=?12, rail=?13, stamps=?14, decisions=?15, roots=?16",
             params![
                 b.id,
                 b.name,
@@ -2225,7 +2237,8 @@ impl BusStore {
                 j(&b.notes),
                 j(&b.rail),
                 j(&b.stamps),
-                j(&b.decisions)
+                j(&b.decisions),
+                j(&b.roots)
             ],
         )?;
         Ok(())
@@ -2262,6 +2275,38 @@ impl BusStore {
             }
         }
         format!("{acc:016x}")
+    }
+
+    // --------------------------------------------------------- served roots
+
+    /// Folders the operator added to what is served (PROPOSALS-2026-11-C
+    /// §C-3), for `agent:<key>` or `repo:<path>` scopes: (scope, path).
+    pub fn served_roots(&self, scopes: &[String]) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT scope, path FROM served_roots ORDER BY added_at")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter(|(sc, _)| scopes.iter().any(|x| x == sc))
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn add_served_root(&self, scope: &str, path: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO served_roots(scope, path, added_at) VALUES(?1, ?2, ?3)",
+            params![scope, path, now_epoch()],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_served_root(&self, scope: &str, path: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "DELETE FROM served_roots WHERE scope = ?1 AND path = ?2",
+            params![scope, path],
+        )? > 0)
     }
 
     // --------------------------------------------------------- project files
@@ -3788,6 +3833,7 @@ mod plugin_library_tests {
             rail: None,
             stamps: None,
             decisions: None,
+            roots: None,
             updated_at: 1.0,
             deleted: false,
         })

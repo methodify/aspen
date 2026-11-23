@@ -32,3 +32,9 @@ button.fl-name { background: none; border: none; padding: 0; cursor: pointer; }
   .fl-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
   .fl-filter { width: 100%; }
 }
+
+/* Roots with a reason, and the ones you added (PROPOSALS-2026-11-C §C-4). */
+.fl-root-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.fl-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 8px; }
+.fl-add > input { flex: 1 1 260px; min-width: 0; }
+.fl-add .serve-folder { padding: 0; flex-basis: 100%; }

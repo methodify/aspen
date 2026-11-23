@@ -800,6 +800,8 @@ export interface Board {
   stamps?: Record<string, number> | null;
   /** The team's decisions (§5): a set merged by id. */
   decisions?: ProjectDecision[] | null;
+  /** Folders served to its members, each on its node (PROPOSALS-2026-11-C). */
+  roots?: { node: string; path: string }[] | null;
   /** A dynamic board: panes are whatever matches. */
   query?: { node?: string; channel?: string; state?: "busy" | "live" | "attention" | "activity" | "any"; name?: string; style?: "grid" | "main" };
   updated_at: number;
@@ -998,7 +1000,9 @@ export interface FileListing {
   parent?: string | null;
   entries?: FileEntry[];
   truncated?: boolean;
-  roots?: { label: string; path: string; exists: boolean }[];
+  /** `scope` names who added a root (PROPOSALS-2026-11-C): `agent:<key>`,
+   *  `repo:<path>`, `project:<id>`; absent for the ones the rule finds. */
+  roots?: { label: string; path: string; exists: boolean; scope?: string | null }[];
   named?: { path: string; stat: { size?: number; mtime?: number; name?: string } }[];
   since?: number | null;
 }
@@ -2034,6 +2038,11 @@ export const api = {
    *  with no `dir` the roots and the files named outside them. */
   files: (name: string, dir?: string) =>
     request<FileListing>(`/api/agents/${enc(name)}/files${dir ? `?dir=${enc(dir)}` : ""}`),
+  /** Serve a folder for this agent or every agent of its repo (C-3). */
+  addRoot: (name: string, path: string, scope: "agent" | "repo") =>
+    post<{ ok: boolean }>(`/api/agents/${enc(name)}/roots`, { path, scope }),
+  removeRoot: (name: string, path: string, scope: string) =>
+    request<{ ok: boolean }>(`/api/agents/${enc(name)}/roots`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, scope }) }),
   filesRecent: (name: string, limit = 50) =>
     request<{ repo: string; files: RecentFile[] }>(`/api/agents/${enc(name)}/files/recent?limit=${limit}`),
   reloadAgent: (name: string) =>

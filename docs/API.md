@@ -360,6 +360,17 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - Every mesh-wide row's `updated_at` now comes from the store's hybrid logical clock.
 
 
+## Where a session works (v0.56) — PROPOSALS-2026-11-C
+
+- The serving rule (file, files, stat, read) also admits: files named by the session's subagents'
+  tool calls; every worktree of the agent's repo; every git checkout the session wrote in or ran a
+  shell command in; and folders the operator added.
+- `POST /api/agents/{name}/roots {path, scope: "agent"|"repo"}` / `DELETE` (scope as listed, e.g.
+  `agent:<key>`) — serve a folder for the agent or every agent of its repo (mesh op `served_root`,
+  trust class). A project's folders are its `roots` field, `[{node, path}]`, patched like the rest.
+- `GET /api/agents/{name}/files` roots carry a label (`repo`, `worktree of the repo`, `worked in`,
+  `added for …`) and, for added ones, `scope`.
+
 ## Starting where the work is (v0.55) — PROPOSALS-2026-11-B
 
 - `POST /api/repos {path, node?, skip_permissions?, create?, git_init?}` — `create` makes a missing

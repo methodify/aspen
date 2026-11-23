@@ -11,6 +11,8 @@ import { useAppData } from "../App";
 import { ErrorBar, relTime } from "../components";
 import { canShareFiles, copyFile, onFileDragStart, qualifiedAgent, shareFile, TapAgain, type AspenFileRef } from "../fileActions";
 import { viewHref } from "../pathLinks";
+import { PathPicker } from "../pathPicker";
+import { removeProjectRoot, ServeFolder } from "../serveFolder";
 import { fmtBytes } from "./sessionExtras";
 import "./files.css";
 
@@ -18,7 +20,23 @@ type Tab = "browse" | "recent" | "named";
 type SortKey = "name" | "mtime" | "size";
 
 /** The roots shown as chips, most used first; the rest follow. */
-const ROOT_ORDER = ["repo", "attachments", "plans", "temp", "session data"];
+const ROOT_ORDER = ["repo", "worktree of the repo", "worked in", "attachments", "plans", "temp", "session data"];
+
+/** Why a root is served (PROPOSALS-2026-11-C §C-4). */
+function rootWhy(label: string): string {
+  if (label === "repo") return "the agent's repo";
+  if (label === "worktree of the repo") return "a git worktree of the agent's repo";
+  if (label === "worked in") return "a git checkout this session (or a subagent of it) wrote in or ran commands in";
+  if (label.startsWith("added")) return `a folder you serve: ${label}`;
+  return `the session's ${label}`;
+}
+
+/** A chip's text: the label, and for a work tree its folder's name. */
+function rootName(r: { label: string; path: string }): string {
+  const leaf = r.path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? r.path;
+  if (r.label === "worktree of the repo" || r.label === "worked in" || r.label.startsWith("added")) return `${leaf} · ${r.label.replace(/^added for /, "+ ")}`;
+  return r.label;
+}
 
 function joinPath(dir: string, name: string): string {
   const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
@@ -53,9 +71,23 @@ export default function Files() {
   };
 
   // Roots once; the directory on every change (the repo by default).
+  const [rootsGen, setRootsGen] = useState(0);
+  const reloadRoots = () => setRootsGen((n) => n + 1);
   useEffect(() => {
     api.files(name).then(setRoots).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
-  }, [name]);
+  }, [name, rootsGen]);
+  // Folders the operator serves (PROPOSALS-2026-11-C §C-3).
+  const [adding, setAdding] = useState<string | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const unserve = async (path: string, scope: string) => {
+    try {
+      if (scope.startsWith("project:")) await removeProjectRoot(scope.slice(8), agent?.node ?? "", path);
+      else await api.removeRoot(name, path, scope);
+      reloadRoots();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
   const repoRoot = roots?.roots?.find((r) => r.label === "repo")?.path ?? "";
   const shownDir = dir || repoRoot;
   useEffect(() => {
@@ -196,14 +228,44 @@ export default function Files() {
         <>
           <div className="fl-roots">
             {rootChips.map((r) => (
-              <button key={r.path} className={`chip mono fl-root${listing?.root === r.path ? " on" : ""}`} onClick={() => set({ dir: r.label === "repo" ? null : r.path })} title={r.path}>
-                {r.label}
-              </button>
+              <span key={r.path} className="fl-root-wrap">
+                <button className={`chip mono fl-root${listing?.root === r.path ? " on" : ""}`} onClick={() => set({ dir: r.label === "repo" ? null : r.path })} title={`${r.path}\n${rootWhy(r.label)}`}>
+                  {rootName(r)}
+                </button>
+                {r.scope && (
+                  <button type="button" className="status-note-x" title={`stop serving ${r.path} (${r.label})`} aria-label="stop serving this folder" onClick={() => void unserve(r.path, r.scope!)}>
+                    ×
+                  </button>
+                )}
+              </span>
             ))}
+            <button type="button" className="btn ghost sm" onClick={() => setAdding(adding === null ? "" : null)} title="serve another folder for this agent, its repo, or a project of it">
+              + add a folder
+            </button>
             {listing?.root_label === "temp" && roots?.since && (
               <span className="mono-meta dim">temp shows what changed since this session started</span>
             )}
           </div>
+          {adding !== null && (
+            <div className="fl-add">
+              <input className="mono" value={adding} onChange={(e) => setAdding(e.target.value)} placeholder={`a folder on ${node ?? "this node"}`} aria-label="folder to serve" spellCheck={false} />
+              <button type="button" className="btn ghost sm" onClick={() => setBrowsing(true)}>browse…</button>
+              {adding.trim() && <ServeFolder name={name} agent={agent} folder={adding.trim()} onDone={() => { setAdding(null); reloadRoots(); }} />}
+            </div>
+          )}
+          {browsing && (
+            <PathPicker
+              node={agent?.remote ? agent.node : undefined}
+              mode="dir"
+              start={adding ?? ""}
+              title="A folder to serve"
+              onPick={(p) => {
+                setAdding(p);
+                setBrowsing(false);
+              }}
+              onClose={() => setBrowsing(false)}
+            />
+          )}
           <div className="fl-bar">
             <span className="fl-crumbs mono">
               {crumbs.map((c, i) => (
