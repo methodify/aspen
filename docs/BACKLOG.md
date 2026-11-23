@@ -46,6 +46,11 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-23: a running workflow's agents count as running; Now opens the workflow (v0.56.1, queued)
+
+- A live workflow agent reports `start` and `progress` (and sometimes `in_progress`), not only `running`, so the phase filter's *running* counted none of them, the running phase was not followed, elapsed time stopped at the last frame and a working agent said "no report". The workflow page now reads every state through one mapping (running · done · failed · queued) for the filter, the phase counts, the followed phase, the times and the row's state.
+- Now's Activity rows open a running workflow in the workflow viewer, as they open an agent's transcript.
+
 ## Shipped — 2026-11-22: where a session works, not only where it started (v0.56.0)
 
 Proposal 2026-11-C (PROPOSALS-2026-11-C.md).

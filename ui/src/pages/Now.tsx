@@ -579,6 +579,10 @@ function ActivityBand({ items }: { items: FleetActivityItem[] }) {
                       <Link to={`/session/${encodeURIComponent(agent)}/agent/${encodeURIComponent(a.id)}`} title="open this agent's transcript">
                         {a.label}
                       </Link>
+                    ) : a.kind === "workflow" && typeof a.detail["run_id"] === "string" ? (
+                      <Link to={`/session/${encodeURIComponent(agent)}/workflow/${encodeURIComponent(String(a.detail["run_id"]))}`} title="open this workflow: its phases, agents and results">
+                        {a.label}
+                      </Link>
                     ) : (
                       a.label
                     )}

@@ -37,36 +37,51 @@ function shortModel(m: string | null | undefined): string {
 /** An agent's elapsed time: its own duration when the harness gave one,
  *  else since it started (running), else from start to its last progress. */
 function agentElapsed(a: WorkflowAgent, now: number): string {
-  if (a.duration_ms && a.state !== "running") return ms(a.duration_ms);
+  const working = stateKind(a.state) === "running";
+  if (a.duration_ms && !working) return ms(a.duration_ms);
   if (a.started_at) {
-    const end = a.state === "running" ? now : (a.last_progress_at ?? now);
+    const end = working ? now : (a.last_progress_at ?? now);
     return ms(end - a.started_at);
   }
   return ms(a.duration_ms);
 }
 
-function stateIs(s: string | null, k: "running" | "failed" | "done"): boolean {
-  if (k === "running") return s === "running";
-  if (k === "failed") return s === "failed" || s === "error";
-  return s === "done" || s === "completed";
-}
-
-function stateClass(s: string | null): string {
+/** What an agent's state means. A live agent reports more than
+ *  `running`: `start` and `progress` frames are working too (the filter
+ *  counted none of them, and the phase showed no one at work). */
+export function stateKind(s: string | null | undefined): "running" | "done" | "failed" | "queued" | "other" {
   switch (s) {
     case "running":
-      return "wf-running";
+    case "start":
+    case "started":
+    case "progress":
+    case "in_progress":
+    case "active":
+      return "running";
     case "done":
     case "completed":
-      return "wf-done";
+    case "success":
+      return "done";
     case "failed":
     case "error":
     case "killed":
-      return "wf-failed";
+    case "cancelled":
+      return "failed";
     case "queued":
-      return "wf-queued";
+    case "pending":
+      return "queued";
     default:
-      return "";
+      return "other";
   }
+}
+
+function stateIs(s: string | null, k: "running" | "failed" | "done"): boolean {
+  return stateKind(s) === k;
+}
+
+function stateClass(s: string | null): string {
+  const k = stateKind(s);
+  return k === "other" ? "" : `wf-${k}`;
 }
 
 export default function Workflow() {
@@ -136,14 +151,14 @@ export default function Workflow() {
   }, [wf]);
   // Follow the phase in progress until the operator picks one.
   const current = useMemo(() => {
-    const live = phases.find((p) => p.agents.some((a) => a.state === "running"));
+    const live = phases.find((p) => p.agents.some((a) => stateKind(a.state) === "running"));
     const p = live ?? phases[phases.length - 1];
     return p ? pkey(p) : null;
   }, [phases]);
   const shown = phases.find((p) => pkey(p) === (phase ?? current)) ?? phases[0] ?? null;
   const all = wf?.phases.flatMap((p) => p.agents) ?? [];
-  const done = all.filter((a) => a.state === "done" || a.state === "completed").length;
-  const failed = all.filter((a) => a.state === "failed" || a.state === "error").length;
+  const done = all.filter((a) => stateKind(a.state) === "done").length;
+  const failed = all.filter((a) => stateKind(a.state) === "failed").length;
   const tokens = wf?.total_tokens ?? wf?.live?.tokens ?? (all.some((a) => a.tokens) ? all.reduce((n, a) => n + (a.tokens ?? 0), 0) : null);
   const tools = wf?.total_tool_calls ?? wf?.live?.tool_uses ?? (all.some((a) => a.tool_calls) ? all.reduce((n, a) => n + (a.tool_calls ?? 0), 0) : null);
   const started = epochMs(wf?.started_at ?? null);
@@ -187,8 +202,8 @@ export default function Workflow() {
         <>
           <div className="wf-phases" role="tablist">
             {phases.map((p) => {
-              const pd = p.agents.filter((a) => a.state === "done" || a.state === "completed").length;
-              const pr = p.agents.filter((a) => a.state === "running").length;
+              const pd = p.agents.filter((a) => stateKind(a.state) === "done").length;
+              const pr = p.agents.filter((a) => stateKind(a.state) === "running").length;
               const active = !!shown && pkey(p) === pkey(shown);
               return (
                 <button key={pkey(p)} role="tab" aria-selected={active} className={`wf-phase${active ? " active" : ""}${pr ? " live" : ""}`} onClick={() => setPhase(pkey(p))} title={p.detail ?? undefined}>
@@ -228,7 +243,7 @@ export default function Workflow() {
                 <div key={a.agent_id || a.label || Math.random()} id={`agent-${a.agent_id}`} className={`wf-agent ${stateClass(a.state)}${isOpen ? " open" : ""}`}>
                   <div className="wf-agent-row" onClick={() => setOpen(isOpen ? null : a.agent_id)}>
                     <span className={`wf-dot ${stateClass(a.state)}`} aria-hidden />
-                    <span className="wf-agent-state mono-meta">{a.state ?? "?"}</span>
+                    <span className="wf-agent-state mono-meta" title={a.state ?? undefined}>{stateKind(a.state) === "other" ? (a.state ?? "?") : stateKind(a.state)}</span>
                     <span className="wf-agent-label">
                       {a.has_transcript ? (
                         <Link to={agentHref(a.agent_id)} onClick={(e) => e.stopPropagation()} title="open this agent's transcript">{a.label ?? a.agent_id}</Link>
@@ -259,7 +274,7 @@ export default function Workflow() {
                         {report ? (
                           <div className="v md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{report}</ReactMarkdown></div>
                         ) : (
-                          <span className="v dim">{a.state === "running" ? "still working" : "no report"}</span>
+                          <span className="v dim">{stateKind(a.state) === "running" ? "still working" : "no report"}</span>
                         )}
                       </div>
                       {a.has_transcript && <Link className="btn sm" to={agentHref(a.agent_id)}>open transcript</Link>}
