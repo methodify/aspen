@@ -453,3 +453,54 @@ export function toolUseNameOf(ev: {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Message times
+
+const SHOW_TIMES_KEY = "aspen.session.showTimes";
+
+/** Whether each message shows when it was written (the ⋯ menu's *times*). */
+export function loadShowTimes(): boolean {
+  try {
+    return localStorage.getItem(SHOW_TIMES_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function storeShowTimes(on: boolean): void {
+  try {
+    localStorage.setItem(SHOW_TIMES_KEY, on ? "1" : "0");
+  } catch {
+    /* private mode */
+  }
+}
+
+/** A message's time, as short as it can be and still say which day:
+ *  "21:04" today, "Sat 21:04" this week, "22 Nov 21:04" before. */
+export function fmtMessageTime(ms: number, now = Date.now()): string {
+  const d = new Date(ms);
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const today = new Date(now);
+  if (d.toDateString() === today.toDateString()) return hm;
+  if (now - ms < 6 * 86400_000 && ms <= now) return `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
+}
+
+/** The full stamp for a tooltip: local date and time, and UTC. */
+export function fmtMessageStamp(ms: number): string {
+  const d = new Date(ms);
+  const utc = d.toISOString().slice(0, 16).replace("T", " ");
+  return `${d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" })} (${utc} UTC)`;
+}
+
+/** How long ago, coarse: "40s", "12m", "2h 14m", "1d 3h". */
+export function fmtAgo(ms: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}

@@ -53,6 +53,8 @@ Esc, on a click outside it and outside any panel it opened, and when a
 row acts. Arrow keys walk the rows; the first row takes focus on open.
 
 - **head**: `@name`, harness · model in use (· effort, when one is set).
+- **times** (v0.56.2, in setup): on shows each message's time; off (the default) keeps it in the
+  tooltip. The status line always carries *last reply … ago*.
 - **setup**: model (select), effort (select, Claude only, v0.53: default · low · medium · high ·
   xhigh · max; set live by the harness's `/effort`, no model turn, and kept for the next start as
   `--effort`), mode (select), render (chat / console /

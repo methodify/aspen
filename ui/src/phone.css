@@ -60,6 +60,8 @@
   .tool-card, .bubble { max-width: calc(100% - var(--chat-gutter)); }
   .catchup { padding: 6px var(--sp-3); }
   .catchup-row { flex-wrap: wrap; }
+  .last-reply-long { display: none; }
+  .last-reply { margin-right: 8px; }
   .catchup-recap:not(.open) { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
   .catchup-recap { flex-basis: 100%; }
 

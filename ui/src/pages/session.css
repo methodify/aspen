@@ -672,3 +672,11 @@
   .repo-menu-title, .repo-menu-when { display: none; }
   .repo-menu-row { flex-wrap: wrap; }
 }
+
+/* When it was written (the status line's last reply; the ⋯ menu's *times*). */
+.last-reply { margin-left: auto; margin-right: 12px; color: var(--text-dim); white-space: nowrap; cursor: default; }
+.last-reply + .artifacts-wrap .status-right { margin-left: 0; }
+.msg-time { font-size: 0.7rem; color: var(--text-dim); }
+.bubble-assistant > .msg-time { display: block; margin-bottom: 2px; }
+.bubble-user .bubble-tag .msg-time { margin-left: 8px; }
+.notice-card summary .msg-time { margin-left: 8px; }

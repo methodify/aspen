@@ -73,6 +73,9 @@ export interface AssistantBubbleItem {
   uuid?: string | null;
   /** The model that produced it, when the transcript says. */
   model?: string | null;
+  /** When it was written (epoch ms): the transcript's timestamp, or when
+   *  this console saw it begin. */
+  at?: number | null;
 }
 
 export interface UserBubbleItem {
@@ -94,6 +97,8 @@ export interface UserBubbleItem {
   /** The node could not reach the session's node and queued this on the
    *  bus: it delivers when the link returns (not a failure). */
   busQueued?: boolean;
+  /** When it was sent (epoch ms). */
+  at?: number | null;
 }
 
 /** A harness task notification (`<task-notification>…`): a background
@@ -106,6 +111,8 @@ export interface TaskNoticeItem {
   taskId: string | null;
   status: string | null;
   summary: string | null;
+  /** When it arrived (epoch ms). */
+  at?: number | null;
 }
 
 /** A bus injection observed on the wire (user-role frame with the envelope header). */
@@ -250,7 +257,7 @@ export function isTaskNotice(text: string): boolean {
   return text.trimStart().startsWith(TASK_NOTICE_MARKER);
 }
 
-export function taskNoticeItem(id: number, text: string): TaskNoticeItem {
+export function taskNoticeItem(id: number, text: string, at: number | null = Date.now()): TaskNoticeItem {
   return {
     kind: "notice",
     id,
@@ -258,7 +265,15 @@ export function taskNoticeItem(id: number, text: string): TaskNoticeItem {
     taskId: tagOf(text, "task-id"),
     status: tagOf(text, "status"),
     summary: tagOf(text, "summary"),
+    at,
   };
+}
+
+/** A transcript line's timestamp as epoch ms, or null. */
+function atOf(ts: unknown): number | null {
+  if (typeof ts !== "string") return null;
+  const t = Date.parse(ts);
+  return Number.isFinite(t) ? t : null;
 }
 
 export function seedFromHistory(history: HistoryItem[]): TranscriptState {
@@ -287,7 +302,7 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
         if (seg.bus) {
           items.push({ kind: "bus", id: nextId++, text: seg.text });
         } else if (isTaskNotice(seg.text)) {
-          items.push(taskNoticeItem(nextId++, seg.text));
+          items.push(taskNoticeItem(nextId++, seg.text, atOf(h.timestamp)));
         } else if (!seg.text.startsWith(INTERRUPT_MARKER)) {
           items.push({
             kind: "user",
@@ -299,6 +314,7 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
             failed: false,
             images: si === 0 && h.images && h.images.length ? h.images : undefined,
             via: typeof h.via === "string" ? h.via : null,
+            at: atOf(h.timestamp),
           });
         }
       }
@@ -313,6 +329,7 @@ export function seedFromHistory(history: HistoryItem[]): TranscriptState {
           open: false,
           uuid: typeof h.uuid === "string" ? h.uuid : null,
           model: typeof h.model === "string" ? h.model : null,
+          at: atOf(h.timestamp),
         });
       }
       for (const t of h.tools ?? []) {
@@ -522,6 +539,7 @@ export function addLocalUserMessage(
     pending: true,
     failed: false,
     images: images && images.length ? images : undefined,
+    at: Date.now(),
   };
   return { ...state, items: [...state.items, item], nextId: state.nextId + 1 };
 }
@@ -595,6 +613,7 @@ function withOpenTailBubble(state: TranscriptState): {
     thinking: "",
     messageId: null,
     open: true,
+    at: Date.now(),
   };
   items = [...items, bubble];
   return {
@@ -662,6 +681,7 @@ function applyAssistantMessage(
     thinking: "",
     messageId: mid || null,
     open: true,
+    at: Date.now(),
   };
   return {
     items: [...items, bubble],
@@ -840,7 +860,7 @@ function applyUserReplay(state: TranscriptState, ev: UserReplayEvent): Transcrip
     if (st.items.some((it) => it.kind === "user" && ((segUuid && it.uuid === segUuid) || it.text === seg.text))) continue;
     st = {
       ...st,
-      items: [...st.items, { kind: "user", id: st.nextId, text: seg.text, uuid: segUuid, localKey: null, pending: false, failed: false }],
+      items: [...st.items, { kind: "user", id: st.nextId, text: seg.text, uuid: segUuid, localKey: null, pending: false, failed: false, at: Date.now() }],
       nextId: st.nextId + 1,
     };
   }

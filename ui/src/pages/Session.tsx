@@ -1,7 +1,9 @@
 import { scoped } from "../profiles";
 import {
+  createContext,
   Fragment,
   memo,
+  useContext,
   useEffect,
   useMemo,
   useReducer,
@@ -92,6 +94,11 @@ import {
   fmtElapsed,
   fmtTokens,
   loadRenderMode,
+  loadShowTimes,
+  storeShowTimes,
+  fmtMessageTime,
+  fmtMessageStamp,
+  fmtAgo,
   normalizeModels,
   runtimeModels,
   parseQuestions,
@@ -279,9 +286,41 @@ const TuiMd = memo(function TuiMd({ text, agent }: { text: string; agent?: strin
   );
 });
 
+/** Whether messages show their times (the ⋯ menu's *times*). */
+const TimesContext = createContext(false);
+
+/** A message's time: always in its tooltip, on the message when *times* is on. */
+function MsgTime({ at }: { at?: number | null }) {
+  const show = useContext(TimesContext);
+  if (!at || !show) return null;
+  return (
+    <span className="msg-time mono-meta" title={fmtMessageStamp(at)}>
+      {fmtMessageTime(at)}
+    </span>
+  );
+}
+
+/** The status line's "last reply 2h 14m ago": when the agent last wrote to
+ *  you, so its own "two hours ago" has a reference. Ticks every 30 s. */
+function LastReply({ at }: { at: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+  if (!at) return null;
+  return (
+    <span className="last-reply mono-meta" title={`its last reply: ${fmtMessageStamp(at)}`}>
+      <span className="last-reply-long">last reply </span>
+      {fmtAgo(at, now)} ago
+    </span>
+  );
+}
+
 const AssistantBubble = memo(function AssistantBubble({ item, source, agent }: { item: AssistantBubbleItem; source?: boolean; agent?: string }) {
   return (
-    <div className="bubble bubble-assistant" data-uuid={item.uuid ?? undefined}>
+    <div className="bubble bubble-assistant" data-uuid={item.uuid ?? undefined} title={item.at ? fmtMessageStamp(item.at) : undefined}>
+      <MsgTime at={item.at} />
       {item.thinking && (
         <details className="thinking">
           <summary>thinking</summary>
@@ -304,8 +343,11 @@ const AssistantBubble = memo(function AssistantBubble({ item, source, agent }: {
 
 const UserBubble = memo(function UserBubble({ item }: { item: UserBubbleItem }) {
   return (
-    <div className="bubble bubble-user" data-uuid={item.uuid ?? undefined}>
-      <div className="bubble-tag mono">@operator</div>
+    <div className="bubble bubble-user" data-uuid={item.uuid ?? undefined} title={item.at ? fmtMessageStamp(item.at) : undefined}>
+      <div className="bubble-tag mono">
+        @operator
+        <MsgTime at={item.at} />
+      </div>
       <div className="user-text">{item.text}</div>
       {item.images && item.images.length > 0 && (
         <div className="user-images">
@@ -335,7 +377,7 @@ const NoticeCard = memo(function NoticeCard({ item, tui }: { item: TaskNoticeIte
   const bad = status === "failed" || status === "error" || status === "killed";
   return (
     <details className={`tool-card notice-card${tui ? " tool-card-tui" : ""}`}>
-      <summary>
+      <summary title={item.at ? fmtMessageStamp(item.at) : undefined}>
         <span className={bad ? "dot dot-error" : "dot dot-idle"} />
         <span className="tool-name mono">task notification</span>
         {item.summary && <span className="tool-summary mono">{item.summary}</span>}
@@ -343,6 +385,7 @@ const NoticeCard = memo(function NoticeCard({ item, tui }: { item: TaskNoticeIte
           {status}
           {item.taskId ? ` · ${item.taskId.slice(0, 12)}` : ""}
         </span>
+        <MsgTime at={item.at} />
       </summary>
       <div className="tool-detail">
         <pre className="src-body notice-body">{item.text}</pre>
@@ -358,12 +401,28 @@ function UsagePopover({ agent, liveCost }: { agent: string; liveCost: number | n
   const [open, setOpen] = useState(false);
   const [row, setRow] = useState<UsageRow | null>(null);
   const [at, setAt] = useState({ top: 0, left: 0 });
+  // The session's figure up front, not only once the panel opens: before,
+  // the bar read "$—" until a turn ended on this page or it was clicked.
+  useEffect(() => {
+    let stop = false;
+    const load = () =>
+      api
+        .agentUsage(agent)
+        .then((rows) => !stop && setRow(rows[0] ?? null))
+        .catch(() => {});
+    void load();
+    const t = window.setInterval(load, 120_000);
+    return () => {
+      stop = true;
+      window.clearInterval(t);
+    };
+  }, [agent]);
   useEffect(() => {
     if (!open) return;
     api
       .agentUsage(agent)
       .then((rows) => setRow(rows[0] ?? null))
-      .catch(() => setRow(null));
+      .catch(() => {});
   }, [open, agent]);
   const cost = liveCost ?? row?.usage.cost_usd ?? (row && row.window.cost_usd > 0 ? row.window.cost_usd : null);
   const observedOnly = liveCost === null && row?.usage.cost_usd === null;
@@ -1520,6 +1579,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const [ctx, setCtx] = useState<ContextSummary | null>(null);
   const [ctxOpen, setCtxOpen] = useState(false);
   const [renderMode, setRenderMode] = useState<RenderMode>(loadRenderMode);
+  const [showTimes, setShowTimes] = useState<boolean>(loadShowTimes);
   const [modelValue, setModelValue] = useState("default");
   const [modeValue, setModeValue] = useState("default");
   // Signals that open the header menus from elsewhere (the status line,
@@ -2704,6 +2764,14 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
   const windowSize = RECENT_WINDOW + showEarlier;
   const hiddenEarlier = Math.max(0, transcript.items.length - windowSize);
   const visibleItems = hiddenEarlier > 0 ? transcript.items.slice(hiddenEarlier) : transcript.items;
+  // When the agent last wrote to the operator: its last reply with text.
+  const lastReplyAt = useMemo(() => {
+    for (let i = transcript.items.length - 1; i >= 0; i--) {
+      const it = transcript.items[i]!;
+      if (it.kind === "assistant" && it.text.trim() && it.at) return it.at;
+    }
+    return null;
+  }, [transcript.items]);
 
   // The active call: the newest unfinished tool while the turn is busy
   // (a permission prompt or status line may sit after it; the harness
@@ -3264,6 +3332,23 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             ))}
           </select>
           </MenuField>
+          <MenuField label="times" hint="each message shows when it was written (hover shows it either way)">
+            <div className="seg" role="group" aria-label="message times">
+              {([false, true] as const).map((on) => (
+                <button
+                  key={String(on)}
+                  type="button"
+                  aria-pressed={showTimes === on}
+                  onClick={() => {
+                    setShowTimes(on);
+                    storeShowTimes(on);
+                  }}
+                >
+                  {on ? "on" : "off"}
+                </button>
+              ))}
+            </div>
+          </MenuField>
           <MenuField label="render">
         <div className="seg" role="group" aria-label="render mode">
           {(["chat", "console", "source"] as const).map((m) => (
@@ -3642,7 +3727,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
             </button>
           </div>
         )}
-        {renderGrouped(visibleItems, renderMode === "console")}
+        <TimesContext.Provider value={showTimes}>{renderGrouped(visibleItems, renderMode === "console")}</TimesContext.Provider>
       </div>
 
       <div className="status-line">
@@ -3686,6 +3771,7 @@ export function SessionView({ name, pane, subagent }: { name: string; pane?: Pan
           )}
         </span>
         {actionError && <span className="error-text">{actionError}</span>}
+        <LastReply at={lastReplyAt} />
         <UsagePopover agent={name} liveCost={lastTurn?.costUsd ?? null} />
       </div>
 
