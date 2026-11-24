@@ -46,7 +46,7 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
-## Shipped — 2026-11-23: when it was said (v0.56.2, queued)
+## Shipped — 2026-11-23: when it was said (v0.56.2)
 
 - **Last reply on the status line**: "last reply 2h 14m ago" (just "2h 14m ago" on a phone), ticking; its tooltip gives the local time and UTC. For sessions that run 24–48 hours, so an agent's own "two hours in" has a reference.
 - **Times on messages**: every reply, operator message and task notification carries its time (the transcript's timestamp, or when this console saw it); hover shows it always, and the ⋯ menu's *times* (setup, beside render) shows it on each message: "21:04" today, "Sat 21:04" this week, "22 Nov 21:04" before. Per browser.
