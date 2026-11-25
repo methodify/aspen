@@ -21,11 +21,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # Build and upload in one job, deploy in another (GitHub's own layout):
+  # a deploy in the same job as the upload sometimes asked for the artifact
+  # before it was registered and failed with "No artifacts named
+  # github-pages" (v0.56.2, v0.56.3; both fine on a re-run).
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,5 +41,13 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ui/dist-hosted
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v4
