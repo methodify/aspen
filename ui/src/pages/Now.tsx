@@ -246,7 +246,15 @@ export default function Now() {
   }, [newFrom, setParams]);
   const [query, setQuery] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [replyTo, setReplyTo] = useState<string | null>(null);
+  // The message being answered: one card's box opens, not every card from
+  // the same sender (they all matched the sender before, and shared one
+  // text). The draft is kept per recipient.
+  const [replyMsg, setReplyMsg] = useState<string | null>(null);
+  const [replyTo, setReplyToRaw] = useState<string | null>(null);
+  const setReplyTo = (to: string | null, msg: string | null = null) => {
+    setReplyToRaw(to);
+    setReplyMsg(to ? msg : null);
+  };
   const [replyText, setReplyTextRaw] = useState("");
   // Reply drafts survive leaving the view (PROPOSALS §1), per recipient.
   const setReplyText = (t: string) => {
@@ -399,7 +407,7 @@ export default function Now() {
               >
                 {m.body}
               </MessageRow>
-              {replyTo === m.sender ? (
+              {replyMsg === `${m.node ?? ""}:${m.id}` ? (
                 <div className="need-reply">
                   <ClassSelect value={replyClass} onChange={setReplyClass} />
                   <input
@@ -417,7 +425,7 @@ export default function Now() {
                 <div className="need-actions">
                   <ClassBadge urgency={m.urgency} />
                   <span style={{ flex: 1 }} />
-                  <button className="btn sm" onClick={() => setReplyTo(m.sender)}>reply</button>
+                  <button className="btn sm" onClick={() => setReplyTo(m.sender, `${m.node ?? ""}:${m.id}`)}>reply</button>
                   <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(m.sender)}`)}>open</button>
                   <button className="btn ghost sm" title="mark read: the card leaves this page (the message stays in the session and the bus log)" onClick={() => void api.markNeedsRead([m.id], m.node).then(() => needsPoll.refresh())}>dismiss</button>
                 </div>
