@@ -1419,6 +1419,25 @@ export interface Needs {
   inbox: (BusMessage & { node: string | null })[];
   adoptions?: Adoption[];
   memory?: MemoryConflict[];
+  /** Which nodes answered, and how long ago (PROPOSALS-2026-11-D §D-2). */
+  nodes?: MeshAnswer[];
+}
+/** One node's part in a mesh-wide answer. */
+export interface MeshAnswer {
+  node: string;
+  self: boolean;
+  /** Seconds since its answer; null when it has not answered. */
+  age: number | null;
+  answered?: boolean;
+  /** Linked now; when not, its mail is its last known. */
+  linked?: boolean;
+}
+/** A message to the operator (PROPOSALS-2026-11-D): kept, read or unread. */
+export type MailItem = BusMessage & { node: string; self: boolean; uuid?: string };
+export interface OperatorMail {
+  mail: MailItem[];
+  unread: number;
+  nodes: MeshAnswer[];
 }
 export interface MemorySettings {
   sync?: boolean;
@@ -2160,6 +2179,11 @@ export const api = {
   markNeedsRead: (ids?: number[], node?: string | null) => post<Record<string, never>>("/api/needs/read", ids ? { ids, node: node ?? undefined } : undefined),
 
   dms: () => request<DmPair[]>("/api/dms"),
+  /** The operator's mail from every node (PROPOSALS-2026-11-D §D-2). */
+  operatorMail: (limit = 300) => request<OperatorMail>(`/api/operator/mail?limit=${limit}`),
+  /** Read, or unread again, each on its own node. */
+  markMail: (items: { node: string | null; id: number }[], read = true) =>
+    post<{ changed: number }>("/api/operator/mail/read", { items, read }),
   dmLog: (a: string, b: string, n = 200) =>
     request<BusMessage[]>(`/api/dm?a=${enc(a)}&b=${enc(b)}&n=${n}`),
 

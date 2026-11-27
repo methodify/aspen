@@ -3443,6 +3443,46 @@ impl BusStore {
         )?)
     }
 
+    /// The operator's mail (PROPOSALS-2026-11-D §D-1): every message to
+    /// `operator` on this node, read or not, newest first. Read is
+    /// `delivered_at` set; nothing is removed.
+    pub fn operator_mail(&self, limit: i64) -> Result<Vec<StoredMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,uuid,thread,sender,recipient,to_display,urgency,body,record_ref,
+                    created_at,delivered_at,delivered_via,ingested_at,post
+             FROM messages WHERE recipient = 'operator' AND urgency != 'ambient'
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], row_to_message)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Mark operator mail read (by the operator) or unread again.
+    pub fn set_mail_read(&self, ids: &[i64], read: bool) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let now = now_epoch();
+        let mut n = 0;
+        for id in ids {
+            n += if read {
+                conn.execute(
+                    "UPDATE messages SET delivered_at=?1, delivered_via='operator-ui'
+                     WHERE id=?2 AND recipient='operator' AND delivered_at IS NULL",
+                    params![now, id],
+                )?
+            } else {
+                conn.execute(
+                    "UPDATE messages SET delivered_at=NULL, delivered_via=NULL
+                     WHERE id=?1 AND recipient='operator'",
+                    params![id],
+                )?
+            };
+        }
+        Ok(n)
+    }
+
     pub fn mark_delivered(&self, ids: &[i64], via: &str, ingest_uuid: Option<&str>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = now_epoch();
@@ -3857,6 +3897,64 @@ mod plugin_library_tests {
             s.boards(false).unwrap()[0].tab_order.clone().unwrap(),
             serde_json::json!(["keep@pw"])
         );
+    }
+
+    #[test]
+    fn operator_mail_is_kept_read_or_unread() {
+        let t = tempfile::tempdir().unwrap();
+        let st = BusStore::open(&t.path().join("bus.db")).unwrap();
+        let a = st
+            .insert_message(
+                "main@deck",
+                "operator",
+                "@operator",
+                "normal",
+                "ticket 1",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let b = st
+            .insert_message(
+                "main@deck",
+                "operator",
+                "@operator",
+                "normal",
+                "ticket 2",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        st.insert_message(
+            "operator",
+            "main@deck",
+            "@main",
+            "ambient",
+            "a notice",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(st.pending_for("operator").unwrap().len(), 2);
+        assert_eq!(st.set_mail_read(&[a], true).unwrap(), 1);
+        // Read is not gone: the mail still lists it, the pending view does not.
+        let mail = st.operator_mail(10).unwrap();
+        assert_eq!(mail.len(), 2);
+        assert!(mail
+            .iter()
+            .find(|m| m.id == a)
+            .unwrap()
+            .delivered_at
+            .is_some());
+        assert_eq!(st.pending_for("operator").unwrap().len(), 1);
+        // Unread again.
+        assert_eq!(st.set_mail_read(&[a], false).unwrap(), 1);
+        assert_eq!(st.pending_for("operator").unwrap().len(), 2);
+        // Only the operator's mail is touched.
+        assert_eq!(st.set_mail_read(&[b + 1], true).unwrap(), 0);
     }
 
     #[test]

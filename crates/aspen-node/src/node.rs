@@ -2026,21 +2026,10 @@ impl Node {
         text: String,
         attachments: Vec<crate::artifacts::Attachment>,
     ) -> Result<String> {
-        // The operator answering a session is the operator having read
-        // its mail: its pending @operator rows leave the Now page.
-        if let Ok(rows) = self.inner.store.pending_for("operator") {
-            let ids: Vec<i64> = rows
-                .iter()
-                .filter(|m| m.sender == name)
-                .map(|m| m.id)
-                .collect();
-            if !ids.is_empty() {
-                let _ = self
-                    .inner
-                    .store
-                    .mark_delivered(&ids, "operator-replied", None);
-            }
-        }
+        // Answering a session no longer marks its mail to the operator read
+        // (PROPOSALS-2026-11-D §D-1): one reply in the chat took a lane's
+        // open tickets off Now with nowhere to find them. Read is the
+        // operator's own act.
         if let Ok(row) = self.agent_row(name) {
             if let Some(to) = row.moved_to {
                 return Err(anyhow!("@{name} moved — it is now @{to}"));

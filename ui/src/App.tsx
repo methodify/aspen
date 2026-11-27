@@ -287,6 +287,7 @@ function MeshColumn() {
           <span className="nav-key" style={{ color: "var(--text-dim)", width: 14 }}>{n.key}</span>
           <span>{n.label}</span>
           {n.label === "Now" && needs > 0 && <span className="badge-count">{needs}</span>}
+          {n.label === "Flow" && needs > 0 && <span className="badge-count" title={`${needs} unread for you`}>{needs}</span>}
         </NavLink>
       ))}
       <button type="button" className="nav-item nav-more" onClick={() => setMoreOpen(true)} title={pwaTick.needRefresh ? "More — a new console is ready" : "More"} aria-haspopup="menu" aria-expanded={moreOpen}>
@@ -650,12 +651,15 @@ function OpenLink() {
 
 export default function App() {
   const agentsPoll = usePoll(api.agents, 2000);
-  const inboxPoll = usePoll(api.inbox, 5000);
+  // The operator's mail from every node (PROPOSALS-2026-11-D): unread is
+  // the dock badge, Now's count and Flow's.
+  const mailPoll = usePoll(api.operatorMail, 5000);
   const needsPoll = usePoll(api.needs, 3000);
   const waiting = useMemo(() => new Set((needsPoll.data?.prompts ?? []).map((p) => p.agent)), [needsPoll.data]);
   const nodePoll = usePoll(api.node, 15000);
   // The dock badge is the needs-you count (PROPOSALS-2026-09-D.md §1).
-  const needsCount = inboxPoll.data?.length ?? 0;
+  const unreadMail = useMemo(() => (mailPoll.data?.mail ?? []).filter((m) => m.delivered_at == null), [mailPoll.data]);
+  const needsCount = unreadMail.length;
   useEffect(() => setBadge(needsCount), [needsCount]);
   // Hosted with nothing to talk to: the front door is the connect page.
   const loc = useLocation();
@@ -670,8 +674,8 @@ export default function App() {
     agentsError: agentsPoll.error,
     agentsLoaded: agentsPoll.data !== null,
     refreshAgents: agentsPoll.refresh,
-    inbox: inboxPoll.data ?? [],
-    refreshInbox: inboxPoll.refresh,
+    inbox: unreadMail,
+    refreshInbox: mailPoll.refresh,
     waiting,
     node: nodePoll.data,
     refreshNode: nodePoll.refresh,

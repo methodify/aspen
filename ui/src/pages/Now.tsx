@@ -285,7 +285,29 @@ export default function Now() {
   ]);
 
   const prompts = needsPoll.data?.prompts ?? [];
-  const inbox = needsPoll.data?.inbox ?? [];
+  // A card dismissed (or answered) leaves at once; the node is told in the
+  // background (PROPOSALS-2026-11-D §D-2: it took 3–5 s to register).
+  const [gone, setGone] = useState<Set<string>>(new Set());
+  const mailKey = (m: { node?: string | null; id: number }) => `${m.node ?? ""}:${m.id}`;
+  const inbox = (needsPoll.data?.inbox ?? []).filter((m) => !gone.has(mailKey(m)));
+  const markRead = (m: { node?: string | null; id: number }) => {
+    setGone((g) => new Set(g).add(mailKey(m)));
+    void api
+      .markMail([{ node: m.node ?? null, id: m.id }], true)
+      .then(() => Promise.all([needsPoll.refresh(), refreshInbox()]))
+      .catch(() => setGone((g) => {
+        const n = new Set(g);
+        n.delete(mailKey(m));
+        return n;
+      }));
+  };
+  const meshLine = (() => {
+    const ns = (needsPoll.data?.nodes ?? []).filter((n) => !n.self);
+    if (ns.length === 0) return null;
+    const silent = ns.filter((n) => n.age === null || n.linked === false);
+    const oldest = Math.max(0, ...ns.filter((n) => n.age !== null).map((n) => n.age!));
+    return `${ns.length + 1} nodes asked${oldest > 0 ? `, the oldest answer ${Math.round(oldest)} s old` : ""}${silent.length ? ` · no answer from ${silent.map((n) => n.node).join(", ")}` : ""}`;
+  })();
   const adoptions = needsPoll.data?.adoptions ?? [];
   const waiting = activityPoll.data?.waiting ?? [];
 
@@ -322,13 +344,15 @@ export default function Now() {
   const needsCount =
     prompts.length + inbox.length + adoptions.length + finished.length + waiting.length + exited.length + updateNeed + memoryConflicts;
 
-  async function sendReply(to: string) {
+  async function sendReply(to: string, answered?: { node?: string | null; id: number }) {
     if (!replyText.trim()) return;
     setErr(null);
     try {
       await api.busSend({ to: `@${to}`, body: replyText.trim(), urgency: replyClass });
       setReplyTo(null);
       setReplyText("");
+      // Answering a message is reading it (that one, not the sender's others).
+      if (answered) markRead(answered);
       await refreshInbox();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "send failed");
@@ -383,6 +407,9 @@ export default function Now() {
           <div className="now-band-head">
             <span className="label">Needs you</span>
             <span className="mono-meta">{needsCount === 0 ? "nothing — the fleet is running itself" : `${needsCount}`}</span>
+            <span style={{ flex: 1 }} />
+            {meshLine && <span className="mono-meta" title="your mail and prompts are gathered from every node at once">{meshLine}</span>}
+            <Link className="mono-meta" to="/flow?view=inbox" title="every message to you, read ones too">all mail →</Link>
           </div>
           <UpdateCard />
           {adoptions.map((a) => (
@@ -415,10 +442,10 @@ export default function Now() {
                     onChange={(e) => setReplyText(e.target.value)}
                     placeholder={`reply to @${m.sender}`}
                     autoFocus
-                    onKeyDown={(e) => e.key === "Enter" && void sendReply(m.sender)}
+                    onKeyDown={(e) => e.key === "Enter" && void sendReply(m.sender, m)}
                     style={{ flex: 1 }}
                   />
-                  <button className="btn sm" onClick={() => void sendReply(m.sender)}>send</button>
+                  <button className="btn sm" onClick={() => void sendReply(m.sender, m)}>send</button>
                   <button className="btn ghost sm" onClick={() => setReplyTo(null)}>cancel</button>
                 </div>
               ) : (
@@ -427,7 +454,7 @@ export default function Now() {
                   <span style={{ flex: 1 }} />
                   <button className="btn sm" onClick={() => setReplyTo(m.sender, `${m.node ?? ""}:${m.id}`)}>reply</button>
                   <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(m.sender)}`)}>open</button>
-                  <button className="btn ghost sm" title="mark read: the card leaves this page (the message stays in the session and the bus log)" onClick={() => void api.markNeedsRead([m.id], m.node).then(() => needsPoll.refresh())}>dismiss</button>
+                  <button className="btn ghost sm" title="mark read: the card leaves this page (the message stays in the session and the bus log)" onClick={() => markRead(m)}>dismiss</button>
                 </div>
               )}
             </div>

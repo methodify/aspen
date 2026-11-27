@@ -46,6 +46,16 @@ Tags: `console` (the web UI), `protocol` (mesh/bus/wire), `sessions`
 | M-1 | projects | **Project memory.** A memory the members of a project share across nodes and repos, as native-feeling as each harness's own (Claude's, Codex's), so a lesson one member learns reaches the others; visible to and authorable by the operator. After the projects slate. | PROPOSALS-2026-11-A §4.6 |
 | W-1 | workflows | **Pause and resume a workflow durably** (with unfinished agents' state kept). Waits on the harness: Claude Code's pause is terminal-only, and a stop restarts unfinished agents. | PROPOSALS-2026-11-A §A-12 |
 
+## Shipped — 2026-11-27: the operator's mail (v0.57.0, queued)
+
+Proposal 2026-11-D (PROPOSALS-2026-11-D.md).
+- **Mail is kept** (D-1): a message to the operator is read or unread, never gone. Answering an agent in its chat no longer marks all its mail read (one reply took a lane's eight open tickets off Now). *Mark unread* puts one back.
+- **One mailbox, mesh-wide and quick** (D-2): `/api/operator/mail` and `/api/needs` ask every peer at once and keep each answer (a call returns with what is known; a peer's new answer lands for the next); a node that is away keeps its last known mail and is named. Now says how many nodes were asked and who did not answer. Mark read and unread on each message's own node; Now's *dismiss* and a reply take a card off at once.
+- **Flow → Inbox** (D-3): every message to the operator, from every node, unread first and read kept; filter by sender and state, search, reply (marks that one read), open the session, the conversation, mark read or unread, mark all read. Flow carries the unread count in the nav, as Now does.
+- **Direct conversations across the mesh** (D-4): Flow's Direct list and threads gather from every node, so the operator's conversation with an agent elsewhere shows both sides (merged by uuid).
+- Found on this node: an agent's 46 messages to the operator sat on `anindor-wsl` while the console read `anindor`; eight open tickets were marked read by one chat reply.
+- Verified on a two-node rig: mail from an agent on b on a's console in ~30 ms; read and unread from a reaching b; a chat reply leaving the mail unread; the DM pair and thread across nodes; b away, its mail kept as last known with b named; in the browser, mark read in ~50 ms and Now's dismiss in ~60 ms, the Inbox's unread and all; a store test for kept, read and unread mail.
+
 ## Shipped — 2026-11-25: reply to one message (v0.56.3)
 
 - On Now, *reply* on one of several messages from the same agent opened a box on every one of them, all showing the same text: the open reply was the sender, so every card from it matched. It is now the message (node and id); the draft is still kept per recipient.

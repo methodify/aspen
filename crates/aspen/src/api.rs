@@ -226,6 +226,8 @@ pub async fn serve(
         .route("/agents/{name}/title", post(post_title))
         .route("/agents/{name}/charter", post(post_charter))
         .route("/needs", get(get_needs))
+        .route("/operator/mail", get(get_operator_mail))
+        .route("/operator/mail/read", post(post_operator_mail_read))
         .route("/needs/read", post(post_needs_read))
         .route("/dms", get(get_dms))
         .route("/dm", get(get_dm))
@@ -5057,6 +5059,224 @@ async fn post_charter(
 
 // ------------------------------------------------------ the mesh-wide inbox
 
+// ------------------------------------------------- asking the mesh at once
+// (PROPOSALS-2026-11-D §D-2): every linked peer in parallel, each answer
+// kept, so a slow or unreachable peer never holds a page.
+
+type PeerAnswers =
+    std::sync::Mutex<std::collections::HashMap<(String, String), (std::time::Instant, Value)>>;
+
+fn peer_answers() -> &'static PeerAnswers {
+    static C: std::sync::OnceLock<PeerAnswers> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// One peer's part of a fan-out: its answer (the last one, if this round's
+/// is still out), how old it is, and whether this round reached it.
+struct PeerPart {
+    node: String,
+    answer: Option<Value>,
+    age: Option<f64>,
+    /// Linked now; an unlinked peer's answer is its last known one.
+    linked: bool,
+}
+
+/// Ask every linked peer `op` at once. An answer younger than `fresh` is
+/// used as it is; the others are asked in parallel and awaited at most
+/// `wait`; a peer still out gives its last answer, and its new one lands
+/// for the next call.
+async fn fanout(
+    s: &AppState,
+    op: &str,
+    body: Value,
+    fresh: std::time::Duration,
+    wait: std::time::Duration,
+) -> Vec<PeerPart> {
+    let Some(mesh) = s.node.inner.mesh() else {
+        return Vec::new();
+    };
+    // Linked peers are asked; a known peer that is away keeps its last
+    // answer and is named as not answering (its mail does not vanish).
+    let linked: std::collections::HashSet<String> =
+        mesh.links.lock().unwrap().keys().cloned().collect();
+    let mut peers: Vec<String> = linked.iter().cloned().collect();
+    for p in mesh.peers() {
+        let n = p.cert.node;
+        if !n.starts_with("console-") && !peers.contains(&n) {
+            peers.push(n);
+        }
+    }
+    peers.sort();
+    let key = format!("{op}\u{0}{body}");
+    let mut asks = Vec::new();
+    for peer in peers.iter().filter(|p| linked.contains(*p)) {
+        let stale = peer_answers()
+            .lock()
+            .unwrap()
+            .get(&(key.clone(), peer.clone()))
+            .is_none_or(|(at, _)| at.elapsed() >= fresh);
+        if stale {
+            let mesh = mesh.clone();
+            let (peer, op, body, key) = (peer.clone(), op.to_owned(), body.clone(), key.clone());
+            asks.push(tokio::spawn(async move {
+                if let Ok(v) = mesh
+                    .api_call(&peer, &op, "", body, std::time::Duration::from_secs(10))
+                    .await
+                {
+                    peer_answers()
+                        .lock()
+                        .unwrap()
+                        .insert((key, peer), (std::time::Instant::now(), v));
+                }
+            }));
+        }
+    }
+    let _ = tokio::time::timeout(wait, futures_util::future::join_all(asks)).await;
+    let held = peer_answers().lock().unwrap();
+    peers
+        .into_iter()
+        .map(|p| {
+            let got = held.get(&(key.clone(), p.clone()));
+            PeerPart {
+                answer: got.map(|(_, v)| v.clone()),
+                age: got.map(|(at, _)| at.elapsed().as_secs_f64()),
+                linked: linked.contains(&p),
+                node: p,
+            }
+        })
+        .collect()
+}
+
+/// Which nodes answered and how long ago (for "asked 3 s ago; b did not
+/// answer").
+fn nodes_status(s: &AppState, parts: &[PeerPart]) -> Value {
+    let mut v = vec![json!({ "node": self_node_name(s), "self": true, "age": 0.0 })];
+    for p in parts {
+        v.push(json!({
+            "node": p.node,
+            "self": false,
+            "age": p.age,
+            "answered": p.answer.is_some(),
+            "linked": p.linked,
+        }));
+    }
+    json!(v)
+}
+
+#[derive(Deserialize)]
+struct MailQuery {
+    limit: Option<i64>,
+}
+
+/// GET /api/operator/mail — the operator's mail from every node, read and
+/// unread, newest first (PROPOSALS-2026-11-D §D-2).
+async fn get_operator_mail(State(s): S, Query(q): Query<MailQuery>) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(300).clamp(1, 2000);
+    let me = self_node_name(&s);
+    let mut mail: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .operator_mail(limit)
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let mut v = m.to_json();
+            v["node"] = json!(me);
+            v["self"] = json!(true);
+            v
+        })
+        .collect();
+    let parts = fanout(
+        &s,
+        "operator_mail",
+        json!({ "limit": limit }),
+        std::time::Duration::from_secs(4),
+        std::time::Duration::from_millis(1500),
+    )
+    .await;
+    for p in &parts {
+        for m in p
+            .answer
+            .as_ref()
+            .and_then(|a| a.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let mut m = m.clone();
+            // A sender on that node is named from here with its node.
+            if let Some(snd) = m.get("sender").and_then(|x| x.as_str()) {
+                if snd != "operator" && snd.split('@').count() == 2 {
+                    m["sender"] = json!(format!("{snd}@{}", p.node));
+                }
+            }
+            m["node"] = json!(p.node);
+            m["self"] = json!(false);
+            mail.push(m);
+        }
+    }
+    mail.sort_by(|a, b| {
+        b["created_at"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&a["created_at"].as_f64().unwrap_or(0.0))
+    });
+    let unread = mail.iter().filter(|m| m["delivered_at"].is_null()).count();
+    Json(json!({ "mail": mail, "unread": unread, "nodes": nodes_status(&s, &parts) }))
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct MailMark {
+    node: Option<String>,
+    id: i64,
+}
+
+#[derive(Deserialize)]
+struct MailReadBody {
+    items: Vec<MailMark>,
+    #[serde(default = "yes")]
+    read: bool,
+}
+
+/// POST /api/operator/mail/read `{items: [{node, id}], read}` — read or
+/// unread again, each on its own node.
+async fn post_operator_mail_read(State(s): S, Json(b): Json<MailReadBody>) -> impl IntoResponse {
+    let mut by: std::collections::BTreeMap<Option<String>, Vec<i64>> = Default::default();
+    for it in b.items {
+        let node = it.node.filter(|n| !is_self_node(&s, n));
+        by.entry(node).or_default().push(it.id);
+    }
+    let mut changed = 0usize;
+    for (node, ids) in by {
+        match node {
+            None => changed += s.node.inner.store.set_mail_read(&ids, b.read).unwrap_or(0),
+            Some(n) => {
+                if let Some(mesh) = s.node.inner.mesh() {
+                    if let Ok(v) = mesh
+                        .api_call(
+                            &n,
+                            "mail_read",
+                            "",
+                            json!({ "ids": ids, "read": b.read }),
+                            std::time::Duration::from_secs(8),
+                        )
+                        .await
+                    {
+                        changed += v["changed"].as_u64().unwrap_or(0) as usize;
+                    }
+                }
+            }
+        }
+    }
+    // The next look at the mail asks again.
+    peer_answers()
+        .lock()
+        .unwrap()
+        .retain(|(k, _), _| !k.starts_with("operator_mail") && !k.starts_with("needs"));
+    Json(json!({ "changed": changed })).into_response()
+}
+
 /// Everything in the WHOLE MESH that needs the operator: open permission
 /// prompts and questions (local + every connected peer) and @operator mail
 /// from every node's store. The console's Command surface is built on this.
@@ -5110,63 +5330,59 @@ async fn get_needs(State(s): S) -> impl IntoResponse {
             v
         })
         .collect();
-    if let Some(mesh) = s.node.inner.mesh() {
-        let peers: Vec<String> = mesh.links.lock().unwrap().keys().cloned().collect();
-        for peer in peers {
-            match mesh
-                .api_call(
-                    &peer,
-                    "needs",
-                    "",
-                    json!({}),
-                    std::time::Duration::from_secs(5),
-                )
-                .await
-            {
-                Ok(v) => {
-                    if let Some(ps) = v.get("prompts").and_then(|p| p.as_array()) {
-                        for p in ps {
-                            let mut p = p.clone();
-                            p["node"] = json!(peer);
-                            // Remote prompts are answered via name@node.
-                            if let Some(a) = p.get("agent").and_then(|a| a.as_str()) {
-                                p["agent"] = json!(format!("{a}@{peer}"));
-                            }
-                            prompts.push(p);
-                        }
-                    }
-                    if let Some(ms) = v.get("inbox").and_then(|m| m.as_array()) {
-                        for m in ms {
-                            let mut m = m.clone();
-                            m["node"] = json!(peer);
-                            inbox.push(m);
-                        }
-                    }
-                    if let Some(ads) = v.get("adoptions").and_then(|m| m.as_array()) {
-                        for a in ads {
-                            let mut a = a.clone();
-                            a["node"] = json!(peer);
-                            if let Some(ag) = a.get("of_agent").and_then(|x| x.as_str()) {
-                                a["of_agent"] = json!(format!("{ag}@{peer}"));
-                            }
-                            adoptions.push(a);
-                        }
-                    }
-                    if let Some(ms) = v.get("memory").and_then(|m| m.as_array()) {
-                        for m in ms {
-                            let mut m = m.clone();
-                            m["node"] = json!(peer);
-                            memory.push(m);
-                        }
-                    }
+    // Every peer at once, each answer kept (PROPOSALS-2026-11-D §D-2):
+    // asked one after another with 5 s each, a slow peer held the page.
+    let parts = fanout(
+        &s,
+        "needs",
+        json!({}),
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_millis(1200),
+    )
+    .await;
+    for part in &parts {
+        let peer = &part.node;
+        let Some(v) = part.answer.as_ref() else {
+            continue;
+        };
+        if let Some(ps) = v.get("prompts").and_then(|p| p.as_array()) {
+            for p in ps {
+                let mut p = p.clone();
+                p["node"] = json!(peer);
+                // Remote prompts are answered via name@node.
+                if let Some(a) = p.get("agent").and_then(|a| a.as_str()) {
+                    p["agent"] = json!(format!("{a}@{peer}"));
                 }
-                Err(e) => {
-                    tracing::debug!(peer, error = %e, "needs aggregation: peer unreachable");
+                prompts.push(p);
+            }
+        }
+        if let Some(ms) = v.get("inbox").and_then(|m| m.as_array()) {
+            for m in ms {
+                let mut m = m.clone();
+                m["node"] = json!(peer);
+                inbox.push(m);
+            }
+        }
+        if let Some(ads) = v.get("adoptions").and_then(|m| m.as_array()) {
+            for a in ads {
+                let mut a = a.clone();
+                a["node"] = json!(peer);
+                if let Some(ag) = a.get("of_agent").and_then(|x| x.as_str()) {
+                    a["of_agent"] = json!(format!("{ag}@{peer}"));
                 }
+                adoptions.push(a);
+            }
+        }
+        if let Some(ms) = v.get("memory").and_then(|m| m.as_array()) {
+            for m in ms {
+                let mut m = m.clone();
+                m["node"] = json!(peer);
+                memory.push(m);
             }
         }
     }
-    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions, "memory": memory }))
+    let nodes = nodes_status(&s, &parts);
+    Json(json!({ "prompts": prompts, "inbox": inbox, "adoptions": adoptions, "memory": memory, "nodes": nodes }))
         .into_response()
 }
 
@@ -5803,16 +6019,70 @@ async fn post_needs_read(State(s): S, body: Option<Json<NeedsReadBody>>) -> impl
 
 // -------------------------------------------------------- direct messages
 
-async fn get_dms(State(s): S) -> impl IntoResponse {
-    match s.node.inner.store.dm_pairs() {
-        Ok(rows) => Json(
-            rows.iter()
-                .map(|(a, b, last, n)| json!({ "a": a, "b": b, "last_at": last, "messages": n }))
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+/// A name as this node writes it: an agent on `node` gets `@node` when it
+/// does not carry one (`main@cyberdeck` there is `main@cyberdeck@node`
+/// here); the operator is the operator everywhere.
+fn qualify(name: &str, node: &str) -> String {
+    if name == "operator" || name.split('@').count() != 2 {
+        name.to_owned()
+    } else {
+        format!("{name}@{node}")
     }
+}
+
+/// GET /api/dms — direct conversations from every node (PROPOSALS-2026-11-D
+/// §D-4): an agent's messages to the operator live on its own node.
+async fn get_dms(State(s): S) -> impl IntoResponse {
+    let mut pairs: std::collections::BTreeMap<(String, String), (f64, i64)> = Default::default();
+    let mut add = |a: String, b: String, last: f64, n: i64| {
+        let k = if a <= b { (a, b) } else { (b, a) };
+        let e = pairs.entry(k).or_insert((0.0, 0));
+        e.0 = e.0.max(last);
+        // A message the operator sent is on both nodes: the larger count
+        // is the conversation's.
+        e.1 = e.1.max(n);
+    };
+    for (a, b, last, n) in s.node.inner.store.dm_pairs().unwrap_or_default() {
+        add(a, b, last, n);
+    }
+    let parts = fanout(
+        &s,
+        "dm_pairs",
+        json!({}),
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(1500),
+    )
+    .await;
+    for p in &parts {
+        for d in p
+            .answer
+            .as_ref()
+            .and_then(|a| a.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let (Some(a), Some(b)) = (d["a"].as_str(), d["b"].as_str()) else {
+                continue;
+            };
+            add(
+                qualify(a, &p.node),
+                qualify(b, &p.node),
+                d["last_at"].as_f64().unwrap_or(0.0),
+                d["messages"].as_i64().unwrap_or(0),
+            );
+        }
+    }
+    let mut rows: Vec<Value> = pairs
+        .into_iter()
+        .map(|((a, b), (last, n))| json!({ "a": a, "b": b, "last_at": last, "messages": n }))
+        .collect();
+    rows.sort_by(|x, y| {
+        y["last_at"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&x["last_at"].as_f64().unwrap_or(0.0))
+    });
+    Json(rows).into_response()
 }
 
 #[derive(Deserialize)]
@@ -5822,11 +6092,61 @@ struct DmQuery {
     n: Option<i64>,
 }
 
+/// GET /api/dm?a&b — one conversation, whole: this node's rows and, for an
+/// agent on another node, that node's (merged by uuid, oldest first).
 async fn get_dm(State(s): S, Query(q): Query<DmQuery>) -> impl IntoResponse {
-    match s.node.inner.store.dm_log(&q.a, &q.b, q.n.unwrap_or(200)) {
-        Ok(rows) => Json(rows.iter().map(message_json).collect::<Vec<_>>()).into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    let n = q.n.unwrap_or(200);
+    let mut out: Vec<Value> = s
+        .node
+        .inner
+        .store
+        .dm_log(&q.a, &q.b, n)
+        .unwrap_or_default()
+        .iter()
+        .map(message_json)
+        .collect();
+    let remote = [&q.a, &q.b]
+        .into_iter()
+        .find_map(|x| remote_parts(&s, x).map(|(bare, node)| (x.clone(), bare, node)));
+    if let (Some((full, bare, node)), Some(mesh)) = (remote, s.node.inner.mesh()) {
+        let other = if q.a == full { &q.b } else { &q.a };
+        if let Ok(v) = mesh
+            .api_call(
+                &node,
+                "dm_log",
+                "",
+                json!({ "a": bare, "b": other, "n": n }),
+                std::time::Duration::from_secs(8),
+            )
+            .await
+        {
+            let seen: std::collections::HashSet<String> = out
+                .iter()
+                .filter_map(|m| m["uuid"].as_str().map(str::to_owned))
+                .collect();
+            for m in v.as_array().into_iter().flatten() {
+                if m["uuid"].as_str().is_some_and(|u| seen.contains(u)) {
+                    continue;
+                }
+                let mut m = m.clone();
+                for k in ["sender", "recipient"] {
+                    if let Some(x) = m[k].as_str() {
+                        m[k] = json!(qualify(x, &node));
+                    }
+                }
+                m["node"] = json!(node);
+                out.push(m);
+            }
+        }
     }
+    out.sort_by(|x, y| {
+        x["created_at"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&y["created_at"].as_f64().unwrap_or(0.0))
+    });
+    let skip = out.len().saturating_sub(n.max(0) as usize);
+    Json(out.split_off(skip)).into_response()
 }
 
 /// Per-recipient receipts for one logical post — watch a routed message land.

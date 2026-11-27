@@ -157,6 +157,9 @@ pub fn op_capability(op: &str) -> Capability {
         | "plugins_status"
         | "templates"
         | "needs"
+        | "operator_mail"
+        | "dm_pairs"
+        | "dm_log"
         | "node_repos"
         | "node_sessions"
         | "session_preview"
@@ -2052,6 +2055,10 @@ fn exposure_precheck(
                 | "memory_conflicts"
                 | "memory_resolve"
                 | "inbox_read"
+                | "operator_mail"
+                | "mail_read"
+                | "dm_pairs"
+                | "dm_log"
                 | "link_add"
                 | "link_del"
                 | "node_update"
@@ -2673,6 +2680,39 @@ async fn serve_api_req(
                 "prompts": prompts, "inbox": inbox, "adoptions": adoptions,
                 "memory": crate::memory::conflicts(inner),
             }))
+        }
+        "operator_mail" => {
+            let limit = body.get("limit").and_then(|l| l.as_i64()).unwrap_or(300);
+            Ok(json!(inner
+                .store
+                .operator_mail(limit.clamp(1, 2000))?
+                .iter()
+                .map(|m| m.to_json())
+                .collect::<Vec<_>>()))
+        }
+        "mail_read" => {
+            let ids: Vec<i64> = body
+                .get("ids")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let read = body.get("read").and_then(|r| r.as_bool()).unwrap_or(true);
+            Ok(json!({ "changed": inner.store.set_mail_read(&ids, read)? }))
+        }
+        "dm_pairs" => Ok(json!(inner
+            .store
+            .dm_pairs()?
+            .iter()
+            .map(|(a, b, last, n)| json!({ "a": a, "b": b, "last_at": last, "messages": n }))
+            .collect::<Vec<_>>())),
+        "dm_log" => {
+            let g = |k: &str| body.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let n = body.get("n").and_then(|v| v.as_i64()).unwrap_or(200);
+            Ok(json!(inner
+                .store
+                .dm_log(g("a"), g("b"), n)?
+                .iter()
+                .map(|m| m.to_json())
+                .collect::<Vec<_>>()))
         }
         "inbox_read" => {
             // All of the operator's pending mail, or just the ids named

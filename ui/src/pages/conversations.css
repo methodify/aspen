@@ -96,3 +96,11 @@
 .flow-state { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .flow-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 0.82rem; }
 .flow-row .dim { color: var(--text-dim); }
+
+/* The operator's inbox (PROPOSALS-2026-11-D §D-3). */
+.inbox-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+.inbox-search { flex: 1 1 180px; min-width: 0; max-width: 320px; }
+.inbox-nodes { padding: 4px 20px; }
+.inbox-item { border-bottom: 1px solid var(--line); padding: 6px 0 8px; }
+.inbox-item.read { opacity: 0.72; }
+.inbox-item .need-actions a.btn { text-decoration: none; }

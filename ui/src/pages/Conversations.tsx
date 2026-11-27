@@ -5,7 +5,7 @@
 // the operator can watch a message land.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api,
   type Activity,
@@ -13,6 +13,8 @@ import {
   type Channel,
   type ChannelPost,
   type DmPair,
+  type MailItem,
+  type OperatorMail,
   type Urgency,
 } from "../api";
 import { usePoll } from "../hooks";
@@ -54,6 +56,9 @@ export default function Conversations() {
   const [newOpen, setNewOpen] = useState(false);
 
   const isTrail = params.get("view") === "trail";
+  // Every message to the operator (PROPOSALS-2026-11-D §D-3).
+  const isInbox = params.get("view") === "inbox";
+  const { inbox: unreadMail } = useAppData();
   const dmParam = params.get("dm");
   const dmPair = useMemo(() => {
     if (!dmParam) return null;
@@ -62,7 +67,7 @@ export default function Conversations() {
     return [parts[0], parts[1]] as [string, string];
   }, [dmParam]);
 
-  const selected = isTrail || dmPair ? null : (channel ?? channels[0]?.name ?? null);
+  const selected = isTrail || isInbox || dmPair ? null : (channel ?? channels[0]?.name ?? null);
   const current = channels.find((c) => c.name === selected) ?? null;
 
   const repoChannels = channels.filter((c) => c.kind === "repo");
@@ -70,6 +75,7 @@ export default function Conversations() {
 
   const openChannel = (name: string) => nav(`/flow/${encodeURIComponent(name)}`);
   const openTrail = () => nav("/flow?view=trail");
+  const openInbox = () => nav("/flow?view=inbox");
   const openDm = (a: string, b: string) =>
     nav(`/flow?dm=${encodeURIComponent(a)},${encodeURIComponent(b)}`);
 
@@ -78,6 +84,7 @@ export default function Conversations() {
       <div className="stage-head">
         <span className="t-display">Flow</span>
         {isTrail && <span className="mono-meta">full trail</span>}
+        {isInbox && <span className="mono-meta">inbox · every message to you</span>}
         {dmPair && <span className="mono-meta">@{dmPair[0]} ↔ @{dmPair[1]}</span>}
         {current && <span className="mono-meta">#{current.name}</span>}
         <span style={{ flex: 1 }} />
@@ -86,6 +93,18 @@ export default function Conversations() {
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr 260px", height: "calc(100% - 61px)", minHeight: 0 }}>
         {/* Rail */}
         <div style={{ borderRight: "1px solid var(--line)", overflow: "auto", padding: "12px 0" }}>
+          <div
+            className={`nav-item${isInbox ? " active" : ""}`}
+            onClick={openInbox}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === "Enter" && openInbox()}
+            title="every message to you, from every node: unread first, read kept"
+          >
+            <span className="mono">✉ inbox</span>
+            <span style={{ flex: 1 }} />
+            {unreadMail.length > 0 ? <span className="badge-count">{unreadMail.length}</span> : <span className="mono-meta">all read</span>}
+          </div>
           <div
             className={`nav-item${isTrail ? " active" : ""}`}
             onClick={openTrail}
@@ -138,7 +157,9 @@ export default function Conversations() {
         </div>
 
         {/* Center pane */}
-        {isTrail ? (
+        {isInbox ? (
+          <InboxView />
+        ) : isTrail ? (
           <TrailView />
         ) : dmPair ? (
           <DmThread key={`${dmPair[0]}|${dmPair[1]}`} a={dmPair[0]} b={dmPair[1]} />
@@ -312,6 +333,150 @@ function Thread({ name, allChannels }: { name: string; allChannels: Channel[] })
           onClose={() => setRoutePost(null)}
         />
       )}
+    </div>
+  );
+}
+
+/* ── The operator's inbox (PROPOSALS-2026-11-D §D-3) ────────────────── */
+
+const mailKey = (m: MailItem) => `${m.node}:${m.id}`;
+
+function InboxView() {
+  const nav = useNavigate();
+  const { refreshInbox } = useAppData();
+  const poll = usePoll<OperatorMail>(useMemo(() => () => api.operatorMail(500), []), 4000);
+  // Read or unread as just set here, until the node's next answer agrees.
+  const [local, setLocal] = useState<Map<string, boolean>>(new Map());
+  const [state, setState] = useState<"unread" | "all">("unread");
+  const [from, setFrom] = useState("");
+  const [q, setQ] = useState("");
+  const [replying, setReplying] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [cls, setCls] = useState<Urgency>("normal");
+  const [err, setErr] = useState<string | null>(null);
+  const mail = useMemo(() => poll.data?.mail ?? [], [poll.data]);
+  const isRead = (m: MailItem) => local.get(mailKey(m)) ?? m.delivered_at != null;
+  useEffect(() => {
+    // Drop overrides the node now agrees with.
+    setLocal((l) => {
+      let changed = false;
+      const n = new Map(l);
+      for (const m of mail) {
+        const k = mailKey(m);
+        if (n.has(k) && n.get(k) === (m.delivered_at != null)) {
+          n.delete(k);
+          changed = true;
+        }
+      }
+      return changed ? n : l;
+    });
+  }, [mail]);
+  const senders = useMemo(() => [...new Set(mail.map((m) => m.sender))].sort(), [mail]);
+  const shown = mail.filter(
+    (m) => (state === "all" || !isRead(m)) && (!from || m.sender === from) && (!q || m.body.toLowerCase().includes(q.toLowerCase())),
+  );
+  const mark = (ms: MailItem[], read: boolean) => {
+    setLocal((l) => {
+      const n = new Map(l);
+      for (const m of ms) n.set(mailKey(m), read);
+      return n;
+    });
+    void api
+      .markMail(ms.map((m) => ({ node: m.self ? null : m.node, id: m.id })), read)
+      .then(() => Promise.all([poll.refresh(), refreshInbox()]))
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  };
+  async function reply(m: MailItem) {
+    if (!draft.trim()) return;
+    setErr(null);
+    try {
+      await api.busSend({ to: `@${m.sender}`, body: draft.trim(), urgency: cls });
+      setDraft("");
+      setReplying(null);
+      if (!isRead(m)) mark([m], true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "send failed");
+    }
+  }
+  const nodes = poll.data?.nodes ?? [];
+  const silent = nodes.filter((n) => !n.self && (n.age === null || n.linked === false)).map((n) => n.node);
+  const unreadShown = shown.filter((m) => !isRead(m));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div className="inbox-bar">
+        <span className="seg">
+          {(["unread", "all"] as const).map((k) => (
+            <button key={k} type="button" className={state === k ? "on" : ""} aria-pressed={state === k} onClick={() => setState(k)}>
+              {k === "unread" ? `unread · ${mail.filter((m) => !isRead(m)).length}` : `all · ${mail.length}`}
+            </button>
+          ))}
+        </span>
+        <select value={from} onChange={(e) => setFrom(e.target.value)} aria-label="from">
+          <option value="">from anyone</option>
+          {senders.map((x) => (
+            <option key={x} value={x}>@{x}</option>
+          ))}
+        </select>
+        <input className="inbox-search" placeholder="search the text" value={q} onChange={(e) => setQ(e.target.value)} />
+        <span style={{ flex: 1 }} />
+        {unreadShown.length > 0 && (
+          <button type="button" className="btn ghost sm" onClick={() => mark(unreadShown, true)}>
+            mark {unreadShown.length} read
+          </button>
+        )}
+      </div>
+      <div className="mono-meta inbox-nodes">
+        {poll.data ? `from ${nodes.length} node${nodes.length === 1 ? "" : "s"}, asked at once` : "asking every node…"}
+        {silent.length > 0 && <span className="error-text"> · no answer from {silent.join(", ")} (shown as last known)</span>}
+      </div>
+      <div style={{ flex: 1, overflow: "auto", padding: "8px 20px 16px" }}>
+        <ErrorBar error={err ?? poll.error} />
+        {poll.data && shown.length === 0 && (
+          <Empty mark="✉">{state === "unread" ? "Nothing unread. Read mail is kept: switch to all." : "No messages to you yet."}</Empty>
+        )}
+        {shown.map((m) => {
+          const read = isRead(m);
+          const k = mailKey(m);
+          return (
+            <div key={k} className={`inbox-item${read ? " read" : ""}`}>
+              <MessageRow
+                urgency={m.urgency}
+                sender={m.sender}
+                meta={
+                  <span className="mono-meta" title={new Date(m.created_at * 1000).toLocaleString()}>
+                    {m.node} · {relTime(m.created_at)} ago{read ? " · read" : ""}
+                  </span>
+                }
+              >
+                {m.body}
+              </MessageRow>
+              {replying === k ? (
+                <div className="need-reply">
+                  <ClassSelect value={cls} onChange={setCls} />
+                  <input
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder={`reply to @${m.sender}`}
+                    autoFocus
+                    onKeyDown={(e) => e.key === "Enter" && void reply(m)}
+                    style={{ flex: 1 }}
+                  />
+                  <button className="btn sm" onClick={() => void reply(m)}>send</button>
+                  <button className="btn ghost sm" onClick={() => setReplying(null)}>cancel</button>
+                </div>
+              ) : (
+                <div className="need-actions">
+                  <span style={{ flex: 1 }} />
+                  <button className="btn sm" onClick={() => setReplying(k)}>reply</button>
+                  <button className="btn ghost sm" onClick={() => nav(`/session/${encodeURIComponent(m.sender)}`)}>open</button>
+                  <Link className="btn ghost sm" to={`/flow?dm=${encodeURIComponent(m.sender)},operator`}>conversation</Link>
+                  <button className="btn ghost sm" onClick={() => mark([m], !read)}>{read ? "mark unread" : "mark read"}</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

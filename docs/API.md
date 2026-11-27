@@ -360,6 +360,19 @@ Everything not under `/api` serves the SPA from `ui/dist` (SPA fallback to
 - Every mesh-wide row's `updated_at` now comes from the store's hybrid logical clock.
 
 
+## The operator's mail (v0.57) — PROPOSALS-2026-11-D
+
+- `GET /api/operator/mail?limit` — `{mail: [message + node, self], unread, nodes: [{node, self, age,
+  answered, linked}]}`: every message to the operator from this node and every peer (asked at once,
+  each answer kept; an away node's last known), read and unread, newest first. Senders on a peer are
+  named with `@node`.
+- `POST /api/operator/mail/read {items: [{node, id}], read}` — read, or unread again, on each
+  message's node (mesh op `mail_read`; `operator_mail` lists).
+- `GET /api/needs` asks peers the same way and carries `nodes`.
+- `GET /api/dms` and `GET /api/dm?a&b` gather from every node (mesh ops `dm_pairs`, `dm_log`); a
+  peer's names carry `@node`; a thread merges by uuid.
+- Answering an agent (`POST /api/agents/{name}/message`) no longer marks its mail read.
+
 ## Where a session works (v0.56) — PROPOSALS-2026-11-C
 
 - The serving rule (file, files, stat, read) also admits: files named by the session's subagents'
